@@ -28,6 +28,7 @@ use crate::verify::{NamespaceFootprint, Verification};
 /// an index is a domain concept (what the bytes mean). The engine maps
 /// index IDs and its own metadata to separate namespaces.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize))]
 pub struct Namespace(&'static str);
 
 impl Namespace {
@@ -258,10 +259,27 @@ pub trait BackendReader: Send {
     /// The snapshot's tip; `None` = nothing committed.
     fn tip(&self) -> Result<Option<BlockRef>, ReadError>;
 
+    /// The newest commit of the snapshot that survives a crash: at or below
+    /// [`tip`](Self::tip), equal to it once [`Backend::flush`] has returned, and
+    /// always equal for a backend that buffers nothing.
+    fn durable_tip(&self) -> Result<Option<BlockRef>, ReadError>;
+
     /// Read a single key from the given namespace.
     ///
     /// A key not of the namespace's key width is [`ReadError::WidthMismatch`].
     fn get(&self, namespace: Namespace, key: &[u8]) -> Result<Option<RawValue>, ReadError>;
+
+    /// [`get`](Self::get) for every key, in order: one value slot per key.
+    ///
+    /// A backend may answer the batch at once (sorted, prefetched, in parallel)
+    /// where that is cheaper than one read per key; the answers are the same.
+    fn get_many(
+        &self,
+        namespace: Namespace,
+        keys: &[&[u8]],
+    ) -> Result<Vec<Option<RawValue>>, ReadError> {
+        keys.iter().map(|key| self.get(namespace, key)).collect()
+    }
 
     /// Entries of `namespace` within `range`, mapped through `filter`, as
     /// lazily read chunks in `range.direction` order.

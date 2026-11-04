@@ -28,7 +28,7 @@ use std::{
 
 use bytes::Bytes;
 
-use super::{too_long, FileHandle, Fs, LockGuard, Mapping};
+use super::{too_long, FileHandle, Fs, LockGuard, Mapping, Uncached};
 
 type FileId = usize;
 
@@ -503,6 +503,8 @@ struct Inner {
     fail_removes: bool,
     fail_creates: bool,
     fail_writes: bool,
+    /// Direct I/O refused: `read_uncached` reads through the cache and says so
+    cached_only: bool,
 }
 
 /// Counts one call in `count`; `EIO` named by `what(at)` from call `from` on
@@ -638,6 +640,13 @@ impl SimFs {
     /// `EIO`, nothing applied (Pebble `errorfs.OnIndex`: loop `op` until a workload succeeds)
     pub fn fail_from(&self, op: u64) {
         self.lock_inner().fail_from = Some(op);
+    }
+
+    /// A filesystem refusing direct I/O from now on (FUSE, virtiofs): every uncached read is
+    /// through the cache and reported as such
+    #[cfg(test)]
+    pub(crate) fn cached_only(&self) {
+        self.lock_inner().cached_only = true;
     }
 
     /// Every removal fails with `EIO` while `on` (a disk refusing unlinks), everything else works
@@ -801,7 +810,7 @@ impl Fs for SimFs {
     }
 
     /// No page cache here: the current bytes (one counted read)
-    fn read_uncached(&self, path: &Path, limit: u64) -> io::Result<Option<Vec<u8>>> {
+    fn read_uncached(&self, path: &Path, limit: u64) -> io::Result<Option<Uncached>> {
         let mut inner = self.lock_inner();
         let Some(id) = inner.image.file(path)? else {
             return Ok(None);
@@ -814,7 +823,10 @@ impl Fs for SimFs {
             return Err(too_long(path, len, limit));
         }
         inner.read(path)?;
-        Ok(Some(device))
+        Ok(Some(Uncached {
+            bytes: device,
+            direct: !inner.cached_only,
+        }))
     }
 
     fn set_read_only(&self, path: &Path) -> io::Result<()> {
@@ -1122,7 +1134,7 @@ mod tests {
         file.sync_data().expect_err("the injected sync failure");
 
         assert_eq!(fs.contents(path), Some(b"XY".to_vec()), "still cached");
-        let device = |fs: &SimFs| fs.read_uncached(path, 2).expect("read").expect("a");
+        let device = |fs: &SimFs| fs.read_uncached(path, 2).expect("read").expect("a").bytes;
         assert_eq!(device(&fs), b"v1", "never reached the device");
         assert_eq!(device(&fs.restarted()), b"v1", "nor after a restart");
         assert_eq!(fs.power_loss().contents(path), Some(b"v1".to_vec()));

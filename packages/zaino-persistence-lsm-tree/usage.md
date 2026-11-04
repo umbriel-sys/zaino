@@ -16,8 +16,12 @@ recovery, failure policy), [lsm-deletes.md](./docs/lsm-deletes.md) and
 [`LsmTreeBackend::open_real`] for the real filesystem), the index directory
 (created if absent) and an [`LsmTreeConfig`]:
 
-- `name` and `format`: the index's name (at most 255 bytes) and layout
-  version. Both are written into the manifest and checked at every open.
+- `name`, `chain` and `format`: the index's name, the chain its data belongs
+  to (both at most 255 bytes; `chain` is opaque here, the index layer names
+  the network, its genesis hash and, on regtest, its activation heights) and
+  the layout version. All three are written into the manifest and checked at
+  every open, so a directory is never read as another index's, chain's or
+  format's.
 - `namespaces`: the port's `NamespaceSpec`s. The directory remembers the ones
   it was committed with, and an open declaring others is refused.
 - `tuning`: per-namespace [`Tuning`], how a namespace is stored, never what it
@@ -37,7 +41,13 @@ recovery, failure policy), [lsm-deletes.md](./docs/lsm-deletes.md) and
     retried before writes stop (default 3, at least 1; below);
   - `spill_bytes`: segment index bytes (fences, filter fingerprints) a write
     or merge holds in memory before spilling them to a scratch file: memory
-    against scratch I/O (default 1 MiB, at most 1 GiB).
+    against scratch I/O (default 1 MiB, at most 1 GiB);
+  - `verify_writes` (default on): every sealed segment is read back whole
+    (keys ascending, filter, decode, row digest) before its commit, O(rows)
+    CPU on the commit path (paced for merges), measured by
+    `zaino.lsm.readback_seconds`. It catches a writer bug before it is
+    committed, never a device fault (the rows come from the page cache).
+    `benches/readback.rs` pins the per-row cost.
 
   A setting out of range refuses the open.
 - `write_buffer`: the buffered heap at which a commit writes the buffer to
@@ -49,6 +59,15 @@ recovery, failure policy), [lsm-deletes.md](./docs/lsm-deletes.md) and
   Merges run on their own threads. A process opening several indexes can cap
   each one so their pools don't oversubscribe the cores. An open whose pool
   cannot start is refused.
+- `strict_manifest_read`: the manifest is read past the page cache at open
+  (`O_DIRECT`), so a page the device never received after an unreported
+  writeback failure cannot pass as committed. A filesystem that refuses direct
+  I/O (FUSE, virtiofs, some ZFS settings) is read through the cache instead,
+  with a warning naming that one guard as lost (torn and partial manifests are
+  still detected), reported by [`LsmTreeBackend::manifest_read`]
+  ([`ManifestRead::Cached`]) and `zaino.store.manifest_read_cached`; tmpfs,
+  whose cache is its storage, counts as direct. With `strict_manifest_read`
+  the open is refused instead.
 
 Namespace names are `/`-separated parts of `[A-Za-z0-9_-]`, unique ignoring
 case. A map owns its directory, so no namespace may sit inside a map's path.
@@ -82,9 +101,11 @@ names (`CON`, `PRN`, `AUX`, `NUL`, `COM0`–`COM9`, `LPT0`–`LPT9`), all ignori
 
 `Backend::verify` scrubs every committed byte against its page checksums.
 [`verify_dir`] does the same offline, with no lock, so it is safe beside a live
-backend; a path holding no index (no `MANIFEST`) is an error. Either covers the
-files committed when it started: a file a merge retires meanwhile is skipped,
-not reported lost. Either returns the port's `Verification`; anything but a
+backend; it takes the name, chain, format and namespaces the directory was
+opened with, and a path holding no index (no `MANIFEST`) or holding another
+chain's is an error. Either covers the files committed when it started: a file
+a merge retires meanwhile is skipped, not reported lost. Either returns the
+port's `Verification` with the checked commit's tip and bytes; anything but a
 clean report means stop, verify the disk, and resync.
 
 ## Metrics
@@ -98,11 +119,15 @@ carry `set` (the map namespace), and the per-tier ones (`segments`, `merging`,
 - `zaino.store.commit_seconds`, `commit_bytes_total`: durable writes.
 - `zaino.store.snapshots_live`, `snapshot_heap_bytes`: memory held by
   snapshots (below).
-- `zaino.lsm.segments`, `merging`, `stall_at`: each map's size tiers, and
-  the segment count at which a write waits on a merge.
+- `zaino.store.manifest_read_cached`: 1 where the manifest could only be read
+  through the page cache at open (above).
+- `zaino.lsm.segments`, `merging`, `stall_at`, `live_rows`: each map's size
+  tiers, the segment count at which a write waits on a merge, and the keys it
+  holds (rows less twice the tombstones).
 - `zaino.lsm.batch_rows_total`, `merge_rows_total`, `merge_bytes_total`,
   `merge_cancelled_total`, `merge_duration_seconds`,
-  `stall_duration_seconds`: write amplification and merge cost.
+  `stall_duration_seconds`, `readback_seconds`: write amplification, merge
+  cost and the sealed-segment read-back.
 - `zaino.lsm.leftover_bytes`, `merge_launch_failed_total`,
   `unlinked_mapped_bytes`: cleanup and disk space (below).
 

@@ -7,6 +7,7 @@ mod names {
     pub(super) const COMMIT_BYTES_TOTAL: &str = "zaino.store.commit_bytes_total";
     pub(super) const SNAPSHOTS_LIVE: &str = "zaino.store.snapshots_live";
     pub(super) const SNAPSHOT_HEAP_BYTES: &str = "zaino.store.snapshot_heap_bytes";
+    pub(super) const MANIFEST_READ_CACHED: &str = "zaino.store.manifest_read_cached";
 }
 
 /// `(metric, bucket edges)` for the exporter (ms commits at the tip → minutes on a stalled disk);
@@ -43,7 +44,22 @@ pub fn describe_metrics() {
         "Estimated buffer heap of the live read states, an upper bound (they share most nodes), \
          by index"
     );
+    describe_gauge!(
+        names::MANIFEST_READ_CACHED,
+        "1 = the index's MANIFEST could only be read through the page cache at open (the \
+         filesystem refuses direct I/O): one durability guard fewer, by index"
+    );
     crate::lsm::describe_metrics();
+}
+
+/// How `index`'s manifest was read at open
+pub(crate) fn manifest_read(index: &str, read: crate::dir::ManifestRead) {
+    let cached = matches!(read, crate::dir::ManifestRead::Cached);
+    metrics::gauge!(names::MANIFEST_READ_CACHED, "index" => index.to_owned()).set(if cached {
+        1.0
+    } else {
+        0.0
+    });
 }
 
 pub(crate) fn committed(index: &str, bytes: usize, took: Duration) {

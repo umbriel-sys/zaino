@@ -129,8 +129,17 @@ impl Backend for InMemoryBackend {
         Ok(())
     }
 
+    /// Nothing is stored, so there is nothing to check: the tip and the bytes held, no unit.
     fn verify(&self) -> Result<Verification, VerifyError> {
-        Ok(Verification::default())
+        let state = current(&self.data).map_err(|source| VerifyError::Failed {
+            operation: "snapshot",
+            source: source.into(),
+        })?;
+        Ok(Verification {
+            tip: state.tip,
+            committed_bytes: state.namespaces.values().map(held_bytes).sum(),
+            units: Vec::new(),
+        })
     }
 
     fn footprint(&self) -> Result<Vec<NamespaceFootprint>, FootprintError> {
@@ -141,21 +150,21 @@ impl Backend for InMemoryBackend {
         Ok(state
             .specs
             .iter()
-            .map(|spec| {
-                let bytes = state.namespaces.get(&spec.namespace).map_or(0, |held| {
-                    held.entries
-                        .iter()
-                        .map(|(k, v)| (k.len() + v.len()) as u64)
-                        .sum()
-                });
-                NamespaceFootprint {
-                    namespace: spec.namespace,
-                    bytes,
-                    cached: None,
-                }
+            .map(|spec| NamespaceFootprint {
+                namespace: spec.namespace,
+                bytes: state.namespaces.get(&spec.namespace).map_or(0, held_bytes),
+                cached: None,
             })
             .collect())
     }
+}
+
+/// Key and value bytes `held` stores.
+fn held_bytes(held: &Held) -> u64 {
+    held.entries
+        .iter()
+        .map(|(k, v)| (k.len() + v.len()) as u64)
+        .sum()
 }
 
 /// Read handle for the in-memory backend: the state when it was opened.
@@ -165,6 +174,11 @@ pub struct InMemoryReader {
 
 impl BackendReader for InMemoryReader {
     fn tip(&self) -> Result<Option<BlockRef>, ReadError> {
+        Ok(self.state.tip)
+    }
+
+    /// Every commit is kept at once: the tip.
+    fn durable_tip(&self) -> Result<Option<BlockRef>, ReadError> {
         Ok(self.state.tip)
     }
 

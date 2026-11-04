@@ -200,7 +200,7 @@ fn open_checks_lengths_and_a_corrupt_page_fails_on_first_touch() {
     let dir = Path::new("/segments");
     fs.create_dir_all(dir).expect("dir");
     let shape = scanned();
-    let writer = SegmentWriter::open(fs.clone(), dir, shape);
+    let writer = SegmentWriter::open(fs.clone(), dir, shape, labels("set"), true);
     // enough rows that page 0 holds records only (open reads the summary, past them)
     let rows = |owner| {
         (0..600)
@@ -297,7 +297,7 @@ fn open_checks_lengths_and_a_corrupt_page_fails_on_first_touch() {
     fs.create_dir_all(ids).expect("dir");
     let id_shape = probed(false);
     let id_rows: Vec<_> = (0..3_000).map(probed_row).collect();
-    let id_writer = SegmentWriter::open(fs.clone(), ids, id_shape);
+    let id_writer = SegmentWriter::open(fs.clone(), ids, id_shape, labels("ids"), true);
     let written = segment(&id_writer, 0, borrowed(&id_rows));
     fs.corrupt(&ids.join(file_name(written.id)), |bytes| {
         *bytes.last_mut().expect("bytes") ^= 1
@@ -333,7 +333,7 @@ fn seek_crosses_summary_groups_to_the_right_slot_and_prefetch_names_its_pages() 
     // even seqs only: every odd seq sits in a gap
     let written: Vec<_> = (0..rows).map(|n| scanned_row(7, 2 * n as u32)).collect();
     let meta = segment(
-        &SegmentWriter::open(fs.clone(), dir, shape),
+        &SegmentWriter::open(fs.clone(), dir, shape, labels("set"), true),
         0,
         borrowed(&written),
     );
@@ -387,7 +387,7 @@ fn a_prefetch_plan_covers_every_asked_key_where_it_lives() {
     let dir = Path::new("/probed");
     fs.create_dir_all(dir).expect("dir");
     let shape = probed(false);
-    let writer = SegmentWriter::open(fs.clone(), dir, shape);
+    let writer = SegmentWriter::open(fs.clone(), dir, shape, labels("set"), true);
     let spans = [0..20_000u32, 20_000..40_000, 40_000..60_000];
     let metas: Vec<_> = (0u32..)
         .zip(&spans)
@@ -458,7 +458,7 @@ fn a_scope_filter_skips_segments_without_the_scope_and_misses_nothing() {
     let dir = Path::new("/accounts");
     fs.create_dir_all(dir).expect("dir");
     let shape = scanned();
-    let writer = SegmentWriter::open(fs.clone(), dir, shape);
+    let writer = SegmentWriter::open(fs.clone(), dir, shape, labels("set"), true);
     // account 0 in every segment, accounts 100·s + 1 .. 100·s + 49 only in segment s
     let segments: Vec<_> = (0u64..6)
         .map(|s| {
@@ -548,7 +548,7 @@ fn a_merge_cancels_value_tombstone_pairs_keeps_lone_tombstones_and_refuses_other
         let fs = SimFs::new();
         let dir = Path::new("/removable");
         fs.create_dir_all(dir).expect("dir");
-        let writer = SegmentWriter::open(fs.clone(), dir, shape);
+        let writer = SegmentWriter::open(fs.clone(), dir, shape, labels("set"), true);
         let segments: Vec<_> = (0u32..)
             .zip(inputs)
             .map(|(id, rows)| {
@@ -742,7 +742,7 @@ fn a_merges_read_back_is_charged_to_its_bandwidth() {
     let dir = Path::new("/paced");
     fs.create_dir_all(dir).expect("dir");
     let shape = scanned();
-    let writer = SegmentWriter::open(fs.clone(), dir, shape);
+    let writer = SegmentWriter::open(fs.clone(), dir, shape, labels("set"), true);
     let rows = 5_000u32;
     let segments: Vec<SegmentMeta> = (0..2u64)
         .map(|owner| {
@@ -775,7 +775,7 @@ fn a_removed_key_stays_absent_under_every_segment_order_and_merge() {
     let dir = Path::new("/removable");
     fs.create_dir_all(dir).expect("dir");
     let shape = probed(true);
-    let writer = SegmentWriter::open(fs.clone(), dir, shape);
+    let writer = SegmentWriter::open(fs.clone(), dir, shape, labels("set"), true);
     let (removed, kept, other) = (probed_row(1), probed_row(2), probed_row(3));
     let held_rows = [removed.clone(), kept.clone()];
     let held = segment(&writer, 0, borrowed(&held_rows));
@@ -863,7 +863,7 @@ fn a_cursor_walks_every_range_in_order_across_segments() {
     let dir = Path::new("/walk");
     fs.create_dir_all(dir).expect("dir");
     let shape = scanned();
-    let writer = SegmentWriter::open(fs.clone(), dir, shape);
+    let writer = SegmentWriter::open(fs.clone(), dir, shape, labels("set"), true);
     let mut model = BTreeMap::new();
     let segments: Vec<_> = (0u32..5)
         .map(|s| {
@@ -956,7 +956,7 @@ fn a_key_in_two_segments_fails_the_walk() {
     let dir = Path::new("/twice");
     fs.create_dir_all(dir).expect("dir");
     let shape = scanned();
-    let writer = SegmentWriter::open(fs.clone(), dir, shape);
+    let writer = SegmentWriter::open(fs.clone(), dir, shape, labels("set"), true);
     let rows = [scanned_row(1, 1)];
     let first = segment(&writer, 0, borrowed(&rows));
     let second = segment(&writer, 1, borrowed(&rows));

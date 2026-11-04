@@ -20,6 +20,7 @@ mod names {
     pub(super) const MERGE_LAUNCH_FAILED_TOTAL: &str = "zaino.lsm.merge_launch_failed_total";
     pub(super) const UNLINKED_MAPPED_BYTES: &str = "zaino.lsm.unlinked_mapped_bytes";
     pub(super) const LIVE_ROWS: &str = "zaino.lsm.live_rows";
+    pub(super) const READBACK_SECONDS: &str = "zaino.lsm.readback_seconds";
 }
 
 /// `(metric, bucket edges)` for the exporter (ms tier-0 merges → tens of minutes at the top)
@@ -33,6 +34,10 @@ pub const METRIC_BUCKETS: &[(&str, &[f64])] = &[
     (
         names::STALL_DURATION_SECONDS,
         &[1e-3, 1e-2, 0.1, 0.5, 1.0, 5.0, 15.0, 60.0, 300.0],
+    ),
+    (
+        names::READBACK_SECONDS,
+        &[1e-4, 1e-3, 1e-2, 0.1, 0.5, 1.0, 5.0, 15.0, 60.0],
     ),
 ];
 
@@ -101,6 +106,12 @@ pub(crate) fn describe_metrics() {
         "Keys the map holds: every committed segment's rows less twice its tombstones, by index \
          and set"
     );
+    describe_histogram!(
+        names::READBACK_SECONDS,
+        Unit::Seconds,
+        "One sealed segment read back whole before its commit (LsmConfig::verify_writes), by \
+         index and set"
+    );
 }
 
 /// One map's metric labels: its index and its set
@@ -144,6 +155,10 @@ pub(super) fn shape(labels: &Labels, shape: &[(usize, bool)], live: i64) {
         metrics::gauge!(names::MERGING, &labels).set(if merging { 1.0 } else { 0.0 });
     }
     metrics::gauge!(names::LIVE_ROWS, &labels.of()).set(live as f64);
+}
+
+pub(super) fn read_back(labels: &Labels, took: Duration) {
+    metrics::histogram!(names::READBACK_SECONDS, &labels.of()).record(took);
 }
 
 pub(super) fn stall_at(labels: &Labels, segments: usize) {

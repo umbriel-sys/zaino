@@ -39,25 +39,30 @@ struct Bandwidth {
 }
 
 impl Bandwidth {
-    fn new(bytes_per_sec: u64) -> Self {
+    /// A full burst at `now`
+    fn new(bytes_per_sec: u64, now: Instant) -> Self {
         let per_sec = bytes_per_sec as f64;
         Self {
             per_sec,
-            bucket: Mutex::new((per_sec, Instant::now())),
+            bucket: Mutex::new((per_sec, now)),
         }
     }
 
+    /// `bytes` charged at `now` (the bucket refilled up to then first): how long the charger
+    /// must wait, `None` within the burst
+    fn debt(&self, bytes: usize, now: Instant) -> Option<Duration> {
+        let mut bucket = self.bucket.lock().unwrap_or_else(PoisonError::into_inner);
+        let (tokens, at) = &mut *bucket;
+        let refill = now.saturating_duration_since(*at).as_secs_f64() * self.per_sec;
+        *tokens = (*tokens + refill).min(self.per_sec) - bytes as f64;
+        *at = now;
+        (*tokens < 0.0)
+            .then(|| -*tokens / self.per_sec)
+            .and_then(|secs| Duration::try_from_secs_f64(secs).ok())
+    }
+
     fn charge(&self, bytes: usize) {
-        let debt = {
-            let mut bucket = self.bucket.lock().unwrap_or_else(PoisonError::into_inner);
-            let (tokens, at) = &mut *bucket;
-            let now = Instant::now();
-            let refill = now.duration_since(*at).as_secs_f64() * self.per_sec;
-            *tokens = (*tokens + refill).min(self.per_sec) - bytes as f64;
-            *at = now;
-            (*tokens < 0.0).then(|| -*tokens / self.per_sec)
-        };
-        if let Some(debt) = debt.and_then(|secs| Duration::try_from_secs_f64(secs).ok()) {
+        if let Some(debt) = self.debt(bytes, Instant::now()) {
             thread::sleep(debt);
         }
     }
@@ -86,7 +91,7 @@ impl Slots {
             }),
             freed: Condvar::new(),
             capacity,
-            bandwidth: Bandwidth::new(bytes_per_sec),
+            bandwidth: Bandwidth::new(bytes_per_sec, Instant::now()),
         }
     }
 
@@ -223,22 +228,35 @@ mod tests {
     /// about half a second (only that lower bound: how much slower a busy machine runs is not the
     /// pacer's)
     #[test]
-    fn bandwidth_slows_chargers_sharing_it_once_its_burst_is_spent() {
-        let bandwidth = Arc::new(Bandwidth::new(20_000_000));
-        let started = Instant::now();
-        let chargers: Vec<_> = (0..3)
-            .map(|_| {
-                let bandwidth = Arc::clone(&bandwidth);
-                thread::spawn(move || (0..10).for_each(|_| bandwidth.charge(1_000_000)))
-            })
-            .collect();
-        for charger in chargers {
-            charger.join().expect("charger");
-        }
-        let took = started.elapsed();
-        assert!(
-            took.as_secs_f64() >= 0.4,
-            "30 MB at 20 MB/s, 20 MB burst: {took:?}"
+    fn bandwidth_debt_is_what_the_burst_and_the_refill_leave_unpaid() {
+        let start = Instant::now();
+        let bandwidth = Bandwidth::new(1_000, start);
+        let secs = |debt: Option<Duration>| debt.map(|debt| debt.as_secs_f64());
+
+        assert_eq!(
+            secs(bandwidth.debt(1_000, start)),
+            None,
+            "the whole burst, free"
+        );
+        assert_eq!(
+            secs(bandwidth.debt(500, start)),
+            Some(0.5),
+            "500 B over at 1 kB/s: half a second owed"
+        );
+        assert_eq!(
+            secs(bandwidth.debt(0, start + Duration::from_millis(500))),
+            None,
+            "half a second later the refill paid it"
+        );
+        assert_eq!(
+            secs(bandwidth.debt(2_000, start + Duration::from_secs(10))),
+            Some(1.0),
+            "the refill caps at one burst, however long the idle"
+        );
+        assert_eq!(
+            secs(bandwidth.debt(0, start)),
+            Some(1.0),
+            "a clock that went backwards refills nothing"
         );
     }
 }

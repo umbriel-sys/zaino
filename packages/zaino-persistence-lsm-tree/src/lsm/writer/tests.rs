@@ -10,9 +10,19 @@ fn shape() -> Shape {
 
 /// A sealed segment and the digest of the rows written into it
 fn written(fs: &Arc<SimFs>) -> (SegmentWriter, SegmentMeta, u32) {
+    written_with(fs, true)
+}
+
+fn written_with(fs: &Arc<SimFs>, verify_writes: bool) -> (SegmentWriter, SegmentMeta, u32) {
     let dir = Path::new("/ids");
     fs.create_dir_all(dir).expect("dir");
-    let writer = SegmentWriter::open(fs.clone(), dir, shape());
+    let writer = SegmentWriter::open(
+        fs.clone(),
+        dir,
+        shape(),
+        Labels::new("test", "ids"),
+        verify_writes,
+    );
     let rows: Vec<(Vec<u8>, Vec<u8>)> = (0..100u32)
         .map(|n| {
             (
@@ -34,6 +44,15 @@ fn written(fs: &Arc<SimFs>) -> (SegmentWriter, SegmentMeta, u32) {
         .collect();
     let written = writer.write(1, borrowed).expect("write").expect("rows");
     (writer, written.meta, digest.finalize())
+}
+
+/// `verify_writes` off: the segment is sealed without its read-back and holds the same rows
+#[test]
+fn an_unverified_write_seals_the_same_rows() {
+    let fs = SimFs::new();
+    let (writer, meta, digest) = written_with(&fs, false);
+    assert_eq!(meta.records, 100);
+    assert!(writer.verify(&meta, digest, None).expect("as written"));
 }
 
 /// The read-back proves what was written: as written = verified; a record count off the file =

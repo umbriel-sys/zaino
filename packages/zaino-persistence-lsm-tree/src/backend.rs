@@ -29,6 +29,7 @@ use zaino_primitives::types::BlockRef;
 
 use crate::{
     buffer::{Buffer, Entry},
+    dir::ManifestRead,
     emit,
     engine::{self, position, DiskView, Durable, Engine},
     error::{guarded, StoreError},
@@ -59,6 +60,10 @@ pub struct LsmTreeConfig<'a> {
     /// Threads of the backend's pool for parallel writes and commit checks (`None` = the
     /// machine's available parallelism)
     pub threads: Option<NonZeroUsize>,
+    /// Refuse to open where the manifest can only be read through the page cache (the
+    /// filesystem refuses direct I/O); off = open with a warning, reported by
+    /// [`LsmTreeBackend::manifest_read`] and `zaino.store.manifest_read_cached`
+    pub strict_manifest_read: bool,
 }
 
 /// On-disk backend: positional files for sequences, an LSM tree for maps, one manifest commit
@@ -79,6 +84,7 @@ struct Shared {
     specs: Arc<[NamespaceSpec]>,
     versions: Arc<Versions>,
     write_buffer: NonZeroUsize,
+    manifest_read: ManifestRead,
     writing: Mutex<Writing>,
     published: ArcSwap<ReadState>,
 }
@@ -156,6 +162,12 @@ impl LsmTreeBackend {
         Self::open(RealFs::shared(), path, config)
     }
 
+    /// How the committed manifest was read at open ([`ManifestRead::Cached`] = one durability
+    /// guard fewer, warned at open)
+    pub fn manifest_read(&self) -> ManifestRead {
+        self.shared.manifest_read
+    }
+
     fn open_checked(
         fs: Arc<dyn Fs>,
         path: &Path,
@@ -171,8 +183,13 @@ impl LsmTreeBackend {
             Arc::clone(&specs),
             &tunings,
             config.lsm,
-            config.threads,
+            engine::Runtime {
+                threads: config.threads,
+                strict_manifest_read: config.strict_manifest_read,
+            },
         )?;
+        let manifest_read = engine.manifest_read();
+        emit::manifest_read(config.name, manifest_read);
         let buffer = Buffer::empty(&specs);
         let (live, heap) = emit::versions(config.name);
         let versions = Arc::new(Versions { live, heap });
@@ -190,6 +207,7 @@ impl LsmTreeBackend {
                 specs,
                 versions,
                 write_buffer: config.write_buffer,
+                manifest_read,
                 writing: Mutex::new(Writing {
                     engine,
                     buffer,
@@ -536,11 +554,30 @@ impl BackendReader for LsmTreeReader {
         Ok(self.state.buffer.tip().or(self.state.view.tip()))
     }
 
+    fn durable_tip(&self) -> Result<Option<BlockRef>, ReadError> {
+        Ok(self.state.view.tip())
+    }
+
     fn get(&self, namespace: Namespace, key: &[u8]) -> Result<Option<RawValue>, ReadError> {
         check_key(&self.state.specs, namespace, key)?;
         guarded(|| self.state.get(namespace, key))
             .and_then(|value| value)
             .map_err(|error| error.into_read("get"))
+    }
+
+    /// A map's keys not in the buffer looked up in one batch (sorted, fences and records
+    /// prefetched, parallel from 64 keys); a sequence's one by one
+    fn get_many(
+        &self,
+        namespace: Namespace,
+        keys: &[&[u8]],
+    ) -> Result<Vec<Option<RawValue>>, ReadError> {
+        for key in keys {
+            check_key(&self.state.specs, namespace, key)?;
+        }
+        guarded(|| self.state.get_many(namespace, keys))
+            .and_then(|values| values)
+            .map_err(|error| error.into_read("get_many"))
     }
 
     fn scan_range<T, F>(
@@ -610,6 +647,45 @@ impl ReadState {
             }
             None => Err(StoreError::Internal("a namespace without its view")),
         }
+    }
+
+    fn get_many(
+        &self,
+        namespace: Namespace,
+        keys: &[&[u8]],
+    ) -> Result<Vec<Option<RawValue>>, StoreError> {
+        let index = position(&self.specs, namespace)
+            .ok_or(StoreError::Internal("a checked key of no namespace"))?;
+        let Some(Durable::Map(snapshot)) = self.view.held(index) else {
+            return keys.iter().map(|key| self.get(namespace, key)).collect();
+        };
+        let mut values: Vec<Option<RawValue>> = vec![None; keys.len()];
+        let mut asked: Vec<&[u8]> = Vec::new();
+        let mut asked_at: Vec<usize> = Vec::new();
+        for (at, key) in keys.iter().enumerate() {
+            match self
+                .buffer
+                .entries(index)
+                .and_then(|entries| entries.get(*key))
+            {
+                Some(Entry::Value(value)) => {
+                    if let Some(slot) = values.get_mut(at) {
+                        *slot = Some(value.to_vec());
+                    }
+                }
+                Some(Entry::Removed | Entry::Cancelled(_)) => {}
+                None => {
+                    asked.push(key);
+                    asked_at.push(at);
+                }
+            }
+        }
+        for (at, lookup) in asked_at.into_iter().zip(snapshot.get_many(&asked)?) {
+            if let (Some(slot), Lookup::Value(value)) = (values.get_mut(at), lookup) {
+                *slot = Some(value.to_vec());
+            }
+        }
+        Ok(values)
     }
 }
 

@@ -124,6 +124,7 @@ fn a_commit_writes_the_buffer_when_its_real_heap_reaches_write_buffer_within_10_
             lsm: LsmConfig::default(),
             write_buffer: WRITE_BUFFER,
             threads: NonZeroUsize::new(2),
+            strict_manifest_read: false,
         };
         let backend = LsmTreeBackend::open_real(dir.path(), &config).expect("open");
         let mut writer = backend.writer().expect("writer");

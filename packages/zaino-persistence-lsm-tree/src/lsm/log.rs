@@ -144,7 +144,13 @@ impl SegmentLog {
             next = next.max(after);
         }
         let mut log = Self {
-            writer: SegmentWriter::open(Arc::clone(&fs), dir, shape),
+            writer: SegmentWriter::open(
+                Arc::clone(&fs),
+                dir,
+                shape,
+                labels.clone(),
+                lsm.verify_writes,
+            ),
             fs,
             dir: dir.to_path_buf(),
             name: name.to_owned(),

@@ -27,7 +27,7 @@ use zaino_primitives::types::BlockRef;
 
 use crate::{
     buffer::{Buffer, Row},
-    dir::{IndexDir, CREATING, LOCK, MANIFEST},
+    dir::{IndexDir, ManifestRead, CREATING, LOCK, MANIFEST},
     error::StoreError,
     fs::Fs,
     lsm::{
@@ -121,11 +121,20 @@ fn check_names(specs: &[NamespaceSpec]) -> Result<(), StoreError> {
     Ok(())
 }
 
-/// One namespace's write side
+/// One namespace's write side (boxed: a handful per index, each holding its file state)
 #[derive(Debug)]
 enum Files {
-    Sequence(SequenceFile),
-    Map(SegmentLog),
+    Sequence(Box<SequenceFile>),
+    Map(Box<SegmentLog>),
+}
+
+/// How an index directory is run, beyond its data and merge policy
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct Runtime {
+    /// Pool threads (`None` = the machine's available parallelism)
+    pub(crate) threads: Option<NonZeroUsize>,
+    /// A manifest readable only through the page cache refuses the open
+    pub(crate) strict_manifest_read: bool,
 }
 
 /// Index directory's writer (holds its `LOCK`)
@@ -143,6 +152,7 @@ pub(crate) struct Engine {
     pool: Arc<rayon::ThreadPool>,
     /// Log files' committed tail pages, saved before each manifest
     tails: Tails,
+    manifest_read: ManifestRead,
 }
 
 /// Committed state: what readers read below the buffer
@@ -346,7 +356,7 @@ impl Engine {
         specs: Arc<[NamespaceSpec]>,
         tunings: &[Tuning],
         lsm: LsmConfig,
-        threads: Option<NonZeroUsize>,
+        runtime: Runtime,
     ) -> Result<Self, StoreError> {
         check_names(&specs)?;
         if let Some(reason) = lsm.refusal() {
@@ -355,7 +365,8 @@ impl Engine {
         let name = identity.name().to_owned();
         let pool = {
             let index = name.clone();
-            let threads = threads
+            let threads = runtime
+                .threads
                 .or_else(|| std::thread::available_parallelism().ok())
                 .map_or(1, NonZeroUsize::get);
             rayon::ThreadPoolBuilder::new()
@@ -363,7 +374,9 @@ impl Engine {
                 .thread_name(move |at| format!("lsm {index} {at}"))
                 .build()?
         };
-        let opened = IndexDir::open(Arc::clone(fs), path, identity)?;
+        let opened =
+            IndexDir::open_with(Arc::clone(fs), path, identity, runtime.strict_manifest_read)?;
+        let manifest_read = opened.manifest_read;
         let mut dir = opened.dir;
         let body = match &opened.body {
             Some(bytes) => Body::decode(bytes, &specs)?,
@@ -418,7 +431,7 @@ impl Engine {
                         tuning.cache_writes,
                         *seals,
                     )?;
-                    Files::Sequence(file)
+                    Files::Sequence(Box::new(file))
                 }
                 (
                     NamespaceKind::Map {
@@ -434,7 +447,7 @@ impl Engine {
                     let slots = Arc::clone(&slots);
                     let labels = Labels::new(index, name);
                     let log = SegmentLog::open(fs, &map_dir, &labels, shape, list, &lsm, slots)?;
-                    Files::Map(log)
+                    Files::Map(Box::new(log))
                 }
                 _ => return Err(StoreError::Internal("a body entry of another kind")),
             });
@@ -483,11 +496,17 @@ impl Engine {
             alert_bytes: lsm.cleanup_alert_bytes,
             pool: Arc::new(pool),
             tails,
+            manifest_read,
         })
     }
 
     pub(crate) fn view(&self) -> &DiskView {
         &self.view
+    }
+
+    /// How the committed manifest was read at open
+    pub(crate) fn manifest_read(&self) -> ManifestRead {
+        self.manifest_read
     }
 
     /// The index's own thread pool (run parallel work in it with `install`)
@@ -553,7 +572,7 @@ impl Engine {
                             Ok((*index, Prepared::Sequence(seals, file.pages(old)?)))
                         })
                         .collect::<Result<Vec<_>, StoreError>>()?;
-                    let saved = relative_tails(sequences.iter().map(|(_, file)| &**file), dir)?;
+                    let saved = relative_tails(sequences.iter().map(|(_, file)| &***file), dir)?;
                     tails.write(seq, &saved)?;
                     Ok(sealed)
                 },
@@ -601,7 +620,7 @@ type MapRows<'a> = (Vec<Row<'a>>, Vec<&'a [u8]>);
 /// Every sequence's committed tail pages saved for manifest `seq` (before it is written)
 fn save_tails(files: &[Files], tails: &Tails, dir: &Path, seq: u64) -> Result<(), StoreError> {
     let sequences = files.iter().filter_map(|files| match files {
-        Files::Sequence(file) => Some(file),
+        Files::Sequence(file) => Some(&**file),
         Files::Map(_) => None,
     });
     tails.write(seq, &relative_tails(sequences, dir)?)
@@ -758,8 +777,12 @@ fn verify_committed(
     let Some(bytes) = committed()? else {
         return Ok(Verification::default());
     };
-    let checked = Body::decode(&bytes, specs)?
-        .files(specs)
+    let body = Body::decode(&bytes, specs)?;
+    let files = body.files(specs);
+    let committed_bytes = files
+        .iter()
+        .fold(0u64, |sum, (_, sealed)| sum.saturating_add(sealed.len));
+    let checked = files
         .into_iter()
         .map(|(name, sealed)| scrub(fs, path, &name, sealed))
         .collect::<Result<Vec<_>, _>>()?;
@@ -787,7 +810,11 @@ fn verify_committed(
         })
         .map(|unit| unit.into_unit())
         .collect();
-    Ok(Verification { units })
+    Ok(Verification {
+        tip: body.committed.tip,
+        committed_bytes,
+        units,
+    })
 }
 
 #[cfg(test)]

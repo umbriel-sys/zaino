@@ -22,6 +22,67 @@ use crate::{
     testing::{commit, config, eventually, open, SimDisk, ROOT, TUNING},
 };
 
+/// `error` and every cause under it, one line
+fn causes(error: &dyn std::error::Error) -> String {
+    let mut chain = error.to_string();
+    let mut source = error.source();
+    while let Some(cause) = source {
+        chain.push_str(": ");
+        chain.push_str(&cause.to_string());
+        source = cause.source();
+    }
+    chain
+}
+
+/// Where direct I/O is refused the manifest is read through the cache: reported by the backend
+/// (warned at open), or refused outright under `strict_manifest_read`
+#[test]
+fn a_cached_manifest_read_is_reported_or_refused_as_configured() {
+    let fs = SimFs::new();
+    assert_eq!(open(&fs, 2).manifest_read(), crate::ManifestRead::Direct);
+
+    fs.cached_only();
+    assert_eq!(open(&fs, 2).manifest_read(), crate::ManifestRead::Cached);
+
+    let strict = LsmTreeConfig {
+        strict_manifest_read: true,
+        ..config(2, NonZeroUsize::MAX)
+    };
+    let Err(refused) = LsmTreeBackend::open(fs.clone(), Path::new(ROOT), &strict) else {
+        panic!("opened under strict_manifest_read");
+    };
+    assert!(
+        matches!(refused, zaino_persistence::OpenError::Unavailable { .. })
+            && causes(&refused).contains("strict_manifest_read"),
+        "{}",
+        causes(&refused)
+    );
+}
+
+/// Offline verify of a directory built for another chain is refused, never a clean report
+#[test]
+fn verify_refuses_another_chains_directory() {
+    let fs = SimFs::new();
+    let backend = open(&fs, 2);
+    commit(&backend, Model::default().advance(2, &[1], 1, &[])).expect("commit");
+    backend.flush().expect("flush");
+
+    let refused = verify_dir(
+        fs.as_ref(),
+        Path::new(ROOT),
+        "conformance",
+        "mainnet",
+        1,
+        &conformance::SPECS,
+    )
+    .expect_err("another chain's directory");
+    assert!(
+        causes(&refused).contains("chain \"regtest\", expected \"mainnet\""),
+        "{}",
+        causes(&refused)
+    );
+}
+
 proptest! {
     // 64 cases ≈ seconds; heavy run after any change: PROPTEST_CASES=1000
     #![proptest_config(ProptestConfig { cases: 64, ..ProptestConfig::default() })]

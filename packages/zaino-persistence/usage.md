@@ -92,6 +92,19 @@ backend writes on its own (e.g. when its buffer fills). After a crash or reopen
 the store holds a prefix of the commits: everything flushed, and possibly more.
 A `commit` or `flush` that returns an error may still have reached the disk: after
 reopening, the tip is the last acknowledged commit or the failed one.
+`BackendReader::durable_tip` names the newest commit of the snapshot that
+survives a crash: at or below `tip`, equal to it once `flush` has returned, and
+always equal for a backend that buffers nothing.
+
+## Point reads
+
+`BackendReader::get` reads one key of a namespace; `get_many` reads a batch
+of keys and answers one slot per key, in order, with the same answers as one
+`get` per key. A backend may serve the batch at once (sorted, prefetched, in
+parallel) where that is cheaper, so prefer it wherever an index resolves many
+keys per block, such as every input's prevout. A key not of the namespace's key
+width (8 bytes for a sequence) fails with `ReadError::WidthMismatch` rather than
+reading as absent.
 
 ## Range scans
 
@@ -132,12 +145,14 @@ blocking task per chunk.
 ## Verification and footprint
 
 `Backend::verify` checks that the stored bytes are exactly the bytes last made
-durable, and returns a [`Verification`]: one [`Unit`] per stored file (or the
-backend's equivalent) with its [`Problem`]s — missing, truncated, a page or the
-checksum list not matching, or harmless orphaned bytes past the commit. It checks
-integrity, not meaning. `Backend::footprint` returns a [`NamespaceFootprint`] per
-declared namespace, in declaration order: bytes stored and, where knowable, bytes
-in the page cache.
+durable, and returns a [`Verification`]: the checked commit's tip and bytes, and
+one [`Unit`] per stored file (or the backend's equivalent) with its
+[`Problem`]s — missing, truncated, a page or the checksum list not matching, or
+harmless orphaned bytes past the commit. It checks integrity, not meaning.
+`Backend::footprint` returns a [`NamespaceFootprint`] per declared namespace, in
+declaration order: bytes stored and, where knowable, bytes in the page cache.
+With the `serde` feature both reports derive `Serialize` (the tip as
+`{ height, hash }`, the hash in display order), for a verify command's output.
 
 ## Errors
 

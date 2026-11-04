@@ -14,7 +14,7 @@ use memmap2::Mmap;
 
 use super::{
     sys::{map_read_only, start_writeback},
-    too_long, FileHandle, Fs, LockGuard, Mapping,
+    too_long, FileHandle, Fs, LockGuard, Mapping, Uncached,
 };
 
 /// The real filesystem
@@ -59,9 +59,9 @@ impl Fs for RealFs {
         existing(OpenOptions::new().read(true).open(path))
     }
 
-    fn read_uncached(&self, path: &Path, limit: u64) -> io::Result<Option<Vec<u8>>> {
-        let file = match uncached(path) {
-            Ok(file) => file,
+    fn read_uncached(&self, path: &Path, limit: u64) -> io::Result<Option<Uncached>> {
+        let (file, direct) = match uncached(path) {
+            Ok(opened) => opened,
             Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
             Err(error) => return Err(error),
         };
@@ -72,10 +72,12 @@ impl Fs for RealFs {
         let len = usize::try_from(len).map_err(io::Error::other)?;
         match read_aligned(&file, len) {
             // a direct open accepted, the direct read refused (some FUSE / network mounts)
-            Err(error) if error.kind() == io::ErrorKind::InvalidInput => {
-                read_aligned(&cached_where_exact(path)?, len).map(Some)
+            Err(error) if direct && error.kind() == io::ErrorKind::InvalidInput => {
+                let (file, direct) = cached(path)?;
+                let bytes = read_aligned(&file, len)?;
+                Ok(Some(Uncached { bytes, direct }))
             }
-            read => read.map(Some),
+            read => read.map(|bytes| Some(Uncached { bytes, direct })),
         }
     }
 
@@ -135,10 +137,10 @@ impl Fs for RealFs {
 /// Direct I/O's buffer, offset and length alignment
 const DIRECT_ALIGN: usize = 4096;
 
-/// `path` read only, past the page cache: `O_DIRECT`; a filesystem refusing it (`EINVAL`) read
-/// through the cache only where that is exact ([`cached_where_exact`])
+/// `path` read only, past the page cache: `O_DIRECT` (`true`); a filesystem refusing it
+/// (`EINVAL`) read through the cache ([`cached`])
 #[cfg(target_os = "linux")]
-fn uncached(path: &Path) -> io::Result<File> {
+fn uncached(path: &Path) -> io::Result<(File, bool)> {
     use std::os::unix::fs::OpenOptionsExt as _;
 
     let direct = i32::try_from(rustix::fs::OFlags::DIRECT.bits()).map_err(io::Error::other)?;
@@ -147,47 +149,39 @@ fn uncached(path: &Path) -> io::Result<File> {
         .custom_flags(direct)
         .open(path)
     {
-        Err(error) if error.kind() == io::ErrorKind::InvalidInput => cached_where_exact(path),
-        opened => opened,
+        Err(error) if error.kind() == io::ErrorKind::InvalidInput => cached(path),
+        opened => opened.map(|file| (file, true)),
     }
 }
 
-/// `path` opened through the page cache on tmpfs, whose cache is its storage; anywhere else a
-/// cached read could pass bytes the device never got, so refused
+/// `path` opened through the page cache: exact on tmpfs, whose cache is its storage (`true`);
+/// anywhere else a cached read could pass bytes the device never got, which the caller is told
+/// (`false`) and decides on
 #[cfg(target_os = "linux")]
-fn cached_where_exact(path: &Path) -> io::Result<File> {
+fn cached(path: &Path) -> io::Result<(File, bool)> {
     const TMPFS_MAGIC: u64 = 0x0102_1994;
-    match rustix::fs::statfs(path)?.f_type as u64 == TMPFS_MAGIC {
-        true => OpenOptions::new().read(true).open(path),
-        false => Err(io::Error::new(
-            io::ErrorKind::Unsupported,
-            format!(
-                "{}: the filesystem refuses direct I/O, so the commit point can't be read past \
-                 the page cache (only tmpfs, whose cache is its storage, is read through it)",
-                path.display()
-            ),
-        )),
-    }
+    let exact = rustix::fs::statfs(path)?.f_type as u64 == TMPFS_MAGIC;
+    Ok((OpenOptions::new().read(true).open(path)?, exact))
 }
 
 /// No cache bypass to fall back from: a plain open
 #[cfg(not(target_os = "linux"))]
-fn cached_where_exact(path: &Path) -> io::Result<File> {
-    OpenOptions::new().read(true).open(path)
+fn cached(path: &Path) -> io::Result<(File, bool)> {
+    Ok((OpenOptions::new().read(true).open(path)?, false))
 }
 
 /// `path` read only, `F_NOCACHE`: best effort (pages already cached may still be served)
 #[cfg(target_vendor = "apple")]
-fn uncached(path: &Path) -> io::Result<File> {
+fn uncached(path: &Path) -> io::Result<(File, bool)> {
     let file = OpenOptions::new().read(true).open(path)?;
     rustix::fs::fcntl_nocache(&file, true)?;
-    Ok(file)
+    Ok((file, true))
 }
 
 /// No cache bypass on this platform: a plain read
 #[cfg(not(any(target_os = "linux", target_vendor = "apple")))]
-fn uncached(path: &Path) -> io::Result<File> {
-    OpenOptions::new().read(true).open(path)
+fn uncached(path: &Path) -> io::Result<(File, bool)> {
+    cached(path)
 }
 
 /// `len` bytes of `file` through an aligned buffer, in aligned reads (direct I/O's rules)
@@ -300,7 +294,9 @@ mod tests {
             let bytes: Vec<u8> = (0..len).map(|n| (n % 251) as u8).collect();
             std::fs::write(&path, &bytes).expect("write");
             assert_eq!(
-                fs.read_uncached(&path, len as u64).expect("read"),
+                fs.read_uncached(&path, len as u64)
+                    .expect("read")
+                    .map(|read| read.bytes),
                 Some(bytes),
                 "{len} bytes"
             );
@@ -319,25 +315,20 @@ mod tests {
         assert_eq!(absent, None);
     }
 
-    /// Where direct I/O is refused: read through the cache on tmpfs only (its cache is its
-    /// storage), refused anywhere else (a cached read could pass bytes the device never got)
+    /// Where direct I/O is refused: a cached read is exact on tmpfs (its cache is its storage)
+    /// and flagged `direct: false` anywhere else (a cached read could pass bytes the device
+    /// never got; the caller decides)
     #[cfg(target_os = "linux")]
     #[test]
-    fn a_cached_read_stands_in_for_a_direct_one_on_tmpfs_only() {
+    fn a_cached_read_is_exact_on_tmpfs_only_and_says_so() {
         const TMPFS_MAGIC: u64 = 0x0102_1994;
         let check = |root: tempfile::TempDir| {
             let path = root.path().join("file");
             std::fs::write(&path, [7; 10]).expect("write");
             let on_tmpfs =
                 rustix::fs::statfs(root.path()).expect("statfs").f_type as u64 == TMPFS_MAGIC;
-            let opened = cached_where_exact(&path);
-            match on_tmpfs {
-                true => assert!(opened.is_ok(), "tmpfs: {opened:?}"),
-                false => assert!(
-                    opened.is_err_and(|error| error.kind() == io::ErrorKind::Unsupported),
-                    "not tmpfs: refused"
-                ),
-            }
+            let (_, exact) = cached(&path).expect("opened through the cache");
+            assert_eq!(exact, on_tmpfs, "exact on tmpfs alone");
             on_tmpfs
         };
         // the temp directory's filesystem, whichever it is; tmpfs too where there is one

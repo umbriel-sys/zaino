@@ -76,6 +76,12 @@ pub struct LsmConfig {
     /// Merges on one tier of a map that may fail in a row from I/O (retried at later writes)
     /// before the next failure stops writes (>= 1)
     pub max_merge_failures: u32,
+    /// Every sealed segment read back whole (keys ascending, filter, decode, row digest) before
+    /// its commit: O(rows) CPU on the commit path (paced for merges), measured by
+    /// `zaino.lsm.readback_seconds`; catches a writer bug before it is committed, never a device
+    /// fault (the rows come from the page cache). On by default; off only where a measurement
+    /// says it costs more than it is worth
+    pub verify_writes: bool,
 }
 
 impl LsmConfig {
@@ -110,6 +116,7 @@ impl Default for LsmConfig {
             cleanup_alert_bytes: 1 << 30,
             spill_bytes: NonZeroUsize::new(1 << 20).unwrap_or(NonZeroUsize::MIN),
             max_merge_failures: 3,
+            verify_writes: true,
         }
     }
 }

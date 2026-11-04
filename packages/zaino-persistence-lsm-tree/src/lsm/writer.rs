@@ -10,11 +10,13 @@ use std::{
         atomic::{AtomicBool, Ordering},
         Arc,
     },
+    time::Instant,
 };
 
 use rayon::slice::ParallelSliceMut as _;
 
 use super::{
+    emit::{self, Labels},
     file::SegmentFile,
     file_name,
     layout::{encode_row, Navigation, Row, Shape},
@@ -75,11 +77,16 @@ pub(super) struct Written {
 }
 
 /// Writes one map's segments into its directory; ids allocated by the caller (one writer per id)
+///
+/// - `verify_writes`: every sealed segment read back before it is handed over
+///   (`LsmConfig::verify_writes`), its time on `zaino.lsm.readback_seconds`
 #[derive(Debug, Clone)]
 pub(super) struct SegmentWriter {
     fs: Arc<dyn Fs>,
     dir: PathBuf,
     shape: Shape,
+    labels: Labels,
+    verify_writes: bool,
 }
 
 /// Segment mid-write: records streamed out in key order, its navigation built alongside
@@ -134,11 +141,19 @@ impl SegmentOut {
 }
 
 impl SegmentWriter {
-    pub(crate) fn open(fs: Arc<dyn Fs>, dir: &Path, shape: Shape) -> Self {
+    pub(crate) fn open(
+        fs: Arc<dyn Fs>,
+        dir: &Path,
+        shape: Shape,
+        labels: Labels,
+        verify_writes: bool,
+    ) -> Self {
         Self {
             fs,
             dir: dir.to_path_buf(),
             shape,
+            labels,
+            verify_writes,
         }
     }
 
@@ -325,8 +340,9 @@ impl SegmentWriter {
     }
 
     /// `out` finished, read back through its page checksums (O(rows); RocksDB
-    /// `paranoid_file_checks`), out of page cache unless its map caches writes (after the
-    /// read-back: it faults every page back in), then made read-only (never written again)
+    /// `paranoid_file_checks`) unless `verify_writes` is off, out of page cache unless its map
+    /// caches writes (after the read-back: it faults every page back in), then made read-only
+    /// (never written again)
     ///
     /// - a merge's read-back is `paced` (`None` once cancelled); a batch's never is
     fn sealed(
@@ -345,14 +361,18 @@ impl SegmentWriter {
             return Ok(None);
         };
         let id = written.meta.id;
-        let verified = self
-            .verify(&written.meta, digest, paced)
-            .map_err(|source| SegmentError::ReadBack {
-                segment: id,
-                source: Box::new(source),
-            })?;
-        if !verified {
-            return Ok(None);
+        if self.verify_writes {
+            let started = Instant::now();
+            let verified = self
+                .verify(&written.meta, digest, paced)
+                .map_err(|source| SegmentError::ReadBack {
+                    segment: id,
+                    source: Box::new(source),
+                })?;
+            emit::read_back(&self.labels, started.elapsed());
+            if !verified {
+                return Ok(None);
+            }
         }
         if !self.shape.cache_writes {
             file.drop_cache();

@@ -1,0 +1,25 @@
+[[changes]]
+crate = "zaino-persistence"
+kind = "feature"
+description = """
+`BackendReader::durable_tip` names the newest commit of a snapshot that \
+survives a crash, and `BackendReader::get_many` reads a batch of keys with \
+the answers of one `get` per key (a backend may serve the batch at once). \
+`Verification` carries the checked commit's tip and bytes, and the `serde` \
+feature derives `Serialize` on the verify and footprint reports."""
+
+[[changes]]
+crate = "zaino-persistence-lsm-tree"
+kind = "feature"
+description = """
+Manifest layout 5: an index directory records the chain its data belongs to \
+(`LsmTreeConfig::chain`, refused on mismatch, also by `verify_dir`) and each \
+listed segment its tombstone count, so `zaino.lsm.live_rows` reports the keys \
+a map holds. `LsmConfig::verify_writes` (default on) keeps the sealed-segment \
+read-back, metered by `zaino.lsm.readback_seconds` and pinned by \
+`benches/readback.rs`. A manifest readable only through the page cache no \
+longer refuses the open: it is warned at open, reported by \
+`LsmTreeBackend::manifest_read` and `zaino.store.manifest_read_cached`, and \
+refused by `LsmTreeConfig::strict_manifest_read`. `get_many` looks a map's \
+keys up in one prefetched batch, and the bandwidth pacer's debt is a pure \
+function of the clock."""

@@ -278,6 +278,12 @@ impl Model {
     /// - `probed`: values over every id issued + as many never issued; full scans
     pub fn assert_view(&self, reader: &impl MaintenanceReader, label: &str) {
         assert_eq!(reader.tip().expect("tip"), self.tip, "{label}: tip");
+        let durable = reader.durable_tip().expect("durable tip");
+        assert!(
+            durable.map(|tip| tip.height) <= self.tip.map(|tip| tip.height),
+            "{label}: durable tip {durable:?} at or below the tip {:?}",
+            self.tip
+        );
         for (namespace, model) in [
             (BLOCKS, &self.blocks),
             (HEIGHTS, &self.heights),
@@ -291,6 +297,13 @@ impl Model {
             assert_eq!(one_by_one, expected, "{label}: {namespace} records");
             let past = reader.get(namespace, &sequence_key(len)).expect("get");
             assert_eq!(past, None, "{label}: {namespace} past the end");
+            let keys: Vec<Vec<u8>> = (0..=len).map(sequence_key).collect();
+            let keys: Vec<&[u8]> = keys.iter().map(Vec::as_slice).collect();
+            assert_eq!(
+                reader.get_many(namespace, &keys).expect("get_many"),
+                [one_by_one, vec![None]].concat(),
+                "{label}: {namespace} get_many = get, in order"
+            );
             let whole = sequence_entries(model);
             let scanned = reader.scan(namespace).expect("scan");
             assert_eq!(scanned, whole, "{label}: {namespace} scan");
@@ -335,6 +348,22 @@ impl Model {
             let got = reader.get(SCANNED, key).expect("get");
             assert_eq!(got, None, "{label}: removed {key:?}");
         }
+        let mut batch: Vec<&[u8]> = self.scanned.keys().step_by(5).map(Vec::as_slice).collect();
+        batch.extend(self.removed.iter().map(Vec::as_slice));
+        batch.push(&[]);
+        let miss = scanned_key(1, self.seq + 1);
+        if let Some(last) = batch.last_mut() {
+            *last = &miss;
+        }
+        let one_by_one: Vec<_> = batch
+            .iter()
+            .map(|key| reader.get(SCANNED, key).expect("get"))
+            .collect();
+        assert_eq!(
+            reader.get_many(SCANNED, &batch).expect("get_many"),
+            one_by_one,
+            "{label}: {SCANNED} get_many = get, in order"
+        );
 
         for n in 0..2 * self.ids + 2 {
             let id = probed_key(n);
@@ -782,6 +811,12 @@ pub fn history<S: Subject>(mut subject: S, steps: &[Step]) {
             Step::Flush => {
                 backend.flush().expect("flush");
                 oracle.flushed();
+                let reader = backend.reader().expect("reader");
+                assert_eq!(
+                    reader.durable_tip().expect("durable tip"),
+                    reader.tip().expect("tip"),
+                    "{label}: flushed = durable"
+                );
             }
             Step::Reorg { keep } => {
                 let unapplied = oracle.nodes.len() - oracle.applied;
@@ -865,6 +900,11 @@ pub fn contract<S: Subject>(subject: S) {
             "{namespace}: a {}-byte point read refused",
             key.len()
         );
+        assert!(
+            matches!(reader().get_many(namespace, &[&key]), Err(ReadError::WidthMismatch { actual, .. }) if actual == key.len()),
+            "{namespace}: a {}-byte batched read refused",
+            key.len()
+        );
     }
     let undeclared = Namespace::new("undeclared");
     let not_found = |error: &ReadError| matches!(error, ReadError::NamespaceNotFound(name) if name == undeclared.as_str());
@@ -872,6 +912,11 @@ pub fn contract<S: Subject>(subject: S) {
     assert!(
         get.as_ref().is_err_and(not_found),
         "undeclared get: {get:?}"
+    );
+    let get_many = reader().get_many(undeclared, &[&[0; 8]]);
+    assert!(
+        get_many.as_ref().is_err_and(not_found),
+        "undeclared get_many: {get_many:?}"
     );
     let scan = reader().scan(undeclared);
     assert!(
@@ -947,6 +992,17 @@ pub fn contract<S: Subject>(subject: S) {
     backend.flush().expect("flush");
     model.assert_view(&reader(), "flushed");
     model.assert_odd_bounds(&reader(), "flushed");
+    assert_eq!(
+        reader().durable_tip().expect("durable tip"),
+        reader().tip().expect("tip"),
+        "flushed: the durable tip is the tip"
+    );
+    let verified = backend.verify().expect("verify");
+    assert_eq!(verified.tip, model.tip, "flushed: verify reports the tip");
+    assert!(
+        verified.committed_bytes > 0,
+        "flushed: verify reports the committed bytes"
+    );
     let footprint = backend.footprint().expect("footprint");
     assert!(
         footprint.iter().all(|namespace| namespace.bytes > 0),

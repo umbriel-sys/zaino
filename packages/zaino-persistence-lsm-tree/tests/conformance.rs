@@ -57,6 +57,7 @@ impl Subject for RealDir {
             write_buffer: self.write_buffer,
             // the shipped default: the machine's available parallelism
             threads: None,
+            strict_manifest_read: false,
         };
         LsmTreeBackend::open_real(&self.path, &config).expect("open")
     }

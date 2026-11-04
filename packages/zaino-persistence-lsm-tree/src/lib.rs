@@ -34,6 +34,6 @@ mod tails;
 mod testing;
 
 pub use backend::{verify_dir, LsmTreeBackend, LsmTreeConfig, LsmTreeReader, LsmTreeWriter};
-pub use dir::disk_bytes;
+pub use dir::{disk_bytes, ManifestRead};
 pub use emit::{describe_metrics, METRIC_BUCKETS};
 pub use lsm::{LsmConfig, Tuning, METRIC_BUCKETS as LSM_METRIC_BUCKETS};

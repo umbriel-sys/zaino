@@ -80,6 +80,7 @@ fn footprint_reports_each_namespaces_committed_bytes_and_their_page_cache_share(
         lsm: LsmConfig::default(),
         write_buffer: NonZeroUsize::MAX,
         threads: NonZeroUsize::new(2),
+        strict_manifest_read: false,
     };
     let backend = LsmTreeBackend::open_real(dir.path(), &config).expect("open");
     let mut writer = backend.writer().expect("writer");

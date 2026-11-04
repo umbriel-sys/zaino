@@ -14,6 +14,8 @@
 
 use zaino_primitives::types::{BlockHash, BlockRef, Height};
 
+use crate::fs::Uncached;
+
 /// Layout version of the directory (3: per-segment filter prefix in segment lists; 4: `TAILS`
 /// beside the manifest, saved before each commit; 5: chain tag in the slot header, tombstone
 /// count per listed segment)
@@ -117,6 +119,12 @@ pub(crate) enum ManifestError {
 
     #[error("{path} holds data but the directory has no MANIFEST")]
     Unmanifested { path: String },
+
+    #[error(
+        "{path}: MANIFEST can only be read through the page cache (the filesystem refuses direct \
+         I/O) and strict_manifest_read is set"
+    )]
+    CachedRead { path: String },
 }
 
 /// Commit `seq`'s slot bytes (written at [`slot_offset`]`(seq)`; rest of the slot untouched,
@@ -274,18 +282,19 @@ pub(crate) fn read(
     dir: &std::path::Path,
     identity: &Identity,
 ) -> Result<Option<Vec<u8>>, ManifestError> {
-    let Some(bytes) = read_file(fs, &dir.join(crate::dir::MANIFEST))? else {
+    let Some(read) = read_file(fs, &dir.join(crate::dir::MANIFEST))? else {
         return Ok(None);
     };
-    latest(identity, &bytes).map(|committed| committed.map(|(_, body)| body.to_vec()))
+    latest(identity, &read.bytes).map(|committed| committed.map(|(_, body)| body.to_vec()))
 }
 
-/// `path`'s bytes as the device holds them (`None` = absent); a file not of the two-slot layout
+/// `path`'s bytes as the device holds them (`None` = absent), or through the page cache where
+/// the filesystem allows nothing else ([`Uncached::direct`]); a file not of the two-slot layout
 /// refused before any read (no allocation sized by a foreign file)
 pub(crate) fn read_file(
     fs: &dyn crate::fs::Fs,
     path: &std::path::Path,
-) -> Result<Option<Vec<u8>>, ManifestError> {
+) -> Result<Option<Uncached>, ManifestError> {
     let Some(file) = fs.open_read_only(path)? else {
         return Ok(None);
     };

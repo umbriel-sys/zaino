@@ -30,23 +30,50 @@ pub(crate) struct IndexDir {
     _lock: LockGuard,
 }
 
-/// Freshly opened directory + committed manifest body (`None` = never committed)
+/// Freshly opened directory + committed manifest body (`None` = never committed) + how the
+/// manifest was read
 #[derive(Debug)]
 pub(crate) struct Opened {
     pub(crate) dir: IndexDir,
     pub(crate) body: Option<Vec<u8>>,
+    pub(crate) manifest_read: ManifestRead,
+}
+
+/// How an index's committed manifest was read at open
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ManifestRead {
+    /// Past the page cache: what the device holds
+    Direct,
+    /// Through the page cache, because the filesystem refuses direct I/O: a manifest page the
+    /// device never received after an unreported writeback failure would pass as committed; torn
+    /// and partial manifests are still detected. Logged as a warning at open; refused instead by
+    /// `strict_manifest_read`
+    Cached,
 }
 
 impl IndexDir {
+    /// [`open_with`](Self::open_with) accepting a cached manifest read (with its warning)
+    #[cfg(test)]
+    pub(crate) fn open(
+        fs: Arc<dyn Fs>,
+        path: &Path,
+        identity: Identity,
+    ) -> Result<Opened, ManifestError> {
+        Self::open_with(fs, path, identity, false)
+    }
+
     /// `path` created if absent (every new level durably in its parent), locked, manifest read
     ///
     /// - missing manifest → two zeroed slots under `CREATING`, synced, renamed in (`MANIFEST`
     ///   only ever whole; later commits overwrite existing blocks)
     /// - leftover `CREATING` = creation a crash interrupted → removed
-    pub(crate) fn open(
+    /// - a manifest readable only through the page cache: `strict` refuses it
+    ///   ([`ManifestError::CachedRead`]), else a warning names what that forgoes
+    pub(crate) fn open_with(
         fs: Arc<dyn Fs>,
         path: &Path,
         identity: Identity,
+        strict: bool,
     ) -> Result<Opened, ManifestError> {
         let mut missing = Vec::new();
         for level in path
@@ -84,9 +111,28 @@ impl IndexDir {
         fs.sync_dir(path)?;
 
         // past the page cache: commit only on what the device holds
-        let bytes = manifest::read_file(fs.as_ref(), &path.join(MANIFEST))?
+        let read = manifest::read_file(fs.as_ref(), &path.join(MANIFEST))?
             .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "MANIFEST vanished"))?;
-        let committed = manifest::latest(&identity, &bytes)?;
+        let manifest_read = match read.direct {
+            true => ManifestRead::Direct,
+            false if strict => {
+                return Err(ManifestError::CachedRead {
+                    path: path.display().to_string(),
+                })
+            }
+            false => {
+                tracing::warn!(
+                    index = identity.name(),
+                    path = %path.display(),
+                    "MANIFEST read through the page cache: the filesystem refuses direct I/O, so \
+                     a manifest page the device never received after an unreported writeback \
+                     failure would pass as committed (torn and partial manifests are still \
+                     detected); set strict_manifest_read to refuse instead"
+                );
+                ManifestRead::Cached
+            }
+        };
+        let committed = manifest::latest(&identity, &read.bytes)?;
         let (seq, body) = committed.map_or((0, None), |(seq, body)| (seq, Some(body.to_vec())));
         let dir = Self {
             fs,
@@ -96,7 +142,11 @@ impl IndexDir {
             seq,
             _lock: lock,
         };
-        Ok(Opened { dir, body })
+        Ok(Opened {
+            dir,
+            body,
+            manifest_read,
+        })
     }
 
     pub(crate) fn path(&self) -> &Path {

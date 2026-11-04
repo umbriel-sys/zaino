@@ -177,6 +177,36 @@ fn a_nested_sequence_a_failed_open_created_survives_a_power_loss_after_its_first
     model.assert_view(&backend.reader().expect("reader"), "after the power loss");
 }
 
+/// A fresh open's files survive a power loss right after it: every sequence log, its checksum
+/// file and its directory are durably linked before the first (empty) manifest names them
+#[test]
+fn a_fresh_opens_files_survive_a_power_loss_right_after_it() {
+    let fs = SimFs::new();
+    drop(open(&fs, 2));
+    let crashed = fs.power_loss();
+    for name in [
+        "MANIFEST",
+        "TAILS",
+        "blocks.dat",
+        "blocks.dat.crc",
+        "blocks.idx",
+        "blocks.idx.crc",
+        "heights.dat",
+        "heights.dat.crc",
+        "pool/nodes.dat",
+        "pool/nodes.dat.crc",
+    ] {
+        assert!(
+            crashed.contents(&Path::new(ROOT).join(name)).is_some(),
+            "{name} survived"
+        );
+    }
+    let config = crate::testing::config(2, std::num::NonZeroUsize::MAX);
+    let backend = LsmTreeBackend::open(crashed, Path::new(ROOT), &config)
+        .unwrap_or_else(|error| panic!("reopens empty: {}", chain(&error)));
+    Model::default().assert_view(&backend.reader().expect("reader"), "after the power loss");
+}
+
 /// Op 0, 1, 2, … failed until the workload succeeds (Pebble `errorfs`); each = the injected `Err`
 /// (never a panic, never swallowed), later commits refused, restart = acked or attempted commit
 ///
@@ -347,7 +377,10 @@ fn a_key_held_twice_is_named_by_reads_and_merges() {
             Arc::clone(&specs),
             &tunings,
             lsm,
-            Some(crate::testing::THREADS),
+            Runtime {
+                threads: Some(crate::testing::THREADS),
+                strict_manifest_read: false,
+            },
         )
         .expect("open");
         let op = WriteOp::Put {

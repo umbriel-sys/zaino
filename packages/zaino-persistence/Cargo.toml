@@ -17,10 +17,13 @@ zaino-primitives = { path = "../zaino-primitives" }
 thiserror.workspace = true
 proptest = { workspace = true, optional = true }
 imbl = { workspace = true, optional = true }
+serde = { workspace = true, features = ["derive"], optional = true }
 
 [features]
 # `in_memory` backend + `conformance` (the suite every backend runs)
 testing = ["dep:proptest", "dep:imbl"]
+# `Serialize` on the verify and footprint reports (`zainod verify` output)
+serde = ["dep:serde"]
 
 [lints.rust]
 unsafe_code = "forbid"
@@ -28,6 +31,7 @@ missing_docs = "warn"
 
 [dev-dependencies]
 proptest.workspace = true
+serde_json.workspace = true
 
 [[test]]
 name = "conformance"

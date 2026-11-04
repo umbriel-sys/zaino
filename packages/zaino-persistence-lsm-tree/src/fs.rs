@@ -34,6 +34,16 @@ fn too_long(path: &Path, len: u64, limit: u64) -> io::Error {
     )
 }
 
+/// A whole file read by [`Fs::read_uncached`]: its bytes, and whether they came past the page
+/// cache (`direct`) or through it, where the filesystem allows nothing else
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Uncached {
+    /// The file's bytes
+    pub bytes: Vec<u8>,
+    /// Read from the device, not the page cache
+    pub direct: bool,
+}
+
 /// Directory operations (Linux semantics; `docs/durability.md` §3)
 pub trait Fs: Send + Sync + fmt::Debug + 'static {
     /// `dir` and every missing ancestor created
@@ -52,10 +62,10 @@ pub trait Fs: Send + Sync + fmt::Debug + 'static {
     /// cache may hold bytes the device never got); `None` when absent; a file past `limit` bytes
     /// refused (`InvalidData`) before any read
     ///
-    /// - Linux: `O_DIRECT`; a filesystem refusing it is an error (`Unsupported`), except tmpfs,
-    ///   whose page cache is its storage
+    /// - Linux: `O_DIRECT`; a filesystem refusing it is read through the cache and says so
+    ///   (`direct: false`), except tmpfs, whose page cache is its storage (`direct: true`)
     /// - macOS: best effort (`F_NOCACHE` leaves pages already cached in place)
-    fn read_uncached(&self, path: &Path, limit: u64) -> io::Result<Option<Vec<u8>>>;
+    fn read_uncached(&self, path: &Path, limit: u64) -> io::Result<Option<Uncached>>;
 
     /// `from` linked at `to`, replacing it
     fn rename(&self, from: &Path, to: &Path) -> io::Result<()>;

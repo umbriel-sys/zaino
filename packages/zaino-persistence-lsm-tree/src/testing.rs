@@ -68,6 +68,7 @@ pub(crate) fn config(fanout: usize, write_buffer: NonZeroUsize) -> LsmTreeConfig
         },
         write_buffer,
         threads: Some(THREADS),
+        strict_manifest_read: false,
     }
 }
 

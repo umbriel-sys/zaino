@@ -23,5 +23,6 @@ with any `LsmConfig` value out of range is refused. Each backend runs its \
 parallel work on its own thread pool of `LsmTreeConfig::threads` threads \
 (default: the machine's available parallelism). A scratch file a write cannot \
 remove never fails it: it is retried with the leftovers. The manifest is read past the page \
-cache, plainly only on tmpfs; elsewhere a refused direct read refuses the open.
+cache; where the filesystem refuses direct I/O it is read through the cache and the open \
+says so (`LsmTreeConfig::strict_manifest_read` refuses instead).
 """

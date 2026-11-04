@@ -44,3 +44,7 @@ metrics-util = "0.20"
 proptest.workspace = true
 tempfile.workspace = true
 zaino-persistence = { path = "../zaino-persistence", features = ["testing"] }
+
+[[bench]]
+name = "readback"
+harness = false
