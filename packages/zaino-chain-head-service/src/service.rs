@@ -39,6 +39,7 @@ use std::{
 };
 
 use arc_swap::ArcSwap;
+use futures::StreamExt as _;
 use tokio::{
     sync::{broadcast, watch},
     task::JoinHandle,
@@ -453,44 +454,59 @@ impl<S: ChainHeadBlockSource> ChainHeadService<S> {
         // must be rewritten to match
         //
         // see https://github.com/ZcashFoundation/zebra/issues/9541
-        while u32::from(graph.best_tip().height) < u32::from(chain_height) {
-            let next = next_height(graph.best_tip().height);
-            // Both reads address the best-chain block at `next`, so they are
-            // independent and run concurrently; the hash check below closes
-            // the reorg race the concurrency opens.
-            let (block, roots) = tokio::join!(
-                self.block_at_height(next),
-                self.source.get_commitment_tree_roots_by_height(next),
-            );
-            let Some(block) = block? else {
-                // Past the tip; the roots result is dropped unexamined, since
-                // its `HeightNotFound` there is expected, not a failure.
-                break;
-            };
+        //
+        // Reads run `fetch_concurrency` heights ahead of the link and arrive
+        // in order; each height's block and roots are independent reads. The
+        // link stays sequential, and a reorg drops everything in flight: those
+        // reads were addressed by height on a chain that just changed.
+        'build: while u32::from(graph.best_tip().height) < u32::from(chain_height) {
+            let first = next_height(graph.best_tip().height);
+            let heights = std::iter::successors(Some(first), |height| Some(next_height(*height)))
+                .take_while(|height| *height <= chain_height);
+            let mut fetched = futures::stream::iter(heights)
+                .map(|height| async move {
+                    tokio::join!(
+                        self.block_at_height(height),
+                        self.source.get_commitment_tree_roots_by_height(height),
+                    )
+                })
+                .buffered(self.config.fetch_concurrency().get());
 
-            let parent_hash = block.header.prev_hash;
-            if parent_hash == graph.best_tip().hash {
-                // Normal chain progression
-                let roots = match roots {
-                    Ok((roots_hash, roots)) if roots_hash == block.header.hash => roots,
-                    // A reorg swapped the best-chain block between the two
-                    // reads, or the height-addressed read failed; the hash we
-                    // hold is authoritative, so refetch by it.
-                    _ => tree_roots(self.source.as_ref(), block.header.hash).await?,
+            while let Some((block, roots)) = fetched.next().await {
+                let Some(block) = block? else {
+                    // Past the tip; the roots result is dropped unexamined, since
+                    // its `HeightNotFound` there is expected, not a failure.
+                    break 'build;
                 };
-                let chainblock =
-                    chain_head_block(block, roots, ParentWork::Retained(graph.tip_block().work))?;
-                info!(
-                    height = u32::from(chainblock.height()),
-                    hash = %chainblock.hash(),
-                    "Syncing block"
-                );
-                extend(&mut graph, chainblock)?;
-            } else {
-                // There's been a reorg. The fresh block is the new chaintip; we
-                // work backwards from it and update heights_to_hashes with it
-                // and all its parents.
-                self.handle_reorg(&mut graph, &block).await?;
+
+                let parent_hash = block.header.prev_hash;
+                if parent_hash == graph.best_tip().hash {
+                    // Normal chain progression
+                    let roots = match roots {
+                        Ok((roots_hash, roots)) if roots_hash == block.header.hash => roots,
+                        // A reorg swapped the best-chain block between the two
+                        // reads, or the height-addressed read failed; the hash we
+                        // hold is authoritative, so refetch by it.
+                        _ => tree_roots(self.source.as_ref(), block.header.hash).await?,
+                    };
+                    let chainblock = chain_head_block(
+                        block,
+                        roots,
+                        ParentWork::Retained(graph.tip_block().work),
+                    )?;
+                    info!(
+                        height = u32::from(chainblock.height()),
+                        hash = %chainblock.hash(),
+                        "Syncing block"
+                    );
+                    extend(&mut graph, chainblock)?;
+                } else {
+                    // There's been a reorg. The fresh block is the new chaintip; we
+                    // work backwards from it and update heights_to_hashes with it
+                    // and all its parents, then fetch afresh from there.
+                    self.handle_reorg(&mut graph, &block).await?;
+                    continue 'build;
+                }
             }
         }
 

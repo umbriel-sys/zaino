@@ -77,6 +77,18 @@ belongs is a compile error rather than a mislabelled log line.
 
 [`zaino-async`]: https://docs.rs/zaino-async
 
+## One CPU budget, split by share
+
+Components that fan work out — the store's build, the chain head's window
+prefetch, mempool polling, chain-view passthrough reads — take their
+concurrency from one [`CpuBudget`] rather than each reading the core count.
+[`CpuBudget::detect`] reads the host once; [`CpuBudget::concurrency`] hands a
+[`Share`] its slice (chain store 8/16, chain head 4/16, mempool 2/16, chain
+view 2/16), rounded up, never below the share's floor (the chain head keeps
+four, its reads being round trips rather than CPU) and never above sixteen.
+A process that wants to pin the cores builds the budget with
+[`CpuBudget::with_cores`] and passes the shares into each component's config.
+
 ## Related
 
 - The lifecycle state machine — which transitions are legal, and why a restart

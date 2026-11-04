@@ -6005,6 +6005,7 @@ version = "0.2.0"
 dependencies = [
  "thiserror 2.0.20",
  "tokio",
+ "zaino-component",
  "zaino-consensus",
  "zaino-primitives",
  "zaino-source",

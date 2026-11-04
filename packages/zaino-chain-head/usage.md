@@ -87,6 +87,11 @@ Lifecycle is absent for the same reason. Starting, stopping and status are
 inherent methods on the concrete service; a read handle cannot shut the chain
 head down because there is no method on it that could.
 
+What a consumer does set is `ChainHeadConfig`: the window depth, the poll and
+backoff intervals, the failure tolerance, and `fetch_concurrency`, how many
+heights the window build reads ahead (default: the chain head's share of
+`zaino_component::CpuBudget`).
+
 ## Work is anchor-relative
 
 A block's `work` is a `RelativeChainWork`: the total over the blocks this window

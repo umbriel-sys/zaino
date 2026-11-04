@@ -1,6 +1,6 @@
 //! How the ChainHead runtime is configured.
 
-use std::num::{NonZeroU32, NonZeroU64};
+use std::num::{NonZeroU32, NonZeroU64, NonZeroUsize};
 use std::time::Duration;
 
 /// How far below the tip ChainHead retains blocks, and how hard it polls.
@@ -38,6 +38,7 @@ pub struct ChainHeadConfig {
     initial_backoff_ms: NonZeroU64,
     max_backoff_ms: NonZeroU64,
     max_consecutive_failures: NonZeroU32,
+    fetch_concurrency: NonZeroUsize,
 }
 
 /// The consensus reorg bound, as a `NonZeroU32`.
@@ -66,6 +67,8 @@ impl Default for ChainHeadConfig {
             initial_backoff_ms: ms(500),
             max_backoff_ms: ms(30_000),
             max_consecutive_failures: NonZeroU32::new(10).expect("10 is not zero"),
+            fetch_concurrency: zaino_component::CpuBudget::detect()
+                .concurrency(zaino_component::Share::ChainHead),
         }
     }
 }
@@ -141,5 +144,16 @@ impl ChainHeadConfig {
     /// Set how many consecutive failures are tolerated.
     pub fn set_max_consecutive_failures(&mut self, failures: NonZeroU32) {
         self.max_consecutive_failures = failures;
+    }
+
+    /// Heights fetched ahead of the link while the window is built. Default:
+    /// the chain head's share of [`zaino_component::CpuBudget`].
+    pub fn fetch_concurrency(&self) -> NonZeroUsize {
+        self.fetch_concurrency
+    }
+
+    /// Set how many heights are fetched ahead of the link.
+    pub fn set_fetch_concurrency(&mut self, heights: NonZeroUsize) {
+        self.fetch_concurrency = heights;
     }
 }

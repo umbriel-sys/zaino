@@ -2,6 +2,7 @@
 #![forbid(unsafe_code)]
 #![deny(clippy::wildcard_enum_match_arm)]
 
+mod budget;
 mod error;
 mod health;
 mod lifecycle;
@@ -13,6 +14,7 @@ mod status;
 #[cfg(test)]
 mod tests;
 
+pub use budget::{CpuBudget, Share};
 pub use error::error_chain;
 pub use health::Health;
 pub use lifecycle::{IllegalTransition, Lifecycle};

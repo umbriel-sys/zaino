@@ -28,6 +28,7 @@ zaino-source = { workspace = true }
 
 tokio = { workspace = true, features = ["sync"] }
 thiserror = { workspace = true }
+zaino-component = { workspace = true }
 
 [dev-dependencies]
 zaino-source-zebra = { workspace = true }
