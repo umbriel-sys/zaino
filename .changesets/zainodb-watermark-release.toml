@@ -1,0 +1,8 @@
+[[changes]]
+crate = "zaino-chain-store-zainodb"
+kind = "fix"
+description = """
+After a background sync released its passthrough, the watermark kept the \
+passthrough provenance until the next freeze, so a freshly started store \
+reported no durable tip although it held every synced block. The release \
+edge now republishes the tip as durable."""
