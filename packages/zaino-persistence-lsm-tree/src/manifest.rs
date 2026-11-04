@@ -2,8 +2,8 @@
 //!
 //! ```text
 //! file = slot 0 ‖ slot 1                     2 × SLOT bytes, zero-filled when created
-//! slot = magic b"ZAINOMS4" ‖ format u16 ‖ name_len u8 ‖ name ‖ seq u64 ‖ body_len u32
-//!        ‖ body ‖ crc32 ‖ (unused to the slot's end)
+//! slot = magic b"ZAINOMS5" ‖ format u16 ‖ name_len u8 ‖ name ‖ chain_len u8 ‖ chain ‖ seq u64
+//!        ‖ body_len u32 ‖ body ‖ crc32 ‖ (unused to the slot's end)
 //! ```
 //!
 //! - little-endian throughout; CRC-32 (IEEE) over the slot's bytes before it
@@ -15,8 +15,9 @@
 use zaino_primitives::types::{BlockHash, BlockRef, Height};
 
 /// Layout version of the directory (3: per-segment filter prefix in segment lists; 4: `TAILS`
-/// beside the manifest, saved before each commit)
-const MAGIC: [u8; 8] = *b"ZAINOMS4";
+/// beside the manifest, saved before each commit; 5: chain tag in the slot header, tombstone
+/// count per listed segment)
+const MAGIC: [u8; 8] = *b"ZAINOMS5";
 const CRC: usize = 4;
 
 /// Where the name starts: after magic ‖ format u16 ‖ name_len u8
@@ -28,35 +29,47 @@ pub(crate) const SLOT: usize = 1 << 20;
 /// Both slots
 pub(crate) const FILE_LEN: u64 = 2 * SLOT as u64;
 
-/// Longest index name a slot header holds
+/// Longest index name, and longest chain tag, a slot header holds
 const MAX_NAME: usize = u8::MAX as usize;
 
 /// What a directory must have been written as (any mismatch refused = identity check)
+///
+/// - `chain`: the chain the data belongs to, opaque here (the index layer names the network,
+///   its genesis hash and, on regtest, its activation heights); data of another chain is never
+///   read as this one's
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct Identity {
     name: Box<str>,
+    chain: Box<str>,
     format: u16,
 }
 
 impl Identity {
-    /// `name` of at most 255 bytes, written at layout version `format`
-    pub(crate) fn new(name: &str, format: u16) -> Result<Self, ManifestError> {
-        match name.len() <= MAX_NAME {
-            true => Ok(Self {
-                name: name.into(),
-                format,
-            }),
-            false => Err(ManifestError::NameLength { len: name.len() }),
+    /// `name` and `chain` of at most 255 bytes each, written at layout version `format`
+    pub(crate) fn new(name: &str, chain: &str, format: u16) -> Result<Self, ManifestError> {
+        if name.len() > MAX_NAME {
+            return Err(ManifestError::NameLength { len: name.len() });
         }
+        if chain.len() > MAX_NAME {
+            return Err(ManifestError::ChainLength { len: chain.len() });
+        }
+        Ok(Self {
+            name: name.into(),
+            chain: chain.into(),
+            format,
+        })
     }
 
     pub(crate) fn name(&self) -> &str {
         &self.name
     }
 
-    /// Header bytes before `seq`: magic ‖ format ‖ name_len ‖ name
+    /// Header bytes before `seq`: magic ‖ format ‖ name_len ‖ name ‖ chain_len ‖ chain
     fn prefix_len(&self) -> usize {
-        NAME_AT.saturating_add(self.name.len())
+        NAME_AT
+            .saturating_add(self.name.len())
+            .saturating_add(1)
+            .saturating_add(self.chain.len())
     }
 }
 
@@ -87,6 +100,12 @@ pub(crate) enum ManifestError {
     #[error("index name of {len} bytes, at most {MAX_NAME}")]
     NameLength { len: usize },
 
+    #[error("directory holds data of chain {found:?}, expected {expected:?}")]
+    Chain { expected: String, found: String },
+
+    #[error("chain tag of {len} bytes, at most {MAX_NAME}")]
+    ChainLength { len: usize },
+
     #[error("directory holds format {found}, this build reads format {expected}")]
     Format { expected: u16, found: u16 },
 
@@ -114,11 +133,16 @@ pub(crate) fn encode(identity: &Identity, seq: u64, body: &[u8]) -> Result<Vec<u
     let name_len = u8::try_from(identity.name.len()).map_err(|_| ManifestError::NameLength {
         len: identity.name.len(),
     })?;
+    let chain_len = u8::try_from(identity.chain.len()).map_err(|_| ManifestError::ChainLength {
+        len: identity.chain.len(),
+    })?;
     let mut out = Vec::with_capacity(len);
     out.extend_from_slice(&MAGIC);
     out.extend_from_slice(&identity.format.to_le_bytes());
     out.push(name_len);
     out.extend_from_slice(identity.name.as_bytes());
+    out.push(chain_len);
+    out.extend_from_slice(identity.chain.as_bytes());
     out.extend_from_slice(&seq.to_le_bytes());
     out.extend_from_slice(&body_len.to_le_bytes());
     out.extend_from_slice(body);
@@ -157,11 +181,13 @@ fn decode_slot<'a>(identity: &Identity, slot: &'a [u8]) -> Result<Slot<'a>, Mani
         let format = u16::from_le_bytes(reader.array()?);
         let [name_len] = reader.array::<1>()?;
         let name = reader.take(usize::from(name_len))?;
+        let [chain_len] = reader.array::<1>()?;
+        let chain = reader.take(usize::from(chain_len))?;
         let seq = reader.u64()?;
         let claimed = reader.u32()?;
-        Ok::<_, ManifestError>((format, name, seq, claimed))
+        Ok::<_, ManifestError>((format, name, chain, seq, claimed))
     })();
-    let Ok((format, name, seq, claimed)) = header else {
+    let Ok((format, name, chain, seq, claimed)) = header else {
         return Ok(Slot::Torn(ManifestError::Body("truncated header")));
     };
     let rest = reader.rest;
@@ -191,6 +217,12 @@ fn decode_slot<'a>(identity: &Identity, slot: &'a [u8]) -> Result<Slot<'a>, Mani
         return Err(ManifestError::Format {
             expected: identity.format,
             found: format,
+        });
+    }
+    if chain != identity.chain.as_bytes() {
+        return Err(ManifestError::Chain {
+            expected: identity.chain.to_string(),
+            found: String::from_utf8_lossy(chain).into_owned(),
         });
     }
     Ok(Slot::Committed { seq, body })

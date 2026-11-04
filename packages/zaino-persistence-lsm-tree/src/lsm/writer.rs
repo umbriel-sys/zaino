@@ -88,6 +88,7 @@ pub(super) struct SegmentWriter {
 struct SegmentOut {
     id: u32,
     filtered: u32,
+    tombstones: u64,
     file: PagedFile,
     navigation: Navigation,
     chunk: Vec<u8>,
@@ -95,9 +96,12 @@ struct SegmentOut {
 }
 
 impl SegmentOut {
-    fn push(&mut self, row: &[u8]) -> Result<()> {
+    fn push(&mut self, row: &[u8], tombstone: bool) -> Result<()> {
         self.navigation.push(row)?;
         self.digest.update(row);
+        if tombstone {
+            self.tombstones = self.tombstones.saturating_add(1);
+        }
         self.chunk.extend_from_slice(row);
         if self.chunk.len() >= CHUNK {
             self.file.append(&self.chunk)?;
@@ -120,6 +124,7 @@ impl SegmentOut {
         let meta = SegmentMeta {
             id: self.id,
             records,
+            tombstones: self.tombstones,
             filtered: self.filtered,
             sealed: self.file.seal().map_err(SegmentError::Sync)?,
         };
@@ -175,7 +180,7 @@ impl SegmentWriter {
                 value.map_or(Row::Tombstone, Row::Value),
                 &mut row,
             )?;
-            out.push(&row)?;
+            out.push(&row, value.is_none())?;
         }
         self.sealed(out, None)
     }
@@ -268,7 +273,11 @@ impl SegmentWriter {
             }
             paced.charge(group.len().saturating_mul(self.shape.stride));
             let row = match group.as_slice() {
-                [(at, row_at)] => Some(source(*at)?.row(*row_at)?),
+                [(at, row_at)] => {
+                    let file = source(*at)?;
+                    let tombstone = matches!(file.content(*row_at)?.1, Row::Tombstone);
+                    Some((file.row(*row_at)?, tombstone))
+                }
                 [(a, a_at), (b, b_at)] if self.shape.deletes => {
                     let contents = [source(*a)?.content(*a_at)?.1, source(*b)?.content(*b_at)?.1];
                     let pair = matches!(contents, [Row::Value(_), Row::Tombstone])
@@ -281,12 +290,12 @@ impl SegmentWriter {
                 }
                 many => return Err(repeated(many)),
             };
-            if let Some(row) = row {
+            if let Some((row, tombstone)) = row {
                 let writing = match &mut out {
                     Some(out) => out,
                     None => out.insert(self.create(id, total)?),
                 };
-                writing.push(row)?;
+                writing.push(row, tombstone)?;
                 paced.charge(row.len());
             }
         }
@@ -426,6 +435,7 @@ impl SegmentWriter {
             id,
             filtered: u32::try_from(self.shape.filtered)
                 .map_err(|_| SegmentError::Overflow("filter prefix"))?,
+            tombstones: 0,
             file,
             navigation: Navigation::new(self.shape, records, &self.fs, &self.dir, id)?,
             chunk: Vec::with_capacity(CHUNK.saturating_add(self.shape.stride)),

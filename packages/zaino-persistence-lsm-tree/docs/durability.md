@@ -42,10 +42,12 @@ of repairing anything in place. Every index directory follows the same six rules
 
 ```text
 field       bytes  meaning
-magic       8      b"ZAINOMS4"
+magic       8      b"ZAINOMS5"
 format      2      u16 LE, the caller's layout version
 name_len    1      u8
 name        n      the index name the caller opens it as (at most 255 bytes)
+chain_len   1      u8
+chain       c      the chain tag the caller opens it as (at most 255 bytes; opaque here)
 seq         8      u64 LE, the commit's sequence number (1, 2, 3, ...)
 body_len    4      u32 LE
 body        m      the engine's layout (§4)
@@ -180,7 +182,7 @@ manifest commits all of them.
 body = namespaces ‖ tip
        ‖ per namespace, in declaration order:
            sequence: Sealed(<name>.dat) [‖ Sealed(<name>.idx) if Variable]
-           map:      count u32 ‖ (id u32 ‖ records u64 ‖ filtered u32 ‖ Sealed)*
+           map:      count u32 ‖ (id u32 ‖ records u64 ‖ tombstones u64 ‖ filtered u32 ‖ Sealed)*
 ```
 
 - **Sequence**: `<name>.dat` holds records back to back; a `Variable` one adds `<name>.idx`, a u64

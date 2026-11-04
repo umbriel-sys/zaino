@@ -51,9 +51,13 @@ pub(crate) fn eventually<T>(what: &str, mut attempt: impl FnMut() -> Option<T>) 
     }
 }
 
+/// The chain tag the tests open every directory as
+pub(crate) const CHAIN: &str = "regtest";
+
 pub(crate) fn config(fanout: usize, write_buffer: NonZeroUsize) -> LsmTreeConfig<'static> {
     LsmTreeConfig {
         name: "conformance",
+        chain: CHAIN,
         format: 1,
         namespaces: &SPECS,
         tuning: &TUNING,

@@ -42,6 +42,10 @@ use crate::{
 pub struct LsmTreeConfig<'a> {
     /// Index name, checked against the directory's (at most 255 bytes)
     pub name: &'a str,
+    /// The chain the data belongs to, checked against the directory's (at most 255 bytes;
+    /// opaque to the backend: the index layer names the network, its genesis hash and, on
+    /// regtest, its activation heights, so another chain's data is never read as this one's)
+    pub chain: &'a str,
     /// Layout version, checked against the directory's
     pub format: u16,
     /// Namespaces held, checked against those the directory was committed with
@@ -159,7 +163,7 @@ impl LsmTreeBackend {
     ) -> Result<Self, StoreError> {
         let specs: Arc<[NamespaceSpec]> = config.namespaces.into();
         let tunings = tunings(&specs, config.tuning)?;
-        let identity = Identity::new(config.name, config.format)?;
+        let identity = Identity::new(config.name, config.chain, config.format)?;
         let engine = Engine::open(
             &fs,
             path,
@@ -231,16 +235,17 @@ fn tunings(
 }
 
 /// Every file `path`'s committed manifest names, scrubbed: offline, no lock, safe beside a live
-/// writer (`name`, `format` and `namespaces` as it was opened with)
+/// writer (`name`, `chain`, `format` and `namespaces` as it was opened with)
 pub fn verify_dir(
     fs: &dyn Fs,
     path: &Path,
     name: &str,
+    chain: &str,
     format: u16,
     namespaces: &[NamespaceSpec],
 ) -> Result<Verification, VerifyError> {
     guarded(|| {
-        let identity = Identity::new(name, format)?;
+        let identity = Identity::new(name, chain, format)?;
         engine::verify(fs, path, &identity, namespaces)
     })
     .and_then(|verified| verified)

@@ -2,7 +2,7 @@ use super::*;
 use crate::fs::SimFs;
 
 fn identity() -> Identity {
-    Identity::new("compact_block", 1).expect("short name")
+    Identity::new("compact_block", "regtest", 1).expect("short name")
 }
 
 /// A directory several missing levels deep, and a nested subdirectory, survive a power loss
@@ -88,9 +88,14 @@ fn commits_survive_reopen_the_lock_excludes_and_identity_is_enforced() {
     );
     drop(reopened);
 
-    let foreign = Identity::new("tree_state", 1).expect("short name");
-    let foreign = IndexDir::open(fs, path, foreign);
+    let foreign = Identity::new("tree_state", "regtest", 1).expect("short name");
+    let foreign = IndexDir::open(fs.clone(), path, foreign);
     assert!(matches!(foreign, Err(ManifestError::Name { .. })));
+    drop(foreign);
+
+    let other_chain = Identity::new("compact_block", "mainnet", 1).expect("short name");
+    let other_chain = IndexDir::open(fs, path, other_chain);
+    assert!(matches!(other_chain, Err(ManifestError::Chain { .. })));
 }
 
 /// A body past the slot: `Full`, the committed state unchanged, later commits continue

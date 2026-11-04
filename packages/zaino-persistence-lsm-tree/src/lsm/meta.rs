@@ -7,20 +7,30 @@ use crate::{
     pages::Sealed,
 };
 
-/// Committed segment: file id, record count, the key bytes its filter covers (the map's scope
-/// when it was written), its file's seal
+/// Committed segment: file id, record count, of those the tombstones, the key bytes its filter
+/// covers (the map's scope when it was written), its file's seal
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct SegmentMeta {
     pub(crate) id: u32,
     pub(crate) records: u64,
+    pub(crate) tombstones: u64,
     pub(crate) filtered: u32,
     pub(crate) sealed: Sealed,
 }
 
 impl SegmentMeta {
+    /// Keys this segment adds to the map: each tombstone cancels one older value (insert-once,
+    /// remove-once), so a segment of lone tombstones counts negative
+    pub(crate) fn live(&self) -> i64 {
+        let records = i64::try_from(self.records).unwrap_or(i64::MAX);
+        let tombstones = i64::try_from(self.tombstones).unwrap_or(i64::MAX);
+        records.saturating_sub(tombstones.saturating_mul(2))
+    }
+
     fn encode(&self, out: &mut Vec<u8>) {
         out.extend_from_slice(&self.id.to_le_bytes());
         out.extend_from_slice(&self.records.to_le_bytes());
+        out.extend_from_slice(&self.tombstones.to_le_bytes());
         out.extend_from_slice(&self.filtered.to_le_bytes());
         self.sealed.encode(out);
     }
@@ -29,14 +39,15 @@ impl SegmentMeta {
         Ok(Self {
             id: body.u32()?,
             records: body.u64()?,
+            tombstones: body.u64()?,
             filtered: body.u32()?,
             sealed: Sealed::decode(body)?,
         })
     }
 }
 
-/// `count u32 ‖ (id u32 ‖ records u64 ‖ filtered u32 ‖ sealed len u64 ‖ tail crc u32 ‖
-/// sums u32)*`, in list order
+/// `count u32 ‖ (id u32 ‖ records u64 ‖ tombstones u64 ‖ filtered u32 ‖ sealed len u64 ‖
+/// tail crc u32 ‖ sums u32)*`, in list order
 pub(crate) fn encode_list(
     segments: &[SegmentMeta],
     out: &mut Vec<u8>,
@@ -58,6 +69,9 @@ pub(crate) fn decode_list(body: &mut BodyReader<'_>) -> Result<Vec<SegmentMeta>,
         let segment = SegmentMeta::decode(body)?;
         if segment.records == 0 {
             return Err(ManifestError::Body("empty segment listed"));
+        }
+        if segment.tombstones > segment.records {
+            return Err(ManifestError::Body("more tombstones than rows"));
         }
         if segment.filtered == 0 {
             return Err(ManifestError::Body("a segment filtering on no key bytes"));
@@ -154,6 +168,7 @@ mod tests {
         SegmentMeta {
             id,
             records,
+            tombstones: records / 4,
             filtered: 8,
             sealed: Sealed {
                 len: records * 3,
@@ -163,27 +178,37 @@ mod tests {
         }
     }
 
-    /// List codec round trip (each segment's filter prefix kept); duplicate id, empty segment or
-    /// zero-byte filter prefix in a manifest refused
+    /// List codec round trip (each segment's filter prefix and tombstone count kept); duplicate
+    /// id, empty segment, zero-byte filter prefix or tombstones past the rows refused
     #[test]
     fn segment_lists_round_trip_and_refuse_duplicates_and_empties() {
         let mut segments = vec![segment(4, 10), segment(9, 1), segment(2, 1 << 40)];
         segments[1].filtered = 21;
         let mut bytes = Vec::new();
         encode_list(&segments, &mut bytes).expect("encode");
-        assert_eq!(bytes.len(), 4 + 3 * 32);
+        assert_eq!(bytes.len(), 4 + 3 * 40);
         let mut body = BodyReader::new(&bytes);
         assert_eq!(decode_list(&mut body).expect("decode"), segments);
         body.finish().expect("whole list consumed");
+        assert_eq!(
+            segment(4, 10).live(),
+            10 - 2 * 2,
+            "rows less twice the tombstones"
+        );
 
         let unfiltered = SegmentMeta {
             filtered: 0,
+            ..segment(1, 5)
+        };
+        let overdeleted = SegmentMeta {
+            tombstones: 6,
             ..segment(1, 5)
         };
         for (bad, reason) in [
             (vec![segment(1, 5), segment(1, 6)], "segment listed twice"),
             (vec![segment(1, 0)], "empty segment listed"),
             (vec![unfiltered], "a segment filtering on no key bytes"),
+            (vec![overdeleted], "more tombstones than rows"),
         ] {
             let mut bytes = Vec::new();
             encode_list(&bad, &mut bytes).expect("encode");

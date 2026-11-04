@@ -533,7 +533,11 @@ impl SegmentLog {
         let merging: Vec<u32> = self.merges.iter().map(|merge| merge.tier).collect();
         let shape = tier_shape(&self.segments, &merging, self.fanout, self.shape_tiers);
         self.shape_tiers = shape.len();
-        emit::shape(&self.labels, &shape);
+        let live = self
+            .segments
+            .iter()
+            .fold(0i64, |sum, segment| sum.saturating_add(segment.live()));
+        emit::shape(&self.labels, &shape, live);
     }
 
     fn launch(&mut self, tier: u32, inputs: Vec<SegmentMeta>) -> Result<Merge> {

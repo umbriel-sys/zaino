@@ -73,6 +73,7 @@ fn footprint_reports_each_namespaces_committed_bytes_and_their_page_cache_share(
     let dir = tempfile::tempdir().expect("tempdir");
     let config = LsmTreeConfig {
         name: "footprint",
+        chain: "regtest",
         format: 1,
         namespaces: &specs,
         tuning: &tuning,

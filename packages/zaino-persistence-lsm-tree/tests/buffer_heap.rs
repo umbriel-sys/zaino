@@ -117,6 +117,7 @@ fn a_commit_writes_the_buffer_when_its_real_heap_reaches_write_buffer_within_10_
         let dir = tempfile::tempdir().expect("tempdir");
         let config = LsmTreeConfig {
             name: "heap",
+            chain: "regtest",
             format: 1,
             namespaces: &specs,
             tuning: &[],

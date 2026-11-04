@@ -45,6 +45,7 @@ impl Subject for RealDir {
         )];
         let config = LsmTreeConfig {
             name: "conformance",
+            chain: "regtest",
             format: 1,
             namespaces: &SPECS,
             tuning: &tuning,

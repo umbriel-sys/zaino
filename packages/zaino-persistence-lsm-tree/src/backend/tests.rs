@@ -961,6 +961,7 @@ fn a_failed_cleanup_never_fails_a_commit_and_is_retried() {
             fs.as_ref(),
             Path::new(ROOT),
             "conformance",
+            crate::testing::CHAIN,
             1,
             &conformance::SPECS,
         )
@@ -1485,6 +1486,7 @@ fn offline_verify_agrees_and_footprint_names_every_namespace() {
         fs.as_ref(),
         Path::new(ROOT),
         "conformance",
+        crate::testing::CHAIN,
         1,
         &conformance::SPECS,
     )

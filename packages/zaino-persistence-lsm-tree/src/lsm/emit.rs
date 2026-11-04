@@ -19,6 +19,7 @@ mod names {
     pub(super) const LEFTOVER_BYTES: &str = "zaino.lsm.leftover_bytes";
     pub(super) const MERGE_LAUNCH_FAILED_TOTAL: &str = "zaino.lsm.merge_launch_failed_total";
     pub(super) const UNLINKED_MAPPED_BYTES: &str = "zaino.lsm.unlinked_mapped_bytes";
+    pub(super) const LIVE_ROWS: &str = "zaino.lsm.live_rows";
 }
 
 /// `(metric, bucket edges)` for the exporter (ms tier-0 merges → tens of minutes at the top)
@@ -95,6 +96,11 @@ pub(crate) fn describe_metrics() {
         "Deleted segment bytes still mapped by a reader (disk freed when it drops), by index and \
          set"
     );
+    describe_gauge!(
+        names::LIVE_ROWS,
+        "Keys the map holds: every committed segment's rows less twice its tombstones, by index \
+         and set"
+    );
 }
 
 /// One map's metric labels: its index and its set
@@ -127,15 +133,17 @@ impl Labels {
     }
 }
 
-/// Per tier `0..shape.len()`: `(segments listed, merge running)`
+/// Per tier `0..shape.len()`: `(segments listed, merge running)`; `live` = keys the map holds
+/// (every segment's [`SegmentMeta::live`] summed)
 ///
 /// - every tier re-sent, zeros included (emptied tier never keeps a stale count)
-pub(super) fn shape(labels: &Labels, shape: &[(usize, bool)]) {
+pub(super) fn shape(labels: &Labels, shape: &[(usize, bool)], live: i64) {
     for (tier, &(segments, merging)) in shape.iter().enumerate() {
         let labels = labels.with_tier(tier);
         metrics::gauge!(names::SEGMENTS, &labels).set(segments as f64);
         metrics::gauge!(names::MERGING, &labels).set(if merging { 1.0 } else { 0.0 });
     }
+    metrics::gauge!(names::LIVE_ROWS, &labels.of()).set(live as f64);
 }
 
 pub(super) fn stall_at(labels: &Labels, segments: usize) {
