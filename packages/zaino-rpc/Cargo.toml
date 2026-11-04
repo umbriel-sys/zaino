@@ -18,8 +18,13 @@ serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true
 thiserror.workspace = true
 tokio = { workspace = true, features = ["time"] }
-zaino-common = { workspace = true }
 metrics = { workspace = true }
+# The process-level provider `ensure_default_crypto_provider` installs
+# (ADR-0006: aws-lc-rs, post-quantum key exchange preferred).
+rustls = { version = "0.23", default-features = false, features = [
+    "aws_lc_rs",
+    "prefer-post-quantum",
+] }
 
 [dev-dependencies]
 tempfile = { workspace = true }

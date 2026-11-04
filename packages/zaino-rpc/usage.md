@@ -62,6 +62,20 @@ let info = probe_node(&addr, auth).await?;   // 6 attempts, 3s apart
 `std::process::exit(1)`, which made the startup path untestable and gave an
 embedding process no say in its own shutdown.
 
+## Address resolution and the crypto provider
+
+Two things every network endpoint in Zaino needs live here, so no crate has
+to pull in a configuration crate to get them:
+
+- `net::resolve_socket_addr` / `net::try_resolve_address`: `host:port` to a
+  `SocketAddr`. `try_resolve_address` answers an `AddressResolution`, which
+  separates a well-formed hostname DNS cannot resolve yet (Docker-style
+  deferred resolution, accepted) from a malformed address (always an error).
+- `ensure_default_crypto_provider`: installs rustls's `aws-lc-rs` provider as
+  the process default if none is installed. `RpcClient::new` calls it; a TLS
+  server must call it before building its acceptor. First-install-wins, so an
+  embedder that installed its own provider keeps it (ADR-0006).
+
 ## Metrics
 
 | Metric                                           | Meaning                                                   |

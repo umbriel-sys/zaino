@@ -6094,12 +6094,7 @@ dependencies = [
 name = "zaino-common"
 version = "0.5.3"
 dependencies = [
- "rustls",
  "serde",
- "time",
- "tracing",
- "tracing-subscriber",
- "tracing-tree",
  "zebra-chain",
 ]
 
@@ -6237,12 +6232,12 @@ version = "0.3.0"
 dependencies = [
  "metrics",
  "reqwest 0.13.1",
+ "rustls",
  "serde",
  "serde_json",
  "tempfile",
  "thiserror 2.0.20",
  "tokio",
- "zaino-common",
  "zaino-source",
 ]
 
@@ -6263,10 +6258,10 @@ dependencies = [
  "tower 0.4.13",
  "tracing",
  "zaino-address",
- "zaino-common",
  "zaino-consensus",
  "zaino-primitives",
  "zaino-proto",
+ "zaino-rpc",
  "zaino-source",
  "zaino-state",
  "zaino-status",
@@ -6424,6 +6419,7 @@ dependencies = [
  "tracing",
  "zaino-chain-head-service",
  "zaino-common",
+ "zaino-logging",
  "zaino-mempool",
  "zaino-rpc",
  "zaino-serve",

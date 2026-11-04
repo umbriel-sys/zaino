@@ -132,7 +132,6 @@ rayon = "1.12"
 imbl = "7.0"
 strum ={ version = "0.28", features = ["derive"] }
 thiserror = "2.0"
-once_cell = "1.20"
 chrono = "0.4"
 which = "8"
 whoami = "2.1"
@@ -146,11 +145,13 @@ bitflags = "2.9"
 
 # Test
 tempfile = "3.2"
-zainod = { path = "packages/zainod" }
 # Service status and health-probe vocabulary. A leaf with one dependency
 # (`tracing`), so any subsystem can report its status without inheriting a
 # dependency graph to do it.
 zaino-status = { path = "packages/zaino-status", version = "0.1.2" }
+# The tracing subscriber a binary installs, and the panic hook that logs
+# through it.
+zaino-logging = { path = "packages/zaino-logging", version = "0.1.0" }
 # What a supervised component is: a lifecycle phase and a health condition as
 # two independent axes, plus the ports to read and watch them. Replaces the
 # fused `zaino-status` model; consumers adopt it one at a time, so both are

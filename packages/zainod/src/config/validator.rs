@@ -1,7 +1,5 @@
-//! Validator type for Zaino configuration.
+//! Validator connection settings.
 
-// use serde::{Deserialize, Serialize};
-// use zebra_chain::parameters::testnet::ConfiguredActivationHeights;
 use std::path::PathBuf;
 
 /// Validator (full-node) connection settings.

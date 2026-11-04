@@ -90,7 +90,7 @@ impl RpcClient {
         // so a client built without this panics with "No provider set" the
         // moment it is constructed. First-install-wins, so an embedder that
         // installed its own provider keeps it (ADR-0006).
-        zaino_common::crypto::ensure_default_crypto_provider();
+        crate::crypto::ensure_default_crypto_provider();
 
         let client = reqwest::Client::builder()
             .connect_timeout(config.connect_timeout)

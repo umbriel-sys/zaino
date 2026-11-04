@@ -18,10 +18,12 @@ use tracing::info;
 use tracing::warn;
 
 use crate::error::IndexerError;
-use zaino_common::{
-    try_resolve_address, AddressResolution, Network, ServiceConfig, StorageConfig, ValidatorConfig,
-};
+use zaino_common::{Network, ServiceConfig, StorageConfig};
+use zaino_rpc::net::{try_resolve_address, AddressResolution};
 use zaino_serve::server::config::{GrpcServerConfig, JsonRpcServerConfig};
+
+mod validator;
+pub use validator::ValidatorConfig;
 use zaino_state::{
     CommonBackendConfig, DirectConnectionConfig, DonationAddress, NodeBackedIndexerServiceConfig,
     ValidatorConnectionType,
@@ -399,7 +401,7 @@ pub fn default_zebra_db_path() -> PathBuf {
 
 /// Resolves a hostname to a SocketAddr.
 fn fetch_socket_addr_from_hostname(address: &str) -> Result<SocketAddr, IndexerError> {
-    zaino_common::net::resolve_socket_addr(address)
+    zaino_rpc::net::resolve_socket_addr(address)
         .map_err(|e| IndexerError::ConfigError(format!("Invalid address '{address}': {e}")))
 }
 

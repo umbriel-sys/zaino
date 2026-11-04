@@ -101,7 +101,7 @@ pub async fn probe_node(
     password: Option<String>,
 ) -> Result<String, ProbeError> {
     let socket_addr =
-        zaino_common::net::resolve_socket_addr(address).map_err(|source| ProbeError::Address {
+        crate::net::resolve_socket_addr(address).map_err(|source| ProbeError::Address {
             address: address.to_string(),
             source,
         })?;

@@ -34,3 +34,35 @@ kind = "internal"
 description = """
 Builds its validator through `zaino_source_zebra::rpc_adapter` and the \
 `zaino_primitives::zebra` conversions."""
+
+[[changes]]
+crate = "zaino-rpc"
+kind = "feature"
+description = """
+Home of the network utilities every endpoint needs: `net` (address \
+resolution: `resolve_socket_addr`, `try_resolve_address`, \
+`AddressResolution`) and `ensure_default_crypto_provider` (the process-level \
+rustls provider), both moved from `zaino-common`. No longer depends on \
+`zaino-common`."""
+
+[[changes]]
+crate = "zaino-common"
+kind = "breaking"
+description = """
+Being dissolved (D-10). `net`, `crypto` and `logging` are gone: address \
+resolution and the crypto provider live in `zaino-rpc`, the tracing setup is \
+`zaino-logging`, and `ValidatorConfig` is `zainod::config::ValidatorConfig`. \
+What remains is the legacy stack's configuration types and `xdg`."""
+
+[[changes]]
+crate = "zainod"
+kind = "internal"
+description = """
+Initialises logging through `zaino-logging`, resolves addresses through \
+`zaino_rpc::net`, and owns `ValidatorConfig` (`zainod::config`)."""
+
+[[changes]]
+crate = "zaino-serve"
+kind = "internal"
+description = """
+Takes the rustls provider from `zaino-rpc` instead of `zaino-common`."""
