@@ -5994,7 +5994,6 @@ dependencies = [
  "zaino-chain-store",
  "zaino-chain-store-zainodb",
  "zaino-component",
- "zaino-convert-zebra",
  "zaino-primitives",
  "zaino-source",
  "zaino-source-zebra",
@@ -6079,7 +6078,6 @@ dependencies = [
  "zaino-common",
  "zaino-component",
  "zaino-consensus",
- "zaino-convert-zebra",
  "zaino-encoding",
  "zaino-primitives",
  "zaino-proto",
@@ -6121,18 +6119,6 @@ version = "0.2.0"
 dependencies = [
  "hex",
  "thiserror 2.0.20",
-]
-
-[[package]]
-name = "zaino-convert-zebra"
-version = "0.3.0"
-dependencies = [
- "orchard",
- "proptest",
- "thiserror 2.0.20",
- "zaino-consensus",
- "zaino-primitives",
- "zebra-chain",
 ]
 
 [[package]]
@@ -6222,9 +6208,13 @@ dependencies = [
 name = "zaino-primitives"
 version = "0.3.0"
 dependencies = [
+ "orchard",
+ "proptest",
  "thiserror 2.0.20",
+ "zaino-consensus",
  "zcash_address",
  "zcash_protocol",
+ "zebra-chain",
 ]
 
 [[package]]
@@ -6304,38 +6294,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "zaino-source-zebra"
-version = "0.2.2"
-dependencies = [
- "tokio",
- "zaino-primitives",
- "zaino-source",
- "zaino-source-zebra-readstate",
- "zaino-source-zebra-rpc",
-]
-
-[[package]]
-name = "zaino-source-zebra-readstate"
-version = "0.2.2"
-dependencies = [
- "chrono",
- "serde_json",
- "thiserror 2.0.20",
- "tokio",
- "tower 0.4.13",
- "tracing",
- "zaino-convert-zebra",
- "zaino-primitives",
- "zaino-source",
- "zcash_address",
- "zcash_protocol",
- "zebra-chain",
- "zebra-rpc",
- "zebra-state",
-]
-
-[[package]]
-name = "zaino-source-zebra-rpc"
+name = "zaino-source-zcash-rpc"
 version = "0.2.2"
 dependencies = [
  "hex",
@@ -6346,12 +6305,32 @@ dependencies = [
  "thiserror 2.0.20",
  "tokio",
  "tracing",
- "zaino-convert-zebra",
  "zaino-primitives",
  "zaino-rpc",
  "zaino-source",
  "zcash_primitives",
  "zebra-chain",
+]
+
+[[package]]
+name = "zaino-source-zebra"
+version = "0.2.2"
+dependencies = [
+ "chrono",
+ "serde_json",
+ "thiserror 2.0.20",
+ "tokio",
+ "tower 0.4.13",
+ "tracing",
+ "zaino-primitives",
+ "zaino-rpc",
+ "zaino-source",
+ "zaino-source-zcash-rpc",
+ "zcash_address",
+ "zcash_protocol",
+ "zebra-chain",
+ "zebra-rpc",
+ "zebra-state",
 ]
 
 [[package]]
@@ -6398,7 +6377,6 @@ dependencies = [
  "zaino-common",
  "zaino-component",
  "zaino-consensus",
- "zaino-convert-zebra",
  "zaino-encoding",
  "zaino-mempool",
  "zaino-mempool-service",
@@ -6406,9 +6384,8 @@ dependencies = [
  "zaino-proto",
  "zaino-rpc",
  "zaino-source",
+ "zaino-source-zcash-rpc",
  "zaino-source-zebra",
- "zaino-source-zebra-readstate",
- "zaino-source-zebra-rpc",
  "zaino-status",
  "zcash_address",
  "zcash_keys",

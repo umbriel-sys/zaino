@@ -12,10 +12,21 @@ keywords.workspace = true
 categories.workspace = true
 
 [dependencies]
+orchard = { workspace = true, optional = true }
 thiserror = { workspace = true }
 zcash_address.workspace = true
 zcash_protocol.workspace = true
+zebra-chain = { workspace = true, optional = true }
 
 [lints.rust]
 unsafe_code = "forbid"
 missing_docs = "warn"
+
+[features]
+# `zebra_chain` → domain conversions (the `zebra` module). Off by default; the
+# crates that hold zebra types turn it on.
+zebra = ["dep:zebra-chain", "dep:orchard"]
+
+[dev-dependencies]
+proptest.workspace = true
+zaino-consensus.workspace = true

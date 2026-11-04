@@ -1,0 +1,36 @@
+[[changes]]
+crate = "zaino-primitives"
+kind = "feature"
+description = """
+Feature `zebra` adds the `zebra` module, the `zebra_chain` → domain \
+conversions (`block_from_zebra`, `header_from_zebra`, \
+`transaction_from_zebra`, `ConvertError`) that were the `zaino-convert-zebra` \
+crate, with its consensus and difficulty agreement tests. Off by default; the \
+crate's footprint is unchanged without it. `zaino-convert-zebra` is removed."""
+
+[[changes]]
+crate = "zaino-source-zcash-rpc"
+kind = "breaking"
+description = """
+Renamed from `zaino-source-zebra-rpc`, and `ZebraRpcAdapter` to \
+`ZcashRpcAdapter`: the adapter speaks the zcash JSON-RPC interface and names \
+no validator. What the spec leaves to the node is read through a `Quirks` \
+table (`ZcashRpcAdapter::with_quirks`); `new` reads every reply as the spec \
+says, so a node's result cap is a failure unless its table reads it."""
+
+[[changes]]
+crate = "zaino-source-zebra"
+kind = "breaking"
+description = """
+Absorbs `zaino-source-zebra-readstate`: `ZebraReadStateAdapter` and the \
+`tracing` and `test_dependencies` features are this crate's. `rpc_adapter` \
+builds the zcash RPC adapter with zebrad's quirk table (its `-8 more than \
+{cap} … match` result cap), the one place that table lives. `ZebraValidator` \
+takes a `ZcashRpcAdapter`."""
+
+[[changes]]
+crate = "zaino-state"
+kind = "internal"
+description = """
+Builds its validator through `zaino_source_zebra::rpc_adapter` and the \
+`zaino_primitives::zebra` conversions."""

@@ -1462,7 +1462,7 @@ impl<
                                 ))
                             })
                             .and_then(|transaction| {
-                                zaino_convert_zebra::transaction_from_zebra(&transaction)
+                                zaino_primitives::zebra::transaction_from_zebra(&transaction)
                                     .map_err(|e| tonic::Status::unknown(e.to_string()))
                             })
                             .map(|transaction| {

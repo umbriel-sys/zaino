@@ -42,7 +42,7 @@ Serialization, by contrast, lives at the boundary that owns the format:
 
 | direction | who owns the format |
 |---|---|
-| validator reply → domain | `zaino-source-zebra-rpc/src/parse.rs` |
+| validator reply → domain | `zaino-source-zcash-rpc/src/parse.rs` |
 | domain → served JSON | `zaino-serve/src/rpc/jsonrpc/wire/` |
 | domain → disk | `zaino-state`'s `Persistent*` types |
 | domain → gRPC | `zaino-proto`, generated from `.proto` |
@@ -267,7 +267,7 @@ anchor-relative work, which is a third quantity.
 The nBits encoding from the block header is its own validated type,
 `CompactDifficulty`, and the whole bits → target → work conversion is native
 to this crate — the domain owns its arithmetic, and consensus implementations
-serve as *differential-test oracles* (`zaino-convert-zebra` sweeps the
+serve as *differential-test oracles* (the `zebra` module's tests sweep the
 pipeline against zebra across the encoding space) rather than as dependencies.
 
 Construction is only through checked doors — `try_from_bits(u32)` for a value
@@ -337,6 +337,22 @@ let displayed = { let mut b = <[u8; 32]>::from(hash); b.reverse(); hex::encode(b
 Tree roots and nonces are **not** reversed for display. If you are unsure which
 a field is, check the wire module that serves it — `wire/treestate.rs` and
 `wire/subtrees.rs` each state their choice and pin it with a test.
+
+## Zebra conversions: feature `zebra`
+
+Off by default, so the crate stays dependency-free for everyone else. With it,
+`zaino_primitives::zebra` holds the `zebra_chain` → domain conversions:
+`block_from_zebra`, `header_from_zebra`, `transaction_from_zebra`, each a
+named function returning `Result<_, ConvertError>` and never a `From`, because
+the zebra → domain step is where a foreign value is validated (a height past
+the maximum, an amount out of range, a block with no coinbase). Turn the
+feature on only in a crate that holds zebra types itself: the source adapters
+and the test code that builds blocks from zebra fixtures.
+
+The module also holds the differential tests that keep this crate independent
+of any node implementation: `consensus_agreement` checks `zaino-consensus`'s
+constants against zebra's, and `difficulty_agreement` sweeps the
+`CompactDifficulty` pipeline against zebra's across the encoding space.
 
 ## Related
 

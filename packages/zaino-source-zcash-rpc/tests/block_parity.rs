@@ -13,7 +13,7 @@ use tokio::net::TcpListener;
 use zaino_primitives::types::Height;
 use zaino_rpc::{RpcClient, RpcClientConfig};
 use zaino_source::OneShotGetBlock;
-use zaino_source_zebra_rpc::ZebraRpcAdapter;
+use zaino_source_zcash_rpc::ZcashRpcAdapter;
 
 struct Expected {
     height: u32,
@@ -198,7 +198,7 @@ async fn block_parity_with_explorer_offline() {
         ..Default::default()
     })
     .expect("RPC client creation");
-    let adapter = ZebraRpcAdapter::new(rpc);
+    let adapter = ZcashRpcAdapter::new(rpc);
 
     for expected in FIXTURES {
         let height = Height::try_from(expected.height).expect("fixture height");

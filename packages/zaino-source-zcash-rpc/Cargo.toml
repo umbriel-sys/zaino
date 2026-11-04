@@ -1,5 +1,5 @@
 [package]
-name = "zaino-source-zebra-rpc"
+name = "zaino-source-zcash-rpc"
 version = "0.2.2"
 edition.workspace = true
 authors.workspace = true
@@ -12,10 +12,9 @@ categories.workspace = true
 description = "Zebra JSON-RPC adapter implementing zaino-source query traits."
 
 [dependencies]
-zaino-primitives = { workspace = true }
+zaino-primitives = { workspace = true, features = ["zebra"] }
 zaino-rpc = { workspace = true }
 zaino-source = { workspace = true }
-zaino-convert-zebra.workspace = true
 hex.workspace = true
 zebra-chain = { workspace = true }
 serde = { workspace = true, features = ["derive"] }

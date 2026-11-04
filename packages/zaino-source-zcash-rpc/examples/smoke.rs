@@ -6,7 +6,7 @@
 //! Requires a Zebra RPC at http://127.0.0.1:8232 (e.g. via port-forward).
 
 use zaino_rpc::{RpcClient, RpcClientConfig};
-use zaino_source_zebra_rpc::ZebraRpcAdapter;
+use zaino_source_zcash_rpc::ZcashRpcAdapter;
 
 use zaino_source::{OneShotGetBlock, OneShotGetChainTip};
 
@@ -19,7 +19,7 @@ async fn main() {
     })
     .expect("client creation");
 
-    let adapter = ZebraRpcAdapter::new(rpc);
+    let adapter = ZcashRpcAdapter::new(rpc);
 
     // Fetch chain tip.
     let (tip_hash, tip_height) = adapter.get_chain_tip().await.expect("get_chain_tip failed");

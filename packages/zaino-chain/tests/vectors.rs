@@ -33,7 +33,7 @@ fn vector_chain() -> Option<Chain> {
     let converted: Vec<_> = blocks
         .iter()
         .map(|vector| {
-            zaino_convert_zebra::block_from_zebra(
+            zaino_primitives::zebra::block_from_zebra(
                 &vector.zebra_block,
                 ChainMetadata {
                     sapling_tree_size: TreeSize::try_from(vector.sapling_tree_size)

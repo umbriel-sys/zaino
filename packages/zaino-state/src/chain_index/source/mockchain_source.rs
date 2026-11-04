@@ -559,7 +559,7 @@ impl MockchainSource {
             ironwood_tree_size: domain::TreeSize::ZERO,
         };
 
-        zaino_convert_zebra::block_from_zebra(&self.blocks[index], chain_metadata)
+        zaino_primitives::zebra::block_from_zebra(&self.blocks[index], chain_metadata)
             .map_err(|error| format!("mock block did not convert: {error}"))
     }
 }

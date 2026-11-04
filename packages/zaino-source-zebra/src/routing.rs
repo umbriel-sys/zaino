@@ -9,10 +9,10 @@ use zaino_primitives::types::{
     Treestate, Utxo,
 };
 use zaino_source::*;
-use zaino_source_zebra_readstate::ZebraReadStateAdapter;
-use zaino_source_zebra_rpc::ZebraRpcAdapter;
+use zaino_source_zcash_rpc::ZcashRpcAdapter;
 
 use crate::fallback::retry_on_slow_path;
+use crate::read_state::ZebraReadStateAdapter;
 
 /// Normalise a sub-adapter's own non-domain error to the seam type, so the
 /// composite presents one `QueryError<E>` regardless of which transport answered.
@@ -34,7 +34,7 @@ fn to_seam<
 pub struct ZebraValidator {
     /// Always present: the mempool and the passthrough RPCs are reachable no
     /// other way.
-    rpc: ZebraRpcAdapter,
+    rpc: ZcashRpcAdapter,
     /// The accelerator, when this deployment has direct database access.
     readstate: Option<ZebraReadStateAdapter>,
     /// Synthesised tip subscription, present once `with_tip_polling` is called.
@@ -43,7 +43,7 @@ pub struct ZebraValidator {
 
 impl ZebraValidator {
     /// A validator reached over JSON-RPC alone.
-    pub fn rpc_only(rpc: ZebraRpcAdapter) -> Self {
+    pub fn rpc_only(rpc: ZcashRpcAdapter) -> Self {
         Self {
             rpc,
             readstate: None,
@@ -55,7 +55,7 @@ impl ZebraValidator {
     ///
     /// The JSON-RPC adapter is still required: it serves the mempool and the
     /// passthrough RPCs, which the state database cannot answer at all.
-    pub fn with_read_state(rpc: ZebraRpcAdapter, readstate: ZebraReadStateAdapter) -> Self {
+    pub fn with_read_state(rpc: ZcashRpcAdapter, readstate: ZebraReadStateAdapter) -> Self {
         Self {
             rpc,
             readstate: Some(readstate),

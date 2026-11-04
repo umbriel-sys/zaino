@@ -62,16 +62,8 @@ name = "zaino-rpc"
 path = "packages/zaino-rpc"
 
 [[target]]
-name = "zaino-convert-zebra"
-path = "packages/zaino-convert-zebra"
-
-[[target]]
-name = "zaino-source-zebra-rpc"
-path = "packages/zaino-source-zebra-rpc"
-
-[[target]]
-name = "zaino-source-zebra-readstate"
-path = "packages/zaino-source-zebra-readstate"
+name = "zaino-source-zcash-rpc"
+path = "packages/zaino-source-zcash-rpc"
 
 [[target]]
 name = "zaino-source-zebra"

@@ -6,7 +6,7 @@
 //! transport failures against the adapter so a consumer never has to.
 //!
 //! ```ignore
-//! let adapter = ZebraRpcAdapter::new(rpc);
+//! let adapter = ZcashRpcAdapter::new(rpc);
 //! let source = ValidatorClient::new(adapter, RetryPolicy::default());
 //! let block = source.get_block(height).await?; // → SourceError, retries handled
 //! ```

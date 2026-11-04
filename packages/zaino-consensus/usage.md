@@ -21,13 +21,13 @@ So each value is stated here with its provenance in the protocol specification.
 ## What makes that safe: the agreement tests
 
 Independence is only safe if the two readings are checked against each other
-somewhere. That somewhere is `zaino-convert-zebra`, which already owns our
-relationship to zebra's types, and takes `zaino-consensus` as a
-**dev-dependency** so the check costs nothing at build time. See its
-`consensus_agreement` module: it asserts the constants match. (The difficulty
-pipeline — nBits validation and work expansion — lives in `zaino-primitives`
-as `CompactDifficulty`, with its own agreement sweep in the sibling
-`difficulty_agreement` module.)
+somewhere. That somewhere is `zaino-primitives`' `zebra` module (feature
+`zebra`), which owns our relationship to zebra's types, and takes
+`zaino-consensus` as a **dev-dependency** so the check costs nothing at build
+time. See its `consensus_agreement` module: it asserts the constants match.
+(The difficulty pipeline — nBits validation and work expansion — is
+`CompactDifficulty` in the same crate, with its own agreement sweep in the
+sibling `difficulty_agreement` module.)
 
 A failure there does not say which side is wrong. It says the protocol moved or
 one of us misread it, and that the answer needs looking up in the specification
@@ -65,6 +65,4 @@ extracted from.
 
 ## Related
 
-- `zaino-status` — the other leaf extracted from `zaino-common` for the same
-  reason.
-- `packages/zaino-convert-zebra/src/lib.rs` — the `consensus_agreement` tests.
+- `packages/zaino-primitives/src/zebra.rs` — the `consensus_agreement` tests.

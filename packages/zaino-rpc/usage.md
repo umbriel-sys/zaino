@@ -13,11 +13,11 @@ use zaino_rpc::{RpcClient, RpcClientConfig};
 
 let client = RpcClient::new(config)?;
 let value = client.call("getblockchaininfo", vec![]).await?;
-// -> serde_json::Value; interpreting it is zaino-source-zebra-rpc's problem
+// -> serde_json::Value; interpreting it is zaino-source-zcash-rpc's problem
 ```
 
 This is the boundary that lets one client serve both the production adapter
-(`zaino-source-zebra-rpc`, which parses into domain types) and the live tests'
+(`zaino-source-zcash-rpc`, which parses into domain types) and the live tests'
 `ValidatorOracle` (which compares raw JSON against Zaino's answers). An oracle
 that shared the parser under test would not be an oracle.
 
@@ -76,5 +76,5 @@ embedding process no say in its own shutdown.
 
 ## Related
 
-- `zaino-source-zebra-rpc` — parses what this returns.
+- `zaino-source-zcash-rpc` — parses what this returns.
 - ADR-0008 — where this sits in the crate graph.

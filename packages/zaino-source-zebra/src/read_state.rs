@@ -281,7 +281,7 @@ impl zaino_source::OneShotGetBlock for ZebraReadStateAdapter {
                 // data, so they are zero here and filled in by whatever tracks
                 // them. Zero is a placeholder, not a measurement.
                 let chain_metadata = ChainMetadata::ZERO;
-                zaino_convert_zebra::block_from_zebra(&arc_block, chain_metadata)
+                zaino_primitives::zebra::block_from_zebra(&arc_block, chain_metadata)
                     .map_err(|e| ReadStateError::invalid_data(e).into())
             }
             ReadResponse::Block(None) => {
@@ -326,7 +326,7 @@ impl zaino_source::OneShotGetBlockByHash for ZebraReadStateAdapter {
             ReadResponse::Block(Some(arc_block)) => {
                 // Tree sizes are indexed state, not block data — see `GetBlock`.
                 let chain_metadata = ChainMetadata::ZERO;
-                zaino_convert_zebra::block_from_zebra(&arc_block, chain_metadata)
+                zaino_primitives::zebra::block_from_zebra(&arc_block, chain_metadata)
                     .map_err(|e| ReadStateError::invalid_data(e).into())
             }
             // Zebra's read-state does not serve side-chain blocks, so an absent

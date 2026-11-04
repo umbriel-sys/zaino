@@ -14,9 +14,7 @@ members = [
     "packages/zaino-source-macros",
     "packages/zaino-source",
     "packages/zaino-rpc",
-    "packages/zaino-convert-zebra",
-    "packages/zaino-source-zebra-rpc",
-    "packages/zaino-source-zebra-readstate",
+    "packages/zaino-source-zcash-rpc",
     "packages/zaino-source-zebra",
     "packages/zaino-mempool",
     "packages/zaino-mempool-service",
@@ -173,7 +171,9 @@ zaino-consensus = { path = "packages/zaino-consensus", version = "0.2.0" }
 zaino-encoding = { path = "packages/zaino-encoding", version = "0.1.1" }
 # Zero-dependency domain vocabulary. Every crate that needs chain-level types
 # (heights, hashes, blocks, transactions) depends on this rather than on
-# `zebra-chain` or on another zaino crate. See docs/adr/zaino/0010.
+# `zebra-chain` or on another zaino crate. See docs/adr/zaino/0010. The
+# `zebra` feature adds the `zebra_chain` → domain conversions; only the crates
+# that hold zebra types turn it on.
 zaino-primitives = { path = "packages/zaino-primitives", version = "0.3.0" }
 # Zcash address parsing and classification, for the two address-validation RPCs.
 # A leaf: it isolates the librustzcash address stack from everything else.
@@ -187,15 +187,11 @@ zaino-mempool = { path = "packages/zaino-mempool", version = "0.2.2" }
 zaino-mempool-service = { path = "packages/zaino-mempool-service", version = "0.2.2" }
 # JSON-RPC 2.0 transport shared by the RPC-backed source adapters.
 zaino-rpc = { path = "packages/zaino-rpc", version = "0.3.0" }
-# The single place `zebra_chain` types are translated into domain types.
-zaino-convert-zebra = { path = "packages/zaino-convert-zebra", version = "0.3.0" }
 # Source adapters. The RPC adapter answers every question over the Zcash
-# JSON-RPC interface; the ReadState adapter answers the subset zebra's
-# in-process state can serve, and simply does not implement the rest.
-zaino-source-zebra-rpc = { path = "packages/zaino-source-zebra-rpc", version = "0.2.2" }
-zaino-source-zebra-readstate = { path = "packages/zaino-source-zebra-readstate", version = "0.2.2" }
-# Composite over the two adapters: capability decides what each can answer,
-# this decides which to ask.
+# JSON-RPC interface and names no validator; the zebra crate holds the
+# ReadState adapter (the subset zebra's in-process state can serve), zebrad's
+# RPC quirk table, and the composite that routes between the two.
+zaino-source-zcash-rpc = { path = "packages/zaino-source-zcash-rpc", version = "0.2.2" }
 zaino-source-zebra = { path = "packages/zaino-source-zebra", version = "0.2.2" }
 zaino-common = { path = "packages/zaino-common", version = "0.5.3" }
 # ChainHead: the bounded non-finalised block graph, its canonical chain, and the

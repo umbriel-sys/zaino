@@ -136,7 +136,7 @@ Full documentation for `ZainoD` can be found [here](https://zingolabs.github.io/
     serde structs with the legacy full node's exact field names, one `from_domain` conversion
     per type, and golden serialization tests beside each.
   - This is deliberately *not* shared with the shape Zaino accepts from a
-    validator, which is `zaino-source-zebra-rpc`'s. The two interfaces
+    validator, which is `zaino-source-zcash-rpc`'s. The two interfaces
     genuinely differ, and one type serving both directions cannot express that.
     See [ADR-0009](./adr/zaino/0009-served-json-schema-lives-in-zaino-serve.md).
 
@@ -221,7 +221,7 @@ and each crate's `usage.md` for practical guidance.
     This is what lets the same client serve both the production adapter and the
     live tests' independent oracle.
 
-- Adapters (`zaino-source-zebra-rpc`, `zaino-source-zebra-readstate`):
+- Adapters (`zaino-source-zcash-rpc`, `zaino-source-zebra`'s read-state adapter):
   - The JSON-RPC adapter implements every port JSON-RPC can answer, and owns
     response parsing (Zaino's external-input validation) and error
     classification.

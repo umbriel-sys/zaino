@@ -1,37 +1,47 @@
-# `zaino-source-zebra-rpc` — usage
+# `zaino-source-zcash-rpc` — usage
 
 The JSON-RPC adapter: implements the `zaino-source` ports by calling a
-validator over JSON-RPC and parsing the replies into domain types.
+validator over the zcash JSON-RPC interface and parsing the replies into
+domain types. It names no validator: every reply is read as the spec defines
+it, and what the spec leaves to the node is read through a quirk table the
+caller supplies.
 
 ```rust
-use zaino_source_zebra_rpc::ZebraRpcAdapter;
+use zaino_source_zcash_rpc::{Quirks, ZcashRpcAdapter};
 
-let adapter = ZebraRpcAdapter::new(rpc_client);
+let adapter = ZcashRpcAdapter::new(rpc_client);              // spec only
+let adapter = ZcashRpcAdapter::with_quirks(rpc_client, quirks); // a known node
 let block = zaino_source::GetBlock::get_block(&adapter, height).await?;
 ```
 
 This adapter implements **every** port that JSON-RPC can answer, so it is the
-one transport that is always present. `zaino-source-zebra-readstate` is an
-optional accelerator, not an alternative.
+one transport that is always present. `zaino-source-zebra`'s read-state
+adapter is an optional accelerator, not an alternative.
 
 ## The two halves
 
 - `parse.rs` — `serde_json::Value` → domain types. This is Zaino's
   **external-input validation**: every field is checked, and a reply that does
-  not say what it should is an error rather than a default.
+  not say what it should is an error rather than a default. Fields the spec
+  marks optional and some nodes omit (`chainwork`, `finalRoot`) are tolerated;
+  nothing else is.
 - `adapter.rs` — the port impls, and the error classification below, which is
-  the part most likely to be got wrong.
+  the part most likely to be got wrong. Raw block bytes are deserialized with
+  `zebra-chain`, the spec steward's parser, and converted through
+  `zaino_primitives::zebra`.
 
 ## Error classification: the part that matters
 
 Every method must decide whether a validator's error reply is an *answer*
-(`QueryError::Domain`) or a *failure* (`QueryError::NonDomain`). Four helpers exist
-so the decision is made once per class rather than once per method:
+(`QueryError::Domain`) or a *failure* (`QueryError::NonDomain`). The codes are
+the zcash RPC interface's (`-5`, `-8`, `-22`, `-25..=-27`, `-32601`), which
+every validator serving it shares. Helpers exist so the decision is made once
+per class rather than once per method:
 
 | helper | for | maps |
 |---|---|---|
 | `absent_or_fetch` | height/hash-keyed reads | `-5`, `-8` → the port's "not found" |
-| `invalid_address_or_fetch` | address-keyed reads | `-5` → "invalid address"; on txids/utxos, zebrad 7's `-8 more than {cap} … match` → `TooManyResults` |
+| `invalid_address_or_fetch` | address-keyed reads | `-5` → "invalid address"; the node's result cap, if the quirk table reads one → `TooManyResults` |
 | `call_parsed_optional` | `gettxout` | not-found → `Ok(None)` |
 | `submission_rejection` | `sendrawtransaction` | `-22`, `-25..=-27` → the rejection reason |
 | `spent_info_rejection` | `getspentinfo` | `-5` → `NotSpent`, `-32601` → `Unsupported` |
@@ -52,13 +62,22 @@ malformed parameter cannot arise.
 
 The address-keyed methods are the exception, and take `-5` only. There, `-8`
 means the *request envelope* was wrong — a bad range, a missing field — which is
-a Zaino bug and must stay a failure. The one `-8` read as an answer is zebrad
-7's result cap, recognised by its message shape (`more than {cap} … match`).
+a Zaino bug and must stay a failure. The one `-8` that can be read as an answer
+is a node's result cap, and only through the quirk table.
 
 **If you add a method, state which class it is in and why.** This classification
 was missing entirely at one point, and the result was that "no block at that
 height" arrived as a transport fault and stalled the sync loop against a healthy
 validator.
+
+## The quirk table
+
+`Quirks` holds the readings the spec leaves to the node, one function per
+reading; `Quirks::default()` has none, so a reply the spec does not define is a
+failure, never a guess. The crate that knows which node answers fills the
+table: `zaino-source-zebra::rpc_adapter` builds this adapter with zebrad's
+(its `-8 more than {cap} … match` result cap). A new node-specific reading
+goes in the table, not in a `match` here, so this crate's name stays true.
 
 ## Byte order at this boundary
 
@@ -73,3 +92,5 @@ that does not exist.
 
 - ADR-0008 — the port model and the domain/fetch distinction.
 - `zaino-rpc` — the transport underneath; it does no parsing.
+- `zaino-source-zebra` — zebrad's quirk table, and the composite over both
+  transports.
