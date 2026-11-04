@@ -193,7 +193,7 @@ pub(crate) const ACCUMULATOR_INCREMENTAL_MAX_GAP: u32 = 1_000;
 /// independent of the shard count.
 ///
 /// The shard count is chosen at rebuild time so the per-shard spent set fits the configured
-/// [`zaino_common::DatabaseConfig::accumulator_rebuild_memory_size`] budget (see
+/// [`ZainoDbConfig::accumulator_rebuild_memory_size`](crate::config::ZainoDbConfig::accumulator_rebuild_memory_size) budget (see
 /// [`DbV1::rebuild_tx_out_set_accumulator`]): a single optimal pass on hosts with enough RAM for
 /// the full spent set, scaling up on memory-constrained deployments. Sharding partitions on the
 /// creating-txid's first byte (256 distinct values), so the count is capped here.
@@ -1227,7 +1227,7 @@ mod tests {
         use crate::config::ZainoDbConfig;
         use lmdb::{Transaction as _, WriteFlags};
         use zaino_chain_store::ChainStoreConfig;
-        use zaino_common::network::ActivationHeights;
+        use zaino_primitives::types::ActivationHeights;
 
         let temp_dir = tempfile::tempdir().expect("tempdir");
         let config = StoreSettings::new(

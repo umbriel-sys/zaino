@@ -6,7 +6,7 @@ use std::sync::{
     atomic::{AtomicU32, Ordering},
     Arc,
 };
-use zaino_common::network::ActivationHeights;
+use zaino_primitives::types::ActivationHeights;
 use zebra_chain::{block::Block, orchard::tree as orchard, sapling::tree as sapling};
 use zebra_chain::{
     block::Height,

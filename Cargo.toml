@@ -18,7 +18,6 @@ members = [
     "packages/zaino-source-zebra",
     "packages/zaino-mempool",
     "packages/zaino-mempool-service",
-    "packages/zaino-common",
     "packages/zaino-chain-head",
     "packages/zaino-chain-head-service",
     "packages/zaino-chain-store",
@@ -194,7 +193,6 @@ zaino-rpc = { path = "packages/zaino-rpc", version = "0.3.0" }
 # RPC quirk table, and the composite that routes between the two.
 zaino-source-zcash-rpc = { path = "packages/zaino-source-zcash-rpc", version = "0.2.2" }
 zaino-source-zebra = { path = "packages/zaino-source-zebra", version = "0.2.2" }
-zaino-common = { path = "packages/zaino-common", version = "0.5.3" }
 # ChainHead: the bounded non-finalised block graph, its canonical chain, and the
 # competing branches retained alongside it. This crate is the domain half —
 # types and ports only, no runtime — so a consumer can name what ChainHead

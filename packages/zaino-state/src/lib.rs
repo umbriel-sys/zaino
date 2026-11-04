@@ -48,6 +48,7 @@ pub use indexer::node_backed_indexer::{
 };
 
 pub mod chain_index;
+pub mod legacy;
 
 pub use zaino_chain_store_zainodb::store::FinalisedStateMode;
 

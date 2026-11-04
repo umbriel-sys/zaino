@@ -6,6 +6,7 @@ use std::{
 };
 use zaino_chain::ChainViewSnapshot as _;
 
+use crate::legacy::config::{DatabaseConfig, StorageConfig};
 use futures::stream::FuturesUnordered;
 use proptest::{
     prelude::{Arbitrary as _, BoxedStrategy, Just},
@@ -13,7 +14,7 @@ use proptest::{
 };
 use rand::seq::IndexedRandom;
 use tokio_stream::StreamExt as _;
-use zaino_common::{network::ActivationHeights, DatabaseConfig, StorageConfig};
+use zaino_primitives::types::ActivationHeights;
 use zebra_chain::{
     block::arbitrary::{self, LedgerStateOverride},
     fmt::SummaryDebug,

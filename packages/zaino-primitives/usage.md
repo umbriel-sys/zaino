@@ -338,6 +338,16 @@ Tree roots and nonces are **not** reversed for display. If you are unsure which
 a field is, check the wire module that serves it — `wire/treestate.rs` and
 `wire/subtrees.rs` each state their choice and pin it with a test.
 
+## The network kind and a regtest schedule
+
+`Network` is the kind alone (`Mainnet`, `PubTestnet`, `Regtest`): activation
+heights are the validator's facts, adopted at spawn, so a configured value
+cannot carry them. `ActivationHeights` is the schedule a regtest is launched
+with, or that a fixture chain is its own. Both derive `Serialize` /
+`Deserialize` under the `serde` feature (off by default), and under `zebra`
+gain the named conversions `Network::from_zebra`, `ActivationHeights::to_zebra`
+and `to_regtest_network`.
+
 ## Zebra conversions: feature `zebra`
 
 Off by default, so the crate stays dependency-free for everyone else. With it,

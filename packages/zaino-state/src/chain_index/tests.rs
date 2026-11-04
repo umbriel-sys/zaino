@@ -20,11 +20,12 @@ pub(crate) fn init_tracing() {
         .unwrap();
 }
 
+use crate::legacy::config::{DatabaseConfig, StorageConfig};
 use std::path::{Path, PathBuf};
 use tempfile::TempDir;
 use tokio::sync::OnceCell;
 use tokio::time::Duration;
-use zaino_common::{network::ActivationHeights, DatabaseConfig, StorageConfig};
+use zaino_primitives::types::ActivationHeights;
 
 use crate::chain_index::chain_store::WithChainStoreSource as _;
 use crate::{

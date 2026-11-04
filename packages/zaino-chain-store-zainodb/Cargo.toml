@@ -37,10 +37,8 @@ zaino-primitives = { workspace = true }
 # has to be matched on to classify a failure as retryable.
 zaino-source = { workspace = true }
 
-# Deployment settings: the LMDB sizing knobs and the activation schedule the
-# store builds against. Retired with `zaino-common` itself (see the demolition
-# plan in the modularisation docs).
-zaino-common = { workspace = true }
+# The LMDB budgets (`DatabaseSize` and friends) are configuration values.
+serde = { workspace = true, features = ["derive"] }
 
 # The versioned encoding every persisted shape here is written in.
 zaino-encoding = { workspace = true }
@@ -99,7 +97,6 @@ zaino-consensus = { workspace = true }
 zaino-source-zebra = { workspace = true }
 primitive-types.workspace = true
 proptest.workspace = true
-serde = { workspace = true, features = ["derive"] }
 serde_arrays = "0.2"
 tempfile.workspace = true
 zaino-primitives = { workspace = true, features = ["zebra"] }

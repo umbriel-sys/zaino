@@ -5,8 +5,13 @@ description = """
 Feature `zebra` adds the `zebra` module, the `zebra_chain` → domain \
 conversions (`block_from_zebra`, `header_from_zebra`, \
 `transaction_from_zebra`, `ConvertError`) that were the `zaino-convert-zebra` \
-crate, with its consensus and difficulty agreement tests. Off by default; the \
-crate's footprint is unchanged without it. `zaino-convert-zebra` is removed."""
+crate, with its consensus and difficulty agreement tests. `Network` (the \
+network kind) and `ActivationHeights` (a regtest schedule) move here from \
+`zaino-common`, serialisable under the new `serde` feature and, under \
+`zebra`, convertible through `Network::from_zebra`, \
+`ActivationHeights::to_zebra` and `to_regtest_network`. Both features are \
+off by default; the crate's footprint is unchanged without them. \
+`zaino-convert-zebra` and `zaino-common` are removed."""
 
 [[changes]]
 crate = "zaino-source-zcash-rpc"
@@ -29,13 +34,6 @@ builds the zcash RPC adapter with zebrad's quirk table (its `-8 more than \
 takes a `ZcashRpcAdapter`."""
 
 [[changes]]
-crate = "zaino-state"
-kind = "internal"
-description = """
-Builds its validator through `zaino_source_zebra::rpc_adapter` and the \
-`zaino_primitives::zebra` conversions."""
-
-[[changes]]
 crate = "zaino-rpc"
 kind = "feature"
 description = """
@@ -46,20 +44,33 @@ rustls provider), both moved from `zaino-common`. No longer depends on \
 `zaino-common`."""
 
 [[changes]]
-crate = "zaino-common"
+crate = "zaino-state"
 kind = "breaking"
 description = """
-Being dissolved (D-10). `net`, `crypto` and `logging` are gone: address \
-resolution and the crypto provider live in `zaino-rpc`, the tracing setup is \
-`zaino-logging`, and `ValidatorConfig` is `zainod::config::ValidatorConfig`. \
-What remains is the legacy stack's configuration types and `xdg`."""
+`zaino_state::legacy` holds what the legacy stack keeps for its users: \
+`legacy::config` (`ServiceConfig`, `StorageConfig`, `CacheConfig`, \
+`DatabaseConfig`, re-exporting the store's budget types) and `legacy::xdg`, \
+both from the removed `zaino-common`. The network kind is \
+`zaino_primitives::types::Network`. Builds its validator through \
+`zaino_source_zebra::rpc_adapter` and the `zaino_primitives::zebra` \
+conversions."""
+
+[[changes]]
+crate = "zaino-chain-store-zainodb"
+kind = "breaking"
+description = """
+Owns its LMDB budgets: `DatabaseSize`, `SyncWriteBatchSize`, \
+`AccumulatorRebuildMemorySize` and `DEFAULT_SYNC_CHECKPOINT_INTERVAL_SECS` \
+move here from `zaino-common`. `ZainoDbConfig::from_storage` is gone: build \
+with `new` and the setters. No longer depends on `zaino-common`."""
 
 [[changes]]
 crate = "zainod"
 kind = "internal"
 description = """
 Initialises logging through `zaino-logging`, resolves addresses through \
-`zaino_rpc::net`, and owns `ValidatorConfig` (`zainod::config`)."""
+`zaino_rpc::net`, takes its configuration types from `zaino-primitives` and \
+`zaino_state::legacy`, and owns `ValidatorConfig` (`zainod::config`)."""
 
 [[changes]]
 crate = "zaino-serve"

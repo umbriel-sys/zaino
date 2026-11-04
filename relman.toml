@@ -42,10 +42,6 @@ name = "zaino-proto"
 path = "packages/zaino-proto"
 
 [[target]]
-name = "zaino-common"
-path = "packages/zaino-common"
-
-[[target]]
 name = "zaino-primitives"
 path = "packages/zaino-primitives"
 

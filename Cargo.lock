@@ -6075,7 +6075,6 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "zaino-chain-store",
- "zaino-common",
  "zaino-component",
  "zaino-consensus",
  "zaino-encoding",
@@ -6088,14 +6087,6 @@ dependencies = [
  "zcash_protocol",
  "zebra-chain",
  "zebra-rpc",
-]
-
-[[package]]
-name = "zaino-common"
-version = "0.5.3"
-dependencies = [
- "serde",
- "zebra-chain",
 ]
 
 [[package]]
@@ -6205,6 +6196,7 @@ version = "0.3.0"
 dependencies = [
  "orchard",
  "proptest",
+ "serde",
  "thiserror 2.0.20",
  "zaino-consensus",
  "zcash_address",
@@ -6369,7 +6361,6 @@ dependencies = [
  "zaino-chain-head-service",
  "zaino-chain-store",
  "zaino-chain-store-zainodb",
- "zaino-common",
  "zaino-component",
  "zaino-consensus",
  "zaino-encoding",
@@ -6418,9 +6409,9 @@ dependencies = [
  "toml",
  "tracing",
  "zaino-chain-head-service",
- "zaino-common",
  "zaino-logging",
  "zaino-mempool",
+ "zaino-primitives",
  "zaino-rpc",
  "zaino-serve",
  "zaino-state",

@@ -21,6 +21,7 @@ mod height;
 mod index_id;
 mod mempool_info;
 mod merkle_root;
+mod network;
 mod network_upgrade;
 mod note_commitment;
 mod nullifier;
@@ -63,6 +64,7 @@ pub use height::{Height, HeightOverflow};
 pub use index_id::IndexId;
 pub use mempool_info::MempoolInfo;
 pub use merkle_root::MerkleRoot;
+pub use network::{ActivationHeights, Network};
 pub use network_upgrade::{
     ConsensusBranchId, ConsensusBranchIds, NetworkUpgradeInfo, NetworkUpgradeStatus,
 };

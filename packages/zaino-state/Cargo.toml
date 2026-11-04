@@ -30,7 +30,6 @@ experimental_features = ["transparent_address_history_experimental"]
 transparent_address_history_experimental = []
 
 [dependencies]
-zaino-common = { workspace = true }
 zaino-proto = { workspace = true }
 
 # LibRustZcash
@@ -83,7 +82,7 @@ zaino-chain-store-zainodb = { workspace = true }
 reqwest.workspace = true
 zaino-source.workspace = true
 zaino-source-zebra.workspace = true
-zaino-primitives = { workspace = true, features = ["zebra"] }
+zaino-primitives = { workspace = true, features = ["zebra", "serde"] }
 zaino-rpc.workspace = true
 zaino-source-zcash-rpc.workspace = true
 zaino-address = { workspace = true }

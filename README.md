@@ -63,7 +63,6 @@ packages/                          Cargo workspace member crates, in dependency 
   zaino-source-zebra/                Zebra ReadStateService adapter, zebrad quirk table, ZebraValidator composite + routing
   zaino-mempool/                     Mempool domain types and ports (no node library)
   zaino-mempool-service/             The mempool runtime: poll loop, read handles, coherence
-  zaino-common/                      Shared utilities and configuration
   zaino-proto/                       Protocol buffer definitions
   zaino-chain-head/                  Non-finalised chain head: vocabulary and ports
   zaino-chain-head-service/          Non-finalised chain head: the runtime

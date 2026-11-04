@@ -41,7 +41,10 @@ pub mod config;
 /// Re-exported flat because a consumer wiring a store names it beside
 /// [`zaino_chain_store::ChainStoreConfig`], and the two reading at different
 /// depths would suggest one is the more important half. Neither is.
-pub use config::ZainoDbConfig;
+pub use config::{
+    AccumulatorRebuildMemorySize, DatabaseSize, SyncWriteBatchSize, ZainoDbConfig,
+    DEFAULT_SYNC_CHECKPOINT_INTERVAL_SECS,
+};
 pub mod adapter;
 pub mod conversion;
 pub mod entry;

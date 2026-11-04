@@ -3,8 +3,7 @@
 use hex::ToHex;
 use std::path::PathBuf;
 use tempfile::TempDir;
-use zaino_common::network::ActivationHeights;
-use zaino_common::{DatabaseConfig, StorageConfig};
+use zaino_primitives::types::ActivationHeights;
 use zaino_proto::proto::utils::{prune_compact_block, PoolTypeFilter};
 
 use crate::store::finalised_source::FinalisedSource;
@@ -39,28 +38,17 @@ pub(crate) async fn spawn_v1_zaino_db(
 /// The tempdir path is set before `tune` runs, so a caller only overrides the knob it cares about.
 async fn spawn_v1_zaino_db_with(
     source: std::sync::Arc<FakeValidator>,
-    tune: impl FnOnce(&mut DatabaseConfig),
+    tune: impl FnOnce(&mut ZainoDbConfig),
 ) -> Result<(TempDir, FinalisedState<FakeValidator>), StoreError> {
     let temp_dir: TempDir = tempfile::tempdir().unwrap();
     let db_path: PathBuf = temp_dir.path().to_path_buf();
 
-    let mut database = DatabaseConfig {
-        path: db_path.clone(),
-        ..Default::default()
-    };
-    tune(&mut database);
+    let mut db_config = ZainoDbConfig::new(ActivationHeights::default().to_regtest_network());
+    tune(&mut db_config);
 
-    let storage = StorageConfig {
-        database,
-        ..Default::default()
-    };
-    let zaino_db = FinalisedState::spawn(
-        ChainStoreConfig::at_path(&db_path),
-        ZainoDbConfig::from_storage(&storage, ActivationHeights::default().to_regtest_network()),
-        source,
-    )
-    .await
-    .unwrap();
+    let zaino_db = FinalisedState::spawn(ChainStoreConfig::at_path(&db_path), db_config, source)
+        .await
+        .unwrap();
 
     Ok((temp_dir, zaino_db))
 }
@@ -210,7 +198,7 @@ async fn sync_to_height_across_many_write_batches() {
     let source = fake_validator_from_vectors(&blocks);
 
     let (_db_dir, zaino_db) = spawn_v1_zaino_db_with(source.clone(), |database| {
-        database.sync_write_batch_size = zaino_common::SyncWriteBatchSize(0);
+        database.set_sync_write_batch_size(crate::config::SyncWriteBatchSize(0));
     })
     .await
     .unwrap();

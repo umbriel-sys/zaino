@@ -117,7 +117,7 @@ fn validate_address_format(address: &str) -> Result<(), String> {
 /// # Examples
 ///
 /// ```
-/// use zaino_common::net::{try_resolve_address, AddressResolution};
+/// use zaino_rpc::net::{try_resolve_address, AddressResolution};
 ///
 /// // IP:port format resolves immediately
 /// let result = try_resolve_address("127.0.0.1:8080");
@@ -175,7 +175,7 @@ pub fn try_resolve_address(address: &str) -> AddressResolution {
 /// # Examples
 ///
 /// ```
-/// use zaino_common::net::resolve_socket_addr;
+/// use zaino_rpc::net::resolve_socket_addr;
 ///
 /// // IP:port format
 /// let addr = resolve_socket_addr("127.0.0.1:8080").unwrap();
