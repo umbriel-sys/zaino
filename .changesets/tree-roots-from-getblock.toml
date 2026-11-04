@@ -1,0 +1,11 @@
+[[changes]]
+crate = "zaino-source-zcash-rpc"
+kind = "fix"
+description = """
+The commitment-tree root ports read Sapling and Orchard roots and sizes from \
+the verbose `getblock` reply instead of hashing every pool's frontier from \
+`z_gettreestate`; only Ironwood, which the block reply lacks, is still \
+hashed, and that hash now runs on the blocking pool so fetches in flight \
+hash in parallel. A root cost about 3 ms per pool per height on the async \
+thread, which left the chain head's window build and the store's sync \
+CPU-bound at startup. `tokio` (`rt`) becomes a regular dependency."""

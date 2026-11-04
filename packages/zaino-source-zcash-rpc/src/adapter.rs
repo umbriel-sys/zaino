@@ -797,6 +797,46 @@ impl zaino_source::OneShotGetTreestateByHash for ZcashRpcAdapter {
     }
 }
 
+impl ZcashRpcAdapter {
+    /// Tree roots for the block `params` name (a height or a hash). Sapling
+    /// and Orchard come from the verbose block, which carries their roots;
+    /// the rest from `z_gettreestate`, whose frontier is hashed to a root
+    /// only for the pools the block reply lacked.
+    async fn tree_roots<E>(
+        &self,
+        params: Vec<serde_json::Value>,
+        absent: impl Fn() -> E,
+    ) -> Result<(BlockHash, zaino_primitives::types::TreeRoots), QueryError<E>>
+    where
+        E: std::fmt::Debug + std::fmt::Display,
+    {
+        let mut block_params = params.clone();
+        block_params.push(serde_json::Value::Number(1.into()));
+        let block = self
+            .call_parsed_or_absent(
+                "getblock",
+                block_params,
+                parse::parse_block_tree_roots,
+                &absent,
+            )
+            .await?;
+        let hash = block.hash;
+        let treestate = self
+            .call_parsed_or_absent("z_gettreestate", params, |value| Ok(value.clone()), &absent)
+            .await?;
+        // Hashing a frontier to its root is milliseconds of CPU; off the async
+        // thread, so fetches in flight hash in parallel instead of in turn.
+        let roots =
+            tokio::task::spawn_blocking(move || parse::complete_tree_roots(block, &treestate))
+                .await
+                .map_err(|join| {
+                    QueryError::from(NonDomainError::from_cause(FailureMode::Parse, join))
+                })?
+                .map_err(from_parse)?;
+        Ok((hash, roots))
+    }
+}
+
 impl zaino_source::OneShotGetCommitmentTreeRoots for ZcashRpcAdapter {
     async fn get_commitment_tree_roots(
         &self,
@@ -805,13 +845,11 @@ impl zaino_source::OneShotGetCommitmentTreeRoots for ZcashRpcAdapter {
         zaino_primitives::types::TreeRoots,
         QueryError<zaino_source::GetCommitmentTreeRootsError>,
     > {
-        self.call_parsed_or_absent(
-            "z_gettreestate",
-            hash_param(block),
-            parse::parse_tree_roots,
-            || zaino_source::GetCommitmentTreeRootsError::BlockNotFound(block),
-        )
+        self.tree_roots(hash_param(block), || {
+            zaino_source::GetCommitmentTreeRootsError::BlockNotFound(block)
+        })
         .await
+        .map(|(_, roots)| roots)
     }
 }
 
@@ -823,10 +861,8 @@ impl zaino_source::OneShotGetCommitmentTreeRootsByHeight for ZcashRpcAdapter {
         (BlockHash, zaino_primitives::types::TreeRoots),
         QueryError<zaino_source::GetCommitmentTreeRootsByHeightError>,
     > {
-        self.call_parsed_or_absent(
-            "z_gettreestate",
+        self.tree_roots(
             vec![serde_json::Value::String(u32::from(height).to_string())],
-            parse::parse_tree_roots_with_hash,
             || zaino_source::GetCommitmentTreeRootsByHeightError::HeightNotFound(height),
         )
         .await

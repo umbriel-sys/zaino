@@ -808,46 +808,93 @@ pub(crate) fn parse_subtree_roots(
     })
 }
 
-/// Derive the per-pool roots and sizes from a `z_gettreestate` response.
-///
-/// # Why this deserialises a tree
-///
-/// `z_gettreestate` carries no size at all, and its `finalRoot` is a display-order
-/// string whose byte order is per-pool. Deserialising `finalState` yields both
-/// facts from one field, in one byte order, for every validator — including the
-/// older Zebras that sent `finalRoot: null`.
-///
-/// A pool with no `finalState` is treated as an empty tree rather than an
-/// absent one: the pool exists at this height, it simply has no commitments
-/// yet, and an empty tree has a well-defined root.
-fn parse_tree_roots_inner(value: &serde_json::Value) -> Result<TreeRoots, ParseError> {
+/// What a verbose `getblock` reply says about the trees: the block's hash and
+/// the Sapling and Orchard roots with their sizes. Ironwood's root is not in
+/// that reply.
+pub(crate) struct BlockTreeRoots {
+    pub(crate) hash: BlockHash,
+    pub(crate) sapling: Option<TreeRootInfo>,
+    pub(crate) orchard: Option<TreeRootInfo>,
+}
+
+/// Sapling and Orchard roots from a verbose `getblock` reply, with sizes from
+/// its `trees`. Zebra writes `finalsaplingroot` reversed and
+/// `finalorchardroot` natural; both come out natural here, the order the
+/// hashed frontier yields. A pool missing its root or size is `None`, left
+/// for `z_gettreestate`.
+pub(crate) fn parse_block_tree_roots(
+    value: &serde_json::Value,
+) -> Result<BlockTreeRoots, ParseError> {
+    let trees = opt_field(value, "trees");
+    let size = |pool: &'static str| -> Result<Option<TreeSize>, ParseError> {
+        trees
+            .and_then(|trees| opt_field(trees, pool))
+            .and_then(|tree| opt_field(tree, "size"))
+            .map(|size| Ok(TreeSize::try_from(as_u64(size)?)?))
+            .transpose()
+    };
+    let sapling = match (opt_field(value, "finalsaplingroot"), size("sapling")?) {
+        (Some(root), Some(size)) => {
+            let mut bytes = natural(root)?;
+            bytes.reverse();
+            Some(TreeRootInfo {
+                root: TreeRoot::new(bytes),
+                size,
+            })
+        }
+        _ => None,
+    };
+    let orchard = match (opt_field(value, "finalorchardroot"), size("orchard")?) {
+        (Some(root), Some(size)) => Some(TreeRootInfo {
+            root: as_tree_root(root)?,
+            size,
+        }),
+        _ => None,
+    };
+    Ok(BlockTreeRoots {
+        hash: parse_block_hash(field(value, "hash")?)?,
+        sapling,
+        orchard,
+    })
+}
+
+/// Completes `block` from the `z_gettreestate` reply for the same block:
+/// Ironwood always, Sapling and Orchard only where the block reply had none.
+/// Those are hashed from the serialised `finalState` frontier, which also
+/// gives the size; `finalRoot` is never read, since Zebra sends none. A pool
+/// present with no `finalState` is an empty tree, not an absent pool. Hashing
+/// a frontier to its root is the expensive step, so it runs only here.
+pub(crate) fn complete_tree_roots(
+    block: BlockTreeRoots,
+    value: &serde_json::Value,
+) -> Result<TreeRoots, ParseError> {
+    let hash = parse_block_hash(field(value, "hash")?)?;
+    if hash != block.hash {
+        return Err(ParseError::Deserialize(format!(
+            "z_gettreestate answered for block {hash}, not {}",
+            block.hash
+        )));
+    }
     Ok(TreeRoots {
-        sapling: pool_root::<sapling_crypto::Node>(opt_field(value, "sapling"), |r| r.to_bytes())?,
-        // Orchard and Ironwood share a node type and a root representation, so
-        // they share this reader — they differ only in which field they read.
-        orchard: pool_root::<zebra_chain::orchard::tree::Node>(opt_field(value, "orchard"), |r| {
-            r.to_repr()
-        })?,
+        sapling: match block.sapling {
+            Some(sapling) => Some(sapling),
+            None => {
+                pool_root::<sapling_crypto::Node>(opt_field(value, "sapling"), |r| r.to_bytes())?
+            }
+        },
+        orchard: match block.orchard {
+            Some(orchard) => Some(orchard),
+            None => {
+                pool_root::<zebra_chain::orchard::tree::Node>(opt_field(value, "orchard"), |r| {
+                    r.to_repr()
+                })?
+            }
+        },
         ironwood: pool_root::<zebra_chain::orchard::tree::Node>(
             opt_field(value, "ironwood"),
             |r| r.to_repr(),
         )?,
     })
-}
-
-/// Public entry point, kept under the original name used by the adapter.
-pub(crate) fn parse_tree_roots(value: &serde_json::Value) -> Result<TreeRoots, ParseError> {
-    parse_tree_roots_inner(value)
-}
-
-/// Parse a `z_gettreestate` response into tree roots plus the answering block's hash.
-pub(crate) fn parse_tree_roots_with_hash(
-    value: &serde_json::Value,
-) -> Result<(BlockHash, TreeRoots), ParseError> {
-    Ok((
-        parse_block_hash(field(value, "hash")?)?,
-        parse_tree_roots_inner(value)?,
-    ))
 }
 
 /// The serialised tree for one pool, if the response carries that pool at all.
@@ -1313,6 +1360,14 @@ mod tests {
         assert!(parse_transaction(&bogus).is_err());
     }
 
+    const TREESTATE_HASH: &str = "0000000000000000000000000000000000000000000000000000000000000001";
+
+    /// A block reply that carries nothing about trees: every pool falls back
+    /// to `z_gettreestate`.
+    fn bare_block() -> BlockTreeRoots {
+        parse_block_tree_roots(&json!({ "hash": TREESTATE_HASH })).expect("a hash is enough")
+    }
+
     /// `z_gettreestate` reports neither a root nor a size — zebra sends
     /// `finalRoot: null` and there is no `finalSize` field — so both are
     /// derived from the serialised tree in `finalState`. Reading the nominal
@@ -1323,11 +1378,12 @@ mod tests {
         // A pool present but with no commitments yet: an empty tree, which has
         // a well-defined root, not an absent pool.
         let empty_pools = json!({
+            "hash": TREESTATE_HASH,
             "sapling": { "commitments": { "finalState": "" } },
             "orchard": { "commitments": { "finalState": "" } },
         });
 
-        let roots = parse_tree_roots(&empty_pools).expect("empty trees are valid");
+        let roots = complete_tree_roots(bare_block(), &empty_pools).expect("empty trees are valid");
 
         let sapling = roots.sapling.expect("sapling pool present");
         assert_eq!(
@@ -1348,10 +1404,11 @@ mod tests {
     #[test]
     fn a_pool_without_final_state_is_still_an_empty_tree() {
         let root_only = json!({
+            "hash": TREESTATE_HASH,
             "sapling": { "commitments": { "finalRoot": "ab".repeat(32) } },
         });
 
-        let roots = parse_tree_roots(&root_only).expect("parses");
+        let roots = complete_tree_roots(bare_block(), &root_only).expect("parses");
         let sapling = roots.sapling.expect("pool present");
 
         assert_eq!(
@@ -1359,6 +1416,80 @@ mod tests {
             TreeSize::ZERO,
             "size comes from the tree, and there is no tree here"
         );
+    }
+
+    /// The block reply's roots are taken as written by Zebra: Sapling reversed
+    /// back to natural order, Orchard natural already, sizes from `trees`.
+    /// Those pools are then not hashed from the treestate, Ironwood is.
+    #[test]
+    fn block_reply_roots_replace_the_hashed_sapling_and_orchard_roots() {
+        let block = json!({
+            "hash": TREESTATE_HASH,
+            "finalsaplingroot": format!("{}{}", "00".repeat(31), "ab"),
+            "finalorchardroot": format!("{}{}", "cd", "00".repeat(31)),
+            "trees": { "sapling": { "size": 7 }, "orchard": { "size": 9 } },
+        });
+        let block = parse_block_tree_roots(&block).expect("parses");
+        let sapling = block.sapling.clone().expect("sapling from the block");
+        assert_eq!(
+            <[u8; 32]>::from(sapling.root)[0],
+            0xab,
+            "sapling is reversed back"
+        );
+        assert_eq!(u64::from(sapling.size), 7);
+        let orchard = block.orchard.clone().expect("orchard from the block");
+        assert_eq!(
+            <[u8; 32]>::from(orchard.root)[0],
+            0xcd,
+            "orchard is natural already"
+        );
+        assert_eq!(u64::from(orchard.size), 9);
+
+        // A treestate whose Sapling and Orchard trees are empty would hash to
+        // the empty roots; the block's roots win, and only Ironwood is hashed.
+        let treestate = json!({
+            "hash": TREESTATE_HASH,
+            "sapling": { "commitments": { "finalState": "" } },
+            "orchard": { "commitments": { "finalState": "" } },
+            "ironwood": { "commitments": { "finalState": "" } },
+        });
+        let roots = complete_tree_roots(block, &treestate).expect("completes");
+        assert_eq!(roots.sapling.expect("sapling").root, sapling.root);
+        assert_eq!(roots.orchard.expect("orchard").root, orchard.root);
+        assert_eq!(
+            roots
+                .ironwood
+                .expect("ironwood hashed from the treestate")
+                .size,
+            TreeSize::ZERO
+        );
+    }
+
+    /// A block reply missing a root or a size leaves that pool to the treestate.
+    #[test]
+    fn a_pool_the_block_reply_lacks_is_hashed_from_the_treestate() {
+        let block = json!({
+            "hash": TREESTATE_HASH,
+            "finalsaplingroot": "00".repeat(32),
+            "trees": { "orchard": { "size": 1 } },
+        });
+        let block = parse_block_tree_roots(&block).expect("parses");
+        assert!(
+            block.sapling.is_none(),
+            "a root without a size is not enough"
+        );
+        assert!(
+            block.orchard.is_none(),
+            "a size without a root is not enough"
+        );
+    }
+
+    /// The two replies must describe the same block; a reorg between them is
+    /// reported, not merged.
+    #[test]
+    fn a_treestate_for_another_block_is_refused() {
+        let other = json!({ "hash": "00".repeat(32) });
+        assert!(complete_tree_roots(bare_block(), &other).is_err());
     }
 
     /// Every pool the validator reports must reach the domain, keyed by its own
