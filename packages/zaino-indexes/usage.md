@@ -59,3 +59,22 @@ each index directory with that digest; the backend stores it in the manifest
 and refuses an open under another, so a layout change that forgot its format
 bump is caught at open rather than misread. A golden test per schema pins
 the digest in CI.
+
+## Indexes: a schema and a fold
+
+Every index implements `Index`: its `SCHEMA`, the `DEPENDENCIES` whose
+readers its fold takes, a `State` carried from block to block, `resume`
+(the state after what a directory already holds) and `fold`, which returns
+the block's `WriteOp`s and the state after them. A fold is pure in its
+state: the writer adopts the returned state only once the ops are committed,
+so a failed commit leaves the index at its last committed block. Continuity
+is checked in the fold (a block must extend the stored tip) and refused as
+`FoldError::Continuity` naming the index.
+
+Each index module also exposes a `Reader` over any `BackendReader` with the
+typed reads the chain-store ports need. Readers slice fields through the
+layouts and fetch single fields with `get_range`.
+
+| Index | Module | Holds |
+| --- | --- | --- |
+| I-01 | `headers` | height → header and cumulative chain work (`headers`); hash → height (`heights`) |

@@ -9,8 +9,13 @@
     )
 )]
 
+pub mod headers;
+mod index;
 mod layout;
 mod schema;
+#[cfg(test)]
+mod testing;
 
+pub use index::{Fold, FoldError, Index};
 pub use layout::{Field, FieldWidth, Layout, LayoutError};
 pub use schema::{NamespaceLayout, Schema};

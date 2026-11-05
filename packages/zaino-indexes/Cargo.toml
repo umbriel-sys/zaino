@@ -12,6 +12,12 @@ keywords = { workspace = true }
 categories = { workspace = true }
 
 [dependencies]
+# The domain vocabulary every record is decoded into.
+zaino-primitives = { workspace = true }
+
+# The fold input (`FrozenBlock`) and the reader-side types the ports name.
+zaino-chain-store = { workspace = true }
+
 # The storage port: namespace shapes the layouts derive, and the digest a
 # directory is stamped with.
 zaino-persistence = { version = "0.1.0", path = "../zaino-persistence" }
@@ -20,6 +26,10 @@ zaino-persistence = { version = "0.1.0", path = "../zaino-persistence" }
 blake2 = { workspace = true }
 
 thiserror.workspace = true
+
+[dev-dependencies]
+# The in-memory backend the index tests fold into.
+zaino-persistence = { path = "../zaino-persistence", features = ["testing"] }
 
 [lints.rust]
 unsafe_code = "forbid"
