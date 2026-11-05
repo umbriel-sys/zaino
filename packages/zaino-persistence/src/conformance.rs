@@ -591,6 +591,54 @@ fn walk(
 }
 
 /// Commit `ops` at `tip` through a fresh writer handle
+/// `get_range` on every held sequence record and map value: each in-bounds
+/// range is the slice of `get`'s answer, an absent key is `None`, a range past
+/// the end is `RangeOutOfBounds`, a wrong-width key `WidthMismatch`.
+fn assert_ranged_reads(reader: &impl BackendReader, model: &Model, label: &str) {
+    let mut held: Vec<(Namespace, RawKey)> = Vec::new();
+    held.extend((0..model.blocks.len()).map(|at| (BLOCKS, sequence_key(at as u64))));
+    held.extend((0..model.heights.len()).map(|at| (HEIGHTS, sequence_key(at as u64))));
+    held.extend(model.scanned.keys().map(|key| (SCANNED, key.clone())));
+    held.extend(model.probed.keys().map(|key| (PROBED, key.clone())));
+    assert!(!held.is_empty(), "{label}: rows to range over");
+    for (namespace, key) in held {
+        let whole = reader
+            .get(namespace, &key)
+            .expect("get")
+            .unwrap_or_else(|| panic!("{label}: {namespace} holds the key"));
+        let len = whole.len();
+        for (start, end) in [(0, len), (0, len / 2), (len / 2, len), (len, len)] {
+            let part = reader
+                .get_range(namespace, &key, start..end)
+                .expect("get_range");
+            assert_eq!(
+                part.as_deref(),
+                Some(&whole[start..end]),
+                "{label}: {namespace} bytes {start}..{end}"
+            );
+        }
+        let past = reader.get_range(namespace, &key, 0..len + 1);
+        assert!(
+            matches!(&past, Err(ReadError::RangeOutOfBounds { len: found, end, .. }) if *found == len && *end == len + 1),
+            "{label}: {namespace} a range past the value: {past:?}"
+        );
+        let inverted = reader.get_range(namespace, &key, len..0);
+        assert!(
+            matches!(inverted, Err(ReadError::RangeOutOfBounds { .. })) || len == 0,
+            "{label}: {namespace} an inverted range: {inverted:?}"
+        );
+    }
+    let absent = reader
+        .get_range(PROBED, &probed_key(u32::MAX), 0..1)
+        .expect("get_range");
+    assert_eq!(absent, None, "{label}: an absent key ranges to None");
+    let short = reader.get_range(PROBED, &[0; 15], 0..1);
+    assert!(
+        matches!(short, Err(ReadError::WidthMismatch { actual: 15, .. })),
+        "{label}: a 15-byte key refused: {short:?}"
+    );
+}
+
 fn commit<B: Backend>(backend: &B, tip: BlockRef, ops: Vec<WriteOp>) -> Result<(), CommitError> {
     backend.writer().expect("writer").commit(tip, ops)
 }
@@ -965,6 +1013,7 @@ pub fn contract<S: Subject>(subject: S) {
     let (tip, ops) = model.advance(2, &[1, 2], 2, &[]);
     commit(&backend, tip, ops).expect("commit");
     let first = model.clone();
+    assert_ranged_reads(&reader(), &first, "committed");
     let pinned = reader();
     let range = ScanRange {
         lower: Bound::Unbounded,
@@ -992,6 +1041,7 @@ pub fn contract<S: Subject>(subject: S) {
     backend.flush().expect("flush");
     model.assert_view(&reader(), "flushed");
     model.assert_odd_bounds(&reader(), "flushed");
+    assert_ranged_reads(&reader(), &model, "flushed");
     assert_eq!(
         reader().durable_tip().expect("durable tip"),
         reader().tip().expect("tip"),

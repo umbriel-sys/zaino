@@ -19,11 +19,11 @@ use std::{
 use arc_swap::ArcSwap;
 use bytes::Bytes;
 use zaino_persistence::{
-    check_key, check_keys, check_shape, check_specs, is_empty_range, raw_entry, sequence_position,
-    Backend, BackendReader, BackendWriter, CommitError, CommitState, FlushError, FootprintError,
-    KeyState, MaintenanceReader, Namespace, NamespaceFootprint, NamespaceKind, NamespaceSpec,
-    OpenError, RawKey, RawValue, ReadError, ScanDirection, ScanRange, Verification, VerifyError,
-    WriteOp,
+    check_key, check_keys, check_shape, check_specs, is_empty_range, ranged, raw_entry,
+    sequence_position, Backend, BackendReader, BackendWriter, CommitError, CommitState, FlushError,
+    FootprintError, KeyState, MaintenanceReader, Namespace, NamespaceFootprint, NamespaceKind,
+    NamespaceSpec, OpenError, RawKey, RawValue, ReadError, ScanDirection, ScanRange, SchemaDigest,
+    Verification, VerifyError, WriteOp,
 };
 use zaino_primitives::types::BlockRef;
 
@@ -49,6 +49,9 @@ pub struct LsmTreeConfig<'a> {
     pub chain: &'a str,
     /// Layout version, checked against the directory's
     pub format: u16,
+    /// The index layer's digest of every namespace's layout, checked against the directory's
+    /// (opaque here: a layout change that kept its `format` is refused, not misread)
+    pub schema: SchemaDigest,
     /// Namespaces held, checked against those the directory was committed with
     pub namespaces: &'a [NamespaceSpec],
     /// Per-namespace [`Tuning`] (unlisted = default; a sequence takes no `scope`)
@@ -175,7 +178,7 @@ impl LsmTreeBackend {
     ) -> Result<Self, StoreError> {
         let specs: Arc<[NamespaceSpec]> = config.namespaces.into();
         let tunings = tunings(&specs, config.tuning)?;
-        let identity = Identity::new(config.name, config.chain, config.format)?;
+        let identity = Identity::new(config.name, config.chain, config.format, config.schema)?;
         let engine = Engine::open(
             &fs,
             path,
@@ -253,17 +256,18 @@ fn tunings(
 }
 
 /// Every file `path`'s committed manifest names, scrubbed: offline, no lock, safe beside a live
-/// writer (`name`, `chain`, `format` and `namespaces` as it was opened with)
+/// writer (`name`, `chain`, `format`, `schema` and `namespaces` as it was opened with)
 pub fn verify_dir(
     fs: &dyn Fs,
     path: &Path,
     name: &str,
     chain: &str,
     format: u16,
+    schema: SchemaDigest,
     namespaces: &[NamespaceSpec],
 ) -> Result<Verification, VerifyError> {
     guarded(|| {
-        let identity = Identity::new(name, chain, format)?;
+        let identity = Identity::new(name, chain, format, schema)?;
         engine::verify(fs, path, &identity, namespaces)
     })
     .and_then(|verified| verified)
@@ -560,9 +564,27 @@ impl BackendReader for LsmTreeReader {
 
     fn get(&self, namespace: Namespace, key: &[u8]) -> Result<Option<RawValue>, ReadError> {
         check_key(&self.state.specs, namespace, key)?;
-        guarded(|| self.state.get(namespace, key))
+        guarded(|| self.state.with_value(namespace, key, <[u8]>::to_vec))
             .and_then(|value| value)
             .map_err(|error| error.into_read("get"))
+    }
+
+    fn get_range(
+        &self,
+        namespace: Namespace,
+        key: &[u8],
+        range: core::ops::Range<usize>,
+    ) -> Result<Option<RawValue>, ReadError> {
+        check_key(&self.state.specs, namespace, key)?;
+        // sliced on the mapped bytes: only the range is copied out
+        guarded(|| {
+            self.state.with_value(namespace, key, |value| {
+                ranged(namespace, value, &range).map(<[u8]>::to_vec)
+            })
+        })
+        .and_then(|value| value)
+        .map_err(|error| error.into_read("get_range"))?
+        .transpose()
     }
 
     /// A map's keys not in the buffer looked up in one batch (sorted, fences and records
@@ -618,7 +640,14 @@ impl MaintenanceReader for LsmTreeReader {
 }
 
 impl ReadState {
-    fn get(&self, namespace: Namespace, key: &[u8]) -> Result<Option<RawValue>, StoreError> {
+    /// `read` on the held value's bytes, in place: a sequence record from its pages or the
+    /// buffer, a map value from the buffer or the segment that holds it
+    fn with_value<R>(
+        &self,
+        namespace: Namespace,
+        key: &[u8],
+        read: impl FnOnce(&[u8]) -> R,
+    ) -> Result<Option<R>, StoreError> {
         let index = position(&self.specs, namespace)
             .ok_or(StoreError::Internal("a checked key of no namespace"))?;
         match self.view.held(index) {
@@ -627,11 +656,11 @@ impl ReadState {
                     "a checked sequence key of no position",
                 ))?;
                 match at.checked_sub(pages.len()) {
-                    None => Ok(pages.record(at)?.map(<[u8]>::to_vec)),
+                    None => Ok(pages.record(at)?.map(read)),
                     Some(above) => Ok(usize::try_from(above)
                         .ok()
                         .and_then(|above| self.buffer.records(index)?.get(above))
-                        .map(|record| record.to_vec())),
+                        .map(|record| read(record))),
                 }
             }
             Some(Durable::Map(snapshot)) => {
@@ -640,9 +669,9 @@ impl ReadState {
                     .entries(index)
                     .and_then(|entries| entries.get(key))
                 {
-                    Some(Entry::Value(value)) => Ok(Some(value.to_vec())),
+                    Some(Entry::Value(value)) => Ok(Some(read(value))),
                     Some(Entry::Removed | Entry::Cancelled(_)) => Ok(None),
-                    None => Ok(snapshot.lookup_with(key, |value, _| value.map(<[u8]>::to_vec))?),
+                    None => Ok(snapshot.lookup_with(key, |value, _| value.map(read))?),
                 }
             }
             None => Err(StoreError::Internal("a namespace without its view")),
@@ -657,7 +686,10 @@ impl ReadState {
         let index = position(&self.specs, namespace)
             .ok_or(StoreError::Internal("a checked key of no namespace"))?;
         let Some(Durable::Map(snapshot)) = self.view.held(index) else {
-            return keys.iter().map(|key| self.get(namespace, key)).collect();
+            return keys
+                .iter()
+                .map(|key| self.with_value(namespace, key, <[u8]>::to_vec))
+                .collect();
         };
         let mut values: Vec<Option<RawValue>> = vec![None; keys.len()];
         let mut asked: Vec<&[u8]> = Vec::new();

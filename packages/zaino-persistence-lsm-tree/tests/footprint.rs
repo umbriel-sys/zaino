@@ -75,6 +75,7 @@ fn footprint_reports_each_namespaces_committed_bytes_and_their_page_cache_share(
         name: "footprint",
         chain: "regtest",
         format: 1,
+        schema: zaino_persistence::SchemaDigest::new([0; 32]),
         namespaces: &specs,
         tuning: &tuning,
         lsm: LsmConfig::default(),

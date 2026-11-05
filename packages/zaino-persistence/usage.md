@@ -106,6 +106,22 @@ keys per block, such as every input's prevout. A key not of the namespace's key
 width (8 bytes for a sequence) fails with `ReadError::WidthMismatch` rather than
 reading as absent.
 
+`get_range` reads one byte range of a value: the same answer as slicing
+`get`'s value, but a backend that maps its files copies only the range out,
+so a field read never pays for the record around it. A range past the value's
+end is `ReadError::RangeOutOfBounds`, not a shorter answer, so a read against
+the wrong layout fails instead of decoding a neighbour. The default
+implementation slices `get`; a backend overrides it where it can avoid the
+copy. `ranged` is the shared check every backend slices through.
+
+## Schema digest
+
+[`SchemaDigest`] is 32 bytes the index layer computes over every namespace's
+name, kind, widths and record layout. A backend stores it beside the name,
+chain and format in the directory's identity and refuses to open a directory
+written under another, so a layout change that forgot its format bump is
+caught at open. The port never interprets it.
+
 ## Range scans
 
 `BackendReader::scan_range` walks the keys of a namespace within a

@@ -47,6 +47,7 @@ impl Subject for RealDir {
             name: "conformance",
             chain: "regtest",
             format: 1,
+            schema: zaino_persistence::SchemaDigest::new([0; 32]),
             namespaces: &SPECS,
             tuning: &tuning,
             lsm: LsmConfig {

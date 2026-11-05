@@ -2,8 +2,8 @@
 //!
 //! ```text
 //! file = slot 0 ‖ slot 1                     2 × SLOT bytes, zero-filled when created
-//! slot = magic b"ZAINOMS5" ‖ format u16 ‖ name_len u8 ‖ name ‖ chain_len u8 ‖ chain ‖ seq u64
-//!        ‖ body_len u32 ‖ body ‖ crc32 ‖ (unused to the slot's end)
+//! slot = magic b"ZAINOMS6" ‖ format u16 ‖ name_len u8 ‖ name ‖ chain_len u8 ‖ chain
+//!        ‖ schema [u8; 32] ‖ seq u64 ‖ body_len u32 ‖ body ‖ crc32 ‖ (unused to the slot's end)
 //! ```
 //!
 //! - little-endian throughout; CRC-32 (IEEE) over the slot's bytes before it
@@ -12,15 +12,17 @@
 //! - in place, not a renamed file (overwrite below EOF = no metadata change: `fdatasync` never
 //!   waits on the filesystem journal or every other file's writeback)
 
+use zaino_persistence::SchemaDigest;
 use zaino_primitives::types::{BlockHash, BlockRef, Height};
 
 use crate::fs::Uncached;
 
 /// Layout version of the directory (3: per-segment filter prefix in segment lists; 4: `TAILS`
 /// beside the manifest, saved before each commit; 5: chain tag in the slot header, tombstone
-/// count per listed segment)
-const MAGIC: [u8; 8] = *b"ZAINOMS5";
+/// count per listed segment; 6: schema digest in the slot header)
+const MAGIC: [u8; 8] = *b"ZAINOMS6";
 const CRC: usize = 4;
+const SCHEMA_LEN: usize = 32;
 
 /// Where the name starts: after magic ‖ format u16 ‖ name_len u8
 const NAME_AT: usize = MAGIC.len() + 2 + 1;
@@ -39,16 +41,24 @@ const MAX_NAME: usize = u8::MAX as usize;
 /// - `chain`: the chain the data belongs to, opaque here (the index layer names the network,
 ///   its genesis hash and, on regtest, its activation heights); data of another chain is never
 ///   read as this one's
+/// - `schema`: the index layer's digest of every namespace's layout, opaque here; a layout
+///   change that kept its `format` is refused, not misread
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct Identity {
     name: Box<str>,
     chain: Box<str>,
     format: u16,
+    schema: SchemaDigest,
 }
 
 impl Identity {
     /// `name` and `chain` of at most 255 bytes each, written at layout version `format`
-    pub(crate) fn new(name: &str, chain: &str, format: u16) -> Result<Self, ManifestError> {
+    pub(crate) fn new(
+        name: &str,
+        chain: &str,
+        format: u16,
+        schema: SchemaDigest,
+    ) -> Result<Self, ManifestError> {
         if name.len() > MAX_NAME {
             return Err(ManifestError::NameLength { len: name.len() });
         }
@@ -59,6 +69,7 @@ impl Identity {
             name: name.into(),
             chain: chain.into(),
             format,
+            schema,
         })
     }
 
@@ -66,13 +77,18 @@ impl Identity {
         &self.name
     }
 
-    /// Header bytes before `seq`: magic ‖ format ‖ name_len ‖ name ‖ chain_len ‖ chain
+    /// Header bytes before `seq`: magic ‖ format ‖ name_len ‖ name ‖ chain_len ‖ chain ‖ schema
     fn prefix_len(&self) -> usize {
         NAME_AT
             .saturating_add(self.name.len())
             .saturating_add(1)
             .saturating_add(self.chain.len())
+            .saturating_add(SCHEMA_LEN)
     }
+}
+
+fn hex(bytes: &[u8]) -> String {
+    bytes.iter().map(|byte| format!("{byte:02x}")).collect()
 }
 
 /// - `Unmanifested` never follows a crash (a directory's first commit precedes any data)
@@ -110,6 +126,9 @@ pub(crate) enum ManifestError {
 
     #[error("directory holds format {found}, this build reads format {expected}")]
     Format { expected: u16, found: u16 },
+
+    #[error("directory holds schema {found}, this build's is {expected}: resync the index")]
+    Schema { expected: String, found: String },
 
     #[error("manifest body of {body} bytes overflows its {SLOT}-byte slot")]
     Full { body: usize },
@@ -151,6 +170,7 @@ pub(crate) fn encode(identity: &Identity, seq: u64, body: &[u8]) -> Result<Vec<u
     out.extend_from_slice(identity.name.as_bytes());
     out.push(chain_len);
     out.extend_from_slice(identity.chain.as_bytes());
+    out.extend_from_slice(identity.schema.as_bytes());
     out.extend_from_slice(&seq.to_le_bytes());
     out.extend_from_slice(&body_len.to_le_bytes());
     out.extend_from_slice(body);
@@ -191,11 +211,12 @@ fn decode_slot<'a>(identity: &Identity, slot: &'a [u8]) -> Result<Slot<'a>, Mani
         let name = reader.take(usize::from(name_len))?;
         let [chain_len] = reader.array::<1>()?;
         let chain = reader.take(usize::from(chain_len))?;
+        let schema = reader.array::<SCHEMA_LEN>()?;
         let seq = reader.u64()?;
         let claimed = reader.u32()?;
-        Ok::<_, ManifestError>((format, name, chain, seq, claimed))
+        Ok::<_, ManifestError>((format, name, chain, schema, seq, claimed))
     })();
-    let Ok((format, name, chain, seq, claimed)) = header else {
+    let Ok((format, name, chain, schema, seq, claimed)) = header else {
         return Ok(Slot::Torn(ManifestError::Body("truncated header")));
     };
     let rest = reader.rest;
@@ -231,6 +252,12 @@ fn decode_slot<'a>(identity: &Identity, slot: &'a [u8]) -> Result<Slot<'a>, Mani
         return Err(ManifestError::Chain {
             expected: identity.chain.to_string(),
             found: String::from_utf8_lossy(chain).into_owned(),
+        });
+    }
+    if schema != *identity.schema.as_bytes() {
+        return Err(ManifestError::Schema {
+            expected: hex(identity.schema.as_bytes()),
+            found: hex(&schema),
         });
     }
     Ok(Slot::Committed { seq, body })

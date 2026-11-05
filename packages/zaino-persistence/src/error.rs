@@ -163,6 +163,18 @@ pub enum ReadError {
         /// Bytes given.
         actual: usize,
     },
+    /// A ranged read reaches past the value's end.
+    #[error("{namespace}: bytes {start}..{end} of a {len}-byte value")]
+    RangeOutOfBounds {
+        /// The namespace.
+        namespace: String,
+        /// The value's length.
+        len: usize,
+        /// The range's start.
+        start: usize,
+        /// The range's end (exclusive).
+        end: usize,
+    },
     /// The read failed (IO, corruption, etc.). `operation` names the read step
     /// that failed.
     #[error("read failed during {operation}")]

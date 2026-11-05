@@ -119,6 +119,7 @@ fn a_commit_writes_the_buffer_when_its_real_heap_reaches_write_buffer_within_10_
             name: "heap",
             chain: "regtest",
             format: 1,
+            schema: zaino_persistence::SchemaDigest::new([0; 32]),
             namespaces: &specs,
             tuning: &[],
             lsm: LsmConfig::default(),

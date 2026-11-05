@@ -45,6 +45,7 @@ segment is one write's rows, sorted, and a merge never has to choose between two
 | `Backend::flush`           | write the buffer: every namespace written and sealed in parallel, then one manifest slot (the commit point)                   |
 | `Backend::reader`          | the last published state: mapped files and segments at one manifest, plus the buffer as it was                               |
 | `BackendReader::get`       | a sequence record by arithmetic; a map key from the buffer, then each segment whose filter admits it                          |
+| `BackendReader::get_range` | the same lookup, the range sliced on the mapped bytes before the copy                                                        |
 | `BackendReader::scan_range`| lazy chunks, each bounded by the bytes it visits: positions for a sequence, a resumable k-way cursor over segments merged with the buffer for a map |
 | `MaintenanceReader::scan`  | `scan_range` drained into memory                                                                                              |
 | `Backend::verify`          | every committed byte scrubbed against its page checksums                                                                      |

@@ -188,6 +188,23 @@ pub fn check_key(
     }
 }
 
+/// `range` of `value`, or `RangeOutOfBounds` past its end; every backend's
+/// `get_range` slices through this so an overreach is refused alike.
+pub fn ranged<'a>(
+    namespace: Namespace,
+    value: &'a [u8],
+    range: &std::ops::Range<usize>,
+) -> Result<&'a [u8], ReadError> {
+    value
+        .get(range.clone())
+        .ok_or_else(|| ReadError::RangeOutOfBounds {
+            namespace: namespace.to_string(),
+            len: value.len(),
+            start: range.start,
+            end: range.end,
+        })
+}
+
 /// `bytes` of `width`, or `WidthMismatch`.
 fn check_width(
     namespace: Namespace,

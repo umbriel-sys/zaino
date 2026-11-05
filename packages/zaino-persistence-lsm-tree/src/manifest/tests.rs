@@ -1,16 +1,18 @@
 use super::*;
 
+use crate::testing::SCHEMA;
+
 fn identity(name: &str, format: u16) -> Identity {
-    Identity::new(name, "regtest", format).expect("short name")
+    Identity::new(name, "regtest", format, SCHEMA).expect("short name")
 }
 
 /// Names and chain tags up to 255 bytes only (one length byte each in the header)
 #[test]
 fn an_identity_name_and_chain_fit_their_length_bytes() {
-    assert!(Identity::new(&"n".repeat(255), &"c".repeat(255), 1).is_ok());
-    let long = Identity::new(&"n".repeat(256), "c", 1);
+    assert!(Identity::new(&"n".repeat(255), &"c".repeat(255), 1, SCHEMA).is_ok());
+    let long = Identity::new(&"n".repeat(256), "c", 1, crate::testing::SCHEMA);
     assert!(matches!(long, Err(ManifestError::NameLength { len: 256 })));
-    let long = Identity::new("n", &"c".repeat(256), 1);
+    let long = Identity::new("n", &"c".repeat(256), 1, crate::testing::SCHEMA);
     assert!(matches!(long, Err(ManifestError::ChainLength { len: 256 })));
 }
 
@@ -20,11 +22,12 @@ fn an_identity_name_and_chain_fit_their_length_bytes() {
 fn manifest_slots_golden_bytes_and_which_commit_every_slot_pair_holds() {
     let identity = identity("tree", 3);
     let encoded = encode(&identity, 7, &[0xaa, 0xbb]).expect("fits");
-    let mut expected = b"ZAINOMS5".to_vec();
+    let mut expected = b"ZAINOMS6".to_vec();
     expected.extend_from_slice(&[3, 0, 4]);
     expected.extend_from_slice(b"tree");
     expected.push(7);
     expected.extend_from_slice(b"regtest");
+    expected.extend_from_slice(&[0x5c; 32]);
     expected.extend_from_slice(&7u64.to_le_bytes());
     expected.extend_from_slice(&[2, 0, 0, 0, 0xaa, 0xbb]);
     expected.extend_from_slice(&crc32fast::hash(&expected).to_le_bytes());
@@ -86,7 +89,9 @@ fn manifest_slots_golden_bytes_and_which_commit_every_slot_pair_holds() {
         assert_eq!(found.map(|(seq, body)| (seq, body.to_vec())), want, "{why}");
     }
 
-    use ManifestError::{BodyLength, Chain, Checksum, Format, Layout, Magic, Name, Sequence};
+    use ManifestError::{
+        BodyLength, Chain, Checksum, Format, Layout, Magic, Name, Schema, Sequence,
+    };
     let (torn_pair, twin_pair) = (
         file(torn(2, &[2]), torn(1, &[1])),
         file(commit(1, &[1]), commit(1, &[2])),
@@ -100,10 +105,18 @@ fn manifest_slots_golden_bytes_and_which_commit_every_slot_pair_holds() {
     let one = file(None, commit(1, &[1]));
     let name = latest(&self::identity("blocks", 3), &one);
     let format = latest(&self::identity("tree", 4), &one);
-    let chain = latest(&Identity::new("tree", "mainnet", 3).expect("short"), &one);
-    // the previous layout (no chain tag, no tombstone counts): refused, never misread
+    let chain = latest(
+        &Identity::new("tree", "mainnet", 3, SCHEMA).expect("short"),
+        &one,
+    );
+    let other_schema = SchemaDigest::new([0xa5; 32]);
+    let schema = latest(
+        &Identity::new("tree", "regtest", 3, other_schema).expect("short"),
+        &one,
+    );
+    // the previous layout (no schema digest): refused, never misread
     let mut foreign_magic = encode(&identity, 1, &[1]).expect("fits");
-    foreign_magic[..8].copy_from_slice(b"ZAINOMS4");
+    foreign_magic[..8].copy_from_slice(b"ZAINOMS5");
     let foreign_pair = file(Some(foreign_magic.clone()), Some(foreign_magic));
     let older_magic = latest(&identity, &foreign_pair);
     assert!(
@@ -137,6 +150,11 @@ fn manifest_slots_golden_bytes_and_which_commit_every_slot_pair_holds() {
     assert!(
         matches!(&chain, Err(Chain { expected, found }) if expected == "mainnet" && found == "regtest"),
         "{chain:?}"
+    );
+    assert!(
+        matches!(&schema, Err(Schema { expected, found })
+            if expected == &hex(other_schema.as_bytes()) && found == &hex(&[0x5c; 32])),
+        "{schema:?}"
     );
     assert!(
         matches!(older_magic, Err(Magic)),

@@ -24,12 +24,12 @@ mod verify;
 pub use backend::{
     raw_entry, sequence_key, sequence_position, Backend, BackendReader, BackendWriter,
     MaintenanceReader, Namespace, NamespaceKind, NamespaceSpec, RawKey, RawValue, ScanDirection,
-    ScanRange, Width, WriteOp, SEQUENCE_KEY_LEN,
+    ScanRange, SchemaDigest, Width, WriteOp, SEQUENCE_KEY_LEN,
 };
 pub use error::{CommitError, FlushError, FootprintError, OpenError, Part, ReadError, VerifyError};
 pub use rules::{
-    check_commit, check_key, check_keys, check_shape, check_specs, is_empty_range, CommitState,
-    KeyState,
+    check_commit, check_key, check_keys, check_shape, check_specs, is_empty_range, ranged,
+    CommitState, KeyState,
 };
 pub use verify::{NamespaceFootprint, Problem, Unit, Verification};
 

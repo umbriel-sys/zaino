@@ -53,12 +53,15 @@ pub(crate) fn eventually<T>(what: &str, mut attempt: impl FnMut() -> Option<T>) 
 
 /// The chain tag the tests open every directory as
 pub(crate) const CHAIN: &str = "regtest";
+pub(crate) const SCHEMA: zaino_persistence::SchemaDigest =
+    zaino_persistence::SchemaDigest::new([0x5c; 32]);
 
 pub(crate) fn config(fanout: usize, write_buffer: NonZeroUsize) -> LsmTreeConfig<'static> {
     LsmTreeConfig {
         name: "conformance",
         chain: CHAIN,
         format: 1,
+        schema: SCHEMA,
         namespaces: &SPECS,
         tuning: &TUNING,
         lsm: LsmConfig {

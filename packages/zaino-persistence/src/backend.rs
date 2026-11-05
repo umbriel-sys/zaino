@@ -15,7 +15,7 @@
 //! [`check_commit`](crate::check_commit) enforces.
 
 use core::num::{NonZeroU32, NonZeroUsize};
-use core::ops::Bound;
+use core::ops::{Bound, Range};
 
 use zaino_primitives::types::BlockRef;
 
@@ -200,6 +200,28 @@ pub enum WriteOp {
     },
 }
 
+/// A digest of the schema a directory was written with: every namespace's
+/// name, kind, widths and record layout, hashed by the index layer.
+///
+/// Stored beside the name, chain and format in the directory's identity and
+/// checked at open, so a layout change that forgot its format bump is refused
+/// rather than misread. Opaque here: the port compares digests, it does not
+/// know what they summarise.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct SchemaDigest([u8; 32]);
+
+impl SchemaDigest {
+    /// Wraps a digest the index layer computed.
+    pub const fn new(bytes: [u8; 32]) -> Self {
+        Self(bytes)
+    }
+
+    /// The digest's bytes.
+    pub const fn as_bytes(&self) -> &[u8; 32] {
+        &self.0
+    }
+}
+
 /// The storage backend.
 ///
 /// Generic — no blockchain or storage-technology knowledge.
@@ -268,6 +290,26 @@ pub trait BackendReader: Send {
     ///
     /// A key not of the namespace's key width is [`ReadError::WidthMismatch`].
     fn get(&self, namespace: Namespace, key: &[u8]) -> Result<Option<RawValue>, ReadError>;
+
+    /// Read `range` of one value's bytes: the same answer as slicing
+    /// [`get`](Self::get)'s value, without copying the rest of it.
+    ///
+    /// `Ok(None)` for an absent key. A range past the value's end is
+    /// [`ReadError::RangeOutOfBounds`], not a shorter answer, so a field read
+    /// against the wrong layout fails instead of decoding a neighbour.
+    fn get_range(
+        &self,
+        namespace: Namespace,
+        key: &[u8],
+        range: Range<usize>,
+    ) -> Result<Option<RawValue>, ReadError> {
+        let Some(value) = self.get(namespace, key)? else {
+            return Ok(None);
+        };
+        Ok(Some(
+            crate::rules::ranged(namespace, &value, &range)?.to_vec(),
+        ))
+    }
 
     /// [`get`](Self::get) for every key, in order: one value slot per key.
     ///

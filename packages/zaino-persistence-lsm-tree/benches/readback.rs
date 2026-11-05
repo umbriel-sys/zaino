@@ -9,7 +9,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-use zaino_persistence::{Backend, BackendWriter, Namespace, NamespaceSpec, WriteOp};
+use zaino_persistence::{Backend, BackendWriter, Namespace, NamespaceSpec, SchemaDigest, WriteOp};
 use zaino_persistence_lsm_tree::{LsmConfig, LsmTreeBackend, LsmTreeConfig};
 use zaino_primitives::types::{BlockHash, BlockRef, Height};
 
@@ -24,6 +24,7 @@ fn flush(verify_writes: bool, rows: u64) -> Duration {
         name: "readback",
         chain: "bench",
         format: 1,
+        schema: SchemaDigest::new([0; 32]),
         namespaces: &specs,
         tuning: &[],
         lsm: LsmConfig {
