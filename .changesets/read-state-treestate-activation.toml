@@ -1,0 +1,9 @@
+[[changes]]
+crate = "zaino-source-zebra"
+kind = "fix"
+description = """
+The read-state adapter answers no treestate for a pool whose upgrade is not \
+active at the block, the gate zebra's `z_gettreestate` applies. Zebra's state \
+seeds every tree at genesis, so the state backend served an encoded empty \
+tree below activation where the fetch backend served nothing, and \
+`GetTreeState` differed by transport."""

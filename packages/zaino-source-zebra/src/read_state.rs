@@ -27,7 +27,7 @@
 use std::path::Path;
 
 use tower::ServiceExt;
-use zebra_chain::parameters::Network;
+use zebra_chain::parameters::{Network, NetworkUpgrade};
 use zebra_state::{ReadRequest, ReadResponse, ReadStateService};
 
 use zaino_primitives::types::{
@@ -661,9 +661,12 @@ impl zaino_source::OneShotGetAddressDeltas for ZebraReadStateAdapter {
         Vec<zaino_primitives::types::AddressDelta>,
         QueryError<zaino_source::GetAddressDeltasError, ReadStateError>,
     > {
-        use zaino_primitives::types::{
-            AddressDelta, SignedZatoshis, TransactionId, TransparentAddress,
-        };
+        use std::collections::hash_map::Entry;
+        use std::collections::HashMap;
+        use std::sync::Arc;
+        use zaino_primitives::types::{AddressDelta, TransactionId};
+        use zebra_chain::transaction::Transaction;
+        use zebra_chain::transparent;
 
         if start > end {
             return Err(QueryError::Domain(
@@ -690,50 +693,56 @@ impl zaino_source::OneShotGetAddressDeltas for ZebraReadStateAdapter {
         // position within the block come from it rather than from a second
         // lookup. Only the transaction body still has to be fetched.
         let mut deltas: Vec<AddressDelta> = Vec::new();
+        // Funding transactions of the inputs seen so far: one read per
+        // distinct funder, not per input.
+        let mut funders: HashMap<zebra_chain::transaction::Hash, Arc<Transaction>> = HashMap::new();
 
         for (location, txid) in located.iter() {
-            let response =
-                read(&self.state, ReadRequest::AnyChainTransaction(txid.0.into())).await?;
-
-            let transaction = match response {
-                ReadResponse::AnyChainTransaction(Some(zebra_state::AnyTx::Mined(mined))) => {
-                    mined.tx
-                }
-                // The address index covers the best chain only, so a
-                // transaction it named must be mined there. Anything else means
-                // the index and the chain disagree.
-                ReadResponse::AnyChainTransaction(_) => {
-                    return Err(ReadStateError::off_contract(format!(
-                        "address index names a transaction the chain lacks: {txid:?}"
-                    ))
-                    .into())
-                }
-                _ => return Err(unexpected_response("AnyChainTransaction").into()),
-            };
-
+            let transaction = self.mined_transaction(*txid).await?;
             let height =
                 Height::try_from(location.height.0).map_err(ReadStateError::invalid_data)?;
+            let block_index = Some(u32::from(location.index.index()));
             let delta_txid = TransactionId::from(txid.0);
+            let delta = |index: usize, output: &transparent::Output, spend: bool| {
+                let zatoshis = output.value.zatoshis();
+                address_delta(
+                    &self.network,
+                    &addresses,
+                    output,
+                    if spend { -zatoshis } else { zatoshis },
+                    delta_txid,
+                    index as u32,
+                    height,
+                    block_index,
+                )
+            };
 
             for (index, output) in transaction.outputs().iter().enumerate() {
-                let Some(address) = output.address(&self.network) else {
+                deltas.extend(delta(index, output, false)?);
+            }
+
+            // The address index lists spenders too; a spend debits the
+            // address by the output it consumes, under the input's index.
+            for (index, input) in transaction.inputs().iter().enumerate() {
+                let Some(outpoint) = input.outpoint() else {
                     continue;
                 };
-                let address = address.to_string();
-                if !addresses.iter().any(|requested| requested == &address) {
-                    continue;
-                }
-
-                deltas.push(AddressDelta {
-                    satoshis: SignedZatoshis::try_new(output.value.zatoshis())
-                        .map_err(ReadStateError::invalid_data)?,
-                    txid: delta_txid,
-                    index: index as u32,
-                    height,
-                    address: TransparentAddress::try_new(address)
-                        .map_err(ReadStateError::invalid_data)?,
-                    block_index: Some(u32::from(location.index.index())),
-                });
+                let funder = match funders.entry(outpoint.hash) {
+                    Entry::Occupied(found) => Arc::clone(found.get()),
+                    Entry::Vacant(slot) => {
+                        Arc::clone(slot.insert(self.mined_transaction(outpoint.hash).await?))
+                    }
+                };
+                let spent = funder
+                    .outputs()
+                    .get(outpoint.index as usize)
+                    .cloned()
+                    .ok_or_else(|| {
+                        ReadStateError::off_contract(format!(
+                            "{txid:?} spends an output {outpoint:?} does not have"
+                        ))
+                    })?;
+                deltas.extend(delta(index, &spent, true)?);
             }
         }
 
@@ -900,21 +909,87 @@ impl zaino_source::OneShotGetTreestate for ZebraReadStateAdapter {
     }
 }
 
+/// One address's balance change from an output, if it pays a requested address.
+///
+/// `satoshis` is the output's value for a receive and its negation for a
+/// spend; `index` is the output's or the spending input's index, as
+/// `getaddressdeltas` documents it.
+#[allow(clippy::too_many_arguments)]
+fn address_delta(
+    network: &Network,
+    requested: &[String],
+    output: &zebra_chain::transparent::Output,
+    satoshis: i64,
+    txid: zaino_primitives::types::TransactionId,
+    index: u32,
+    height: Height,
+    block_index: Option<u32>,
+) -> Result<Option<zaino_primitives::types::AddressDelta>, ReadStateError> {
+    use zaino_primitives::types::{AddressDelta, SignedZatoshis, TransparentAddress};
+
+    let Some(address) = output.address(network) else {
+        return Ok(None);
+    };
+    let address = address.to_string();
+    if !requested.iter().any(|candidate| candidate == &address) {
+        return Ok(None);
+    }
+    Ok(Some(AddressDelta {
+        satoshis: SignedZatoshis::try_new(satoshis).map_err(ReadStateError::invalid_data)?,
+        txid,
+        index,
+        height,
+        address: TransparentAddress::try_new(address).map_err(ReadStateError::invalid_data)?,
+        block_index,
+    }))
+}
+
+/// A pool's treestate at a block, absent before the pool's upgrade activates.
+///
+/// Zebra's state seeds every tree at genesis, so a tree read below activation
+/// finds the empty tree rather than nothing; its RPC gates on activation and
+/// omits the pool. The gate here is the same schedule the state was opened
+/// with, so both transports answer `None`, which the wire carries as the
+/// empty string.
+fn pool_if_active(
+    network: &Network,
+    upgrade: zebra_chain::parameters::NetworkUpgrade,
+    height: zebra_chain::block::Height,
+    final_state: Option<Vec<u8>>,
+) -> Option<zaino_primitives::types::PoolTreestate> {
+    let active = upgrade
+        .activation_height(network)
+        .is_some_and(|activation| activation <= height);
+    let final_state = final_state.filter(|_| active)?;
+    Some(zaino_primitives::types::PoolTreestate {
+        // Roots are answered by `get_commitment_tree_roots` on both adapters.
+        final_root: None,
+        final_state,
+    })
+}
+
 impl ZebraReadStateAdapter {
-    /// Serialised commitment trees for a block, one per pool.
+    /// The mined transaction the chain holds under `txid`.
+    async fn mined_transaction(
+        &self,
+        txid: zebra_chain::transaction::Hash,
+    ) -> Result<std::sync::Arc<zebra_chain::transaction::Transaction>, ReadStateError> {
+        match read(&self.state, ReadRequest::AnyChainTransaction(txid)).await? {
+            ReadResponse::AnyChainTransaction(Some(zebra_state::AnyTx::Mined(mined))) => {
+                Ok(mined.tx)
+            }
+            ReadResponse::AnyChainTransaction(_) => Err(ReadStateError::off_contract(format!(
+                "address index names a transaction the chain lacks: {txid:?}"
+            ))),
+            _ => Err(unexpected_response("AnyChainTransaction")),
+        }
+    }
+
+    /// Serialised commitment trees for a block, one per pool; `None` for a
+    /// pool not active at that block (`pool_if_active`).
     ///
     /// Shared by the height- and hash-addressed queries, which differ only in
     /// how the block is named.
-    ///
-    /// # Activation gating removed deliberately
-    ///
-    /// The previous implementation looked up each pool's activation height and
-    /// skipped the read for blocks below it. That made this a second source of
-    /// activation-height truth, compiled in and able to disagree with the
-    /// validator — the very thing Zaino avoids elsewhere by adopting the
-    /// schedule from `getblockchaininfo`. The state service already answers
-    /// `None` for a pool that is not active at the block, so the gate only
-    /// duplicated a fact the read itself reports.
     async fn treestate(
         &self,
         id: zebra_state::HashOrHeight,
@@ -929,7 +1004,7 @@ impl ZebraReadStateAdapter {
             read(&self.state, ReadRequest::IronwoodTree(id)),
         );
 
-        let (block_hash, height, time) = match header? {
+        let (block_hash, zebra_height, time) = match header? {
             ReadResponse::BlockHeader {
                 header,
                 hash,
@@ -937,40 +1012,35 @@ impl ZebraReadStateAdapter {
                 ..
             } => (
                 BlockHash::from(hash.0),
-                Height::try_from(height.0).map_err(ReadStateError::invalid_data)?,
+                height,
                 header.time.timestamp() as u32,
             ),
             _ => return Err(unexpected_response("BlockHeader")),
         };
+        let height = Height::try_from(zebra_height.0).map_err(ReadStateError::invalid_data)?;
 
-        // A pool with no tree at this block is absent rather than empty: the
-        // block predates its activation. That distinction is why every pool is
-        // an `Option` — see `Treestate`.
-        // `final_root` is left absent here, matching the RPC adapter: roots are
-        // answered by `get_commitment_tree_roots`, so a treestate carries the
-        // tree and a caller that wants the root asks for it. Populating it on
-        // one adapter only would make the answer depend on the transport.
-        let pool = |final_state: Vec<u8>| zaino_primitives::types::PoolTreestate {
-            final_root: None,
-            final_state,
+        let pool = |upgrade, final_state: Option<Vec<u8>>| {
+            pool_if_active(&self.network, upgrade, zebra_height, final_state)
         };
-
         let sapling = match sapling? {
-            ReadResponse::SaplingTree(tree) => {
-                tree.as_deref().map(|tree| pool(tree.to_rpc_bytes()))
-            }
+            ReadResponse::SaplingTree(tree) => pool(
+                NetworkUpgrade::Sapling,
+                tree.as_deref().map(|tree| tree.to_rpc_bytes()),
+            ),
             _ => return Err(unexpected_response("SaplingTree")),
         };
         let orchard = match orchard? {
-            ReadResponse::OrchardTree(tree) => {
-                tree.as_deref().map(|tree| pool(tree.to_rpc_bytes()))
-            }
+            ReadResponse::OrchardTree(tree) => pool(
+                NetworkUpgrade::Nu5,
+                tree.as_deref().map(|tree| tree.to_rpc_bytes()),
+            ),
             _ => return Err(unexpected_response("OrchardTree")),
         };
         let ironwood = match ironwood? {
-            ReadResponse::IronwoodTree(tree) => {
-                tree.as_deref().map(|tree| pool(tree.to_rpc_bytes()))
-            }
+            ReadResponse::IronwoodTree(tree) => pool(
+                NetworkUpgrade::Nu6_3,
+                tree.as_deref().map(|tree| tree.to_rpc_bytes()),
+            ),
             _ => return Err(unexpected_response("IronwoodTree")),
         };
 
@@ -1580,6 +1650,109 @@ mod address_query_tests {
         assert_eq!(
             within_result_cap(MAX_ADDRESS_QUERY_RESULTS + 1, |l| l),
             Err(MAX_ADDRESS_QUERY_RESULTS)
+        );
+    }
+}
+
+#[cfg(test)]
+mod address_delta_tests {
+    use super::address_delta;
+    use zaino_primitives::types::{Height, TransactionId};
+    use zebra_chain::amount::Amount;
+    use zebra_chain::parameters::{Network, NetworkKind};
+    use zebra_chain::transparent::{Address, Output};
+
+    fn output(pub_key_hash: [u8; 20]) -> (String, Output) {
+        let address = Address::from_pub_key_hash(NetworkKind::Regtest, pub_key_hash);
+        let output = Output {
+            value: Amount::try_from(1_000).expect("in range"),
+            lock_script: address.script(),
+        };
+        (address.to_string(), output)
+    }
+
+    /// A spend is the consumed output's value negated, under the input's
+    /// index, so an address's deltas sum to its balance.
+    #[test]
+    fn a_spend_debits_what_the_output_paid() {
+        let network = Network::new_regtest(Default::default());
+        let (address, paid) = output([7; 20]);
+        let txid = TransactionId::from([1; 32]);
+        let height = Height::try_from(9).expect("in range");
+        let delta = |satoshis, index| {
+            address_delta(
+                &network,
+                std::slice::from_ref(&address),
+                &paid,
+                satoshis,
+                txid,
+                index,
+                height,
+                Some(2),
+            )
+            .expect("in range")
+            .expect("the address is requested")
+        };
+
+        let receive = delta(1_000, 0);
+        let spend = delta(-1_000, 3);
+        assert_eq!(i64::from(receive.satoshis), 1_000);
+        assert_eq!(i64::from(spend.satoshis), -1_000);
+        assert_eq!(spend.index, 3);
+        assert_eq!(spend.address.as_str(), address);
+    }
+
+    /// An output paying an address nobody asked about yields nothing.
+    #[test]
+    fn an_unrequested_address_yields_no_delta() {
+        let network = Network::new_regtest(Default::default());
+        let (requested, _) = output([7; 20]);
+        let (_, other) = output([8; 20]);
+        let delta = address_delta(
+            &network,
+            &[requested],
+            &other,
+            1_000,
+            TransactionId::from([1; 32]),
+            0,
+            Height::try_from(9).expect("in range"),
+            None,
+        )
+        .expect("in range");
+        assert_eq!(delta, None);
+    }
+}
+
+#[cfg(test)]
+mod pool_if_active_tests {
+    use super::pool_if_active;
+    use zebra_chain::block::Height;
+    use zebra_chain::parameters::testnet::{ConfiguredActivationHeights, RegtestParameters};
+    use zebra_chain::parameters::{Network, NetworkUpgrade};
+
+    /// Zebra's state holds an empty tree below a pool's activation; the pool
+    /// is reported absent there and present from activation on, empty or not.
+    #[test]
+    fn a_pool_is_absent_before_its_activation() {
+        let network = Network::new_regtest(RegtestParameters {
+            activation_heights: ConfiguredActivationHeights {
+                nu5: Some(5),
+                ..Default::default()
+            },
+            ..Default::default()
+        });
+        let empty = Some(Vec::new());
+
+        assert_eq!(
+            pool_if_active(&network, NetworkUpgrade::Nu5, Height(4), empty.clone()),
+            None
+        );
+        let active = pool_if_active(&network, NetworkUpgrade::Nu5, Height(5), empty)
+            .expect("active at its activation height");
+        assert_eq!(active.final_state, Vec::<u8>::new());
+        assert_eq!(
+            pool_if_active(&network, NetworkUpgrade::Nu5, Height(5), None),
+            None
         );
     }
 }

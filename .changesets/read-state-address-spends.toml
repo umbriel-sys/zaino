@@ -1,0 +1,9 @@
+[[changes]]
+crate = "zaino-source-zebra"
+kind = "fix"
+description = """
+The read-state adapter's `getaddressdeltas` reports spends as well as \
+receives: each input's funding output is resolved and, where it paid a \
+requested address, debited under the input's index, as zcashd documents. \
+Zebra has no `getaddressdeltas`, so this is the only answer a zebrad-backed \
+deployment has, and it previously omitted every debit."""

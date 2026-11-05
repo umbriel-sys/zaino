@@ -94,21 +94,29 @@ alternative**.
 
 ### What it implements, and what it deliberately does not
 
-It implements 22 ports: block and header reads, chain tip, address queries,
-treestate and commitment trees, subtree roots, transactions, block deltas,
-blockchain info, and the block/tip subscriptions.
+It implements 23 ports: block and header reads, chain tip, address queries
+(including `GetAddressDeltas`, which zebrad has no RPC for), treestate and
+commitment trees, subtree roots, transactions, block deltas, blockchain info,
+and the block/tip subscriptions.
 
 It does **not** implement the mempool ports, the passthrough ports
-(`getpeerinfo`, `getmininginfo`, `getnetworksolps`, …), `GetAddressDeltas`, or
-`SubscribeChainTip`. That is the capability model working, not a gap to fill:
+(`getpeerinfo`, `getmininginfo`, `getnetworksolps`, …) or `SubscribeChainTip`.
+That is the capability model working, not a gap to fill: a state service
+**has no mempool**. An implementation here could not see unconfirmed
+transactions, so it would silently answer a different question than the one
+asked. ADR-0008's structural-capability rule means routing a mempool query
+here is a compile error rather than a wrong answer.
 
-- A state service **has no mempool**. An implementation here could not see
-  unconfirmed transactions, so it would silently answer a different question
-  than the one asked. ADR-0008's structural-capability rule means routing a
-  mempool query here is a compile error rather than a wrong answer.
-- `GetAddressDeltas` is a *composition* — address txids, then every
-  transaction, then a derivation — and the transaction step needs the mempool.
-  It belongs above the adapters, where both transports are in reach.
+Two contracts the adapter keeps so that both transports answer alike:
+
+- `GetAddressDeltas` reports receives *and* spends, as zcashd documents: a
+  spend is the consumed output's value negated, under the spending input's
+  index. Zebra's address index lists spenders, and each input's outpoint
+  names the funding transaction, which is read once per funder.
+- `GetTreestate` answers `None` for a pool whose upgrade is not active at the
+  block (Sapling, NU5 for Orchard, NU6.3 for Ironwood), the gate zebra's own
+  `z_gettreestate` applies. Zebra's state seeds every tree at genesis, so an
+  ungated read would serve an encoded empty tree where the RPC omits the pool.
 
 **Do not add a partial implementation of a port to "cover more cases".** A port
 that answers 90% of the question is worse than one that does not exist, because
