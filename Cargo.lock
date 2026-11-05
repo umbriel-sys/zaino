@@ -6116,6 +6116,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "zaino-indexes"
+version = "0.1.0"
+dependencies = [
+ "blake2",
+ "thiserror 2.0.20",
+ "zaino-persistence",
+]
+
+[[package]]
 name = "zaino-logging"
 version = "0.1.0"
 dependencies = [

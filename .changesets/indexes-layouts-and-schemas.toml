@@ -1,0 +1,10 @@
+[[changes]]
+crate = "zaino-indexes"
+kind = "feature"
+description = """
+New crate, the index set's home. This first cut is the schema machinery: \
+`Layout` (per-field record layouts, fixed fields at constant offsets, \
+variable fields located by a `u32` end-offset directory, `encode` and one \
+slice per field), `NamespaceLayout` (namespace specs derived from layouts) \
+and `Schema` (an index's name, hand-set format and namespaces, with the \
+BLAKE2b-256 digest a directory is stamped with)."""
