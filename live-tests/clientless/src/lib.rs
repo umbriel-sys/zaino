@@ -17,7 +17,7 @@ pub mod rpc {
     pub mod z_validate_address {
         use anyhow::{Context, Result};
         use serde_json::{json, Value};
-        use ztest::prelude::JsonRpcClient;
+        use zaino_testutils::JsonRpcClient;
 
         use crate::rpc::json_rpc::{
             VALID_DIVERSIFIED_TRANSMISSION_KEY, VALID_DIVERSIFIER, VALID_SAPLING_ADDRESS,

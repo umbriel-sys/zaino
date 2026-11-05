@@ -6,10 +6,9 @@ target/
 /db
 /docs/cargo_docs/debug
 /.helix
-/live-tests/chain_cache/*
+# Regtest chain cache built by the live suite (live-tests/zaino-testutils/src/cache.rs).
+/live-tests/.cache/
 /live-tests/target/*
-!/live-tests/chain_cache/testnet_get_subtree_roots_sapling
-!/live-tests/chain_cache/testnet_get_subtree_roots_orchard
 .cargo
 .local/
 **/proptest-regressions/**

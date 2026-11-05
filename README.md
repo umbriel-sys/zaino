@@ -73,7 +73,7 @@ packages/                          Cargo workspace member crates, in dependency 
   zaino-serve/                       gRPC + JSON-RPC servers, and the served JSON schema
   zainod/                            Daemon binary
 
-live-tests/                        Live-test suite — standalone workspace, run on the ztest k8s harness
+live-tests/                        Live-test suite — standalone workspace over a real zebrad and an in-process zainod
   e2e/                               End-to-end partition (wallet client -> Zaino -> validator)
   clientless/                        Clientless partition (Zaino services -> live validator, no client)
   zaino-testutils/                   Shared test harness and utilities
@@ -149,17 +149,18 @@ RUSTFLAGS="-C force-frame-pointers=yes" cargo build --profile profiling --bin za
 
 ## Running tests
 
-Production-crate tests run on your host; the live suites run on a Kubernetes
-cluster via [`ztest`](https://crates.io/crates/ztest_cli):
+Production-crate tests and the live suites both run on your host; the live
+suites launch a real `zebrad` per test around an in-process `zainod`, with an
+in-process librustzcash wallet for `e2e`, all starting from one cached
+fixture chain:
 
 ```sh
 cargo nextest run                          # packages/*, no live validator
-cd live-tests && ztest run -p clientless -p e2e   # both live partitions
+cd live-tests && cargo nextest run         # both live partitions
 ```
 
-The live suites need the `ztest` CLI and a registered cluster
-(`cargo install ztest_cli`, then `kind create cluster` and `ztest cluster
-setup`) — see [docs/testing.md](./docs/testing.md) for the full setup.
+The live suites need a release-built `zebrad` (7.0.0 or later) on `PATH` or
+named by `ZEBRAD_BIN` — see [docs/testing.md](./docs/testing.md).
 
 On lower-resource machines you may hit occasional contention flakes under full
 parallelism — re-run, or lower `--test-threads`.
@@ -168,7 +169,7 @@ parallelism — re-run, or lower `--test-threads`.
 
 - [Use Cases](./docs/use_cases.md): Holds instructions and example use cases.
 - [Testing](./docs/testing.md): Holds instructions for running tests.
-- [Live-test guidelines](./live-tests/CLAUDE.md): The rules for writing live tests — the live oracle, QoS tiers, parameterization.
+- [Live-test guidelines](./live-tests/CLAUDE.md): The rules for writing live tests — inline topology, the chain cache, parameterization.
 - [Live Service System Architecture](./docs/zaino_live_system_architecture.pdf): Holds the Zcash system architecture diagram for the Zaino live service.
 - [Library System Architecture](./docs/zaino_lib_system_architecture.pdf): Holds the Zcash system architecture diagram for the Zaino client library.
 - [ZainoD (Live Service) Internal Architecture](./docs/zaino_serve_architecture_v020.pdf): Holds an internal Zaino system architecture diagram.

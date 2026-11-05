@@ -10,7 +10,7 @@ use zaino_testutils::legacy_parser::transaction::FullTransaction;
 use zaino_testutils::legacy_parser::utils::ParseFromSlice;
 
 // Synchronous: nothing here awaits. The parser is offline, so this test needs
-// neither a runtime nor the ztest cluster.
+// neither a runtime nor a validator.
 #[test]
 fn pre_v4_txs_parsing() -> anyhow::Result<()> {
     let test_vectors = get_test_vectors();

@@ -1,6 +1,6 @@
 [package]
 name = "zaino-testutils"
-description = "Shared helpers for Zaino live tests running on the ztest Kubernetes harness."
+description = "Live-test harness: validator and wallet ports, their zebrad and in-process librustzcash implementations, the in-process zainod launcher and the fixture cache."
 authors = { workspace = true }
 repository = { workspace = true }
 homepage = { workspace = true }
@@ -10,30 +10,56 @@ version = { workspace = true }
 publish = false
 
 [dependencies]
-# The k8s test harness. Owns validator/indexer/wallet lifecycle and exposes
-# typed RPC handles back to test code (replaces zcash_local_net's subprocess
-# launcher and Zaino's in-process service subscribers).
-ztest = { workspace = true }
+# In-process indexer and the types its handle exposes.
+zainod = { workspace = true }
+zaino-state = { workspace = true }
+zaino-serve = { workspace = true }
+zaino-primitives = { workspace = true }
+zaino-proto = { workspace = true }
+zcash_protocol = { workspace = true, features = ["local-consensus"] }
 
-# `anyhow::Result` on the parity helpers; JSON-RPC response comparison in the
-# `json` / `rpc` parity helpers.
+# Process launching, polling, RPC.
+tokio = { workspace = true }
 anyhow = { workspace = true }
+serde = { workspace = true }
 serde_json = { workspace = true }
-
-# `legacy_parser` only. It is the independent second parser the transaction
-# vectors compare against, so it renders into the same compact-format types the
-# server serves. `default-features = false` keeps the `heavy` feature — and with
-# it zebra-state and rocksdb — out of the live-test dependency graph.
-zaino-proto = { workspace = true, default-features = false }
-zebra-chain = { workspace = true }
+tonic = { workspace = true }
 prost = { workspace = true }
+reqwest = { workspace = true }
+nix = { workspace = true }
+tempfile = { workspace = true }
+tracing = { workspace = true }
 thiserror = { workspace = true }
 
-# The hex codec behind the `hex` module.
-hex = "0.4"
-# Polling clock behind the `finalised` gate.
-tokio = { workspace = true }
-orchard.workspace = true
+# Chain cache key and manifest.
+sha2 = { workspace = true }
+toml = { workspace = true }
+hex = { workspace = true }
+
+# The rustls crypto provider reqwest's client needs.
+zaino-rpc = { path = "../../packages/zaino-rpc" }
+# `RUST_LOG`-driven tracing for the in-process indexer.
+zaino-logging = { path = "../../packages/zaino-logging" }
+
+# The in-process librustzcash wallet (`librustzcash` module).
+zcash_client_backend = { version = "0.25", features = ["sync", "orchard", "transparent-inputs", "lightwalletd-tonic-transport"] }
+zcash_client_sqlite = { version = "0.23", features = ["orchard", "transparent-inputs"] }
+zcash_keys = { version = "0.17", features = ["sapling", "orchard", "transparent-inputs"] }
+zcash_proofs = { version = "0.31", features = ["bundled-prover"] }
+zcash_primitives = "0.31"
+rusqlite = "0.37"
+bip0039 = "0.14"
+secrecy = "0.8"
+rand = "0.10"
+async-trait = "0.1"
+zip32 = "0.3"
+
+# The operational seam depth the fixture is sized against.
+zaino-consensus = { path = "../../packages/zaino-consensus" }
+
+# `legacy_parser` only.
+zebra-chain = { workspace = true }
+orchard = { workspace = true }
 
 [dev-dependencies]
 # Drives `legacy_parser::transaction`'s own round-trip tests.

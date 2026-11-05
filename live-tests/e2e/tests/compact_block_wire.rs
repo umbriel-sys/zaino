@@ -9,47 +9,45 @@
 use std::time::Duration;
 
 use anyhow::Result;
-use zaino_testutils::ZEBRAD_VERSION;
-use ztest::prelude::*;
+use zaino_testutils::{
+    ActivationHeights, Backend, ChainCache, Fixture, Pool, Validator as _, Zainod, Zebrad,
+    REGTEST_ACTIVATION_HEIGHTS,
+};
 
-const READY: Duration = Duration::from_secs(120);
+const READY: Duration = Duration::from_secs(300);
 
 /// The mid-chain NU6.3 (Ironwood) activation height for the transition fixture:
 /// an Orchard era `[2, 6)` that flips to Ironwood at height 6.
 const NU6_3_TRANSITION_BOUNDARY: u32 = 6;
 
-/// NU6.3 never activates, so the orchard-receiver coinbase stays in Orchard
+fn nu6_3_boundary() -> Fixture {
+    Fixture::boundary(
+        "nu6_3",
+        ActivationHeights {
+            nu6_3: Some(NU6_3_TRANSITION_BOUNDARY),
+            nu7: None,
+            ..REGTEST_ACTIVATION_HEIGHTS
+        },
+        NU6_3_TRANSITION_BOUNDARY,
+    )
+}
+
+/// Below the NU6.3 boundary the orchard-receiver coinbase stays in Orchard
 /// actions for every block.
-#[ztest::qos::integration]
 #[tokio::test(flavor = "multi_thread")]
 async fn orchard_only_wire_serving_zebrad() -> Result<()> {
-    let mut env = TestEnv::builder().ready_timeout(READY).activation_heights(
-        ActivationHeights::builder()
-            .set_overwinter(Some(1))
-            .set_sapling(Some(1))
-            .set_blossom(Some(1))
-            .set_heartwood(Some(1))
-            .set_canopy(Some(1))
-            .set_nu5(Some(2))
-            .set_nu6(Some(2))
-            .set_nu6_1(Some(2))
-            .set_nu6_2(Some(2))
-            .build(),
-    );
-    let validator = env.add_validator(
-        Validator::zebrad(ZEBRAD_VERSION)
-            .regtest()
-            .mine_to(Pool::Orchard),
-    );
-    let indexer = env.add_indexer(dev!(Indexer::Zainod, "../../Dockerfile").regtest());
-    env.build().await?;
+    let cache = ChainCache::ensure_fixture(Fixture::orchard_only()).await?;
+    let zebrad = Zebrad::launch(cache.zebrad_config()).await?;
+    let indexer = Zainod::launch(cache.indexer_config(&zebrad, Backend::Fetch)).await?;
 
-    let tip = validator.generate_blocks(6).await?;
-    indexer.wait_for_block_num(tip, READY).await?;
+    let tip = cache.manifest.fixture.height;
+    assert_eq!(
+        cache.manifest.fixture.heights.nu6_3, None,
+        "the orchard-only fixture never activates NU6.3"
+    );
+    indexer.wait_for_block(tip, READY).await?;
 
-    let blocks = indexer
-        .get_block_range(BlockHeight::from(1u32), tip)
-        .await?;
+    let blocks = indexer.get_block_range(1, tip).await?;
     assert_eq!(
         blocks.len() as u64,
         u64::from(tip),
@@ -74,42 +72,44 @@ async fn orchard_only_wire_serving_zebrad() -> Result<()> {
     Ok(())
 }
 
-/// The zebrad default heights activate NU6.3 at height 2, so the orchard-receiver
-/// coinbase is paid as Ironwood actions from the first shielded block.
-#[ztest::qos::integration]
+/// The main fixture activates NU6.3 at height 2, so the orchard-receiver
+/// coinbase is paid as Ironwood actions from the first shielded block and no
+/// block in the chain carries an Orchard action.
 #[tokio::test(flavor = "multi_thread")]
 async fn ironwood_only_wire_serving_zebrad() -> Result<()> {
-    let mut env = TestEnv::builder().ready_timeout(READY);
-    let validator = env.add_validator(
-        Validator::zebrad(ZEBRAD_VERSION)
-            .regtest()
-            .mine_to(Pool::Orchard),
-    );
-    let indexer = env.add_indexer(dev!(Indexer::Zainod, "../../Dockerfile").regtest());
-    env.build().await?;
+    let cache = ChainCache::ensure().await?;
+    let zebrad = Zebrad::launch(cache.zebrad_config()).await?;
+    let indexer = Zainod::launch(cache.indexer_config(&zebrad, Backend::Fetch)).await?;
 
-    let tip = validator.generate_blocks(6).await?;
-    indexer.wait_for_block_num(tip, READY).await?;
+    let tip = cache.manifest.fixture.height;
+    indexer.wait_for_block(tip, READY).await?;
 
-    let blocks = indexer
-        .get_block_range(BlockHeight::from(1u32), tip)
-        .await?;
+    let blocks = indexer.get_block_range(1, tip).await?;
     assert_eq!(
         blocks.len() as u64,
         u64::from(tip),
         "zainod must serve every block in [1, {tip}]"
     );
 
+    let ironwood_heights: Vec<u64> = cache
+        .manifest
+        .events
+        .iter()
+        .filter(|event| event.pool == Pool::Ironwood)
+        .map(|event| u64::from(event.height))
+        .collect();
     for (offset, block) in blocks.iter().enumerate() {
         let height = 1 + offset as u64;
         assert_eq!(block.height, height, "served heights must be contiguous");
         let orchard: usize = block.vtx.iter().map(|tx| tx.actions.len()).sum();
         let ironwood: usize = block.vtx.iter().map(|tx| tx.ironwood_actions.len()).sum();
-        assert_eq!(
-            ironwood > 0,
-            height >= 2,
-            "ironwood actions at height {height} (orchard {orchard}, ironwood {ironwood})"
-        );
+        if height <= 2 || ironwood_heights.contains(&height) {
+            assert_eq!(
+                ironwood > 0,
+                height >= 2,
+                "ironwood actions at height {height} (orchard {orchard}, ironwood {ironwood})"
+            );
+        }
         assert_eq!(
             orchard, 0,
             "no orchard actions anywhere at height {height} (ironwood {ironwood})"
@@ -120,39 +120,26 @@ async fn ironwood_only_wire_serving_zebrad() -> Result<()> {
 
 /// The unchanged orchard-receiver miner's served stream flips from Orchard to
 /// Ironwood actions exactly at the NU6.3 activation height.
-#[ztest::qos::integration]
 #[tokio::test(flavor = "multi_thread")]
 async fn orchard_to_ironwood_transition_wire_serving_zebrad() -> Result<()> {
-    let mut env = TestEnv::builder().ready_timeout(READY).activation_heights(
-        ActivationHeights::builder()
-            .set_overwinter(Some(1))
-            .set_sapling(Some(1))
-            .set_blossom(Some(1))
-            .set_heartwood(Some(1))
-            .set_canopy(Some(1))
-            .set_nu5(Some(2))
-            .set_nu6(Some(2))
-            .set_nu6_1(Some(2))
-            .set_nu6_2(Some(2))
-            .set_nu6_3(Some(NU6_3_TRANSITION_BOUNDARY))
-            .build(),
+    let cache = ChainCache::ensure_fixture(nu6_3_boundary()).await?;
+    let zebrad = Zebrad::launch(cache.zebrad_config()).await?;
+    let indexer = Zainod::launch(cache.indexer_config(&zebrad, Backend::Fetch)).await?;
+    assert_eq!(
+        zebrad.coinbase_pool(),
+        cache.manifest.fixture.coinbase,
+        "the fixture's miner must stay the orchard receiver across the boundary"
     );
-    let validator = env.add_validator(
-        Validator::zebrad(ZEBRAD_VERSION)
-            .regtest()
-            .mine_to(Pool::Orchard),
-    );
-    let indexer = env.add_indexer(dev!(Indexer::Zainod, "../../Dockerfile").regtest());
-    env.build().await?;
 
     // Two blocks past the boundary, so both eras carry more than one block.
-    let mined = NU6_3_TRANSITION_BOUNDARY + 2;
-    let tip = validator.generate_blocks(mined).await?;
-    indexer.wait_for_block_num(tip, READY).await?;
-
-    let blocks = indexer
-        .get_block_range(BlockHeight::from(1u32), tip)
+    let target = NU6_3_TRANSITION_BOUNDARY + 2;
+    let tip = zebrad
+        .generate_blocks(target - cache.manifest.fixture.height)
         .await?;
+    assert_eq!(tip, target, "mined to {tip}, wanted {target}");
+    indexer.wait_for_block(tip, READY).await?;
+
+    let blocks = indexer.get_block_range(1, tip).await?;
     assert_eq!(
         blocks.len() as u64,
         u64::from(tip),

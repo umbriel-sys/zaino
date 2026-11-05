@@ -1,0 +1,14 @@
+# Every live test restores its own zebrad and an in-process zainod from the
+# fixture, so parallelism is bounded by memory (about 1.5 GB per test) and
+# proving CPU. The default is min(cores / 2, memory / 1.5 GB), measured on a
+# 16-core, 61 GB host: 4 threads 24 min, 8 threads 11 min, 16 threads 9 min
+# with most tests past the slow mark.
+[profile.default]
+test-threads = 8
+slow-timeout = { period = "120s", terminate-after = 5 }
+
+# The fixture builder goes first: it builds or refreshes the fixture every
+# other test copies. Later starters wait on its lock either way.
+[[profile.default.overrides]]
+filter = 'test(build_chain_cache)'
+priority = 100

@@ -172,7 +172,7 @@ of them:
 - `rc-gate` signal — any producer that posts a `success` check-run/commit-status
   with context `vars.RELMAN_RC_GATE_CHECK` (default `rc-gate`) on the tested
   commit. **No producer is wired yet** (the gate won't advance without `force`).
-  The anticipated producer is a **cluster job driven by `ztest`** that runs the
+  The anticipated producer is the **`live-tests.yaml` workflow** that runs the
   live suite and posts the status; it lands with no change to the gate. `GITHUB_TOKEN`
   suffices for whichever producer runs inside Actions — the gate only reads.
 - `release-gate` (deployment) signal — normally the cluster deployment gate posts
@@ -185,11 +185,11 @@ of them:
 ### Suite membership
 
 Which test lands in which suite is decided **here**, never by the runner. The
-runner — `ztest`, a restored self-hosted fleet, or plain CI — is a *scheduler and
+runner — the live-tests workflow, a self-hosted fleet, or plain CI — is a *scheduler and
 reporter*: it resolves a gate name to a selection this repo defines, executes it,
 and posts the named signal (§ "How a gate reads its suite"). A "gate-aware"
 runner is simply one that reads the manifest below; that awareness grants it no
-authority over membership. This is what lets `ztest` give a "simple standard
+authority over membership. This is what lets a runner give a "simple standard
 answer" (`rc-gate: green`) without owning any policy.
 
 **The sorting criterion.** The axis is **fidelity vs. cost**. Each suite admits
@@ -272,12 +272,12 @@ deferred to per-test filtersets once real wall-clock data exists — the manifes
 edit is one line when it does. That one-line-edit property is the point: moving a
 test between tiers needs no gate rename or policy-doc churn, and a gate-aware
 runner resolves `rc-gate` by reading `extends` + `filterset` from here, so
-"`ztest` knows the gates" costs nothing beyond parsing this file.
+"the runner knows the gates" costs nothing beyond parsing this file.
 
 **The answer envelope (contract 3 — a documented target, NOT built yet).** The
 gate mechanism needs only the boolean signal (§ "How a gate reads its suite").
 *Richer* reporting — for the release PR and relman's changelog/audit — would want
-a producer-agnostic shape so `ztest` and the devops soak repo could both feed it.
+a producer-agnostic shape so the live-tests workflow and the devops soak repo could both feed it.
 When (and only when) a second live producer exists, that shape is a thin
 **ref-carrying envelope**, never a per-test dump:
 
@@ -286,7 +286,7 @@ When (and only when) a second live producer exists, that shape is a thin
   "commit":     "<sha>",
   "gate":       "rc-gate",
   "verdict":    "success | failure",
-  "producer":   "ztest | deployment-soak",
+  "producer":   "live-tests | deployment-soak",
   "detail_ref": "<url to the run / junit / soak dashboard>",
   "at":         "<iso8601>"
 }

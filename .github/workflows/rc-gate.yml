@@ -73,7 +73,7 @@ jobs:
       # requires a NAMED SIGNAL — a check-run or commit status whose context is
       # `vars.RELMAN_RC_GATE_CHECK` (default `rc-gate`) — to be `success` on dev
       # HEAD. No publisher is wired yet, and
-      # the gate never names one: whatever publishes the signal (a ztest e2e
+      # the gate never names one: whatever publishes the signal (the live-tests
       # workflow, an external runner, a manual sign-off) is the swappable
       # membership. A `force` dispatch bypasses (recovery, or before the suite
       # has run for a fresh commit).

@@ -4,32 +4,26 @@ use std::time::Duration;
 
 use anyhow::{Context, Result};
 use clientless::rpc::z_validate_address::run_z_validate_for;
-use rstest::rstest;
 use serde_json::{json, Value};
-use zaino_testutils::{assert_json_equal_ignoring, assert_rpc_parity, ZEBRAD_VERSION};
-use ztest::prelude::*;
+use zaino_testutils::{
+    assert_json_equal_ignoring, assert_rpc_parity, Backend, ChainCache, ShieldedProtocol,
+    Validator as _, Zainod, Zebrad,
+};
 
 const READY: Duration = Duration::from_secs(60);
 
-/// Blocks each `get` test mines to reach the two-block chain the pre-ztest
-/// harness left at launch, which these assertions were written against.
-/// `TestEnv::build` already mines one warm-up block per regtest validator.
-const BASELINE: u32 = 1;
+/// zebra's first regtest halving: `height_for_halving(1)` with the regtest
+/// pre-Blossom interval (144), slow start 0 and Blossom at 1.
+const FIRST_HALVING_HEIGHT: u32 = 287;
 
 mod launch {
     use super::*;
 
-    #[rstest]
-    #[case::zebra(Validator::zebrad(ZEBRAD_VERSION))]
-    #[ztest::qos::integration]
     #[tokio::test(flavor = "multi_thread")]
-    pub(crate) async fn regtest_no_cache<B: ValidatorConfig>(
-        #[case] validator: Validator<B>,
-    ) -> Result<()> {
-        let mut env = TestEnv::builder().ready_timeout(READY);
-        let _validator = env.add_validator(validator.regtest());
-        let indexer = env.add_indexer(dev!(Indexer::Zainod, "../../Dockerfile").regtest());
-        env.build().await?;
+    pub(crate) async fn regtest_no_cache() -> Result<()> {
+        let cache = ChainCache::ensure().await?;
+        let zebrad = Zebrad::launch(cache.zebrad_config()).await?;
+        let indexer = Zainod::launch(cache.indexer_config(&zebrad, Backend::Fetch)).await?;
 
         let info = indexer.indexer_info().await?;
         assert!(
@@ -43,19 +37,13 @@ mod launch {
 mod validation {
     use super::*;
 
-    #[rstest]
-    #[case::zebra(Validator::zebrad(ZEBRAD_VERSION))]
-    #[ztest::qos::integration]
     #[tokio::test(flavor = "multi_thread")]
-    pub(crate) async fn validate_address<B: ValidatorConfig>(
-        #[case] validator: Validator<B>,
-    ) -> Result<()> {
-        let mut env = TestEnv::builder().ready_timeout(READY);
-        let _validator = env.add_validator(validator.regtest());
-        let indexer = env.add_indexer(dev!(Indexer::Zainod, "../../Dockerfile").regtest());
-        env.build().await?;
+    pub(crate) async fn validate_address() -> Result<()> {
+        let cache = ChainCache::ensure().await?;
+        let zebrad = Zebrad::launch(cache.zebrad_config()).await?;
+        let indexer = Zainod::launch(cache.indexer_config(&zebrad, Backend::Fetch)).await?;
 
-        let irpc = indexer.json_rpc().await?;
+        let irpc = indexer.json_rpc();
         for (addr, is_script) in [
             ("tm9iMLAuYMzJ6jtFLcA7rzUmfreGuKvr7Ma", false),
             ("t26YoyZ1iPgiMEWL4zGUm74eVWfhyDMXzY2", true),
@@ -80,19 +68,13 @@ mod validation {
         Ok(())
     }
 
-    #[rstest]
-    #[case::zebra(Validator::zebrad(ZEBRAD_VERSION))]
-    #[ztest::qos::integration]
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    pub(crate) async fn z_validate_address<B: ValidatorConfig>(
-        #[case] validator: Validator<B>,
-    ) -> Result<()> {
-        let mut env = TestEnv::builder().ready_timeout(READY);
-        let _validator = env.add_validator(validator.regtest());
-        let indexer = env.add_indexer(dev!(Indexer::Zainod, "../../Dockerfile").regtest());
-        env.build().await?;
+    pub(crate) async fn z_validate_address() -> Result<()> {
+        let cache = ChainCache::ensure().await?;
+        let zebrad = Zebrad::launch(cache.zebrad_config()).await?;
+        let indexer = Zainod::launch(cache.indexer_config(&zebrad, Backend::Fetch)).await?;
 
-        let irpc = indexer.json_rpc().await?;
+        let irpc = indexer.json_rpc();
         run_z_validate_for(&irpc).await
     }
 }
@@ -100,105 +82,85 @@ mod validation {
 mod get {
     use super::*;
 
-    #[rstest]
-    #[case::zebra(Validator::zebrad(ZEBRAD_VERSION))]
-    #[ztest::qos::integration]
     #[tokio::test(flavor = "multi_thread")]
-    pub(crate) async fn block_raw<B: ValidatorConfig>(
-        #[case] validator: Validator<B>,
-    ) -> Result<()> {
-        let mut env = TestEnv::builder().ready_timeout(READY);
-        let validator = env.add_validator(validator.regtest());
-        let indexer = env.add_indexer(dev!(Indexer::Zainod, "../../Dockerfile").regtest());
-        env.build().await?;
+    pub(crate) async fn block_raw() -> Result<()> {
+        let cache = ChainCache::ensure().await?;
+        let zebrad = Zebrad::launch(cache.zebrad_config()).await?;
+        let indexer = Zainod::launch(cache.indexer_config(&zebrad, Backend::Fetch)).await?;
 
-        let tip = validator.generate_blocks(BASELINE + 1).await?;
-        indexer.wait_for_block_num(tip, READY).await?;
+        let tip = cache.manifest.fixture.height;
+        indexer.wait_for_block(tip, READY).await?;
 
         let _block = indexer
             .json_rpc()
-            .await?
             .call_value("getblock", json!(["1", 0]))
             .await?;
         Ok(())
     }
 
-    #[rstest]
-    #[case::zebra(Validator::zebrad(ZEBRAD_VERSION))]
-    #[ztest::qos::integration]
     #[tokio::test(flavor = "multi_thread")]
-    pub(crate) async fn block_object<B: ValidatorConfig>(
-        #[case] validator: Validator<B>,
-    ) -> Result<()> {
-        let mut env = TestEnv::builder().ready_timeout(READY);
-        let validator = env.add_validator(validator.regtest());
-        let indexer = env.add_indexer(dev!(Indexer::Zainod, "../../Dockerfile").regtest());
-        env.build().await?;
+    pub(crate) async fn block_object() -> Result<()> {
+        let cache = ChainCache::ensure().await?;
+        let zebrad = Zebrad::launch(cache.zebrad_config()).await?;
+        let indexer = Zainod::launch(cache.indexer_config(&zebrad, Backend::Fetch)).await?;
 
-        let tip = validator.generate_blocks(BASELINE + 1).await?;
-        indexer.wait_for_block_num(tip, READY).await?;
+        let tip = cache.manifest.fixture.height;
+        indexer.wait_for_block(tip, READY).await?;
 
         let _block = indexer
             .json_rpc()
-            .await?
             .call_value("getblock", json!(["1", 1]))
             .await?;
         Ok(())
     }
 
-    #[rstest]
-    #[case::zebra(Validator::zebrad(ZEBRAD_VERSION))]
-    #[ztest::qos::integration]
     #[tokio::test(flavor = "multi_thread")]
-    pub(crate) async fn latest_block<B: ValidatorConfig>(
-        #[case] validator: Validator<B>,
-    ) -> Result<()> {
-        let mut env = TestEnv::builder().ready_timeout(READY);
-        let validator = env.add_validator(validator.regtest());
-        let indexer = env.add_indexer(dev!(Indexer::Zainod, "../../Dockerfile").regtest());
-        env.build().await?;
+    pub(crate) async fn latest_block() -> Result<()> {
+        let cache = ChainCache::ensure().await?;
+        let zebrad = Zebrad::launch(cache.zebrad_config()).await?;
+        let indexer = Zainod::launch(cache.indexer_config(&zebrad, Backend::Fetch)).await?;
 
-        let tip = validator.generate_blocks(BASELINE + 1).await?;
-        indexer.wait_for_block_num(tip, READY).await?;
+        let tip = cache.manifest.fixture.height;
+        indexer.wait_for_block(tip, READY).await?;
 
         let indexer_tip = indexer.latest_block_height().await?;
-        let validator_tip = validator.chain_height().await?;
+        let validator_tip = zebrad.chain_height().await?;
         assert_eq!(
             indexer_tip, validator_tip,
             "indexer tip ({indexer_tip}) must equal validator tip ({validator_tip})"
         );
+        assert_eq!(indexer_tip, tip, "indexer tip must be the fixture's tip");
 
         let indexer_best_hash = indexer
             .json_rpc()
-            .await?
             .call_value("getbestblockhash", json!([]))
             .await?;
-        let validator_best_hash = validator
-            .json_rpc()
-            .await?
+        let validator_best_hash = zebrad
+            .rpc()
             .call_value("getbestblockhash", json!([]))
             .await?;
         assert_eq!(
             indexer_best_hash, validator_best_hash,
             "indexer best block hash must equal validator best block hash"
         );
+        assert_eq!(
+            indexer_best_hash.as_str(),
+            Some(cache.manifest.tip_hash.as_str()),
+            "indexer best block hash must be the fixture's tip hash"
+        );
         Ok(())
     }
 
-    #[rstest]
-    #[case::zebra(Validator::zebrad(ZEBRAD_VERSION))]
-    #[ztest::qos::integration]
     #[tokio::test(flavor = "multi_thread")]
-    pub(crate) async fn block<B: ValidatorConfig>(#[case] validator: Validator<B>) -> Result<()> {
-        let mut env = TestEnv::builder().ready_timeout(READY);
-        let validator = env.add_validator(validator.regtest());
-        let indexer = env.add_indexer(dev!(Indexer::Zainod, "../../Dockerfile").regtest());
-        env.build().await?;
+    pub(crate) async fn block() -> Result<()> {
+        let cache = ChainCache::ensure().await?;
+        let zebrad = Zebrad::launch(cache.zebrad_config()).await?;
+        let indexer = Zainod::launch(cache.indexer_config(&zebrad, Backend::Fetch)).await?;
 
-        let tip = validator.generate_blocks(BASELINE + 1).await?;
-        indexer.wait_for_block_num(tip, READY).await?;
+        let tip = cache.manifest.fixture.height;
+        indexer.wait_for_block(tip, READY).await?;
 
-        let by_height = indexer.get_block(BlockHeight::from(1u32)).await?;
+        let by_height = indexer.get_block(1).await?;
         assert_eq!(by_height.height, 1, "get_block(1).height");
         assert_eq!(by_height.hash.len(), 32, "block hash must be 32 bytes");
         let hash_bytes: [u8; 32] = by_height
@@ -207,7 +169,7 @@ mod get {
             .try_into()
             .ok()
             .context("block hash must be 32 bytes")?;
-        let by_hash = indexer.get_block_by_hash(BlockHash(hash_bytes)).await?;
+        let by_hash = indexer.get_block_by_hash(hash_bytes).await?;
         assert_eq!(
             by_height.height, by_hash.height,
             "by-hash height round-trip"
@@ -216,67 +178,57 @@ mod get {
         Ok(())
     }
 
-    #[rstest]
-    #[case::zebra(Validator::zebrad(ZEBRAD_VERSION))]
-    #[ztest::qos::integration]
+    /// Parity at genesis and the first blocks, at every recorded transaction's
+    /// height (deep in the finalised band, across the seam, at the top) and at
+    /// the tip.
     #[tokio::test(flavor = "multi_thread")]
-    pub(crate) async fn block_header<B: ValidatorConfig>(
-        #[case] validator: Validator<B>,
-    ) -> Result<()> {
-        let mut env = TestEnv::builder().ready_timeout(READY);
-        let validator = env.add_validator(validator.regtest());
-        let indexer = env.add_indexer(dev!(Indexer::Zainod, "../../Dockerfile").regtest());
-        env.build().await?;
+    pub(crate) async fn block_header() -> Result<()> {
+        let cache = ChainCache::ensure().await?;
+        let zebrad = Zebrad::launch(cache.zebrad_config()).await?;
+        let indexer = Zainod::launch(cache.indexer_config(&zebrad, Backend::Fetch)).await?;
 
-        let vrpc = validator.json_rpc().await?;
-        let irpc = indexer.json_rpc().await?;
-        for i in 0u32..10 {
-            let tip = validator.generate_blocks(BASELINE + 1).await?;
-            indexer.wait_for_block_num(tip, READY).await?;
+        let tip = cache.manifest.fixture.height;
+        indexer.wait_for_block(tip, READY).await?;
+
+        let vrpc = zebrad.rpc();
+        let irpc = indexer.json_rpc();
+        let heights = (0..10)
+            .chain(cache.manifest.events.iter().map(|event| event.height))
+            .chain([tip]);
+        for height in heights {
             let blk = vrpc
-                .call_value("getblock", json!([i.to_string(), 1]))
+                .call_value("getblock", json!([height.to_string(), 1]))
                 .await?;
             let hash = blk
                 .get("hash")
                 .and_then(Value::as_str)
-                .with_context(|| format!("getblock({i},1).hash missing"))?
+                .with_context(|| format!("getblock({height},1).hash missing"))?
                 .to_string();
             for verbose in [false, true] {
                 let params = format!(r#"["{hash}", {verbose}]"#);
-                assert_rpc_parity("getblockheader", &params, &vrpc, &irpc, &[]).await?;
+                assert_rpc_parity("getblockheader", &params, vrpc, &irpc, &[]).await?;
             }
         }
         Ok(())
     }
 
-    #[rstest]
-    #[case::zebra(Validator::zebrad(ZEBRAD_VERSION))]
-    #[ztest::qos::integration]
     #[tokio::test(flavor = "multi_thread")]
-    pub(crate) async fn difficulty<B: ValidatorConfig>(
-        #[case] validator: Validator<B>,
-    ) -> Result<()> {
-        let mut env = TestEnv::builder().ready_timeout(READY);
-        let validator = env.add_validator(validator.regtest());
-        let indexer = env.add_indexer(dev!(Indexer::Zainod, "../../Dockerfile").regtest());
-        env.build().await?;
+    pub(crate) async fn difficulty() -> Result<()> {
+        let cache = ChainCache::ensure().await?;
+        let zebrad = Zebrad::launch(cache.zebrad_config()).await?;
+        let indexer = Zainod::launch(cache.indexer_config(&zebrad, Backend::Fetch)).await?;
 
-        let tip = validator.generate_blocks(BASELINE).await?;
-        indexer.wait_for_block_num(tip, READY).await?;
+        let tip = cache.manifest.fixture.height;
+        indexer.wait_for_block(tip, READY).await?;
 
-        let vrpc = validator.json_rpc().await?;
-        let irpc = indexer.json_rpc().await?;
-        assert_rpc_parity("getdifficulty", "", &vrpc, &irpc, &[]).await?;
+        let vrpc = zebrad.rpc();
+        let irpc = indexer.json_rpc();
+        assert_rpc_parity("getdifficulty", "", vrpc, &irpc, &[]).await?;
         Ok(())
     }
 
-    #[rstest]
-    #[case::zebra(Validator::zebrad(ZEBRAD_VERSION))]
-    #[ztest::qos::integration]
     #[tokio::test(flavor = "multi_thread")]
-    pub(crate) async fn mining_info<B: ValidatorConfig>(
-        #[case] validator: Validator<B>,
-    ) -> Result<()> {
+    pub(crate) async fn mining_info() -> Result<()> {
         let ignore: &[&str] = &[
             "difficulty",
             "errors",
@@ -287,98 +239,83 @@ mod get {
             "generate",
         ];
 
-        let mut env = TestEnv::builder().ready_timeout(READY);
-        let validator = env.add_validator(validator.regtest());
-        let indexer = env.add_indexer(dev!(Indexer::Zainod, "../../Dockerfile").regtest());
-        env.build().await?;
+        let cache = ChainCache::ensure().await?;
+        let zebrad = Zebrad::launch(cache.zebrad_config()).await?;
+        let indexer = Zainod::launch(cache.indexer_config(&zebrad, Backend::Fetch)).await?;
 
-        let tip = validator.generate_blocks(BASELINE).await?;
-        indexer.wait_for_block_num(tip, READY).await?;
+        let tip = cache.manifest.fixture.height;
+        indexer.wait_for_block(tip, READY).await?;
 
-        let v = validator
-            .json_rpc()
-            .await?
-            .call_value("getmininginfo", json!([]))
-            .await?;
+        let v = zebrad.rpc().call_value("getmininginfo", json!([])).await?;
         let i = indexer
             .json_rpc()
-            .await?
             .call_value("getmininginfo", json!([]))
             .await?;
         assert_json_equal_ignoring("getmininginfo", v, i, ignore);
         Ok(())
     }
 
-    #[rstest]
-    #[case::zebra(Validator::zebrad(ZEBRAD_VERSION))]
-    #[ztest::qos::integration]
     #[tokio::test(flavor = "multi_thread")]
-    pub(crate) async fn peer_info<B: ValidatorConfig>(
-        #[case] validator: Validator<B>,
-    ) -> Result<()> {
-        let mut env = TestEnv::builder().ready_timeout(READY);
-        let validator = env.add_validator(validator.regtest());
-        let indexer = env.add_indexer(dev!(Indexer::Zainod, "../../Dockerfile").regtest());
-        env.build().await?;
+    pub(crate) async fn peer_info() -> Result<()> {
+        let cache = ChainCache::ensure().await?;
+        let zebrad = Zebrad::launch(cache.zebrad_config()).await?;
+        let indexer = Zainod::launch(cache.indexer_config(&zebrad, Backend::Fetch)).await?;
 
-        let tip = validator.generate_blocks(BASELINE).await?;
-        indexer.wait_for_block_num(tip, READY).await?;
+        let tip = cache.manifest.fixture.height;
+        indexer.wait_for_block(tip, READY).await?;
 
-        let vrpc = validator.json_rpc().await?;
-        let irpc = indexer.json_rpc().await?;
-        assert_rpc_parity("getpeerinfo", "", &vrpc, &irpc, &[]).await?;
+        let vrpc = zebrad.rpc();
+        let irpc = indexer.json_rpc();
+        assert_rpc_parity("getpeerinfo", "", vrpc, &irpc, &[]).await?;
         Ok(())
     }
 
-    #[rstest]
-    #[case::zebra(Validator::zebrad(ZEBRAD_VERSION))]
-    #[ztest::qos::integration]
     #[tokio::test(flavor = "multi_thread")]
-    pub(crate) async fn block_subsidy<B: ValidatorConfig>(
-        #[case] validator: Validator<B>,
-    ) -> Result<()> {
-        let mut env = TestEnv::builder().ready_timeout(READY);
-        let validator = env.add_validator(validator.regtest());
-        let indexer = env.add_indexer(dev!(Indexer::Zainod, "../../Dockerfile").regtest());
-        env.build().await?;
+    pub(crate) async fn block_subsidy() -> Result<()> {
+        let cache = ChainCache::ensure().await?;
+        let zebrad = Zebrad::launch(cache.zebrad_config()).await?;
+        let indexer = Zainod::launch(cache.indexer_config(&zebrad, Backend::Fetch)).await?;
 
-        // getblocksubsidy is a pure function of (height, network schedule): the
-        // validator never reads the chain for an explicit height, so no mining is
-        // needed — heights far past the tip answer identically. Sweep through the
-        // first halving boundary plus a margin on both validators.
-        let block_limit = match validator.chain_config().await?.first_halving_height {
-            Some(first_halving) => u32::from(first_halving) + 10,
-            None => 10,
-        };
-        let tip = validator.generate_blocks(BASELINE + block_limit).await?;
-        indexer.wait_for_block_num(tip, READY).await?;
+        // getblocksubsidy is a pure function of (height, network schedule).
+        // NU7 is active from height 2 here, so issuance is smooth rather than
+        // halving: the sweep covers the pre-NU7 block, the activation, the old
+        // halving height, every recorded transaction and the tip.
+        let tip = cache.manifest.fixture.height;
+        indexer.wait_for_block(tip, READY).await?;
 
-        let vrpc = validator.json_rpc().await?;
-        let irpc = indexer.json_rpc().await?;
-        for height in 0u32..block_limit {
+        let vrpc = zebrad.rpc();
+        let irpc = indexer.json_rpc();
+        let activation = vrpc.call_value("getblocksubsidy", json!([2])).await?;
+        let later = vrpc.call_value("getblocksubsidy", json!([tip])).await?;
+        anyhow::ensure!(
+            activation["miner"] != later["miner"],
+            "premise: the subsidy must change between NU7 activation and the tip: \
+             {activation} vs {later}"
+        );
+        let mut heights: Vec<u32> = (0..=10)
+            .chain(FIRST_HALVING_HEIGHT - 1..=FIRST_HALVING_HEIGHT + 1)
+            .chain(cache.manifest.events.iter().map(|event| event.height))
+            .chain([tip])
+            .collect();
+        heights.sort_unstable();
+        heights.dedup();
+        for height in heights {
             let params = format!("[{height}]");
-            assert_rpc_parity("getblocksubsidy", &params, &vrpc, &irpc, &[]).await?;
+            assert_rpc_parity("getblocksubsidy", &params, vrpc, &irpc, &[]).await?;
         }
         Ok(())
     }
 
-    #[rstest]
-    #[case::zebra(Validator::zebrad(ZEBRAD_VERSION))]
-    #[ztest::qos::integration]
     #[tokio::test(flavor = "multi_thread")]
-    pub(crate) async fn best_blockhash<B: ValidatorConfig>(
-        #[case] validator: Validator<B>,
-    ) -> Result<()> {
-        let mut env = TestEnv::builder().ready_timeout(READY);
-        let validator = env.add_validator(validator.regtest());
-        let indexer = env.add_indexer(dev!(Indexer::Zainod, "../../Dockerfile").regtest());
-        env.build().await?;
+    pub(crate) async fn best_blockhash() -> Result<()> {
+        let cache = ChainCache::ensure().await?;
+        let zebrad = Zebrad::launch(cache.zebrad_config()).await?;
+        let indexer = Zainod::launch(cache.indexer_config(&zebrad, Backend::Fetch)).await?;
 
-        let tip = validator.generate_blocks(BASELINE + 5).await?;
-        indexer.wait_for_block_num(tip, READY).await?;
+        let tip = cache.manifest.fixture.height;
+        indexer.wait_for_block(tip, READY).await?;
 
-        let tip = u32::from(validator.chain_height().await?);
-        let irpc = indexer.json_rpc().await?;
+        let irpc = indexer.json_rpc();
         let block = irpc
             .call_value("getblock", json!([tip.to_string(), 1]))
             .await?;
@@ -396,155 +333,119 @@ mod get {
             block_hash, best_hash,
             "getblock(tip).hash must equal getbestblockhash"
         );
-        Ok(())
-    }
-
-    #[rstest]
-    #[case::zebra(Validator::zebrad(ZEBRAD_VERSION))]
-    #[ztest::qos::integration]
-    #[tokio::test(flavor = "multi_thread")]
-    pub(crate) async fn block_count<B: ValidatorConfig>(
-        #[case] validator: Validator<B>,
-    ) -> Result<()> {
-        let mut env = TestEnv::builder().ready_timeout(READY);
-        let validator = env.add_validator(validator.regtest());
-        let indexer = env.add_indexer(dev!(Indexer::Zainod, "../../Dockerfile").regtest());
-        env.build().await?;
-
-        let tip = validator.generate_blocks(BASELINE + 5).await?;
-        indexer.wait_for_block_num(tip, READY).await?;
-
-        let vrpc = validator.json_rpc().await?;
-        let irpc = indexer.json_rpc().await?;
-        let count = assert_rpc_parity("getblockcount", "", &vrpc, &irpc, &[]).await?;
         assert_eq!(
-            count.as_u64(),
-            Some(u64::from(u32::from(tip))),
-            "getblockcount must equal the validator's tip"
+            best_hash, cache.manifest.tip_hash,
+            "getbestblockhash must be the fixture's tip hash"
         );
         Ok(())
     }
 
-    #[rstest]
-    #[case::zebra(Validator::zebrad(ZEBRAD_VERSION))]
-    #[ztest::qos::integration]
     #[tokio::test(flavor = "multi_thread")]
-    pub(crate) async fn block_nullifiers<B: ValidatorConfig>(
-        #[case] validator: Validator<B>,
-    ) -> Result<()> {
-        let mut env = TestEnv::builder().ready_timeout(READY);
-        let validator = env.add_validator(validator.regtest());
-        let indexer = env.add_indexer(dev!(Indexer::Zainod, "../../Dockerfile").regtest());
-        env.build().await?;
+    pub(crate) async fn block_count() -> Result<()> {
+        let cache = ChainCache::ensure().await?;
+        let zebrad = Zebrad::launch(cache.zebrad_config()).await?;
+        let indexer = Zainod::launch(cache.indexer_config(&zebrad, Backend::Fetch)).await?;
 
-        let tip = validator.generate_blocks(BASELINE + 3).await?;
-        indexer.wait_for_block_num(tip, READY).await?;
+        let tip = cache.manifest.fixture.height;
+        indexer.wait_for_block(tip, READY).await?;
 
-        let cb = indexer
-            .get_block_nullifiers(BlockHeight::from(1u32))
-            .await?;
+        let vrpc = zebrad.rpc();
+        let irpc = indexer.json_rpc();
+        let count = assert_rpc_parity("getblockcount", "", vrpc, &irpc, &[]).await?;
         assert_eq!(
-            cb.height, 1,
+            count.as_u64(),
+            Some(u64::from(tip)),
+            "getblockcount must equal the fixture's tip"
+        );
+        Ok(())
+    }
+
+    /// At the first recorded shield, a block carrying a transaction with spends.
+    #[tokio::test(flavor = "multi_thread")]
+    pub(crate) async fn block_nullifiers() -> Result<()> {
+        let cache = ChainCache::ensure().await?;
+        let zebrad = Zebrad::launch(cache.zebrad_config()).await?;
+        let indexer = Zainod::launch(cache.indexer_config(&zebrad, Backend::Fetch)).await?;
+
+        let tip = cache.manifest.fixture.height;
+        indexer.wait_for_block(tip, READY).await?;
+
+        let shield = cache
+            .manifest
+            .events
+            .iter()
+            .find(|event| event.kind == "shield")
+            .context("the fixture records a shield")?;
+        let cb = indexer.get_block_nullifiers(shield.height).await?;
+        assert_eq!(
+            cb.height,
+            u64::from(shield.height),
             "GetBlockNullifiers must return the requested height"
         );
         Ok(())
     }
 
-    #[rstest]
-    #[case::zebra(Validator::zebrad(ZEBRAD_VERSION))]
-    #[ztest::qos::integration]
     #[tokio::test(flavor = "multi_thread")]
-    pub(crate) async fn block_range<B: ValidatorConfig>(
-        #[case] validator: Validator<B>,
-    ) -> Result<()> {
-        let mut env = TestEnv::builder().ready_timeout(READY);
-        let validator = env.add_validator(validator.regtest());
-        let indexer = env.add_indexer(dev!(Indexer::Zainod, "../../Dockerfile").regtest());
-        env.build().await?;
+    pub(crate) async fn block_range() -> Result<()> {
+        let cache = ChainCache::ensure().await?;
+        let zebrad = Zebrad::launch(cache.zebrad_config()).await?;
+        let indexer = Zainod::launch(cache.indexer_config(&zebrad, Backend::Fetch)).await?;
 
-        let tip = validator.generate_blocks(BASELINE + 10).await?;
-        indexer.wait_for_block_num(tip, READY).await?;
+        let tip = cache.manifest.fixture.height;
+        indexer.wait_for_block(tip, READY).await?;
 
-        let _blocks = indexer
-            .get_block_range(BlockHeight::from(1u32), BlockHeight::from(10u32))
-            .await?;
+        let _blocks = indexer.get_block_range(1, 10).await?;
         Ok(())
     }
 
-    #[rstest]
-    #[case::zebra(Validator::zebrad(ZEBRAD_VERSION))]
-    #[ztest::qos::integration]
     #[tokio::test(flavor = "multi_thread")]
-    pub(crate) async fn block_range_nullifiers<B: ValidatorConfig>(
-        #[case] validator: Validator<B>,
-    ) -> Result<()> {
-        let mut env = TestEnv::builder().ready_timeout(READY);
-        let validator = env.add_validator(validator.regtest());
-        let indexer = env.add_indexer(dev!(Indexer::Zainod, "../../Dockerfile").regtest());
-        env.build().await?;
+    pub(crate) async fn block_range_nullifiers() -> Result<()> {
+        let cache = ChainCache::ensure().await?;
+        let zebrad = Zebrad::launch(cache.zebrad_config()).await?;
+        let indexer = Zainod::launch(cache.indexer_config(&zebrad, Backend::Fetch)).await?;
 
-        let tip = validator.generate_blocks(BASELINE + 10).await?;
-        indexer.wait_for_block_num(tip, READY).await?;
+        let tip = cache.manifest.fixture.height;
+        indexer.wait_for_block(tip, READY).await?;
 
-        let _blocks = indexer
-            .get_block_range_nullifiers(BlockHeight::from(1u32), BlockHeight::from(10u32))
-            .await?;
+        let _blocks = indexer.get_block_range_nullifiers(1, 10).await?;
         Ok(())
     }
 
-    #[rstest]
-    #[case::zebra(Validator::zebrad(ZEBRAD_VERSION))]
-    #[ztest::qos::integration]
     #[tokio::test(flavor = "multi_thread")]
-    pub(crate) async fn tree_state<B: ValidatorConfig>(
-        #[case] validator: Validator<B>,
-    ) -> Result<()> {
-        let mut env = TestEnv::builder().ready_timeout(READY);
-        let validator = env.add_validator(validator.regtest());
-        let indexer = env.add_indexer(dev!(Indexer::Zainod, "../../Dockerfile").regtest());
-        env.build().await?;
+    pub(crate) async fn tree_state() -> Result<()> {
+        let cache = ChainCache::ensure().await?;
+        let zebrad = Zebrad::launch(cache.zebrad_config()).await?;
+        let indexer = Zainod::launch(cache.indexer_config(&zebrad, Backend::Fetch)).await?;
 
-        let tip = validator.generate_blocks(BASELINE + 1).await?;
-        indexer.wait_for_block_num(tip, READY).await?;
+        let tip = cache.manifest.fixture.height;
+        indexer.wait_for_block(tip, READY).await?;
 
-        let chain_tip = validator.chain_height().await?;
+        let chain_tip = zebrad.chain_height().await?;
         let _ts = indexer.get_tree_state(chain_tip).await?;
         Ok(())
     }
 
-    #[rstest]
-    #[case::zebra(Validator::zebrad(ZEBRAD_VERSION))]
-    #[ztest::qos::integration]
     #[tokio::test(flavor = "multi_thread")]
-    pub(crate) async fn latest_tree_state<B: ValidatorConfig>(
-        #[case] validator: Validator<B>,
-    ) -> Result<()> {
-        let mut env = TestEnv::builder().ready_timeout(READY);
-        let validator = env.add_validator(validator.regtest());
-        let indexer = env.add_indexer(dev!(Indexer::Zainod, "../../Dockerfile").regtest());
-        env.build().await?;
+    pub(crate) async fn latest_tree_state() -> Result<()> {
+        let cache = ChainCache::ensure().await?;
+        let zebrad = Zebrad::launch(cache.zebrad_config()).await?;
+        let indexer = Zainod::launch(cache.indexer_config(&zebrad, Backend::Fetch)).await?;
 
-        let tip = validator.generate_blocks(BASELINE + 1).await?;
-        indexer.wait_for_block_num(tip, READY).await?;
+        let tip = cache.manifest.fixture.height;
+        indexer.wait_for_block(tip, READY).await?;
 
         let _ts = indexer.get_latest_tree_state().await?;
         Ok(())
     }
 
-    #[rstest]
-    #[case::zebra(Validator::zebrad(ZEBRAD_VERSION))]
-    #[ztest::qos::integration]
     #[tokio::test(flavor = "multi_thread")]
-    pub(crate) async fn subtree_roots<B: ValidatorConfig>(
-        #[case] validator: Validator<B>,
-    ) -> Result<()> {
-        let mut env = TestEnv::builder().ready_timeout(READY);
-        let validator = env.add_validator(validator.regtest());
-        let indexer = env.add_indexer(dev!(Indexer::Zainod, "../../Dockerfile").regtest());
-        env.build().await?;
+    pub(crate) async fn subtree_roots() -> Result<()> {
+        let cache = ChainCache::ensure().await?;
+        let zebrad = Zebrad::launch(cache.zebrad_config()).await?;
+        let indexer = Zainod::launch(cache.indexer_config(&zebrad, Backend::Fetch)).await?;
 
-        let tip = validator.generate_blocks(BASELINE + 1).await?;
-        indexer.wait_for_block_num(tip, READY).await?;
+        let tip = cache.manifest.fixture.height;
+        indexer.wait_for_block(tip, READY).await?;
 
         let _roots = indexer
             .get_subtree_roots(0, ShieldedProtocol::Sapling, 0)
@@ -552,43 +453,31 @@ mod get {
         Ok(())
     }
 
-    #[rstest]
-    #[case::zebra(Validator::zebrad(ZEBRAD_VERSION))]
-    #[ztest::qos::integration]
     #[tokio::test(flavor = "multi_thread")]
-    pub(crate) async fn lightd_info<B: ValidatorConfig>(
-        #[case] validator: Validator<B>,
-    ) -> Result<()> {
-        let mut env = TestEnv::builder().ready_timeout(READY);
-        let validator = env.add_validator(validator.regtest());
-        let indexer = env.add_indexer(dev!(Indexer::Zainod, "../../Dockerfile").regtest());
-        env.build().await?;
+    pub(crate) async fn lightd_info() -> Result<()> {
+        let cache = ChainCache::ensure().await?;
+        let zebrad = Zebrad::launch(cache.zebrad_config()).await?;
+        let indexer = Zainod::launch(cache.indexer_config(&zebrad, Backend::Fetch)).await?;
 
-        let tip = validator.generate_blocks(BASELINE).await?;
-        indexer.wait_for_block_num(tip, READY).await?;
+        let tip = cache.manifest.fixture.height;
+        indexer.wait_for_block(tip, READY).await?;
 
         let _info = indexer.indexer_info().await?;
         Ok(())
     }
 
-    #[rstest]
-    #[case::zebra(Validator::zebrad(ZEBRAD_VERSION))]
-    #[ztest::qos::integration]
     #[tokio::test(flavor = "multi_thread")]
-    pub(crate) async fn get_network_sol_ps<B: ValidatorConfig>(
-        #[case] validator: Validator<B>,
-    ) -> Result<()> {
-        let mut env = TestEnv::builder().ready_timeout(READY);
-        let validator = env.add_validator(validator.regtest());
-        let indexer = env.add_indexer(dev!(Indexer::Zainod, "../../Dockerfile").regtest());
-        env.build().await?;
+    pub(crate) async fn get_network_sol_ps() -> Result<()> {
+        let cache = ChainCache::ensure().await?;
+        let zebrad = Zebrad::launch(cache.zebrad_config()).await?;
+        let indexer = Zainod::launch(cache.indexer_config(&zebrad, Backend::Fetch)).await?;
 
-        let tip = validator.generate_blocks(BASELINE).await?;
-        indexer.wait_for_block_num(tip, READY).await?;
+        let tip = cache.manifest.fixture.height;
+        indexer.wait_for_block(tip, READY).await?;
 
-        let vrpc = validator.json_rpc().await?;
-        let irpc = indexer.json_rpc().await?;
-        assert_rpc_parity("getnetworksolps", "", &vrpc, &irpc, &[]).await?;
+        let vrpc = zebrad.rpc();
+        let irpc = indexer.json_rpc();
+        assert_rpc_parity("getnetworksolps", "", vrpc, &irpc, &[]).await?;
         Ok(())
     }
 }

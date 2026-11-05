@@ -1,8 +1,6 @@
 name: Live tests
 
 on:
-  # Fork PRs cannot mint the OIDC token (`pull_request` from a fork is capped read-only), so a
-  # maintainer runs them from here: base-repo context, full permissions, behind the environment gate.
   workflow_dispatch:
     inputs:
       pr:
@@ -10,16 +8,9 @@ on:
         required: false
         type: string
   pull_request:
-    # `closed` is here only to cancel: a merged or closed PR's run enters the
-    # per-PR group below and supersedes the run still holding the cluster, then
-    # every job skips. Without it an orphaned run holds its reservation for the
-    # whole job timeout.
-    types: [opened, synchronize, reopened, closed]
+    types: [opened, synchronize, reopened]
 
-# Per-PR — a push supersedes its own run, never another PR's
-# - the cluster-wide queue is on the `run` job, not here: ztest waits at most
-#   600 s for capacity (`qos/ledger.rs::ACQUIRE_WAIT_TIMEOUT`), shorter than any
-#   suite, so two PRs contending at the cluster means the second one fails
+# Per-PR: a push supersedes its own run, never another PR's.
 concurrency:
   group: ${{ github.workflow }}-${{ github.head_ref || github.run_id }}
   cancel-in-progress: true
@@ -27,11 +18,13 @@ concurrency:
 permissions:
   contents: read
 
+env:
+  # The oldest zebrad the harness drives (`zaino_testutils::ZEBRAD_MIN_VERSION`).
+  ZEBRAD_VERSION: "7.0.0"
+
 jobs:
-  # Cluster-free: compiles the live suite without standing up a cluster.
   compile:
     name: Compile check
-    if: github.event.action != 'closed'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
@@ -56,90 +49,47 @@ jobs:
           --all-targets --all-features --locked -- -D warnings
 
   run:
-    name: Run on cluster
+    name: Run
     needs: compile
-    # Fork PRs skip rather than fail: read-only token = no OIDC = no tailnet. Run them by hand
-    # via workflow_dispatch, which GitHub already restricts to write access.
-    if: >
-      github.event.action != 'closed'
-      && (github.event_name == 'workflow_dispatch'
-      || github.event.pull_request.head.repo.full_name == github.repository)
-    # One run on the cluster at a time. Runs from other PRs wait in GitHub's
-    # queue instead of at ztest's 600 s capacity wait. GitHub keeps one pending
-    # run per group: a third arrival cancels the second, which then needs a
-    # re-run, where before it failed ten minutes in.
-    concurrency:
-      group: ${{ github.workflow }}-cluster
-      cancel-in-progress: false
-    # Unconditional, and load-bearing beyond any protection rules: the tailnet trust credential
-    # matches subject `repo:zingolabs/zaino:environment:ztest-cluster`, and a job without an
-    # `environment:` mints `…:pull_request` instead → 403 at the join.
-    environment: ztest-cluster
     runs-on: ubuntu-latest
-    timeout-minutes: 90
-    permissions:
-      contents: read
-      id-token: write # mints the GitHub OIDC token Tailscale federates on
+    timeout-minutes: 120
     steps:
       - uses: actions/checkout@v7
         with:
           ref: ${{ inputs.pr && format('refs/pull/{0}/merge', inputs.pr) || '' }}
 
-      # CLI and library must be the same version: ztest verifies a hash of the
-      # ClusterRole it renders against the applied one at run start. So the version is derived,
-      # never floated to latest.
-      - name: Resolve ztest version from the lockfile
-        id: ztest
-        run: |
-          v=$(awk '/^name = "ztest"$/ { getline; print $3 }' live-tests/Cargo.lock | tr -d '"')
-          [ -n "$v" ] || { echo "no ztest version in live-tests/Cargo.lock"; exit 1; }
-          echo "version=$v" >> "$GITHUB_OUTPUT"
-
-      # Caches the built binary itself. `cargo install` keys off `~/.cargo/.crates.toml`, which a
-      # `~/.cargo/bin` cache does not carry — so a plain cache restores the binary and rebuilds anyway.
-      - name: Install ztest CLI
-        uses: baptiste0928/cargo-install@v3
+      - uses: actions/cache@v6
         with:
-          crate: ztest_cli
-          version: ${{ steps.ztest.outputs.version }}
-          locked: true
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            live-tests/target
+          key: live-tests-compile-${{ hashFiles('live-tests/Cargo.lock') }}
+          restore-keys: live-tests-compile-
 
-      - uses: azure/setup-kubectl@v5
-
-      # Workload identity federation (GitHub OIDC) — no stored secret. Client ID and
-      # audience are non-secret repo *variables*. tag:ztest-runner reaches
-      # tag:k8s-operator:443 only — no node, no SSH.
-      - name: Join tailnet (ephemeral tag:ztest-runner, OIDC — no secret)
-        uses: tailscale/github-action@v4
-        with:
-          oauth-client-id: ${{ vars.TS_OIDC_CLIENT_ID }}
-          audience: ${{ vars.TS_OIDC_AUDIENCE }}
-          tags: tag:ztest-runner
-
-      # Authenticates as the tailnet identity; no kube token exists to leak.
-      # The tailnet grant impersonates tag:ztest-runner into the k8s group `ztest-ci`.
-      - name: Configure kubeconfig via the operator proxy
-        run: tailscale configure kubeconfig tailscale-operator
-
-      - name: Register the cluster
+      # The release binary is taken out of the published image, which is
+      # faster than building zebrad from source.
+      - name: Install zebrad from the zfnd/zebra image
         run: |
-          ztest cluster add zingo-infra \
-            --kube-context "$(kubectl config current-context)" \
-            --extra-config '${{ vars.ZTEST_CLUSTER_CONFIG_URL }}' \
-            --set-default --yes
+          id=$(docker create "zfnd/zebra:${ZEBRAD_VERSION}")
+          sudo docker cp "$id:/usr/local/bin/zebrad" /usr/local/bin/zebrad
+          docker rm "$id"
+          zebrad --version
 
-      # Probes every (resource, verb) pair the run role grants, so a permission gap
-      # is named here rather than 403-ing twenty minutes into a run.
-      - name: Check the cluster
-        run: ztest cluster check
+      - uses: taiki-e/install-action@nextest
+
+      # Keyed on what the harness keys its fixture directory on; a miss
+      # rebuilds it in the builder test below.
+      - name: Cache the fixture
+        uses: actions/cache@v6
+        with:
+          path: live-tests/.cache
+          key: fixture-${{ env.ZEBRAD_VERSION }}-${{ hashFiles('live-tests/zaino-testutils/src/cache.rs', 'live-tests/zaino-testutils/src/validator.rs', 'live-tests/Cargo.lock') }}
+
+      - name: Build the fixture
+        working-directory: live-tests
+        run: cargo nextest run --locked -p clientless -E 'test(build_chain_cache)'
 
       - name: Run the live suite
         working-directory: live-tests
-        run: ztest run
-
-      # - no janitor on zingo-infra (`janitor/ttl` is advisory) → a cancelled run leaks without this
-      # - targeted by run id: every CI run shares `ztest.io/user=runner`, untargeted reaps peers
-      - name: Reclaim this run's cluster resources
-        if: always()
-        continue-on-error: true
-        run: ztest cleanup --force '${{ github.run_id }}'
+        run: cargo nextest run --locked --workspace
