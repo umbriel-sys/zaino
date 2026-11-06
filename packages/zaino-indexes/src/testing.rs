@@ -72,6 +72,17 @@ pub(crate) fn block(n: u32) -> FoldBlock {
     block_of(header(n))
 }
 
+/// Block `n` holding `count` empty transactions, txids from `n * 100 + i`.
+pub(crate) fn busy(n: u32, count: u32) -> FoldBlock {
+    block_with(n, (0..count).map(|i| tx(n * 100 + i)).collect())
+}
+
+/// Block `n` holding `transactions`.
+pub(crate) fn block_with(n: u32, transactions: Vec<FoldTx>) -> FoldBlock {
+    let roots = block(n).tree_roots().clone();
+    FoldBlock::try_new(header(n), transactions, roots).expect("fixture block")
+}
+
 /// An empty backend declaring `schema`'s namespaces.
 pub(crate) fn backend(schema: &Schema) -> InMemoryBackend {
     InMemoryBackend::new(&schema.specs()).expect("fixture specs")

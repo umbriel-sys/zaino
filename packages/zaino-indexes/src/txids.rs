@@ -10,6 +10,7 @@ use zaino_persistence::{sequence_key, BackendReader, Namespace, WriteOp};
 use zaino_primitives::types::{Height, TransactionId};
 
 use crate::block::FoldBlock;
+use crate::codec::{self, elements, le_u32, txid};
 use crate::index::{check_extends, Fold, FoldError, Index};
 use crate::layout::{declared, Field, Layout, LayoutError};
 use crate::schema::{NamespaceLayout, Schema};
@@ -63,7 +64,7 @@ impl Index for Txids {
     fn fold(state: Option<&State>, block: &FoldBlock) -> Result<Fold<State>, FoldError> {
         check_extends(NAME, state.map(|state| state.tip), block)?;
         let transactions = block.transactions();
-        let count = u32::try_from(transactions.len()).map_err(|_| LayoutError::Overflow)?;
+        let count = codec::count(transactions.len())?;
         let list = transactions
             .iter()
             .flat_map(|tx| <[u8; TXID_BYTES]>::from(tx.compact().txid))
@@ -98,17 +99,8 @@ impl<'a, R: BackendReader> Reader<'a, R> {
         let Some(record) = self.backend.get(TXIDS, &key(height))? else {
             return Ok(None);
         };
-        let count = decode_count(BLOCK_TXIDS.field(&record, COUNT)?)?;
-        let list = BLOCK_TXIDS.field(&record, LIST)?;
-        let chunks = list.chunks_exact(TXID_BYTES);
-        let expected = usize::try_from(count).map_err(|_| LayoutError::Overflow)?;
-        if !chunks.remainder().is_empty() || chunks.len() != expected {
-            return Err(FoldError::continuity(
-                NAME,
-                format!("{} txid bytes for {count} at height {height}", list.len()),
-            ));
-        }
-        chunks
+        let count = le_u32(BLOCK_TXIDS.field(&record, COUNT)?, "count")?;
+        elements(NAME, count, BLOCK_TXIDS.field(&record, LIST)?, TXID_BYTES)?
             .map(|bytes| txid(bytes).map_err(FoldError::from))
             .collect::<Result<Vec<_>, _>>()
             .map(Some)
@@ -119,7 +111,7 @@ impl<'a, R: BackendReader> Reader<'a, R> {
         let Some(bytes) = self.backend.get_range(TXIDS, &key(height), COUNT_RANGE)? else {
             return Ok(None);
         };
-        decode_count(&bytes).map(Some)
+        Ok(Some(le_u32(&bytes, "count")?))
     }
 
     /// The txid at (`height`, `index`): two field reads, never the record.
@@ -141,38 +133,13 @@ fn key(height: Height) -> Vec<u8> {
     sequence_key(u64::from(height))
 }
 
-fn decode_count(bytes: &[u8]) -> Result<u32, FoldError> {
-    let bytes = <[u8; 4]>::try_from(bytes).map_err(|_| LayoutError::FieldWidth {
-        field: "count",
-        expected: 4,
-        actual: bytes.len(),
-    })?;
-    Ok(u32::from_le_bytes(bytes))
-}
-
-fn txid(bytes: &[u8]) -> Result<TransactionId, LayoutError> {
-    <[u8; TXID_BYTES]>::try_from(bytes)
-        .map(TransactionId::from)
-        .map_err(|_| LayoutError::FieldWidth {
-            field: "txid",
-            expected: TXID_BYTES,
-            actual: bytes.len(),
-        })
-}
-
 #[cfg(test)]
 mod tests {
     use zaino_persistence::{Backend as _, SchemaDigest};
 
     use super::*;
     use crate::block::FoldBlock;
-    use crate::testing::{backend, block, fold_all, header, tx};
-
-    /// Block `n` with `count` transactions, txids `n * 100 + i`.
-    fn busy(n: u32, count: u32) -> FoldBlock {
-        let txs = (0..count).map(|i| tx(n * 100 + i)).collect();
-        FoldBlock::try_new(header(n), txs, block(n).tree_roots().clone()).expect("fixture")
-    }
+    use crate::testing::{backend, busy, fold_all};
 
     fn txids_of(block: &FoldBlock) -> Vec<TransactionId> {
         block

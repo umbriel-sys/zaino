@@ -95,3 +95,9 @@ layouts and fetch single fields with `get_range`.
 | --- | --- | --- |
 | I-01 | `headers` | height → header and cumulative chain work (`headers`); hash → height (`heights`) |
 | I-02 | `txids` | height → transaction count and txids in block order (`txids`); `Reader::txid(height, index)` is two field reads via `Layout::element_range`, the location → txid lookup the other indexes resolve through |
+| I-03 | `txid_location` | txid → (height, tx index) (`txid_location`); `Reader::positions` batches through `get_many` |
+| I-04 | `transparent` | per height, three columns in wire form: `t_layout` (per tx, cumulative input and output counts), `t_in` (36-byte prevouts), `t_out` (value then script, as a variable-element list); `Reader::output(position, vout)` reads five small fields, never a record |
+
+Lists of variable-length elements (`t_out`) hold each element's end offset
+(`u32`, relative to the data) ahead of the data, so element *i* is two
+offsets at a constant stride and one slice.

@@ -18,12 +18,15 @@
 )]
 
 mod block;
+mod codec;
 pub mod headers;
 mod index;
 mod layout;
 mod schema;
 #[cfg(test)]
 mod testing;
+pub mod transparent;
+pub mod txid_location;
 pub mod txids;
 
 pub use block::{FoldBlock, FoldBlockError, FoldTx};

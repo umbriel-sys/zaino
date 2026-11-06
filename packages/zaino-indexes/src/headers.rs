@@ -9,8 +9,9 @@ use zaino_primitives::types::{
 };
 
 use crate::block::FoldBlock;
+use crate::codec::{self, array, le_u32};
 use crate::index::{check_extends, Fold, FoldError, Index};
-use crate::layout::{declared, Field, Layout, LayoutError};
+use crate::layout::{declared, Field, Layout};
 use crate::schema::{NamespaceLayout, Schema};
 
 /// The index's name: its directory and the name dependants use.
@@ -196,17 +197,14 @@ impl<'a, R: BackendReader> Reader<'a, R> {
         let Some(bytes) = self.backend.get(HEIGHTS, &<[u8; 32]>::from(hash))? else {
             return Ok(None);
         };
-        let height = u32::from_le_bytes(array::<4>(&bytes, "height")?);
-        Height::try_from(height)
-            .map(Some)
-            .map_err(|_| FoldError::continuity(NAME, format!("stored height {height}")))
+        Ok(Some(codec::height(NAME, le_u32(&bytes, "height")?)?))
     }
 }
 
 /// The header a stored record holds at `height`.
 fn decode_header(record: &[u8], height: Height) -> Result<BlockHeader, FoldError> {
     let field = |index: usize| HEADER.field(record, index);
-    let bits = u32::from_le_bytes(array::<4>(field(BITS)?, "bits")?);
+    let bits = le_u32(field(BITS)?, "bits")?;
     let solution = field(SOLUTION)?;
     let solution = match (
         <[u8; 1344]>::try_from(solution),
@@ -223,10 +221,10 @@ fn decode_header(record: &[u8], height: Height) -> Result<BlockHeader, FoldError
     };
     Ok(BlockHeader {
         hash: BlockHash::from(array::<32>(field(HASH)?, "hash")?),
-        version: u32::from_le_bytes(array::<4>(field(VERSION)?, "version")?),
+        version: le_u32(field(VERSION)?, "version")?,
         prev_hash: BlockHash::from(array::<32>(field(PREV_HASH)?, "prev_hash")?),
         height,
-        time: u32::from_le_bytes(array::<4>(field(TIME)?, "time")?),
+        time: le_u32(field(TIME)?, "time")?,
         merkle_root: MerkleRoot::from(array::<32>(field(MERKLE_ROOT)?, "merkle_root")?),
         block_commitments: BlockCommitments::from(array::<32>(
             field(BLOCK_COMMITMENTS)?,
@@ -236,15 +234,6 @@ fn decode_header(record: &[u8], height: Height) -> Result<BlockHeader, FoldError
             .map_err(|_| FoldError::continuity(NAME, format!("stored bits {bits:#x}")))?,
         nonce: array::<32>(field(NONCE)?, "nonce")?,
         solution,
-    })
-}
-
-/// A fixed field's bytes as an array; a width other than `N` is refused.
-fn array<const N: usize>(bytes: &[u8], field: &'static str) -> Result<[u8; N], LayoutError> {
-    <[u8; N]>::try_from(bytes).map_err(|_| LayoutError::FieldWidth {
-        field,
-        expected: N,
-        actual: bytes.len(),
     })
 }
 
