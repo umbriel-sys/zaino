@@ -75,8 +75,8 @@ pub use script::{classify_script, Script, ScriptType, TransparentAddressKey};
 pub use shielded_pool::ShieldedPool;
 pub use subtree_root::SubtreeRoot;
 pub use transaction::{
-    OrchardAction, OrchardData, SaplingData, SaplingOutput, SaplingSpend, Transaction,
-    TransparentData, TransparentInput, TransparentOutput,
+    OrchardAction, OrchardData, PoolBalances, SaplingData, SaplingOutput, SaplingSpend,
+    Transaction, TransparentData, TransparentInput, TransparentOutput,
 };
 pub use transaction_hash::TransactionId;
 pub use transaction_location::TransactionLocation;

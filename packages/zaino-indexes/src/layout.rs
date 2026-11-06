@@ -44,6 +44,21 @@ impl Field {
 /// Bytes of one end offset in a record's directory.
 const OFFSET: usize = 4;
 
+/// Declares a `const` from a fallible `const fn`: an invalid layout, range or
+/// namespace fails the build. It emits the item itself, so the check can only
+/// ever run at compile time.
+macro_rules! declared {
+    ($(#[$meta:meta])* $vis:vis const $name:ident: $ty:ty = $declaration:expr;) => {
+        $(#[$meta])*
+        $vis const $name: $ty = match $declaration {
+            Ok(declared) => declared,
+            #[allow(clippy::panic)]
+            Err(_) => panic!(concat!("invalid ", stringify!($name))),
+        };
+    };
+}
+pub(crate) use declared;
+
 /// A record type's layout, versioned.
 ///
 /// Fixed fields come first, so each sits at a constant offset. Variable
@@ -54,125 +69,130 @@ const OFFSET: usize = 4;
 /// decoding of its neighbours, and a fixed field's range is known before the
 /// record is read.
 ///
-/// Construction is `const` and refuses, at compile time when evaluated in a
-/// `const`, a fixed field after a variable one, a zero-width fixed field and
-/// an empty layout.
+/// Built only by [`new`](Self::new), which refuses an empty layout, a
+/// zero-width fixed field, a fixed field after a variable one and a fixed
+/// section past `u32`; the section sizes are computed there once.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Layout {
-    /// Name, part of the schema digest.
-    pub name: &'static str,
-    /// Bumped on any change to `fields`; part of the schema digest.
-    pub version: u16,
-    /// The fields, in record order.
-    pub fields: &'static [Field],
+    name: &'static str,
+    version: u16,
+    fields: &'static [Field],
+    fixed_len: usize,
+    var_count: usize,
 }
 
 impl Layout {
-    /// Declares a layout; see the type's invariants.
-    pub const fn new(name: &'static str, version: u16, fields: &'static [Field]) -> Self {
+    /// Declares a layout; see the type's invariants. `version` is bumped on
+    /// any change to `fields`; name, version and fields enter the digest.
+    pub const fn new(
+        name: &'static str,
+        version: u16,
+        fields: &'static [Field],
+    ) -> Result<Self, LayoutError> {
         if fields.is_empty() {
-            panic!("a layout needs at least one field");
+            return Err(LayoutError::Empty { layout: name });
         }
-        let mut at = 0;
-        let mut seen_var = false;
-        while at < fields.len() {
-            match fields[at].width {
-                FieldWidth::Fixed(0) => panic!("a fixed field needs at least one byte"),
-                FieldWidth::Fixed(_) if seen_var => {
-                    panic!("fixed fields come before variable ones")
+        let mut fixed_len: usize = 0;
+        let mut var_count: usize = 0;
+        let mut rest = fields;
+        while let [field, tail @ ..] = rest {
+            match field.width {
+                FieldWidth::Fixed(0) => return Err(LayoutError::ZeroWidth { field: field.name }),
+                FieldWidth::Fixed(_) if var_count > 0 => {
+                    return Err(LayoutError::FixedAfterVar { field: field.name })
                 }
-                FieldWidth::Fixed(_) => {}
-                FieldWidth::Var => seen_var = true,
+                FieldWidth::Fixed(bytes) => match fixed_len.checked_add(bytes) {
+                    Some(len) => fixed_len = len,
+                    None => return Err(LayoutError::Overflow),
+                },
+                FieldWidth::Var => match var_count.checked_add(1) {
+                    Some(count) => var_count = count,
+                    None => return Err(LayoutError::Overflow),
+                },
             }
-            at += 1;
+            rest = tail;
         }
-        Self {
+        let layout = Self {
             name,
             version,
             fields,
+            fixed_len,
+            var_count,
+        };
+        match layout.directory_len().checked_add(fixed_len) {
+            Some(section) if section <= u32::MAX as usize => Ok(layout),
+            _ => Err(LayoutError::Overflow),
         }
+    }
+
+    /// The layout's name.
+    pub const fn name(&self) -> &'static str {
+        self.name
     }
 
     /// Bytes of the fixed section.
     pub const fn fixed_len(&self) -> usize {
-        let mut len = 0;
-        let mut at = 0;
-        while at < self.fields.len() {
-            if let FieldWidth::Fixed(bytes) = self.fields[at].width {
-                len += bytes;
-            }
-            at += 1;
-        }
-        len
+        self.fixed_len
     }
 
     /// Fields of any length.
     pub const fn var_count(&self) -> usize {
-        let mut count = 0;
-        let mut at = 0;
-        while at < self.fields.len() {
-            if let FieldWidth::Var = self.fields[at].width {
-                count += 1;
-            }
-            at += 1;
-        }
-        count
+        self.var_count
     }
 
     /// Bytes of the directory: one end offset per variable field, none when
     /// one variable field runs to the record's end.
     pub const fn directory_len(&self) -> usize {
-        match self.var_count() {
+        match self.var_count {
             0 | 1 => 0,
-            count => count * OFFSET,
+            count => count.saturating_mul(OFFSET),
         }
     }
 
     /// Where the directory sits: right after the fixed section.
     pub const fn directory_range(&self) -> Range<usize> {
-        self.fixed_len()..self.fixed_len() + self.directory_len()
+        self.fixed_len..self.section_len()
     }
 
     /// The record width a namespace declares for this layout.
     pub const fn width(&self) -> Width {
         match self.fixed_width() {
-            Some(bytes) if self.var_count() == 0 => Width::Fixed(bytes),
-            _ => Width::Variable,
+            Some(bytes) => Width::Fixed(bytes),
+            None => Width::Variable,
         }
     }
 
     /// The whole record's width when every field is fixed.
     pub const fn fixed_width(&self) -> Option<NonZeroU32> {
-        if self.var_count() != 0 {
+        if self.var_count != 0 || self.fixed_len > u32::MAX as usize {
             return None;
         }
-        match self.fixed_len() {
-            len if len > u32::MAX as usize => None,
-            len => NonZeroU32::new(len as u32),
-        }
+        NonZeroU32::new(self.fixed_len as u32)
     }
 
     /// A fixed field's bytes within any record of this layout.
     ///
     /// Known without the record, so a field can be read with
-    /// `BackendReader::get_range`. Refused for a variable field.
-    pub const fn fixed_range(&self, field: usize) -> Range<usize> {
-        if field >= self.fields.len() {
-            panic!("no such field");
-        }
-        let mut start = 0;
-        let mut at = 0;
-        while at < field {
-            match self.fields[at].width {
-                FieldWidth::Fixed(bytes) => start += bytes,
-                FieldWidth::Var => panic!("a variable field has no fixed range"),
+    /// `BackendReader::get_range`; an index declares its ranges as consts.
+    pub const fn fixed_range(&self, field: usize) -> Result<Range<usize>, LayoutError> {
+        let mut start: usize = 0;
+        let mut at: usize = 0;
+        let mut rest = self.fields;
+        while let [spec, tail @ ..] = rest {
+            let FieldWidth::Fixed(bytes) = spec.width else {
+                return Err(LayoutError::NotFixed { field: spec.name });
+            };
+            let Some(end) = start.checked_add(bytes) else {
+                return Err(LayoutError::Overflow);
+            };
+            if at == field {
+                return Ok(start..end);
             }
-            at += 1;
+            start = end;
+            at = at.saturating_add(1);
+            rest = tail;
         }
-        match self.fields[field].width {
-            FieldWidth::Fixed(bytes) => start..start + bytes,
-            FieldWidth::Var => panic!("a variable field has no fixed range"),
-        }
+        Err(LayoutError::NoSuchField { field })
     }
 
     /// A variable field's bytes within a record of `len` bytes whose
@@ -189,8 +209,8 @@ impl Layout {
         len: usize,
     ) -> Result<Range<usize>, LayoutError> {
         let (name, position) = self.var_position(field)?;
-        let section = self.fixed_len() + self.directory_len();
-        if self.var_count() == 1 {
+        let section = self.section_len();
+        if self.var_count == 1 {
             return match len >= section {
                 true => Ok(section..len),
                 false => Err(LayoutError::Truncated {
@@ -204,16 +224,16 @@ impl Layout {
             return Err(LayoutError::Directory { field: name });
         }
         let end_of = |index: usize| -> Result<usize, LayoutError> {
-            let at = index * OFFSET;
             let bytes = directory
-                .get(at..at + OFFSET)
+                .chunks_exact(OFFSET)
+                .nth(index)
                 .and_then(|bytes| <[u8; OFFSET]>::try_from(bytes).ok())
                 .ok_or(LayoutError::Directory { field: name })?;
-            Ok(u32::from_le_bytes(bytes) as usize)
+            usize::try_from(u32::from_le_bytes(bytes)).map_err(|_| LayoutError::Overflow)
         };
-        let start = match position {
-            0 => section,
-            previous => end_of(previous - 1)?,
+        let start = match position.checked_sub(1) {
+            None => section,
+            Some(previous) => end_of(previous)?,
         };
         let end = end_of(position)?;
         match start <= end && end <= len {
@@ -229,14 +249,14 @@ impl Layout {
             .get(field)
             .ok_or(LayoutError::NoSuchField { field })?;
         let range = match spec.width {
-            FieldWidth::Fixed(_) => self.fixed_range(field),
+            FieldWidth::Fixed(_) => self.fixed_range(field)?,
             FieldWidth::Var => {
                 let directory =
                     record
                         .get(self.directory_range())
                         .ok_or(LayoutError::Truncated {
                             field: spec.name,
-                            needed: self.directory_range().end,
+                            needed: self.section_len(),
                             len: record.len(),
                         })?;
                 self.var_range(field, directory, record.len())?
@@ -258,13 +278,17 @@ impl Layout {
                 actual: fields.len(),
             });
         }
-        let var_len: usize = fields
+        let var_len = fields
             .iter()
             .zip(self.fields)
             .filter(|(_, spec)| spec.width == FieldWidth::Var)
-            .map(|(bytes, _)| bytes.len())
-            .sum();
-        let mut out = Vec::with_capacity(self.fixed_len() + self.directory_len() + var_len);
+            .try_fold(0usize, |len, (bytes, _)| len.checked_add(bytes.len()))
+            .ok_or(LayoutError::Overflow)?;
+        let total = self
+            .section_len()
+            .checked_add(var_len)
+            .ok_or(LayoutError::Overflow)?;
+        let mut out = Vec::with_capacity(total);
         for (bytes, spec) in fields.iter().zip(self.fields) {
             if let FieldWidth::Fixed(expected) = spec.width {
                 if bytes.len() != expected {
@@ -278,10 +302,10 @@ impl Layout {
             }
         }
         if self.directory_len() > 0 {
-            let mut end = self.fixed_len() + self.directory_len();
+            let mut end = self.section_len();
             for (bytes, spec) in fields.iter().zip(self.fields) {
                 if spec.width == FieldWidth::Var {
-                    end += bytes.len();
+                    end = end.checked_add(bytes.len()).ok_or(LayoutError::Overflow)?;
                     let offset = u32::try_from(end).map_err(|_| LayoutError::Overflow)?;
                     out.extend_from_slice(&offset.to_le_bytes());
                 }
@@ -293,6 +317,12 @@ impl Layout {
             }
         }
         Ok(out)
+    }
+
+    /// Bytes before the first variable field: fixed section plus directory;
+    /// within `u32` by construction.
+    const fn section_len(&self) -> usize {
+        self.fixed_len.saturating_add(self.directory_len())
     }
 
     /// `field`'s name and its position among the variable fields.
@@ -332,9 +362,34 @@ impl Layout {
     }
 }
 
-/// A record that does not fit its layout, or a field asked of the wrong kind.
+/// A layout that cannot be declared, a record that does not fit its layout,
+/// or a field asked of the wrong kind.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum LayoutError {
+    /// A layout with no fields.
+    #[error("{layout}: no fields")]
+    Empty {
+        /// The layout.
+        layout: &'static str,
+    },
+    /// A fixed field of no bytes.
+    #[error("{field}: a fixed field of zero bytes")]
+    ZeroWidth {
+        /// The field.
+        field: &'static str,
+    },
+    /// A fixed field declared after a variable one.
+    #[error("{field}: fixed after a variable field")]
+    FixedAfterVar {
+        /// The field.
+        field: &'static str,
+    },
+    /// A map key or value layout with a variable field.
+    #[error("{layout}: a map's key and value must be fixed-width")]
+    NotFixedWidth {
+        /// The layout.
+        layout: &'static str,
+    },
     /// `encode` was given the wrong number of fields.
     #[error("{actual} fields for a layout of {expected}")]
     FieldCount {
@@ -381,7 +436,13 @@ pub enum LayoutError {
         /// The field.
         field: &'static str,
     },
-    /// A record past 4 GiB, which the directory cannot address.
+    /// A fixed range asked of, or past, a variable field.
+    #[error("{field} is a variable field")]
+    NotFixed {
+        /// The field.
+        field: &'static str,
+    },
+    /// A record or section past 4 GiB, which the directory cannot address.
     #[error("record past the directory's reach")]
     Overflow,
 }
@@ -390,28 +451,32 @@ pub enum LayoutError {
 mod tests {
     use super::*;
 
-    const FIXED: Layout = Layout::new(
-        "fixed",
-        1,
-        &[Field::fixed("height", 4), Field::fixed("index", 2)],
-    );
-    const TAIL: Layout = Layout::new("tail", 1, &[Field::fixed("count", 2), Field::var("bytes")]);
-    const TWO: Layout = Layout::new(
-        "two",
-        1,
-        &[
-            Field::fixed("height", 4),
-            Field::var("script"),
-            Field::var("memo"),
-        ],
-    );
+    declared! {
+        const FIXED: Layout = Layout::new(
+            "fixed",
+            1,
+            &[Field::fixed("height", 4), Field::fixed("index", 2)],
+        );
+    }
+    declared! {
+        const TAIL: Layout =
+            Layout::new("tail", 1, &[Field::fixed("count", 2), Field::var("bytes")]);
+    }
+    declared! {
+        const TWO: Layout = Layout::new(
+            "two",
+            1,
+            &[Field::fixed("height", 4), Field::var("script"), Field::var("memo")],
+        );
+    }
 
     /// Fixed offsets are constant and known without a record; the width a
     /// namespace declares follows the fields.
     #[test]
     fn fixed_fields_sit_at_constant_offsets() {
-        assert_eq!(FIXED.fixed_range(0), 0..4);
-        assert_eq!(FIXED.fixed_range(1), 4..6);
+        declared! { const INDEX: Range<usize> = FIXED.fixed_range(1); }
+        assert_eq!(FIXED.fixed_range(0), Ok(0..4));
+        assert_eq!(INDEX, 4..6);
         assert_eq!(FIXED.width(), Width::Fixed(NonZeroU32::new(6).expect("6")));
         assert_eq!(FIXED.directory_len(), 0);
         assert_eq!(TAIL.width(), Width::Variable);
@@ -419,6 +484,35 @@ mod tests {
         assert_eq!(TAIL.directory_len(), 0, "one variable field: no directory");
         assert_eq!(TWO.directory_len(), 8);
         assert_eq!(TWO.directory_range(), 4..12);
+        assert_eq!(
+            FIXED.fixed_range(2),
+            Err(LayoutError::NoSuchField { field: 2 })
+        );
+        assert_eq!(
+            TAIL.fixed_range(1),
+            Err(LayoutError::NotFixed { field: "bytes" })
+        );
+    }
+
+    /// What `declared!` refuses at compile time, `new` reports by name.
+    #[test]
+    fn invalid_declarations_are_refused() {
+        const ZERO: &[Field] = &[Field::fixed("nothing", 0)];
+        const LATE: &[Field] = &[Field::var("bytes"), Field::fixed("count", 2)];
+        const HUGE: &[Field] = &[Field::fixed("a", usize::MAX), Field::fixed("b", 1)];
+        assert_eq!(
+            Layout::new("none", 1, &[]),
+            Err(LayoutError::Empty { layout: "none" })
+        );
+        assert_eq!(
+            Layout::new("zero", 1, ZERO),
+            Err(LayoutError::ZeroWidth { field: "nothing" })
+        );
+        assert_eq!(
+            Layout::new("late", 1, LATE),
+            Err(LayoutError::FixedAfterVar { field: "count" })
+        );
+        assert_eq!(Layout::new("huge", 1, HUGE), Err(LayoutError::Overflow));
     }
 
     /// Every field of every shape slices back to what was encoded, through
@@ -435,7 +529,7 @@ mod tests {
         assert_eq!(tail, [0, 1, b'h', b'e', b'l', b'l', b'o']);
         assert_eq!(TAIL.field(&tail, 1).expect("bytes"), b"hello");
         let empty = TAIL.encode(&[&[0, 1], &[]]).expect("encodes");
-        assert_eq!(TAIL.field(&empty, 1).expect("bytes"), &[]);
+        assert!(TAIL.field(&empty, 1).expect("bytes").is_empty());
 
         let two = TWO.encode(&[&[9; 4], b"abc", b""]).expect("encodes");
         let mut expected = vec![9; 4];

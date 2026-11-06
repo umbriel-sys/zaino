@@ -1,7 +1,7 @@
 [package]
 name = "zaino-indexes"
 version = "0.1.0"
-description = "Zaino's index set: per-field record layouts, index schemas, and one fold per index over the finalised chain."
+description = "Zaino's index set: per-field record layouts, index schemas, and one pure fold per index."
 authors = { workspace = true }
 repository = { workspace = true }
 homepage = { workspace = true }
@@ -14,9 +14,6 @@ categories = { workspace = true }
 [dependencies]
 # The domain vocabulary every record is decoded into.
 zaino-primitives = { workspace = true }
-
-# The fold input (`FrozenBlock`) and the reader-side types the ports name.
-zaino-chain-store = { workspace = true }
 
 # The storage port: namespace shapes the layouts derive, and the digest a
 # directory is stamped with.

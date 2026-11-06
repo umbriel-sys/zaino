@@ -4,7 +4,7 @@ use zaino_chain_store::FrozenBlock;
 use zaino_chain_store::StoredBlock;
 use zaino_chain_store::StoredTx;
 use zaino_primitives::types::{AbsoluteChainWork, BlockHeader, BlockRef, TreeRoots};
-use zaino_primitives::types::{Block, PreIndexCompactTx, SignedZatoshis};
+use zaino_primitives::types::{Block, PreIndexCompactTx};
 
 /// A block, from whichever provider held it.
 ///
@@ -87,18 +87,11 @@ fn stored_txs(block: &Block) -> Vec<StoredTx> {
 
 /// The indexed projection of a parsed transaction.
 fn stored_tx(tx: &zaino_primitives::types::Transaction) -> StoredTx {
+    let balances = tx.pool_balances();
     StoredTx {
         compact: PreIndexCompactTx::from(tx),
-        sapling_value: pool_value(
-            tx.sapling.spends.is_empty() && tx.sapling.outputs.is_empty(),
-            tx.sapling.value_balance,
-        ),
-        orchard_value: pool_value(tx.orchard.actions.is_empty(), tx.orchard.value_balance),
-        ironwood_value: pool_value(tx.ironwood.actions.is_empty(), tx.ironwood.value_balance),
+        sapling_value: balances.sapling,
+        orchard_value: balances.orchard,
+        ironwood_value: balances.ironwood,
     }
-}
-
-/// A pool's balance, or `None` where the transaction does not use the pool.
-fn pool_value(pool_is_empty: bool, balance: SignedZatoshis) -> Option<SignedZatoshis> {
-    (!pool_is_empty).then_some(balance)
 }

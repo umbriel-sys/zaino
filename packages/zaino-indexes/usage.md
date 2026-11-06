@@ -16,28 +16,35 @@ field, placed right after the fixed section. A field is therefore always one
 slice, with no decoding of its neighbours, and no CompactSize prefixes.
 
 ```rust
-use zaino_indexes::{Field, Layout};
+use zaino_indexes::{Field, Layout, LayoutError};
 
-const EVENT: Layout = Layout::new(
+const EVENT: Layout = match Layout::new(
     "address_event",
     1,
     &[Field::fixed("value", 8), Field::fixed("kind", 1)],
-);
+) {
+    Ok(layout) => layout,
+    Err(_) => panic!("invalid layout"), // const: a build error, never at runtime
+};
 const VALUE: usize = 0;
-let range = EVENT.fixed_range(VALUE);        // 0..8, a constant
+let range = EVENT.fixed_range(VALUE)?;        // 0..8
 let record = EVENT.encode(&[&[0; 8], &[1]])?; // widths checked
 let value = EVENT.field(&record, VALUE)?;     // one slice
-# Ok::<(), zaino_indexes::LayoutError>(())
+# Ok::<(), LayoutError>(())
 ```
 
 `fixed_range` feeds `BackendReader::get_range`, so a reader fetches a field
 without copying the record around it. A record that does not fit its layout
 is a `LayoutError` naming the field, never a slice of a neighbour.
 
-Construction is `const` and refuses, at compile time, a fixed field after a
-variable one, a zero-width fixed field and an empty layout. `version` is
-bumped with any change to the fields and old layouts stay in the code as
-consts, so a future in-place migration is "slice by V1, encode by V2".
+`Layout::new`, `fixed_range` and `NamespaceLayout::map` are fallible
+`const fn`s: an empty layout, a zero-width fixed field, a fixed field after
+a variable one, a section past `u32`, or a map over a variable-width layout
+is a `LayoutError`. Declared as consts (inside the crate through
+`declared!`, which emits the const item) a mistake fails the build, and no
+runtime path panics. `version` is bumped with any change to the fields and
+old layouts stay in the code as consts, so a future in-place migration is
+"slice by V1, encode by V2".
 
 Lists inside a record are a count in the fixed section plus fixed-width
 elements, so element *i* is at a constant stride; a list of variable
@@ -62,14 +69,23 @@ the digest in CI.
 
 ## Indexes: a schema and a fold
 
-Every index implements `Index`: its `SCHEMA`, the `DEPENDENCIES` whose
-readers its fold takes, a `State` carried from block to block, `resume`
-(the state after what a directory already holds) and `fold`, which returns
-the block's `WriteOp`s and the state after them. A fold is pure in its
-state: the writer adopts the returned state only once the ops are committed,
-so a failed commit leaves the index at its last committed block. Continuity
-is checked in the fold (a block must extend the stored tip) and refused as
+Every index implements `Index`: its `SCHEMA`, the `DEPENDENCIES` enabled
+with it (the indexes its readers compose answers from), a `State` carried
+from block to block, `resume` (the state after what a directory already
+holds) and `fold`, which returns the block's `WriteOp`s and the state after
+them. The caller adopts the returned state only once the ops are applied, so
+a failed commit leaves the index at its last committed block. Continuity is
+checked in the fold (a block must extend the state's tip) and refused as
 `FoldError::Continuity` naming the index.
+
+A fold is pure: it reads nothing. Its input is a `FoldBlock`, the crate's
+own block vocabulary, built only through `FoldBlock::try_new` and
+`FoldTx::try_new` (or `FoldTx::from_transaction` from a parsed
+transaction), which refuse a block without a coinbase, a coinbase that
+spends, and prevouts that do not pair one-to-one with a transaction's
+transparent inputs. Whoever folds resolves the prevouts first: the chain
+store from its own indexes, the chain head from its window and the store.
+The same fold therefore builds the store and the chain head's branches.
 
 Each index module also exposes a `Reader` over any `BackendReader` with the
 typed reads the chain-store ports need. Readers slice fields through the

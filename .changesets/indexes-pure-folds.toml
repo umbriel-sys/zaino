@@ -1,0 +1,28 @@
+[[changes]]
+crate = "zaino-indexes"
+kind = "feature"
+description = """
+The `Index` trait and I-01 `headers`. An index is a `Schema`, a `State` \
+and a pure `fold(state, &FoldBlock)` returning the block's ops and the next \
+state; `resume` rebuilds the state from a directory. `FoldBlock` is the \
+crate's own validated fold input (at least a coinbase, which spends \
+nothing, and one prevout per transparent input), so folds read nothing and \
+the crate no longer depends on `zaino-chain-store`. I-01 holds header and \
+cumulative chain work by height and height by hash, with field reads through \
+`get_range`."""
+
+[[changes]]
+crate = "zaino-indexes"
+kind = "fix"
+description = """
+No panics: `Layout::new`, `Layout::fixed_range` and `NamespaceLayout::map` \
+return `LayoutError` (new variants `Empty`, `ZeroWidth`, `FixedAfterVar`, \
+`NotFixedWidth`, `NotFixed`), constant layouts are checked at compile time, \
+and a stored field of the wrong width is an error instead of zeros."""
+
+[[changes]]
+crate = "zaino-primitives"
+kind = "feature"
+description = """
+`Transaction::pool_balances` and `PoolBalances`: each shielded pool's value \
+balance, `None` where the transaction does not use the pool."""

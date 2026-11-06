@@ -37,6 +37,36 @@ pub struct Transaction {
     pub ironwood: OrchardData,
 }
 
+impl Transaction {
+    /// Each shielded pool's value balance, `None` where the transaction does
+    /// not use the pool.
+    pub fn pool_balances(&self) -> PoolBalances {
+        let used = |unused: bool, balance: SignedZatoshis| (!unused).then_some(balance);
+        PoolBalances {
+            sapling: used(
+                self.sapling.spends.is_empty() && self.sapling.outputs.is_empty(),
+                self.sapling.value_balance,
+            ),
+            orchard: used(self.orchard.actions.is_empty(), self.orchard.value_balance),
+            ironwood: used(
+                self.ironwood.actions.is_empty(),
+                self.ironwood.value_balance,
+            ),
+        }
+    }
+}
+
+/// A transaction's per-pool value balances; `None` = pool not used.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct PoolBalances {
+    /// Sapling.
+    pub sapling: Option<SignedZatoshis>,
+    /// Orchard.
+    pub orchard: Option<SignedZatoshis>,
+    /// Ironwood (NU6.3).
+    pub ironwood: Option<SignedZatoshis>,
+}
+
 /// Transparent pool data within a transaction.
 #[derive(Debug, Clone, Default)]
 pub struct TransparentData {

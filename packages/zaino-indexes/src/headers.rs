@@ -1,14 +1,16 @@
 //! I-01 `headers`: height → header and cumulative chain work; hash → height.
 
-use zaino_chain_store::FrozenBlock;
+use core::ops::Range;
+
 use zaino_persistence::{sequence_key, BackendReader, Namespace, WriteOp};
 use zaino_primitives::types::{
     AbsoluteChainWork, BlockCommitments, BlockHash, BlockHeader, BlockRef, CompactDifficulty,
     EquihashSolution, Height, MerkleRoot,
 };
 
+use crate::block::FoldBlock;
 use crate::index::{Fold, FoldError, Index};
-use crate::layout::{Field, Layout};
+use crate::layout::{declared, Field, Layout, LayoutError};
 use crate::schema::{NamespaceLayout, Schema};
 
 /// The index's name: its directory and the name dependants use.
@@ -17,23 +19,25 @@ pub const NAME: &str = "headers";
 const HEADERS: Namespace = Namespace::new("headers");
 const HEIGHTS: Namespace = Namespace::new("heights");
 
-/// A header at its height, with the chain work through it.
-pub const HEADER: Layout = Layout::new(
-    "header",
-    1,
-    &[
-        Field::fixed("hash", 32),
-        Field::fixed("version", 4),
-        Field::fixed("prev_hash", 32),
-        Field::fixed("time", 4),
-        Field::fixed("merkle_root", 32),
-        Field::fixed("block_commitments", 32),
-        Field::fixed("bits", 4),
-        Field::fixed("nonce", 32),
-        Field::fixed("chainwork", 32),
-        Field::var("solution"),
-    ],
-);
+declared! {
+    /// A header at its height, with the chain work through it.
+    pub const HEADER: Layout = Layout::new(
+        "header",
+        1,
+        &[
+            Field::fixed("hash", 32),
+            Field::fixed("version", 4),
+            Field::fixed("prev_hash", 32),
+            Field::fixed("time", 4),
+            Field::fixed("merkle_root", 32),
+            Field::fixed("block_commitments", 32),
+            Field::fixed("bits", 4),
+            Field::fixed("nonce", 32),
+            Field::fixed("chainwork", 32),
+            Field::var("solution"),
+        ],
+    );
+}
 const HASH: usize = 0;
 const VERSION: usize = 1;
 const PREV_HASH: usize = 2;
@@ -44,20 +48,27 @@ const BITS: usize = 6;
 const NONCE: usize = 7;
 const CHAINWORK: usize = 8;
 const SOLUTION: usize = 9;
+declared! { const HASH_RANGE: Range<usize> = HEADER.fixed_range(HASH); }
+declared! { const CHAINWORK_RANGE: Range<usize> = HEADER.fixed_range(CHAINWORK); }
 
-/// A block hash as a map key.
-pub const BLOCK_HASH: Layout = Layout::new("block_hash", 1, &[Field::fixed("hash", 32)]);
-/// A height as a map value.
-pub const HEIGHT: Layout = Layout::new("height", 1, &[Field::fixed("height", 4)]);
+declared! {
+    /// A block hash as a map key.
+    pub const BLOCK_HASH: Layout = Layout::new("block_hash", 1, &[Field::fixed("hash", 32)]);
+}
+declared! {
+    /// A height as a map value.
+    pub const HEIGHT: Layout = Layout::new("height", 1, &[Field::fixed("height", 4)]);
+}
+declared! {
+    const HEIGHTS_BY_HASH: NamespaceLayout =
+        NamespaceLayout::map(HEIGHTS, &BLOCK_HASH, &HEIGHT, false);
+}
 
 /// The schema: `headers` by height, `heights` by hash.
 pub const SCHEMA: Schema = Schema::new(
     NAME,
     1,
-    &[
-        NamespaceLayout::sequence(HEADERS, &HEADER),
-        NamespaceLayout::map(HEIGHTS, &BLOCK_HASH, &HEIGHT, false),
-    ],
+    &[NamespaceLayout::sequence(HEADERS, &HEADER), HEIGHTS_BY_HASH],
 );
 
 /// I-01.
@@ -76,7 +87,6 @@ impl Index for Headers {
     const SCHEMA: Schema = SCHEMA;
     const DEPENDENCIES: &'static [&'static str] = &[];
     type State = State;
-    type Deps<R: BackendReader> = ();
 
     fn resume<R: BackendReader>(backend: &R) -> Result<Option<State>, FoldError> {
         let reader = Reader::new(backend);
@@ -89,12 +99,8 @@ impl Index for Headers {
         Ok(Some(State { tip, chainwork }))
     }
 
-    fn fold<R: BackendReader>(
-        state: Option<&State>,
-        block: &FrozenBlock,
-        (): &(),
-    ) -> Result<Fold<State>, FoldError> {
-        let header = &block.header;
+    fn fold(state: Option<&State>, block: &FoldBlock) -> Result<Fold<State>, FoldError> {
+        let header = block.header();
         let work = header.bits.to_work();
         let chainwork = match state {
             Some(state) => {
@@ -185,25 +191,24 @@ impl<'a, R: BackendReader> Reader<'a, R> {
 
     /// The hash at `height`: one field, not the record.
     pub fn hash(&self, height: Height) -> Result<Option<BlockHash>, FoldError> {
-        let hash = self.backend.get_range(
-            HEADERS,
-            &sequence_key(u64::from(height)),
-            HEADER.fixed_range(HASH),
-        )?;
-        Ok(hash.map(|bytes| BlockHash::from(array::<32>(&bytes, "hash"))))
+        let Some(bytes) =
+            self.backend
+                .get_range(HEADERS, &sequence_key(u64::from(height)), HASH_RANGE)?
+        else {
+            return Ok(None);
+        };
+        Ok(Some(BlockHash::from(array::<32>(&bytes, "hash")?)))
     }
 
     /// Cumulative chain work through `height`.
     pub fn chainwork(&self, height: Height) -> Result<Option<AbsoluteChainWork>, FoldError> {
-        let Some(bytes) = self.backend.get_range(
-            HEADERS,
-            &sequence_key(u64::from(height)),
-            HEADER.fixed_range(CHAINWORK),
-        )?
+        let Some(bytes) =
+            self.backend
+                .get_range(HEADERS, &sequence_key(u64::from(height)), CHAINWORK_RANGE)?
         else {
             return Ok(None);
         };
-        AbsoluteChainWork::from_be_bytes(array::<32>(&bytes, "chainwork"))
+        AbsoluteChainWork::from_be_bytes(array::<32>(&bytes, "chainwork")?)
             .map(Some)
             .map_err(|_| FoldError::continuity(NAME, "stored chain work of zero"))
     }
@@ -213,7 +218,7 @@ impl<'a, R: BackendReader> Reader<'a, R> {
         let Some(bytes) = self.backend.get(HEIGHTS, &<[u8; 32]>::from(hash))? else {
             return Ok(None);
         };
-        let height = u32::from_le_bytes(array::<4>(&bytes, "height"));
+        let height = u32::from_le_bytes(array::<4>(&bytes, "height")?);
         Height::try_from(height)
             .map(Some)
             .map_err(|_| FoldError::continuity(NAME, format!("stored height {height}")))
@@ -223,7 +228,7 @@ impl<'a, R: BackendReader> Reader<'a, R> {
 /// The header a stored record holds at `height`.
 fn decode_header(record: &[u8], height: Height) -> Result<BlockHeader, FoldError> {
     let field = |index: usize| HEADER.field(record, index);
-    let bits = u32::from_le_bytes(array::<4>(field(BITS)?, "bits"));
+    let bits = u32::from_le_bytes(array::<4>(field(BITS)?, "bits")?);
     let solution = field(SOLUTION)?;
     let solution = match (
         <[u8; 1344]>::try_from(solution),
@@ -239,29 +244,29 @@ fn decode_header(record: &[u8], height: Height) -> Result<BlockHeader, FoldError
         }
     };
     Ok(BlockHeader {
-        hash: BlockHash::from(array::<32>(field(HASH)?, "hash")),
-        version: u32::from_le_bytes(array::<4>(field(VERSION)?, "version")),
-        prev_hash: BlockHash::from(array::<32>(field(PREV_HASH)?, "prev_hash")),
+        hash: BlockHash::from(array::<32>(field(HASH)?, "hash")?),
+        version: u32::from_le_bytes(array::<4>(field(VERSION)?, "version")?),
+        prev_hash: BlockHash::from(array::<32>(field(PREV_HASH)?, "prev_hash")?),
         height,
-        time: u32::from_le_bytes(array::<4>(field(TIME)?, "time")),
-        merkle_root: MerkleRoot::from(array::<32>(field(MERKLE_ROOT)?, "merkle_root")),
+        time: u32::from_le_bytes(array::<4>(field(TIME)?, "time")?),
+        merkle_root: MerkleRoot::from(array::<32>(field(MERKLE_ROOT)?, "merkle_root")?),
         block_commitments: BlockCommitments::from(array::<32>(
             field(BLOCK_COMMITMENTS)?,
             "block_commitments",
-        )),
+        )?),
         bits: CompactDifficulty::try_from_bits(bits)
             .map_err(|_| FoldError::continuity(NAME, format!("stored bits {bits:#x}")))?,
-        nonce: array::<32>(field(NONCE)?, "nonce"),
+        nonce: array::<32>(field(NONCE)?, "nonce")?,
         solution,
     })
 }
 
-/// A fixed field's bytes as an array; the layout guarantees the width, so a
-/// mismatch is a layout bug surfaced as such rather than a panic.
-fn array<const N: usize>(bytes: &[u8], field: &'static str) -> [u8; N] {
-    <[u8; N]>::try_from(bytes).unwrap_or_else(|_| {
-        debug_assert!(false, "{field}: {} bytes for {N}", bytes.len());
-        [0; N]
+/// A fixed field's bytes as an array; a width other than `N` is refused.
+fn array<const N: usize>(bytes: &[u8], field: &'static str) -> Result<[u8; N], LayoutError> {
+    <[u8; N]>::try_from(bytes).map_err(|_| LayoutError::FieldWidth {
+        field,
+        expected: N,
+        actual: bytes.len(),
     })
 }
 
@@ -271,7 +276,7 @@ mod tests {
     use zaino_primitives::types::Height;
 
     use super::*;
-    use crate::testing::{backend, block, fold_all, hash, REGTEST_BITS};
+    use crate::testing::{backend, block, block_of, fold_all, hash, header, REGTEST_BITS};
 
     /// Every header folded reads back whole and by field, the hash map
     /// answers the height, and the chain work accumulates block by block.
@@ -288,16 +293,14 @@ mod tests {
             .to_work();
         let mut expected = AbsoluteChainWork::genesis(work);
         for block in &chain {
-            let height = block.header.height;
+            let header = block.header();
+            let height = header.height;
             assert_eq!(
                 reader.header(height).expect("header").as_ref(),
-                Some(&block.header)
+                Some(header)
             );
-            assert_eq!(reader.hash(height).expect("hash"), Some(block.header.hash));
-            assert_eq!(
-                reader.height(block.header.hash).expect("height"),
-                Some(height)
-            );
+            assert_eq!(reader.hash(height).expect("hash"), Some(header.hash));
+            assert_eq!(reader.height(header.hash).expect("height"), Some(height));
             assert_eq!(reader.chainwork(height).expect("chainwork"), Some(expected));
             expected = expected.accumulate(work).expect("fits");
         }
@@ -325,28 +328,19 @@ mod tests {
         let backend = backend(&SCHEMA);
         let state = fold_all::<Headers>(&backend, &[block(0), block(1)]).expect("two blocks");
 
-        let gap = Headers::fold::<zaino_persistence::in_memory::InMemoryReader>(
-            Some(&state),
-            &block(3),
-            &(),
-        );
+        let gap = Headers::fold(Some(&state), &block(3));
         assert!(
             matches!(&gap, Err(FoldError::Continuity { index: NAME, what }) if what == "height 3 after 1"),
             "{gap:?}"
         );
-        let mut forked = block(2);
-        forked.header.prev_hash = hash(7);
-        let forked = Headers::fold::<zaino_persistence::in_memory::InMemoryReader>(
-            Some(&state),
-            &forked,
-            &(),
-        );
+        let mut forked = header(2);
+        forked.prev_hash = hash(7);
+        let forked = Headers::fold(Some(&state), &block_of(forked));
         assert!(
             matches!(&forked, Err(FoldError::Continuity { index: NAME, what }) if what.contains("does not extend")),
             "{forked:?}"
         );
-        let late =
-            Headers::fold::<zaino_persistence::in_memory::InMemoryReader>(None, &block(1), &());
+        let late = Headers::fold(None, &block(1));
         assert!(
             matches!(&late, Err(FoldError::Continuity { index: NAME, what }) if what == "height 1 into an empty index"),
             "{late:?}"

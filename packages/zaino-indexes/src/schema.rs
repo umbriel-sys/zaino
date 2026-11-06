@@ -6,7 +6,7 @@ use blake2::Blake2b;
 
 use zaino_persistence::{Namespace, NamespaceKind, NamespaceSpec, SchemaDigest, Width};
 
-use crate::layout::Layout;
+use crate::layout::{Layout, LayoutError};
 
 /// One namespace and the layouts of what it holds.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -35,15 +35,20 @@ impl NamespaceLayout {
         key: &'static Layout,
         value: &'static Layout,
         deletes: bool,
-    ) -> Self {
-        let (Some(key_width), Some(value_width)) = (key.fixed_width(), value.fixed_width()) else {
-            panic!("a map's key and value layouts must be fixed-width");
+    ) -> Result<Self, LayoutError> {
+        let Some(key_width) = key.fixed_width() else {
+            return Err(LayoutError::NotFixedWidth { layout: key.name() });
         };
-        Self {
+        let Some(value_width) = value.fixed_width() else {
+            return Err(LayoutError::NotFixedWidth {
+                layout: value.name(),
+            });
+        };
+        Ok(Self {
             spec: NamespaceSpec::map(namespace, key_width, value_width, deletes),
             key: Some(key),
             value,
-        }
+        })
     }
 }
 
@@ -143,23 +148,38 @@ fn update_width(hasher: &mut impl Update, width: Width) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::layout::Field;
+    use crate::layout::{declared, Field};
 
-    const HEIGHT: Layout = Layout::new("height", 1, &[Field::fixed("height", 4)]);
-    const EVENT: Layout = Layout::new(
-        "event",
-        1,
-        &[Field::fixed("value", 8), Field::fixed("kind", 1)],
-    );
-    const BLOCK: Layout = Layout::new("block", 2, &[Field::var("bytes")]);
-    const SCHEMA: Schema = Schema::new(
-        "sample",
-        3,
-        &[
-            NamespaceLayout::sequence(Namespace::new("blocks"), &BLOCK),
-            NamespaceLayout::map(Namespace::new("events"), &HEIGHT, &EVENT, true),
-        ],
-    );
+    declared! { const HEIGHT: Layout = Layout::new("height", 1, &[Field::fixed("height", 4)]); }
+    declared! {
+        const EVENT: Layout =
+            Layout::new("event", 1, &[Field::fixed("value", 8), Field::fixed("kind", 1)]);
+    }
+    declared! { const BLOCK: Layout = Layout::new("block", 2, &[Field::var("bytes")]); }
+    declared! {
+        const WIDER: Layout =
+            Layout::new("event", 1, &[Field::fixed("value", 8), Field::fixed("kind", 2)]);
+    }
+    declared! {
+        const NEWER: Layout =
+            Layout::new("event", 2, &[Field::fixed("value", 8), Field::fixed("kind", 1)]);
+    }
+    const BLOCKS: NamespaceLayout = NamespaceLayout::sequence(Namespace::new("blocks"), &BLOCK);
+    const EVENTS: Namespace = Namespace::new("events");
+    declared! { const EVENTS_NS: NamespaceLayout = NamespaceLayout::map(EVENTS, &HEIGHT, &EVENT, true); }
+    declared! { const WIDER_NS: NamespaceLayout = NamespaceLayout::map(EVENTS, &HEIGHT, &WIDER, true); }
+    declared! { const NEWER_NS: NamespaceLayout = NamespaceLayout::map(EVENTS, &HEIGHT, &NEWER, true); }
+    declared! { const NO_DELETES: NamespaceLayout = NamespaceLayout::map(EVENTS, &HEIGHT, &EVENT, false); }
+    const SCHEMA: Schema = Schema::new("sample", 3, &[BLOCKS, EVENTS_NS]);
+
+    /// A map over a variable-width layout is refused by name.
+    #[test]
+    fn a_map_needs_fixed_widths() {
+        assert_eq!(
+            NamespaceLayout::map(Namespace::new("events"), &BLOCK, &EVENT, true),
+            Err(LayoutError::NotFixedWidth { layout: "block" })
+        );
+    }
 
     /// The digest is pinned: a change to any name, width, version or kind
     /// moves it, and the pinned value is what every directory written by this
@@ -178,34 +198,12 @@ mod tests {
             SCHEMA.digest().as_bytes()
         );
 
-        static WIDER: Layout = Layout::new(
-            "event",
-            1,
-            &[Field::fixed("value", 8), Field::fixed("kind", 2)],
-        );
-        static NEWER: Layout = Layout::new(
-            "event",
-            2,
-            &[Field::fixed("value", 8), Field::fixed("kind", 1)],
-        );
-        static WIDER_NS: [NamespaceLayout; 2] = [
-            NamespaceLayout::sequence(Namespace::new("blocks"), &BLOCK),
-            NamespaceLayout::map(Namespace::new("events"), &HEIGHT, &WIDER, true),
-        ];
-        static NEWER_NS: [NamespaceLayout; 2] = [
-            NamespaceLayout::sequence(Namespace::new("blocks"), &BLOCK),
-            NamespaceLayout::map(Namespace::new("events"), &HEIGHT, &NEWER, true),
-        ];
-        static NO_DELETES: [NamespaceLayout; 2] = [
-            NamespaceLayout::sequence(Namespace::new("blocks"), &BLOCK),
-            NamespaceLayout::map(Namespace::new("events"), &HEIGHT, &EVENT, false),
-        ];
         let moved = [
             Schema::new("sample", 4, SCHEMA.namespaces),
             Schema::new("other", 3, SCHEMA.namespaces),
-            Schema::new("sample", 3, &WIDER_NS),
-            Schema::new("sample", 3, &NEWER_NS),
-            Schema::new("sample", 3, &NO_DELETES),
+            Schema::new("sample", 3, &[BLOCKS, WIDER_NS]),
+            Schema::new("sample", 3, &[BLOCKS, NEWER_NS]),
+            Schema::new("sample", 3, &[BLOCKS, NO_DELETES]),
         ];
         for schema in moved {
             assert_ne!(schema.digest(), SCHEMA.digest(), "{schema:?}");

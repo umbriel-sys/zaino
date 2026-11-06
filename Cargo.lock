@@ -6121,7 +6121,6 @@ version = "0.1.0"
 dependencies = [
  "blake2",
  "thiserror 2.0.20",
- "zaino-chain-store",
  "zaino-persistence",
  "zaino-primitives",
 ]
