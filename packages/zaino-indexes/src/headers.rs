@@ -9,7 +9,7 @@ use zaino_primitives::types::{
 };
 
 use crate::block::FoldBlock;
-use crate::index::{Fold, FoldError, Index};
+use crate::index::{check_extends, Fold, FoldError, Index};
 use crate::layout::{declared, Field, Layout, LayoutError};
 use crate::schema::{NamespaceLayout, Schema};
 
@@ -100,34 +100,12 @@ impl Index for Headers {
     }
 
     fn fold(state: Option<&State>, block: &FoldBlock) -> Result<Fold<State>, FoldError> {
+        check_extends(NAME, state.map(|state| state.tip), block)?;
         let header = block.header();
         let work = header.bits.to_work();
         let chainwork = match state {
-            Some(state) => {
-                let next = state.tip.height.checked_add(1);
-                if next != Some(header.height) {
-                    return Err(FoldError::continuity(
-                        NAME,
-                        format!("height {} after {}", header.height, state.tip.height),
-                    ));
-                }
-                if header.prev_hash != state.tip.hash {
-                    return Err(FoldError::continuity(
-                        NAME,
-                        format!("{} does not extend {}", header.hash, state.tip.hash),
-                    ));
-                }
-                state.chainwork.accumulate(work)?
-            }
-            None => {
-                if u32::from(header.height) != 0 {
-                    return Err(FoldError::continuity(
-                        NAME,
-                        format!("height {} into an empty index", header.height),
-                    ));
-                }
-                AbsoluteChainWork::genesis(work)
-            }
+            Some(state) => state.chainwork.accumulate(work)?,
+            None => AbsoluteChainWork::genesis(work),
         };
         let record = HEADER.encode(&[
             &<[u8; 32]>::from(header.hash),

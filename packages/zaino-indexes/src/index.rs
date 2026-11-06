@@ -1,7 +1,7 @@
 //! What every index is: a schema, a pure fold, and the state the fold carries.
 
 use zaino_persistence::{BackendReader, ReadError, WriteOp};
-use zaino_primitives::types::WorkOverflow;
+use zaino_primitives::types::{BlockRef, WorkOverflow};
 
 use crate::block::FoldBlock;
 use crate::layout::LayoutError;
@@ -75,4 +75,36 @@ impl FoldError {
             what: what.into(),
         }
     }
+}
+
+/// Refuses `block` unless it extends `tip`, or is genesis when `tip` is
+/// `None`.
+pub(crate) fn check_extends(
+    index: &'static str,
+    tip: Option<BlockRef>,
+    block: &FoldBlock,
+) -> Result<(), FoldError> {
+    let header = block.header();
+    let Some(tip) = tip else {
+        return match u32::from(header.height) {
+            0 => Ok(()),
+            height => Err(FoldError::continuity(
+                index,
+                format!("height {height} into an empty index"),
+            )),
+        };
+    };
+    if tip.height.checked_add(1) != Some(header.height) {
+        return Err(FoldError::continuity(
+            index,
+            format!("height {} after {}", header.height, tip.height),
+        ));
+    }
+    if header.prev_hash != tip.hash {
+        return Err(FoldError::continuity(
+            index,
+            format!("{} does not extend {}", header.hash, tip.hash),
+        ));
+    }
+    Ok(())
 }

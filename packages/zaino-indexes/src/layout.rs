@@ -242,6 +242,28 @@ impl Layout {
         }
     }
 
+    /// Element `index` of a list of `width`-byte elements held in the single
+    /// variable field `field`: known without the record, for
+    /// `BackendReader::get_range`. Whether the element exists is the
+    /// record's count to say.
+    pub fn element_range(
+        &self,
+        field: usize,
+        index: usize,
+        width: usize,
+    ) -> Result<Range<usize>, LayoutError> {
+        let (name, _) = self.var_position(field)?;
+        if self.var_count != 1 {
+            return Err(LayoutError::NotTrailing { field: name });
+        }
+        let start = index
+            .checked_mul(width)
+            .and_then(|offset| offset.checked_add(self.section_len()))
+            .ok_or(LayoutError::Overflow)?;
+        let end = start.checked_add(width).ok_or(LayoutError::Overflow)?;
+        Ok(start..end)
+    }
+
     /// Any field's bytes of `record`.
     pub fn field<'a>(&self, record: &'a [u8], field: usize) -> Result<&'a [u8], LayoutError> {
         let spec = self
@@ -436,6 +458,13 @@ pub enum LayoutError {
         /// The field.
         field: &'static str,
     },
+    /// An element range asked of a variable field that does not run to the
+    /// record's end.
+    #[error("{field} is not the record's only variable field")]
+    NotTrailing {
+        /// The field.
+        field: &'static str,
+    },
     /// A fixed range asked of, or past, a variable field.
     #[error("{field} is a variable field")]
     NotFixed {
@@ -491,6 +520,15 @@ mod tests {
         assert_eq!(
             TAIL.fixed_range(1),
             Err(LayoutError::NotFixed { field: "bytes" })
+        );
+        assert_eq!(TAIL.element_range(1, 3, 32), Ok(98..130));
+        assert_eq!(
+            TWO.element_range(1, 0, 32),
+            Err(LayoutError::NotTrailing { field: "script" })
+        );
+        assert_eq!(
+            TAIL.element_range(1, usize::MAX, 32),
+            Err(LayoutError::Overflow)
         );
     }
 

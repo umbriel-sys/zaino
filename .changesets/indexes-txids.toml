@@ -1,0 +1,8 @@
+[[changes]]
+crate = "zaino-indexes"
+kind = "feature"
+description = """
+I-02 `txids`: height → transaction count and txids in block order. \
+`Reader::txid(height, index)` reads two fields, never the record, through \
+the new `Layout::element_range` (element *i* of a list held in a record's \
+single variable field). Continuity checks are shared by every index."""

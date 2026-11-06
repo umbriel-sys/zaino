@@ -94,3 +94,4 @@ layouts and fetch single fields with `get_range`.
 | Index | Module | Holds |
 | --- | --- | --- |
 | I-01 | `headers` | height → header and cumulative chain work (`headers`); hash → height (`heights`) |
+| I-02 | `txids` | height → transaction count and txids in block order (`txids`); `Reader::txid(height, index)` is two field reads via `Layout::element_range`, the location → txid lookup the other indexes resolve through |

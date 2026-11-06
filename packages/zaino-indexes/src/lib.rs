@@ -24,6 +24,7 @@ mod layout;
 mod schema;
 #[cfg(test)]
 mod testing;
+pub mod txids;
 
 pub use block::{FoldBlock, FoldBlockError, FoldTx};
 pub use index::{Fold, FoldError, Index};
