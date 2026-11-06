@@ -1,0 +1,8 @@
+[[changes]]
+crate = "zaino-indexes"
+kind = "feature"
+description = """
+I-08 `chain_metadata` (per-pool tree root and size by height, absent before \
+activation), I-09 `spent` (outpoint → spending input, batched reads) and \
+I-10 `address_history` (receives and spends per P2PKH/P2SH address in chain \
+order, streamed in bounded chunks over a height range)."""

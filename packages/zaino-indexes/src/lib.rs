@@ -17,12 +17,15 @@
     )
 )]
 
+pub mod address_history;
 mod block;
+pub mod chain_metadata;
 mod codec;
 pub mod headers;
 mod index;
 mod layout;
 mod schema;
+pub mod spent;
 #[cfg(test)]
 mod testing;
 pub mod transparent;
