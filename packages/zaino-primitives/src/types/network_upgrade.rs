@@ -72,6 +72,20 @@ pub struct NetworkUpgradeInfo {
     pub status: NetworkUpgradeStatus,
 }
 
+/// The consensus branch in force at `height` under the validator's
+/// `schedule`: the upgrade with the highest activation height at or below
+/// it, ignoring disabled ones. `None` before the first branch-carrying
+/// upgrade (Overwinter). Every historic block gets the branch its own
+/// height was mined under.
+pub fn branch_at(schedule: &[NetworkUpgradeInfo], height: Height) -> Option<ConsensusBranchId> {
+    schedule
+        .iter()
+        .filter(|upgrade| upgrade.status != NetworkUpgradeStatus::Disabled)
+        .filter(|upgrade| upgrade.activation_height <= height)
+        .max_by_key(|upgrade| upgrade.activation_height)
+        .map(|upgrade| upgrade.branch_id)
+}
+
 /// The consensus branches in force around the current tip.
 ///
 /// The two differ exactly when the next block activates a network upgrade,
@@ -99,6 +113,37 @@ mod tests {
     fn branch_id_displays_as_eight_digit_hex() {
         assert_eq!(ConsensusBranchId::new(0xc2d6_d0b4).to_string(), "c2d6d0b4");
         assert_eq!(ConsensusBranchId::new(0).to_string(), "00000000");
+    }
+
+    /// Each height gets the branch activated at or below it, including on
+    /// the activation height itself; a disabled upgrade never applies.
+    #[test]
+    fn historic_heights_get_their_own_branch() {
+        let info = |branch: u32, height: u32, status| NetworkUpgradeInfo {
+            branch_id: ConsensusBranchId::new(branch),
+            name: String::new(),
+            activation_height: Height::try_from(height).expect("height"),
+            status,
+        };
+        // Out of order on purpose: the schedule is a set, not a sequence.
+        let schedule = [
+            info(3, 300, NetworkUpgradeStatus::Active),
+            info(1, 100, NetworkUpgradeStatus::Active),
+            info(2, 200, NetworkUpgradeStatus::Active),
+            info(4, 400, NetworkUpgradeStatus::Pending),
+            info(9, 250, NetworkUpgradeStatus::Disabled),
+        ];
+        let at = |height: u32| {
+            branch_at(&schedule, Height::try_from(height).expect("height")).map(u32::from)
+        };
+        assert_eq!(at(0), None);
+        assert_eq!(at(99), None);
+        assert_eq!(at(100), Some(1));
+        assert_eq!(at(199), Some(1));
+        assert_eq!(at(200), Some(2));
+        assert_eq!(at(260), Some(2), "a disabled upgrade never applies");
+        assert_eq!(at(300), Some(3));
+        assert_eq!(at(400), Some(4), "a pending upgrade applies once reached");
     }
 
     #[test]

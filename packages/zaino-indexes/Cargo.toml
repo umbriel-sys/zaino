@@ -24,6 +24,14 @@ blake2 = { workspace = true }
 
 thiserror.workspace = true
 
+# The consensus branch ids each history-tree epoch is keyed by.
+zaino-consensus = { version = "0.2.0", path = "../zaino-consensus" }
+
+# C6's ZIP 221 chain history tree (D-61): node types V1-V3, MMR append and
+# hashing, with upstream test vectors; `primitive-types` is its work type.
+zcash_history = "0.6"
+primitive-types = "0.12"
+
 [dev-dependencies]
 # The in-memory backend the index tests fold into.
 zaino-persistence = { path = "../zaino-persistence", features = ["testing"] }

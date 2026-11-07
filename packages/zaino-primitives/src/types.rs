@@ -66,7 +66,7 @@ pub use mempool_info::MempoolInfo;
 pub use merkle_root::MerkleRoot;
 pub use network::{ActivationHeights, Network};
 pub use network_upgrade::{
-    ConsensusBranchId, ConsensusBranchIds, NetworkUpgradeInfo, NetworkUpgradeStatus,
+    branch_at, ConsensusBranchId, ConsensusBranchIds, NetworkUpgradeInfo, NetworkUpgradeStatus,
 };
 pub use note_commitment::NoteCommitment;
 pub use nullifier::Nullifier;

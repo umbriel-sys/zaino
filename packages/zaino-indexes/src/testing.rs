@@ -7,7 +7,7 @@ use zaino_primitives::types::{
     Height, MerkleRoot, PoolBalances, PreIndexCompactTx, TransactionId, TreeRoots,
 };
 
-use crate::block::{FoldBlock, FoldTx};
+use crate::block::{FoldBlock, FoldBlockParts, FoldTx, PoolFrontiers};
 use crate::index::{Fold, Index};
 use crate::schema::Schema;
 
@@ -56,15 +56,27 @@ pub(crate) fn tx(n: u32) -> FoldTx {
     FoldTx::try_new(compact, PoolBalances::default(), Vec::new()).expect("no inputs")
 }
 
+/// The parts of a pre-Overwinter block of `header` with no pools, holding
+/// `transactions`.
+pub(crate) fn parts(header: BlockHeader, transactions: Vec<FoldTx>) -> FoldBlockParts {
+    FoldBlockParts {
+        header,
+        branch: None,
+        transactions,
+        tree_roots: TreeRoots {
+            sapling: None,
+            orchard: None,
+            ironwood: None,
+        },
+        frontiers: PoolFrontiers::default(),
+        subtrees: Vec::new(),
+    }
+}
+
 /// A block of `header` holding only a coinbase.
 pub(crate) fn block_of(header: BlockHeader) -> FoldBlock {
-    let roots = TreeRoots {
-        sapling: None,
-        orchard: None,
-        ironwood: None,
-    };
     let coinbase = tx(u32::from(header.height));
-    FoldBlock::try_new(header, vec![coinbase], roots).expect("fixture block")
+    FoldBlock::try_new(parts(header, vec![coinbase])).expect("fixture block")
 }
 
 /// Block `n` of the fixture chain.
@@ -79,8 +91,7 @@ pub(crate) fn busy(n: u32, count: u32) -> FoldBlock {
 
 /// Block `n` holding `transactions`.
 pub(crate) fn block_with(n: u32, transactions: Vec<FoldTx>) -> FoldBlock {
-    let roots = block(n).tree_roots().clone();
-    FoldBlock::try_new(header(n), transactions, roots).expect("fixture block")
+    FoldBlock::try_new(parts(header(n), transactions)).expect("fixture block")
 }
 
 /// An empty backend declaring `schema`'s namespaces.

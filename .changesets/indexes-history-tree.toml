@@ -1,0 +1,24 @@
+[[changes]]
+crate = "zaino-indexes"
+kind = "feature"
+description = """
+C6 `history_tree`: the ZIP 221 chain history tree on `zcash_history`, every \
+epoch's MMR nodes in one sequence with a per-height epoch record, Heartwood \
+and Canopy header commitments checked, unknown branches refused. \
+`FoldBlock` is built from `FoldBlockParts` and carries the block's consensus \
+branch, per-pool frontiers and completed subtrees, all checked against its \
+tree sizes."""
+
+[[changes]]
+crate = "zaino-primitives"
+kind = "feature"
+description = """
+`types::branch_at(schedule, height)`: the consensus branch a height was \
+mined under, from the validator's reported upgrade schedule."""
+
+[[changes]]
+crate = "zaino-consensus"
+kind = "feature"
+description = """
+`branch_id`: the consensus branch ids from Overwinter to NU7, checked \
+against zebra's."""

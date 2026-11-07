@@ -79,11 +79,16 @@ checked in the fold (a block must extend the state's tip) and refused as
 `FoldError::Continuity` naming the index.
 
 A fold is pure: it reads nothing. Its input is a `FoldBlock`, the crate's
-own block vocabulary, built only through `FoldBlock::try_new` and
-`FoldTx::try_new` (or `FoldTx::from_transaction` from a parsed
+own block vocabulary, built only through `FoldBlock::try_new(FoldBlockParts)`
+and `FoldTx::try_new` (or `FoldTx::from_transaction` from a parsed
 transaction), which refuse a block without a coinbase, a coinbase that
-spends, and prevouts that do not pair one-to-one with a transaction's
-transparent inputs. Whoever folds resolves the prevouts first: the chain
+spends, prevouts that do not pair one-to-one with a transaction's
+transparent inputs, and frontiers or completed subtrees that disagree with
+the block's tree sizes. Beside its transactions a `FoldBlock` carries its
+consensus branch (`zaino_primitives::types::branch_at` over the validator's
+schedule, so every historic block has the branch it was mined under), its
+tree roots, the frontier of each pool it changed and the subtrees it
+completed. Whoever folds resolves the prevouts first: the chain
 store from its own indexes, the chain head from its window and the store.
 The same fold therefore builds the store and the chain head's branches.
 
@@ -101,6 +106,8 @@ layouts and fetch single fields with `get_range`.
 | I-08 | `chain_metadata` | height → per pool (Sapling, Orchard, Ironwood) a present flag, tree root and cumulative size; a pool before activation is absent, never an empty tree; `Reader::size` is two field reads |
 | I-09 | `spent` | outpoint → spender (height, tx index, input index); `Reader::spenders` batches |
 | I-10 | `address_history` | one row per receive and per spend, keyed address hash, script type, height, tx index, io index, kind (big-endian, so an address's history is one key range in chain order), valued by the amount; P2PKH and P2SH only; `Reader::events` streams bounded chunks over a height range and never materialises a whole history |
+
+| C6 | `history_tree` | the ZIP 221 chain history tree: every MMR node of every epoch in one global `nodes` sequence (`zcash_history` entries, each epoch contiguous), and per height the block's branch, its epoch's start and length; V1/V2/V3 nodes by branch, an unknown branch refused; every Heartwood and Canopy header's commitment checked against the root of the blocks before it; `Reader::root(height)` rebuilds from at most 32 peaks |
 
 A stored transaction position is height `u32` then tx index `u16`; an input
 index is `u16`, an output index `u32`. Those are the smallest widths a 2 MB

@@ -202,7 +202,7 @@ mod tests {
     use zaino_persistence::{Backend as _, SchemaDigest};
 
     use super::*;
-    use crate::testing::{block_with, fold_all, tx};
+    use crate::testing::{fold_all, header, parts, tx};
 
     fn info(byte: u8, size: u32) -> TreeRootInfo {
         TreeRootInfo {
@@ -212,9 +212,11 @@ mod tests {
     }
 
     fn with_roots(n: u32, roots: TreeRoots) -> FoldBlock {
-        let block = block_with(n, vec![tx(n)]);
-        FoldBlock::try_new(block.header().clone(), block.transactions().to_vec(), roots)
-            .expect("fixture")
+        FoldBlock::try_new(crate::block::FoldBlockParts {
+            tree_roots: roots,
+            ..parts(header(n), vec![tx(n)])
+        })
+        .expect("fixture")
     }
 
     /// Roots and sizes read back whole and by pool; a pool before its

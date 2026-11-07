@@ -68,6 +68,35 @@ pub enum RawTransactionError {
     },
 }
 
+/// Consensus branch ids (protocol §7.1, ZIP 200 and each upgrade's ZIP).
+/// From Heartwood each epoch has a ZIP 221 chain history tree: V1 nodes for
+/// Heartwood and Canopy, V2 for NU5 to NU6.2 (Orchard), V3 for NU6.3 and NU7
+/// (Ironwood). Overwinter, Sapling and Blossom have none.
+pub mod branch_id {
+    /// Overwinter.
+    pub const OVERWINTER: u32 = 0x5ba8_1b19;
+    /// Sapling.
+    pub const SAPLING: u32 = 0x76b8_09bb;
+    /// Blossom.
+    pub const BLOSSOM: u32 = 0x2bb4_0e60;
+    /// Heartwood: the first epoch with a chain history tree.
+    pub const HEARTWOOD: u32 = 0xf5b9_230b;
+    /// Canopy.
+    pub const CANOPY: u32 = 0xe9ff_75a6;
+    /// NU5: Orchard, history nodes V2.
+    pub const NU5: u32 = 0xc2d6_d0b4;
+    /// NU6.
+    pub const NU6: u32 = 0xc8e7_1055;
+    /// NU6.1.
+    pub const NU6_1: u32 = 0x4dec_4df0;
+    /// NU6.2.
+    pub const NU6_2: u32 = 0x5437_f330;
+    /// NU6.3: Ironwood, history nodes V3.
+    pub const NU6_3: u32 = 0x37a5_165b;
+    /// NU7 (ZIP 259).
+    pub const NU7: u32 = 0x7719_0ad9;
+}
+
 /// Maximum serialised size of a block, in bytes.
 ///
 /// Also the maximum size of a transaction: a transaction must fit in a block,
