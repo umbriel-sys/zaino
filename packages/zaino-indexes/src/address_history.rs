@@ -187,8 +187,7 @@ impl<'a, R: BackendReader> Reader<'a, R> {
 
 /// An output's address, for the two scripts an address can name.
 fn address_of(output: &TransparentOutput) -> Option<TransparentAddressKey> {
-    let address = TransparentAddressKey::from_script(output.script.as_bytes());
-    address.is_standard().then_some(address)
+    TransparentAddressKey::from_standard_script(output.script.as_bytes())
 }
 
 fn address_bytes(address: TransparentAddressKey) -> [u8; ADDRESS_BYTES] {
@@ -309,13 +308,25 @@ mod tests {
             value: Zatoshis::new(3).expect("3"),
             script: Script::from(vec![0x6a, 1, 2]),
         };
+        // A raw 21-byte script tagged like zainodb's legacy rows names no
+        // address, so it must not land under address 1.
+        let mut tagged = vec![0x00];
+        tagged.extend_from_slice(&[1; 20]);
+        let legacy_form = TransparentOutput {
+            value: Zatoshis::new(4).expect("4"),
+            script: Script::from(tagged),
+        };
         let chain = [
             block_with(0, vec![with(0, vec![], vec![pay(1, 50), pay(2, 7)])]),
             block_with(
                 1,
                 vec![
                     tx(1),
-                    with(2, vec![pay(1, 50)], vec![pay(1, 20), odd, pay(2, 30)]),
+                    with(
+                        2,
+                        vec![pay(1, 50)],
+                        vec![pay(1, 20), odd, pay(2, 30), legacy_form],
+                    ),
                 ],
             ),
         ];

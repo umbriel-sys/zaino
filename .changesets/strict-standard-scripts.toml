@@ -1,0 +1,15 @@
+[[changes]]
+crate = "zaino-primitives"
+kind = "feature"
+description = """
+`TransparentAddressKey::from_standard_script`: the address of an exact \
+25-byte P2PKH or 23-byte P2SH script, `None` otherwise, without \
+`classify_script`'s legacy 21-byte arm."""
+
+[[changes]]
+crate = "zaino-indexes"
+kind = "fix"
+description = """
+I-10 keys only exact P2PKH and P2SH scripts: a raw 21-byte script starting \
+`0x00` or `0x01` was read as standard and filed under an address nobody \
+controls."""
