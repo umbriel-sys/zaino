@@ -66,6 +66,9 @@ pub enum FoldError {
     /// Cumulative chain work left its range.
     #[error("chain work overflow")]
     Work(#[from] WorkOverflow),
+    /// A UTXO-set total left its range: a double spend or a misread value.
+    #[error("txout set: {0}")]
+    TxOutSet(#[from] zaino_primitives::txout_commitment::TxOutSetError),
 }
 
 impl FoldError {

@@ -107,6 +107,7 @@ layouts and fetch single fields with `get_range`.
 | I-09 | `spent` | outpoint → spender (height, tx index, input index); `Reader::spenders` batches |
 | I-10 | `address_history` | one row per receive and per spend, keyed address hash, script type, height, tx index, io index, kind (big-endian, so an address's history is one key range in chain order), valued by the amount; P2PKH and P2SH only; `Reader::events` streams bounded chunks over a height range and never materialises a whole history |
 
+| I-11 | `tx_out_set` | `gettxoutsetinfo` at every height: the `TxOutSetAccumulator` per height (64 B, one read), over zcashd's set (all unspent transparent outputs but `OP_RETURN` and oversized scripts, never genesis); the fold state holds each transaction's remaining counted outputs, persisted as `txid ‖ remaining` rows and rebuilt and cross-checked against `transactions` on resume |
 | C6 | `history_tree` | the ZIP 221 chain history tree: every MMR node of every epoch in one global `nodes` sequence (`zcash_history` entries, each epoch contiguous), and per height the block's branch, its epoch's start and length; V1/V2/V3 nodes by branch, an unknown branch refused; every Heartwood and Canopy header's commitment checked against the root of the blocks before it; `Reader::root(height)` rebuilds from at most 32 peaks |
 
 A stored transaction position is height `u32` then tx index `u16`; an input

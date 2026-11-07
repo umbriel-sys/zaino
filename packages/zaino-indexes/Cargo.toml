@@ -13,7 +13,7 @@ categories = { workspace = true }
 
 [dependencies]
 # The domain vocabulary every record is decoded into.
-zaino-primitives = { workspace = true }
+zaino-primitives = { workspace = true, features = ["txout-commitment"] }
 
 # The storage port: namespace shapes the layouts derive, and the digest a
 # directory is stamped with.
@@ -31,6 +31,9 @@ zaino-consensus = { version = "0.2.0", path = "../zaino-consensus" }
 # hashing, with upstream test vectors; `primitive-types` is its work type.
 zcash_history = "0.6"
 primitive-types = "0.12"
+
+# I-11's per-transaction counts, shared structurally between states (D-69).
+imbl.workspace = true
 
 [dev-dependencies]
 # The in-memory backend the index tests fold into.
