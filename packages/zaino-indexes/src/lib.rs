@@ -21,6 +21,7 @@ pub mod address_history;
 mod block;
 pub mod chain_metadata;
 mod codec;
+pub mod compact_block;
 pub mod headers;
 mod index;
 mod layout;

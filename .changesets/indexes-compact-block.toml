@@ -1,0 +1,7 @@
+[[changes]]
+crate = "zaino-indexes"
+kind = "feature"
+description = """
+I-05 `compact_block`: Sapling, Orchard and Ironwood nullifiers and outputs as \
+fixed-width element columns, and a per-height `layout` of column starts, \
+per-transaction element counts and fee (a negative fee is refused)."""
