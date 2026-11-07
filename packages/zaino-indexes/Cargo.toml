@@ -39,6 +39,13 @@ imbl.workspace = true
 # The in-memory backend the index tests fold into.
 zaino-persistence = { path = "../zaino-persistence", features = ["testing"] }
 
+# The oracle the legacy tree decoder is checked against: zebra's own note
+# commitment trees, and the hashes that rebuild a decoded frontier's root.
+zebra-chain.workspace = true
+incrementalmerkletree.workspace = true
+sapling-crypto.workspace = true
+orchard.workspace = true
+
 [lints.rust]
 unsafe_code = "forbid"
 missing_docs = "warn"

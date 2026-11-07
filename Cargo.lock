@@ -6120,12 +6120,16 @@ version = "0.1.0"
 dependencies = [
  "blake2",
  "imbl",
+ "incrementalmerkletree",
+ "orchard",
  "primitive-types 0.12.2",
+ "sapling-crypto",
  "thiserror 2.0.20",
  "zaino-consensus",
  "zaino-persistence",
  "zaino-primitives",
  "zcash_history",
+ "zebra-chain",
 ]
 
 [[package]]

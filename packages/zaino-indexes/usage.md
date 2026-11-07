@@ -88,7 +88,10 @@ the block's tree sizes. Beside its transactions a `FoldBlock` carries its
 consensus branch (`zaino_primitives::types::branch_at` over the validator's
 schedule, so every historic block has the branch it was mined under), its
 tree roots, the frontier of each pool it changed and the subtrees it
-completed. Whoever folds resolves the prevouts first: the chain
+completed. `NoteFrontier::from_legacy_tree` reads a frontier from zcashd's
+legacy `CommitmentTree` encoding (`z_gettreestate`'s `finalState`, zebra's
+`to_rpc_bytes`), which both source backends answer treestates in, without
+hashing. Whoever folds resolves the prevouts first: the chain
 store from its own indexes, the chain head from its window and the store.
 The same fold therefore builds the store and the chain head's branches.
 

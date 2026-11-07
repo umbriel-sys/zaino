@@ -1,0 +1,7 @@
+[[changes]]
+crate = "zaino-indexes"
+kind = "feature"
+description = """
+`NoteFrontier::from_legacy_tree`: a frontier from zcashd's legacy \
+`CommitmentTree` encoding, the form both source backends answer treestates \
+in; checked against zebra's own Sapling and Orchard trees."""
