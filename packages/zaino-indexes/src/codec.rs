@@ -7,8 +7,9 @@ use zaino_primitives::types::{BlockTxPosition, Height, Outpoint, TransactionId};
 use crate::index::FoldError;
 use crate::layout::LayoutError;
 
-/// Bytes of a transaction position: height then index, `u32` each.
-pub(crate) const POSITION_BYTES: usize = 8;
+/// Bytes of a transaction position: height `u32`, then tx index `u16`
+/// (D-62: a 2 MB block holds at most ≈ 26 700 transactions).
+pub(crate) const POSITION_BYTES: usize = 6;
 /// Bytes of an outpoint: txid then output index.
 pub(crate) const OUTPOINT_BYTES: usize = 36;
 
@@ -44,13 +45,23 @@ pub(crate) fn txid(bytes: &[u8]) -> Result<TransactionId, LayoutError> {
     array::<32>(bytes, "txid").map(TransactionId::from)
 }
 
+/// `value` as a stored `u16`; past it is refused by name, never wrapped.
+pub(crate) fn narrow(field: &'static str, value: u32) -> Result<u16, LayoutError> {
+    u16::try_from(value).map_err(|_| LayoutError::OutOfRange {
+        field,
+        value: u64::from(value),
+    })
+}
+
 /// A position, big-endian so keys sort in chain order.
-pub(crate) fn position_bytes(position: BlockTxPosition) -> [u8; POSITION_BYTES] {
+pub(crate) fn position_bytes(
+    position: BlockTxPosition,
+) -> Result<[u8; POSITION_BYTES], LayoutError> {
     let mut out = [0; POSITION_BYTES];
     let (height, index) = out.split_at_mut(4);
     height.copy_from_slice(&u32::from(position.height).to_be_bytes());
-    index.copy_from_slice(&position.tx_index.to_be_bytes());
-    out
+    index.copy_from_slice(&narrow("tx_index", position.tx_index)?.to_be_bytes());
+    Ok(out)
 }
 
 /// A position written by [`position_bytes`].
@@ -58,8 +69,11 @@ pub(crate) fn position(index: &'static str, bytes: &[u8]) -> Result<BlockTxPosit
     let bytes = array::<POSITION_BYTES>(bytes, "position")?;
     let (raw_height, tx_index) = bytes.split_at(4);
     let raw_height = u32::from_be_bytes(array::<4>(raw_height, "height")?);
-    let tx_index = u32::from_be_bytes(array::<4>(tx_index, "tx_index")?);
-    Ok(BlockTxPosition::new(height(index, raw_height)?, tx_index))
+    let tx_index = u16::from_be_bytes(array::<2>(tx_index, "tx_index")?);
+    Ok(BlockTxPosition::new(
+        height(index, raw_height)?,
+        u32::from(tx_index),
+    ))
 }
 
 /// An outpoint as a key: txid, then the output index big-endian.
@@ -219,10 +233,20 @@ mod tests {
         let at = |height: u32, tx_index| {
             BlockTxPosition::new(Height::try_from(height).expect("height"), tx_index)
         };
-        let bytes = position_bytes(at(7, 3));
-        assert_eq!(position("test", &bytes).expect("decodes"), at(7, 3));
-        assert!(position_bytes(at(1, 9)) < position_bytes(at(2, 0)));
-        assert!(position_bytes(at(2, 0)) < position_bytes(at(2, 1)));
+        let bytes = |position| position_bytes(position).expect("fits");
+        assert_eq!(
+            position("test", &bytes(at(7, 3))).expect("decodes"),
+            at(7, 3)
+        );
+        assert!(bytes(at(1, 9)) < bytes(at(2, 0)));
+        assert!(bytes(at(2, 0)) < bytes(at(2, 1)));
+        assert_eq!(
+            position_bytes(at(2, 65_536)),
+            Err(LayoutError::OutOfRange {
+                field: "tx_index",
+                value: 65_536
+            })
+        );
         assert_eq!(
             le_u32(&[1, 0, 0], "count"),
             Err(LayoutError::FieldWidth {

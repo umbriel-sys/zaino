@@ -4,6 +4,8 @@
 //! (heights, hashes) depend on this crate instead of on each other. The
 //! `zebra` feature adds the [`zebra`] conversions from `zebra_chain` types.
 
+#[cfg(feature = "txout-commitment")]
+pub mod txout_commitment;
 pub mod types;
 #[cfg(feature = "zebra")]
 pub mod zebra;

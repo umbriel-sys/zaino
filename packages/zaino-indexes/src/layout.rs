@@ -474,6 +474,14 @@ pub enum LayoutError {
     /// A record or section past 4 GiB, which the directory cannot address.
     #[error("record past the directory's reach")]
     Overflow,
+    /// A value past its field's stored width.
+    #[error("{field}: {value} does not fit its stored width")]
+    OutOfRange {
+        /// The field.
+        field: &'static str,
+        /// The value.
+        value: u64,
+    },
 }
 
 #[cfg(test)]

@@ -813,10 +813,10 @@ impl TxOutSetIndex for FakeStore {
                     index,
                 };
                 let output = StoredTxOut::from_output(output);
-                if spent.contains(&outpoint) || is_unspendable(&output) {
+                if spent.contains(&outpoint) || is_unspendable(&output.address) {
                     continue;
                 }
-                set.apply_added_output(&outpoint, &output)
+                set.apply_added_output(&outpoint, output.value, &output.address)
                     .map_err(backend)?;
                 holds_one = true;
             }

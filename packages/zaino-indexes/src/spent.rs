@@ -23,14 +23,15 @@ declared! {
     );
 }
 declared! {
-    /// The spending input: height, tx index, input index, big-endian.
+    /// The spending input: height `u32`, tx index and input index `u16`
+    /// (D-62), big-endian.
     pub const SPENDER: Layout = Layout::new(
         "spender",
         1,
         &[
             Field::fixed("height", 4),
-            Field::fixed("tx_index", 4),
-            Field::fixed("input", 4),
+            Field::fixed("tx_index", 2),
+            Field::fixed("input", 2),
         ],
     );
 }
@@ -38,7 +39,7 @@ declared! {
     const BY_OUTPOINT: NamespaceLayout = NamespaceLayout::map(SPENT, &OUTPOINT, &SPENDER, false);
 }
 const _: () = assert!(OUTPOINT.fixed_len() == OUTPOINT_BYTES);
-const _: () = assert!(SPENDER.fixed_len() == POSITION_BYTES + 4);
+const _: () = assert!(SPENDER.fixed_len() == POSITION_BYTES + 2);
 
 /// The schema: one map, outpoint → spender.
 pub const SCHEMA: Schema = Schema::new(NAME, 1, &[BY_OUTPOINT]);
@@ -79,8 +80,8 @@ impl Index for Spent {
             let position = BlockTxPosition::new(reference.height, tx_index);
             for (input, spent) in (0u32..).zip(&tx.compact().transparent_inputs) {
                 let mut value = Vec::with_capacity(SPENDER.fixed_len());
-                value.extend_from_slice(&position_bytes(position));
-                value.extend_from_slice(&input.to_be_bytes());
+                value.extend_from_slice(&position_bytes(position)?);
+                value.extend_from_slice(&codec::narrow("input", input)?.to_be_bytes());
                 ops.push(WriteOp::Put {
                     namespace: SPENT,
                     key: outpoint_bytes(Outpoint {
@@ -144,7 +145,8 @@ fn spender(bytes: &[u8]) -> Result<Spender, FoldError> {
             })?;
     Ok(Spender {
         position: codec::position(NAME, position)?,
-        input: codec::array::<4>(input, "input").map(u32::from_be_bytes)?,
+        input: codec::array::<2>(input, "input")
+            .map(|bytes| u32::from(u16::from_be_bytes(bytes)))?,
     })
 }
 
@@ -224,9 +226,9 @@ mod tests {
     #[test]
     fn the_schema_digest_is_golden() {
         const GOLDEN: [u8; 32] = [
-            0xf3, 0xc7, 0x0e, 0x04, 0xf4, 0x49, 0xa5, 0x80, 0x67, 0xc6, 0x90, 0x8a, 0x20, 0x1c,
-            0x8c, 0x82, 0xd1, 0xc5, 0x58, 0x96, 0x03, 0x00, 0xa0, 0x0d, 0xd3, 0x72, 0xc5, 0x87,
-            0xeb, 0xc0, 0x86, 0x9c,
+            0x48, 0x37, 0x48, 0x8d, 0x2f, 0x6b, 0x30, 0xfc, 0x5b, 0x1a, 0x2f, 0x5e, 0xf8, 0xd4,
+            0xf7, 0xc8, 0x64, 0x04, 0xc2, 0xbd, 0xdc, 0x88, 0x5f, 0x50, 0x06, 0xc6, 0x2f, 0x47,
+            0x51, 0x6d, 0x49, 0x59,
         ];
         assert_eq!(
             SCHEMA.digest(),

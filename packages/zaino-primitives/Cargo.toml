@@ -12,6 +12,8 @@ keywords.workspace = true
 categories.workspace = true
 
 [dependencies]
+# The UTXO-set commitment's hash (feature `txout-commitment`).
+blake2 = { workspace = true, optional = true }
 orchard = { workspace = true, optional = true }
 serde = { workspace = true, features = ["derive"], optional = true }
 thiserror = { workspace = true }
@@ -30,6 +32,9 @@ zebra = ["dep:zebra-chain", "dep:orchard"]
 # `Serialize`/`Deserialize` on the configuration vocabulary (`Network`,
 # `ActivationHeights`).
 serde = ["dep:serde"]
+# Zaino's UTXO-set commitment (the `txout_commitment` module), shared by every
+# store and the chain head.
+txout-commitment = ["dep:blake2"]
 
 [dev-dependencies]
 proptest.workspace = true

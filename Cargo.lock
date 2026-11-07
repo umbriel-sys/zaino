@@ -6036,7 +6036,6 @@ dependencies = [
 name = "zaino-chain-store"
 version = "0.1.1"
 dependencies = [
- "blake2",
  "futures",
  "thiserror 2.0.20",
  "tokio",
@@ -6205,6 +6204,7 @@ dependencies = [
 name = "zaino-primitives"
 version = "0.3.0"
 dependencies = [
+ "blake2",
  "orchard",
  "proptest",
  "serde",

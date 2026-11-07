@@ -6,7 +6,9 @@ own terms, independent of how any of it is transported or stored.
 ## The one rule
 
 **This crate depends only on `thiserror` and the librustzcash
-protocol-specification crates (`zcash_address`, `zcash_protocol`).** Keeping the
+protocol-specification crates (`zcash_address`, `zcash_protocol`)**, plus
+optional features a consumer opts into (`zebra`, `serde`,
+`txout-commitment`). Keeping the
 list this short is not an accident of the current implementation — it is the
 property that makes every other crate able to depend on it. Adding a dependency
 here adds it to `zaino-source`, both adapters, `zaino-state`, `zaino-serve` and
@@ -16,9 +18,11 @@ The rule is about *what a dependency lets in*, not a fixed name list. Two things
 must never enter through it, because both would let some other layer's decisions
 leak into the domain vocabulary:
 
-- **No serialization framework.** In particular there is **no serde**. A serde
-  derive in this crate would let the wire format and the domain model start
-  deciding each other, which is exactly what ADR-0009 exists to prevent.
+- **No serialization framework on the domain types.** A serde derive on a
+  chain type would let the wire format and the domain model start deciding
+  each other, which is exactly what ADR-0009 exists to prevent. The optional
+  `serde` feature covers only the configuration vocabulary (`Network`,
+  `ActivationHeights`).
 - **No node, transport, or storage implementation.** A validator client, a gRPC
   or JSON-RPC stack, a database — these belong at the boundaries that own them,
   never in the vocabulary every boundary shares.
@@ -60,7 +64,9 @@ use zaino_primitives::types::rpc::{BlockDeltas, MiningInfo, NodeInfo, PeerInfo};
   quantity family `SingleBlockWork` / `AbsoluteChainWork`, the zatoshi quantity
   family `Zatoshis` / `ZatoshisFlowSum` / `SignedZatoshis`, and the
   transparent-script family `Script` / `ScriptType` / `classify_script` /
-  `TransparentAddressKey` / `TransparentAddress` (all four families below).
+  `TransparentAddressKey` / `TransparentAddress` (all four families below);
+  `Transaction::pool_balances` gives each shielded pool's value balance as a
+  `PoolBalances`.
 - `types::rpc` — the response shapes for passthrough RPCs, in domain
   vocabulary rather than any interface's: `BlockDeltas`, `BlockchainInfo`,
   `ChainTip`, `MiningInfo`, `NodeInfo`, `PeerInfo`, `SpentInfo`, `TxOut`,
@@ -200,11 +206,11 @@ if key.is_standard() { /* reconstructible as an address, given a network */ }
 ```
 
 The rule is **total**: every script gets a key, including scripts with no
-address at all. An index that refused non-standard outputs would answer "no
-history" for an address that has some, so `NonStandard` is a real answer rather
-than a failure. What an index then *does* with it is the index's business —
-Zaino's transparent-address history keys them, while its UTXO-set accumulator
-excludes them, mirroring zcashd's `IsUnspendable`.
+address at all, so classification never fails. What an index does with a
+`NonStandard` key is its own business: Zaino's address history (I-10) and its
+UTXO-set commitment both skip them, since no address names such a script and
+their 20 bytes collide (zcashd's address index and `IsUnspendable` do the
+same).
 
 ### Why the key is not the address
 
@@ -347,6 +353,23 @@ with, or that a fixture chain is its own. Both derive `Serialize` /
 `Deserialize` under the `serde` feature (off by default), and under `zebra`
 gain the named conversions `Network::from_zebra`, `ActivationHeights::to_zebra`
 and `to_regtest_network`.
+
+## UTXO-set commitment: feature `txout-commitment`
+
+Off by default; it adds `blake2`. `zaino_primitives::txout_commitment` is the
+one definition of `gettxoutsetinfo`'s `hash_serialized`: the XOR, over every
+unspent P2PKH/P2SH output, of `BLAKE2b-256(TXOUT_SET_DOMAIN_TAG ||
+canonical_entry)`, with `TxOutSetAccumulator` keeping it and the running
+totals incrementally. Every store and the chain head compute it through this
+module, so the value means one thing across deployments; `zaino-chain-store`
+re-exports it.
+
+```rust,ignore
+let mut set = TxOutSetAccumulator::empty();
+if !is_unspendable(&address) {
+    set.apply_added_output(&outpoint, value, &address)?;   // and apply_removed_output
+}
+```
 
 ## Zebra conversions: feature `zebra`
 

@@ -97,10 +97,15 @@ layouts and fetch single fields with `get_range`.
 | I-02 | `txids` | height → transaction count and txids in block order (`txids`); `Reader::txid(height, index)` is two field reads via `Layout::element_range`, the location → txid lookup the other indexes resolve through |
 | I-03 | `txid_location` | txid → (height, tx index) (`txid_location`); `Reader::positions` batches through `get_many` |
 | I-04 | `transparent` | per height, three columns in wire form: `t_layout` (per tx, cumulative input and output counts), `t_in` (36-byte prevouts), `t_out` (value then script, as a variable-element list); `Reader::output(position, vout)` reads five small fields, never a record |
-
 | I-08 | `chain_metadata` | height → per pool (Sapling, Orchard, Ironwood) a present flag, tree root and cumulative size; a pool before activation is absent, never an empty tree; `Reader::size` is two field reads |
 | I-09 | `spent` | outpoint → spender (height, tx index, input index); `Reader::spenders` batches |
 | I-10 | `address_history` | one row per receive and per spend, keyed address hash, script type, height, tx index, io index, kind (big-endian, so an address's history is one key range in chain order), valued by the amount; P2PKH and P2SH only; `Reader::events` streams bounded chunks over a height range and never materialises a whole history |
+
+A stored transaction position is height `u32` then tx index `u16`; an input
+index is `u16`, an output index `u32`. Those are the smallest widths a 2 MB
+block cannot exceed (≈ 26 700 transactions, a transaction ≈ 48 700 inputs
+but ≈ 222 000 outputs); every narrowing is checked, so a value past its width
+fails the fold with `LayoutError::OutOfRange` and never wraps.
 
 Lists of variable-length elements (`t_out`) hold each element's end offset
 (`u32`, relative to the data) ahead of the data, so element *i* is two

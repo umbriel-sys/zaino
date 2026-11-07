@@ -6,7 +6,7 @@ use zaino_primitives::types::{BlockRef, BlockTxPosition, TransactionId};
 use crate::block::FoldBlock;
 use crate::codec::{self, position_bytes, POSITION_BYTES};
 use crate::index::{check_extends, Fold, FoldError, Index};
-use crate::layout::{declared, Field, Layout};
+use crate::layout::{declared, Field, Layout, LayoutError};
 use crate::schema::{NamespaceLayout, Schema};
 
 /// The index's name: its directory and the name dependants use.
@@ -23,7 +23,7 @@ declared! {
     pub const POSITION: Layout = Layout::new(
         "tx_position",
         1,
-        &[Field::fixed("height", 4), Field::fixed("tx_index", 4)],
+        &[Field::fixed("height", 4), Field::fixed("tx_index", 2)],
     );
 }
 declared! {
@@ -57,12 +57,15 @@ impl Index for TxidLocation {
         let reference = block.reference();
         let ops = (0u32..)
             .zip(block.transactions())
-            .map(|(tx_index, tx)| WriteOp::Put {
-                namespace: LOCATIONS,
-                key: <[u8; 32]>::from(tx.compact().txid).to_vec(),
-                value: position_bytes(BlockTxPosition::new(reference.height, tx_index)).to_vec(),
+            .map(|(tx_index, tx)| {
+                let position = BlockTxPosition::new(reference.height, tx_index);
+                Ok(WriteOp::Put {
+                    namespace: LOCATIONS,
+                    key: <[u8; 32]>::from(tx.compact().txid).to_vec(),
+                    value: position_bytes(position)?.to_vec(),
+                })
             })
-            .collect();
+            .collect::<Result<_, LayoutError>>()?;
         Ok(Fold {
             ops,
             next: State { tip: reference },
@@ -163,9 +166,9 @@ mod tests {
     #[test]
     fn the_schema_digest_is_golden() {
         const GOLDEN: [u8; 32] = [
-            0x99, 0x39, 0x5b, 0xb9, 0x6b, 0xa4, 0x0a, 0x61, 0xa8, 0x96, 0xaf, 0x36, 0x82, 0x5a,
-            0x1f, 0x6b, 0xd1, 0xc6, 0xef, 0x8d, 0x97, 0xdd, 0xf8, 0xec, 0xdb, 0xbd, 0x2f, 0xdf,
-            0x55, 0x38, 0x60, 0x75,
+            0xd1, 0x36, 0x74, 0x20, 0x6e, 0xb1, 0x3a, 0x9c, 0x69, 0x48, 0xac, 0xe7, 0x0a, 0x6e,
+            0x06, 0x7b, 0x17, 0xf0, 0x01, 0xb8, 0x4f, 0x5d, 0x31, 0xf9, 0x44, 0x4c, 0xe9, 0xe5,
+            0x3a, 0x69, 0x7b, 0x18,
         ];
         assert_eq!(
             SCHEMA.digest(),

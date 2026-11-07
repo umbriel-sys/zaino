@@ -1,8 +1,9 @@
 //! I-10 `address_history`: every receive and spend of each transparent
 //! address, in chain order.
 //!
-//! One row per event, keyed `address hash (20) | script type (1) | height |
-//! tx index | input or output index | kind`, all big-endian, so an address's
+//! One row per event, keyed `address hash (20) | script type (1) | height
+//! (u32) | tx index (u16) | input or output index (u32) | kind`, all
+//! big-endian, so an address's
 //! history is one key range in chain order and the leading bytes are
 //! uniformly distributed. The value is the amount. Spends are rows of their
 //! own (the prevout arrives resolved in the `FoldBlock`); whether a receive
@@ -24,7 +25,7 @@ use zaino_primitives::types::{
 use crate::block::FoldBlock;
 use crate::codec::{self, le_u64, POSITION_BYTES};
 use crate::index::{check_extends, Fold, FoldError, Index};
-use crate::layout::{declared, Field, Layout};
+use crate::layout::{declared, Field, Layout, LayoutError};
 use crate::schema::{NamespaceLayout, Schema};
 
 /// The index's name: its directory and the name dependants use.
@@ -41,7 +42,7 @@ declared! {
             Field::fixed("address_hash", 20),
             Field::fixed("script_type", 1),
             Field::fixed("height", 4),
-            Field::fixed("tx_index", 4),
+            Field::fixed("tx_index", 2),
             Field::fixed("io_index", 4),
             Field::fixed("kind", 1),
         ],
@@ -56,7 +57,7 @@ declared! {
 }
 /// Bytes naming an address: hash then script type.
 const ADDRESS_BYTES: usize = 21;
-const KEY_BYTES: usize = 34;
+const KEY_BYTES: usize = 32;
 const _: () = assert!(EVENT_KEY.fixed_len() == KEY_BYTES);
 
 /// The schema: one map of events.
@@ -98,6 +99,7 @@ impl Index for AddressHistory {
     const SCHEMA: Schema = SCHEMA;
     const DEPENDENCIES: &'static [&'static str] = &[
         crate::txids::NAME,
+        crate::txid_location::NAME,
         crate::transparent::NAME,
         crate::spent::NAME,
     ];
@@ -122,7 +124,7 @@ impl Index for AddressHistory {
                 if let Some(address) = address_of(output) {
                     ops.push(WriteOp::Put {
                         namespace: EVENTS,
-                        key: event_key(address, position, index, kind).to_vec(),
+                        key: event_key(address, position, index, kind)?.to_vec(),
                         value: u64::from(output.value).to_le_bytes().to_vec(),
                     });
                 }
@@ -210,19 +212,19 @@ fn event_key(
     position: BlockTxPosition,
     index: u32,
     kind: EventKind,
-) -> [u8; KEY_BYTES] {
+) -> Result<[u8; KEY_BYTES], LayoutError> {
     let mut out = [0; KEY_BYTES];
     let (head, rest) = out.split_at_mut(ADDRESS_BYTES);
     head.copy_from_slice(&address_bytes(address));
     let (at, rest) = rest.split_at_mut(POSITION_BYTES);
-    at.copy_from_slice(&codec::position_bytes(position));
+    at.copy_from_slice(&codec::position_bytes(position)?);
     let (io, tail) = rest.split_at_mut(4);
     io.copy_from_slice(&index.to_be_bytes());
     tail.copy_from_slice(&[match kind {
         EventKind::Received => 0,
         EventKind::Spent => 1,
     }]);
-    out
+    Ok(out)
 }
 
 fn event(key: &[u8], value: &[u8]) -> Result<AddressEvent, FoldError> {
@@ -353,9 +355,9 @@ mod tests {
     #[test]
     fn the_schema_digest_is_golden() {
         const GOLDEN: [u8; 32] = [
-            0xd3, 0x7b, 0x3f, 0xc5, 0x77, 0xeb, 0x00, 0x06, 0xbf, 0x02, 0x0f, 0xe9, 0x11, 0x12,
-            0x91, 0xa8, 0x4f, 0x85, 0x2c, 0xad, 0x3e, 0x49, 0x7d, 0x4f, 0xb6, 0x9e, 0x9b, 0x8a,
-            0x2d, 0x81, 0xe0, 0xf4,
+            0xf0, 0xfe, 0x67, 0xa0, 0x42, 0x16, 0x84, 0x1f, 0x52, 0x54, 0xcd, 0xd8, 0xd9, 0x49,
+            0x91, 0x0e, 0xca, 0xbf, 0x75, 0x09, 0x2c, 0x51, 0x20, 0x12, 0x8f, 0x36, 0x05, 0x28,
+            0x30, 0x78, 0xc1, 0x32,
         ];
         assert_eq!(
             SCHEMA.digest(),

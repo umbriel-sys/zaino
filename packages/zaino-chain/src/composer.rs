@@ -1410,10 +1410,10 @@ where
                     "the chain head spends an output the store does not hold",
                 ))
             })?;
-            if is_unspendable(&previous) {
+            if is_unspendable(&previous.address) {
                 continue;
             }
-            set.apply_removed_output(outpoint, &previous)
+            set.apply_removed_output(outpoint, previous.value, &previous.address)
                 .map_err(accumulator_err)?;
             *removed.entry(outpoint.txid).or_default() += 1;
         }
@@ -1463,7 +1463,7 @@ where
         let outpoints: Vec<Outpoint> = outputs
             .iter()
             .zip(0..)
-            .filter(|(output, _)| !is_unspendable(output))
+            .filter(|(output, _)| !is_unspendable(&output.address))
             .map(|(_, index)| Outpoint { txid, index })
             .collect();
         let spenders = self
@@ -1481,10 +1481,10 @@ fn apply_created(set: &mut TxOutSetAccumulator, created: &[CreatedTxOut]) -> Res
     let mut holders = HashSet::new();
     for created in created {
         let output = StoredTxOut::from_output(&created.output);
-        if is_unspendable(&output) {
+        if is_unspendable(&output.address) {
             continue;
         }
-        set.apply_added_output(&created.outpoint, &output)
+        set.apply_added_output(&created.outpoint, output.value, &output.address)
             .map_err(accumulator_err)?;
         holders.insert(created.outpoint.txid);
     }
