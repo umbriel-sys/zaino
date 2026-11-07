@@ -276,26 +276,9 @@ impl<'a, R: BackendReader> Reader<'a, R> {
 
     /// The layout at `height`.
     pub fn layout(&self, height: Height) -> Result<Option<BlockLayout>, FoldError> {
-        let Some(record) = self
-            .backend
-            .get(LAYOUT_NS, &sequence_key(u64::from(height)))?
-        else {
-            return Ok(None);
-        };
-        let start = |field: usize| -> Result<u32, FoldError> {
-            Ok(le_u32(BLOCK_LAYOUT.field(&record, field)?, "start")?)
-        };
-        let starts = ColumnStarts {
-            sapling_spends: start(0)?,
-            sapling_outputs: start(1)?,
-            orchard_actions: start(2)?,
-            ironwood_actions: start(3)?,
-        };
-        let count = le_u32(BLOCK_LAYOUT.field(&record, COUNT)?, "count")?;
-        let txs = elements(NAME, count, BLOCK_LAYOUT.field(&record, TXS)?, TX_BYTES)?
-            .map(tx_layout)
-            .collect::<Result<Vec<_>, _>>()?;
-        Ok(Some(BlockLayout { starts, txs }))
+        self.backend
+            .with_value(LAYOUT_NS, &sequence_key(u64::from(height)), block_layout)?
+            .transpose()
     }
 
     /// `count` Sapling nullifiers from position `start`.
@@ -467,6 +450,24 @@ fn tx_bytes(tx: &TxLayout) -> [u8; TX_BYTES] {
     }
     fee.copy_from_slice(&u64::from(tx.fee).to_le_bytes());
     out
+}
+
+/// The layout a stored record holds.
+fn block_layout(record: &[u8]) -> Result<BlockLayout, FoldError> {
+    let start = |field: usize| -> Result<u32, FoldError> {
+        Ok(le_u32(BLOCK_LAYOUT.field(record, field)?, "start")?)
+    };
+    let starts = ColumnStarts {
+        sapling_spends: start(0)?,
+        sapling_outputs: start(1)?,
+        orchard_actions: start(2)?,
+        ironwood_actions: start(3)?,
+    };
+    let count = le_u32(BLOCK_LAYOUT.field(record, COUNT)?, "count")?;
+    let txs = elements(NAME, count, BLOCK_LAYOUT.field(record, TXS)?, TX_BYTES)?
+        .map(tx_layout)
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok(BlockLayout { starts, txs })
 }
 
 fn tx_layout(bytes: &[u8]) -> Result<TxLayout, FoldError> {

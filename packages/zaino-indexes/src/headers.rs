@@ -159,13 +159,11 @@ impl<'a, R: BackendReader> Reader<'a, R> {
 
     /// The header at `height`.
     pub fn header(&self, height: Height) -> Result<Option<BlockHeader>, FoldError> {
-        let Some(record) = self
-            .backend
-            .get(HEADERS, &sequence_key(u64::from(height)))?
-        else {
-            return Ok(None);
-        };
-        Ok(Some(decode_header(&record, height)?))
+        self.backend
+            .with_value(HEADERS, &sequence_key(u64::from(height)), |record| {
+                decode_header(record, height)
+            })?
+            .transpose()
     }
 
     /// The hash at `height`: one field, not the record.
@@ -194,10 +192,11 @@ impl<'a, R: BackendReader> Reader<'a, R> {
 
     /// The height of the block with `hash`.
     pub fn height(&self, hash: BlockHash) -> Result<Option<Height>, FoldError> {
-        let Some(bytes) = self.backend.get(HEIGHTS, &<[u8; 32]>::from(hash))? else {
-            return Ok(None);
-        };
-        Ok(Some(codec::height(NAME, le_u32(&bytes, "height")?)?))
+        self.backend
+            .with_value(HEIGHTS, &<[u8; 32]>::from(hash), |bytes| {
+                codec::height(NAME, le_u32(bytes, "height")?)
+            })?
+            .transpose()
     }
 }
 

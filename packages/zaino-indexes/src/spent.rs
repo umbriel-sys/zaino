@@ -115,10 +115,7 @@ impl<'a, R: BackendReader> Reader<'a, R> {
     /// The input that spent `outpoint`; `None` if unspent as of the tip.
     pub fn spender(&self, outpoint: Outpoint) -> Result<Option<Spender>, FoldError> {
         let key = outpoint_bytes(outpoint);
-        self.backend
-            .get(SPENT, &key)?
-            .map(|bytes| spender(&bytes))
-            .transpose()
+        self.backend.with_value(SPENT, &key, spender)?.transpose()
     }
 
     /// [`spender`](Self::spender) for each outpoint, in order, one batch read.

@@ -387,6 +387,21 @@ fn nodes_namespace(pool: ShieldedPool) -> Namespace {
     }
 }
 
+/// Each pool's size a stored record holds.
+fn decode_sizes(record: &[u8]) -> Result<[Option<u32>; 3], FoldError> {
+    let pool = |first: usize| -> Result<Option<u32>, FoldError> {
+        match array::<1>(POOL_SIZES.field(record, first)?, "present")? {
+            [0] => Ok(None),
+            [1] => Ok(Some(le_u32(
+                POOL_SIZES.field(record, first.saturating_add(1))?,
+                "size",
+            )?)),
+            [flag] => Err(FoldError::continuity(NAME, format!("present flag {flag}"))),
+        }
+    };
+    Ok([pool(0)?, pool(2)?, pool(4)?])
+}
+
 fn subtrees_namespace(pool: ShieldedPool) -> Namespace {
     match pool {
         ShieldedPool::Sapling => SAPLING_SUBTREES,
@@ -410,20 +425,9 @@ impl<'a, R: BackendReader> Reader<'a, R> {
     /// Each pool's size after `height`, `None` inside for a pool not yet
     /// active.
     pub fn sizes(&self, height: Height) -> Result<Option<[Option<u32>; 3]>, FoldError> {
-        let Some(record) = self.backend.get(SIZES, &sequence_key(u64::from(height)))? else {
-            return Ok(None);
-        };
-        let pool = |first: usize| -> Result<Option<u32>, FoldError> {
-            match array::<1>(POOL_SIZES.field(&record, first)?, "present")? {
-                [0] => Ok(None),
-                [1] => Ok(Some(le_u32(
-                    POOL_SIZES.field(&record, first.saturating_add(1))?,
-                    "size",
-                )?)),
-                [flag] => Err(FoldError::continuity(NAME, format!("present flag {flag}"))),
-            }
-        };
-        Ok(Some([pool(0)?, pool(2)?, pool(4)?]))
+        self.backend
+            .with_value(SIZES, &sequence_key(u64::from(height)), decode_sizes)?
+            .transpose()
     }
 
     /// `pool`'s frontier after `height`: the leaf and at most 32 ommers, one
@@ -474,28 +478,34 @@ impl<'a, R: BackendReader> Reader<'a, R> {
     ) -> Result<Vec<SubtreeRoot>, FoldError> {
         let mut roots = Vec::new();
         for index in start..start.saturating_add(limit) {
-            let Some(record) = self
-                .backend
-                .get(subtrees_namespace(pool), &sequence_key(index))?
+            let Some(root) = self.backend.with_value(
+                subtrees_namespace(pool),
+                &sequence_key(index),
+                |record| -> Result<SubtreeRoot, FoldError> {
+                    Ok(SubtreeRoot {
+                        root: array::<32>(SUBTREE.field(record, 0)?, "root")?,
+                        completed: codec::height(
+                            NAME,
+                            le_u32(SUBTREE.field(record, 1)?, "height")?,
+                        )?,
+                    })
+                },
+            )?
             else {
                 break;
             };
-            roots.push(SubtreeRoot {
-                root: array::<32>(SUBTREE.field(&record, 0)?, "root")?,
-                completed: codec::height(NAME, le_u32(SUBTREE.field(&record, 1)?, "height")?)?,
-            });
+            roots.push(root?);
         }
         Ok(roots)
     }
 
     fn node(&self, pool: ShieldedPool, address: (u8, u64)) -> Result<[u8; 32], FoldError> {
-        let bytes = self
-            .backend
-            .get(nodes_namespace(pool), &node_key(address)?)?
-            .ok_or_else(|| {
-                FoldError::continuity(NAME, format!("{pool} node {address:?} missing"))
-            })?;
-        Ok(array::<32>(&bytes, "node")?)
+        self.backend
+            .with_value(nodes_namespace(pool), &node_key(address)?, |bytes| {
+                array::<32>(bytes, "node")
+            })?
+            .ok_or_else(|| FoldError::continuity(NAME, format!("{pool} node {address:?} missing")))?
+            .map_err(FoldError::from)
     }
 }
 

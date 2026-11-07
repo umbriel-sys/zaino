@@ -299,10 +299,23 @@ impl Model {
             assert_eq!(past, None, "{label}: {namespace} past the end");
             let keys: Vec<Vec<u8>> = (0..=len).map(sequence_key).collect();
             let keys: Vec<&[u8]> = keys.iter().map(Vec::as_slice).collect();
+            let lent: Vec<_> = keys
+                .iter()
+                .map(|key| {
+                    reader
+                        .with_value(namespace, key, <[u8]>::to_vec)
+                        .expect("with_value")
+                })
+                .collect();
             assert_eq!(
                 reader.get_batch(namespace, &keys).expect("get_batch"),
                 [one_by_one, vec![None]].concat(),
                 "{label}: {namespace} get_batch = get, in order"
+            );
+            assert_eq!(
+                lent,
+                reader.get_batch(namespace, &keys).expect("get_batch"),
+                "{label}: {namespace} with_value = get"
             );
             let whole = sequence_entries(model);
             let scanned = reader.scan(namespace).expect("scan");
@@ -364,6 +377,15 @@ impl Model {
             one_by_one,
             "{label}: {SCANNED} get_batch = get, in order"
         );
+        let lent: Vec<_> = batch
+            .iter()
+            .map(|key| {
+                reader
+                    .with_value(SCANNED, key, <[u8]>::to_vec)
+                    .expect("with_value")
+            })
+            .collect();
+        assert_eq!(lent, one_by_one, "{label}: {SCANNED} with_value = get");
 
         for n in 0..2 * self.ids + 2 {
             let id = probed_key(n);

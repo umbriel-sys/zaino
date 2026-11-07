@@ -87,10 +87,11 @@ impl<'a, R: BackendReader> Reader<'a, R> {
 
     /// Where `txid` was mined; `None` if this index never folded it.
     pub fn position(&self, txid: TransactionId) -> Result<Option<BlockTxPosition>, FoldError> {
-        let Some(bytes) = self.backend.get(LOCATIONS, &<[u8; 32]>::from(txid))? else {
-            return Ok(None);
-        };
-        codec::position(NAME, &bytes).map(Some)
+        self.backend
+            .with_value(LOCATIONS, &<[u8; 32]>::from(txid), |bytes| {
+                codec::position(NAME, bytes)
+            })?
+            .transpose()
     }
 
     /// [`position`](Self::position) for each txid, in order, one batch read.

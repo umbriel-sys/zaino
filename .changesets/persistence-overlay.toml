@@ -1,0 +1,23 @@
+[[changes]]
+crate = "zaino-persistence"
+kind = "feature"
+description = """
+`Overlay`: commits above a durable root kept in persistent maps and read \
+through `BackendReader`, with `with` (check and apply a block, sharing data \
+with the parent) and `rebase`. `imbl` is now a required dependency.
+"""
+
+[[changes]]
+crate = "zaino-persistence"
+kind = "feature"
+description = """
+`BackendReader::with_value` decodes a value in place through a closure; the \
+in-memory and LSM backends serve it without copying the value.
+"""
+
+[[changes]]
+crate = "zaino-indexes"
+kind = "internal"
+description = """
+Index readers decode point reads through `with_value`.
+"""

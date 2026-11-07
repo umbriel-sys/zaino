@@ -96,14 +96,9 @@ impl<'a, R: BackendReader> Reader<'a, R> {
 
     /// Every txid at `height`, in block order.
     pub fn txids(&self, height: Height) -> Result<Option<Vec<TransactionId>>, FoldError> {
-        let Some(record) = self.backend.get(TXIDS, &key(height))? else {
-            return Ok(None);
-        };
-        let count = le_u32(BLOCK_TXIDS.field(&record, COUNT)?, "count")?;
-        elements(NAME, count, BLOCK_TXIDS.field(&record, LIST)?, TXID_BYTES)?
-            .map(|bytes| txid(bytes).map_err(FoldError::from))
-            .collect::<Result<Vec<_>, _>>()
-            .map(Some)
+        self.backend
+            .with_value(TXIDS, &key(height), decode_txids)?
+            .transpose()
     }
 
     /// How many transactions the block at `height` holds.
@@ -131,6 +126,14 @@ impl<'a, R: BackendReader> Reader<'a, R> {
 
 fn key(height: Height) -> Vec<u8> {
     sequence_key(u64::from(height))
+}
+
+/// The txids a stored record holds.
+fn decode_txids(record: &[u8]) -> Result<Vec<TransactionId>, FoldError> {
+    let count = le_u32(BLOCK_TXIDS.field(record, COUNT)?, "count")?;
+    elements(NAME, count, BLOCK_TXIDS.field(record, LIST)?, TXID_BYTES)?
+        .map(|bytes| txid(bytes).map_err(FoldError::from))
+        .collect()
 }
 
 #[cfg(test)]

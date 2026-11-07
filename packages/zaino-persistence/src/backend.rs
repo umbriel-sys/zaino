@@ -291,6 +291,18 @@ pub trait BackendReader: Send {
     /// A key not of the namespace's key width is [`ReadError::WidthMismatch`].
     fn get(&self, namespace: Namespace, key: &[u8]) -> Result<Option<RawValue>, ReadError>;
 
+    /// `read` over one value's bytes in place: the same answer as
+    /// [`get`](Self::get), without copying the value out where the backend
+    /// can lend it. `Ok(None)` for an absent key.
+    fn with_value<T>(
+        &self,
+        namespace: Namespace,
+        key: &[u8],
+        read: impl FnOnce(&[u8]) -> T,
+    ) -> Result<Option<T>, ReadError> {
+        Ok(self.get(namespace, key)?.map(|value| read(&value)))
+    }
+
     /// Read `range` of one value's bytes: the same answer as slicing
     /// [`get`](Self::get)'s value, without copying the rest of it.
     ///

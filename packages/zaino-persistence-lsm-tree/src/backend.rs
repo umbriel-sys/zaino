@@ -569,6 +569,19 @@ impl BackendReader for LsmTreeReader {
             .map_err(|error| error.into_read("get"))
     }
 
+    /// `read` on the mapped or buffered bytes, in place: nothing is copied.
+    fn with_value<T>(
+        &self,
+        namespace: Namespace,
+        key: &[u8],
+        read: impl FnOnce(&[u8]) -> T,
+    ) -> Result<Option<T>, ReadError> {
+        check_key(&self.state.specs, namespace, key)?;
+        guarded(|| self.state.with_value(namespace, key, read))
+            .and_then(|value| value)
+            .map_err(|error| error.into_read("with_value"))
+    }
+
     fn get_bytes(
         &self,
         namespace: Namespace,

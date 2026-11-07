@@ -70,7 +70,10 @@ impl Index for ChainMetadata {
         let Some(tip) = backend.tip()? else {
             return Ok(None);
         };
-        if backend.get(METADATA, &key(tip.height))?.is_none() {
+        if backend
+            .with_value(METADATA, &key(tip.height), |_| ())?
+            .is_none()
+        {
             return Err(FoldError::continuity(NAME, "tip without its metadata"));
         }
         Ok(Some(State { tip }))
@@ -110,25 +113,9 @@ impl<'a, R: BackendReader> Reader<'a, R> {
 
     /// Every pool's root and size after the block at `height`.
     pub fn roots(&self, height: Height) -> Result<Option<TreeRoots>, FoldError> {
-        let Some(record) = self.backend.get(METADATA, &key(height))? else {
-            return Ok(None);
-        };
-        let pool = |pool: ShieldedPool| -> Result<Option<TreeRootInfo>, FoldError> {
-            let first = pool_index(pool).saturating_mul(PER_POOL);
-            let field = |offset: usize| POOLS.field(&record, first.saturating_add(offset));
-            if !present(field(0)?)? {
-                return Ok(None);
-            }
-            Ok(Some(TreeRootInfo {
-                root: TreeRoot::from(array::<32>(field(1)?, "root")?),
-                size: TreeSize::from(le_u32(field(2)?, "size")?),
-            }))
-        };
-        Ok(Some(TreeRoots {
-            sapling: pool(ShieldedPool::Sapling)?,
-            orchard: pool(ShieldedPool::Orchard)?,
-            ironwood: pool(ShieldedPool::Ironwood)?,
-        }))
+        self.backend
+            .with_value(METADATA, &key(height), decode_roots)?
+            .transpose()
     }
 
     /// `pool`'s cumulative size after `height`: `Some(None)` before the
@@ -187,6 +174,26 @@ fn pool_fields(info: Option<&TreeRootInfo>) -> ([u8; 1], [u8; 32], [u8; 4]) {
         ),
         None => ([0], [0; 32], [0; 4]),
     }
+}
+
+/// Every pool's root and size a stored record holds.
+fn decode_roots(record: &[u8]) -> Result<TreeRoots, FoldError> {
+    let pool = |pool: ShieldedPool| -> Result<Option<TreeRootInfo>, FoldError> {
+        let first = pool_index(pool).saturating_mul(PER_POOL);
+        let field = |offset: usize| POOLS.field(record, first.saturating_add(offset));
+        if !present(field(0)?)? {
+            return Ok(None);
+        }
+        Ok(Some(TreeRootInfo {
+            root: TreeRoot::from(array::<32>(field(1)?, "root")?),
+            size: TreeSize::from(le_u32(field(2)?, "size")?),
+        }))
+    };
+    Ok(TreeRoots {
+        sapling: pool(ShieldedPool::Sapling)?,
+        orchard: pool(ShieldedPool::Orchard)?,
+        ironwood: pool(ShieldedPool::Ironwood)?,
+    })
 }
 
 fn present(flag: &[u8]) -> Result<bool, FoldError> {

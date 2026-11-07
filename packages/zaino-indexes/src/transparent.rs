@@ -100,7 +100,10 @@ impl Index for Transparent {
         let Some(tip) = backend.tip()? else {
             return Ok(None);
         };
-        if backend.get(T_LAYOUT, &key(tip.height))?.is_none() {
+        if backend
+            .with_value(T_LAYOUT, &key(tip.height), |_| ())?
+            .is_none()
+        {
             return Err(FoldError::continuity(NAME, "tip without its layout"));
         }
         Ok(Some(State { tip }))

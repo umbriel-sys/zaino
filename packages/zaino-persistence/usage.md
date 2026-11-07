@@ -114,6 +114,24 @@ the wrong layout fails instead of decoding a neighbour. The default
 implementation slices `get`; a backend overrides it where it can avoid the
 copy. `ranged` is the shared check every backend slices through.
 
+`with_value` hands one value's bytes to a closure and returns what it returns:
+the same answer as decoding `get`'s value, without copying it out where the
+backend holds it in memory. Decode in the closure and return an owned result;
+don't read the backend again from inside it.
+
+## Overlay
+
+[`Overlay`] holds the commits above a durable root (`None` = genesis) in memory
+and reads them through `BackendReader`. `with(block, ops)` checks the commit and
+returns a new overlay that shares all unchanged data with its parent, which
+keeps its own version; `rebase(root)` drops the blocks at or below a new root.
+`tip` is the last block applied, `durable_tip` the root.
+
+Over genesis it is a complete store and enforces every commit rule. Above a
+block it sees only its own writes: a key below the root reads as absent, a
+sequence starts at its first append, and a delete of a key it has not seen is
+taken as a key below the root. Reading through both tiers is the caller's job.
+
 ## Schema digest
 
 [`SchemaDigest`] is 32 bytes the index layer computes over every namespace's
