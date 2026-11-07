@@ -113,7 +113,13 @@ impl Index for AddressHistory {
         check_extends(NAME, state.map(|state| state.tip), block)?;
         let reference = block.reference();
         let mut ops = Vec::new();
-        for (tx_index, tx) in (0u32..).zip(block.transactions()) {
+        // Consensus: the genesis coinbase's outputs can never be spent, and
+        // no address index holds them.
+        let txs = match crate::block::is_genesis(block) {
+            true => &[][..],
+            false => block.transactions(),
+        };
+        for (tx_index, tx) in (0u32..).zip(txs) {
             let position = BlockTxPosition::new(reference.height, tx_index);
             let received = (0u32..).zip(&tx.compact().transparent_outputs);
             let spent = (0u32..).zip(tx.prevouts());
@@ -301,7 +307,8 @@ mod tests {
     }
 
     /// Receives and spends read back per address in chain order, bounded
-    /// by height; other addresses and non-standard scripts do not appear.
+    /// by height; other addresses, non-standard scripts and the genesis
+    /// coinbase's outputs do not appear.
     #[test]
     fn events_stream_per_address_in_chain_order() {
         let odd = TransparentOutput {
@@ -317,13 +324,14 @@ mod tests {
             script: Script::from(tagged),
         };
         let chain = [
-            block_with(0, vec![with(0, vec![], vec![pay(1, 50), pay(2, 7)])]),
+            block_with(0, vec![with(0, vec![], vec![pay(1, 99)])]),
+            block_with(1, vec![with(1, vec![], vec![pay(1, 50), pay(2, 7)])]),
             block_with(
-                1,
+                2,
                 vec![
-                    tx(1),
+                    tx(2),
                     with(
-                        2,
+                        3,
                         vec![pay(1, 50)],
                         vec![pay(1, 20), odd, pay(2, 30), legacy_form],
                     ),
@@ -344,22 +352,23 @@ mod tests {
             value: Zatoshis::new(value).expect("v"),
         };
         assert_eq!(
-            all(&reader, 1, 0..=1),
+            all(&reader, 1, 0..=2),
             vec![
-                ev(at(0, 0), 0, EventKind::Received, 50),
-                ev(at(1, 1), 0, EventKind::Received, 20),
-                ev(at(1, 1), 0, EventKind::Spent, 50),
+                ev(at(1, 0), 0, EventKind::Received, 50),
+                ev(at(2, 1), 0, EventKind::Received, 20),
+                ev(at(2, 1), 0, EventKind::Spent, 50),
             ]
         );
-        assert_eq!(all(&reader, 1, 1..=1).len(), 2, "height-bounded");
+        assert!(all(&reader, 1, 0..=0).is_empty(), "genesis outputs");
+        assert_eq!(all(&reader, 1, 2..=2).len(), 2, "height-bounded");
         assert_eq!(
-            all(&reader, 2, 0..=1),
+            all(&reader, 2, 0..=2),
             vec![
-                ev(at(0, 0), 1, EventKind::Received, 7),
-                ev(at(1, 1), 2, EventKind::Received, 30),
+                ev(at(1, 0), 1, EventKind::Received, 7),
+                ev(at(2, 1), 2, EventKind::Received, 30),
             ]
         );
-        assert!(all(&reader, 3, 0..=1).is_empty());
+        assert!(all(&reader, 3, 0..=2).is_empty());
     }
 
     /// The schema digest every `address_history_1` directory carries.

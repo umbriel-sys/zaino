@@ -1,0 +1,6 @@
+[[changes]]
+crate = "zaino-indexes"
+kind = "fix"
+description = """
+I-10 skips the genesis block's coinbase outputs, which consensus makes \
+unspendable and which zebra's address index also leaves out."""

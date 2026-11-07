@@ -92,6 +92,12 @@ impl FoldBlock {
     }
 }
 
+/// Whether `block` is the genesis block, whose coinbase outputs consensus
+/// makes unspendable.
+pub(crate) fn is_genesis(block: &FoldBlock) -> bool {
+    u32::from(block.header.height) == 0
+}
+
 impl FoldTx {
     /// A transaction from its parts; `prevouts` pairs with the compact
     /// form's transparent inputs.
