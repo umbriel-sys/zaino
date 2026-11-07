@@ -31,6 +31,7 @@ pub mod spent;
 #[cfg(test)]
 mod testing;
 pub mod transparent;
+pub mod tree_state;
 pub mod tx_out_set;
 pub mod txid_location;
 pub mod txids;

@@ -1,0 +1,9 @@
+[[changes]]
+crate = "zaino-indexes"
+kind = "feature"
+description = """
+C2 `tree_state`: Sapling, Orchard and Ironwood note commitment trees at \
+every height from the validator's per-block frontiers and subtree roots, \
+with no hashing; frontiers read in at most 33 lookups, subtree roots by \
+index; the source's frontiers and subtrees are cross-checked against the \
+block's notes and tree sizes."""
