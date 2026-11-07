@@ -31,10 +31,30 @@ pub const fn script_type_tag(script_type: ScriptType) -> u8 {
     }
 }
 
-/// Whether an output is outside the set: anything but P2PKH or P2SH, as
-/// zcashd's `IsUnspendable` for `gettxoutsetinfo`.
-pub fn is_unspendable(address: &TransparentAddressKey) -> bool {
-    !matches!(address.script_type, ScriptType::P2PKH | ScriptType::P2SH)
+/// Scripts longer than this are unspendable (zcashd's `MAX_SCRIPT_SIZE`).
+pub const MAX_SCRIPT_SIZE: usize = 10_000;
+/// `OP_RETURN`, which makes a script unspendable when it comes first.
+const OP_RETURN: u8 = 0x6a;
+
+/// Whether an output is outside the set, as zcashd's `IsUnspendable`: a
+/// script starting `OP_RETURN` or longer than [`MAX_SCRIPT_SIZE`]. Every
+/// other output, non-standard ones included, is counted, so `txouts`,
+/// `transactions` and `total_amount` match zcashd's.
+pub fn is_unspendable(script: &[u8]) -> bool {
+    script.first() == Some(&OP_RETURN) || script.len() > MAX_SCRIPT_SIZE
+}
+
+/// The address an output enters the commitment under: its P2PKH or P2SH
+/// hash, else the first 20 bytes of its script (zero-padded) tagged
+/// non-standard. Strict: no legacy 21-byte arm.
+pub fn commitment_address(script: &[u8]) -> TransparentAddressKey {
+    TransparentAddressKey::from_standard_script(script).unwrap_or_else(|| {
+        let mut hash = [0u8; 20];
+        for (slot, byte) in hash.iter_mut().zip(script) {
+            *slot = *byte;
+        }
+        TransparentAddressKey::new(hash, ScriptType::NonStandard)
+    })
 }
 
 /// The canonical bytes committed to for one unspent output.
@@ -342,12 +362,45 @@ mod tests {
         assert!(matches!(error, TxOutSetError::Underflow(_)));
     }
 
-    /// Only standard outputs are in the set.
+    /// zcashd's rule: only `OP_RETURN` scripts and scripts past 10 000 bytes
+    /// are outside the set; P2PK, multisig and other scripts are counted.
     #[test]
-    fn non_standard_outputs_are_unspendable() {
-        assert!(!is_unspendable(&address(ScriptType::P2PKH)));
-        assert!(!is_unspendable(&address(ScriptType::P2SH)));
-        assert!(is_unspendable(&address(ScriptType::NonStandard)));
+    fn only_op_return_and_oversized_scripts_are_unspendable() {
+        let p2pk = [&[33u8][..], &[2; 33], &[0xac]].concat();
+        assert!(!is_unspendable(&p2pk));
+        assert!(!is_unspendable(&[]));
+        assert!(!is_unspendable(&vec![0x51; MAX_SCRIPT_SIZE]));
+        assert!(is_unspendable(&[0x6a, 4, 1, 2, 3, 4]));
+        assert!(is_unspendable(&vec![0x51; MAX_SCRIPT_SIZE + 1]));
+    }
+
+    /// Standard scripts commit under their address; anything else, the
+    /// legacy 21-byte form included, under its first 20 bytes tagged
+    /// non-standard.
+    #[test]
+    fn commitment_addresses_are_strict() {
+        let mut p2pkh = vec![0x76, 0xa9, 0x14];
+        p2pkh.extend_from_slice(&[7; 20]);
+        p2pkh.extend_from_slice(&[0x88, 0xac]);
+        assert_eq!(
+            commitment_address(&p2pkh),
+            TransparentAddressKey::new([7; 20], ScriptType::P2PKH)
+        );
+        let mut tagged = vec![0x00];
+        tagged.extend_from_slice(&[7; 20]);
+        let mut expected = [0u8; 20];
+        expected[0] = 0x00;
+        expected[1..].copy_from_slice(&[7; 19]);
+        assert_eq!(
+            commitment_address(&tagged),
+            TransparentAddressKey::new(expected, ScriptType::NonStandard)
+        );
+        let mut short = [0u8; 20];
+        short[..3].copy_from_slice(&[0x51, 0x52, 0x53]);
+        assert_eq!(
+            commitment_address(&[0x51, 0x52, 0x53]),
+            TransparentAddressKey::new(short, ScriptType::NonStandard)
+        );
     }
 
     /// The digest, pinned to the value already committed on disk by zainodb.

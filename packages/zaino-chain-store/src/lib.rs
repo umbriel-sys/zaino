@@ -66,9 +66,9 @@ pub use ports::{
     TransactionIndex, TransactionIndexCapability, TxOutSetIndex, TxOutSetIndexCapability,
 };
 pub use txout_set::{
-    canonical_entry, canonical_entry_parts, entry_digest, entry_digest_parts, is_unspendable,
-    script_type_tag, Delta, TxOutSetAccumulator, TxOutSetError, TXOUT_SET_DOMAIN_TAG,
-    TXOUT_SET_ENTRY_LEN,
+    canonical_entry, canonical_entry_parts, commitment_address, entry_digest, entry_digest_parts,
+    is_legacy_unspendable, is_unspendable, script_type_tag, Delta, TxOutSetAccumulator,
+    TxOutSetError, MAX_SCRIPT_SIZE, TXOUT_SET_DOMAIN_TAG, TXOUT_SET_ENTRY_LEN,
 };
 
 #[cfg(feature = "transparent_address_history_experimental")]

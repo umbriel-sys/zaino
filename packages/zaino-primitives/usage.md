@@ -207,10 +207,11 @@ if key.is_standard() { /* reconstructible as an address, given a network */ }
 
 The rule is **total**: every script gets a key, including scripts with no
 address at all, so classification never fails. What an index does with a
-`NonStandard` key is its own business: Zaino's address history (I-10) and its
-UTXO-set commitment both skip them, since no address names such a script and
-their 20 bytes collide (zcashd's address index and `IsUnspendable` do the
-same).
+`NonStandard` key is its own business: Zaino's address history (I-10) skips
+them, since no address names such a script (as zcashd's address index does),
+while the UTXO-set commitment counts them, as zcashd's `gettxoutsetinfo`
+does. New code keys raw scripts with `TransparentAddressKey::from_standard_script`,
+which has no legacy 21-byte arm.
 
 ### Why the key is not the address
 
@@ -357,17 +358,19 @@ and `to_regtest_network`.
 ## UTXO-set commitment: feature `txout-commitment`
 
 Off by default; it adds `blake2`. `zaino_primitives::txout_commitment` is the
-one definition of `gettxoutsetinfo`'s `hash_serialized`: the XOR, over every
-unspent P2PKH/P2SH output, of `BLAKE2b-256(TXOUT_SET_DOMAIN_TAG ||
-canonical_entry)`, with `TxOutSetAccumulator` keeping it and the running
+one definition of `gettxoutsetinfo`'s set and `hash_serialized`. The set is
+zcashd's: every unspent transparent output except those `is_unspendable`
+names (`OP_RETURN` first, or a script past `MAX_SCRIPT_SIZE`), so `txouts`,
+`transactions` and `total_amount` match zcashd. The hash is Zaino's own: the
+XOR of `BLAKE2b-256(TXOUT_SET_DOMAIN_TAG || canonical_entry)` per output,
+keyed by `commitment_address(script)`. `TxOutSetAccumulator` keeps it and the
 totals incrementally. Every store and the chain head compute it through this
-module, so the value means one thing across deployments; `zaino-chain-store`
-re-exports it.
+module; `zaino-chain-store` re-exports it.
 
 ```rust,ignore
 let mut set = TxOutSetAccumulator::empty();
-if !is_unspendable(&address) {
-    set.apply_added_output(&outpoint, value, &address)?;   // and apply_removed_output
+if !is_unspendable(script) {
+    set.apply_added_output(&outpoint, value, &commitment_address(script))?; // and apply_removed_output
 }
 ```
 

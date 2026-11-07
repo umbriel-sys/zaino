@@ -40,11 +40,11 @@ use zaino_chain_head::{
     ChainHeadTransactionService, ChainHeadTxPosition, SpenderLocation,
 };
 use zaino_chain_store::{
-    is_unspendable, ChainStoreError, ChainStoreFreezeSink, ChainStoreIngest, ChainStoreReader,
-    ChainStoreService, ChainStoreSourceError, CompactBlockRead, FrozenBlock, MigrationState,
-    PoolFilter, Provenance, SchemaVersion, SpenderRef, SpentOutputIndex, StoreCapabilities,
-    StoreCapability, StoreSchema, StoreWatermark, StoredBlock, StoredBlockRead, StoredTx,
-    StoredTxOut, TransactionIndex, TxOutSetAccumulator, TxOutSetError, TxOutSetIndex,
+    is_legacy_unspendable, ChainStoreError, ChainStoreFreezeSink, ChainStoreIngest,
+    ChainStoreReader, ChainStoreService, ChainStoreSourceError, CompactBlockRead, FrozenBlock,
+    MigrationState, PoolFilter, Provenance, SchemaVersion, SpenderRef, SpentOutputIndex,
+    StoreCapabilities, StoreCapability, StoreSchema, StoreWatermark, StoredBlock, StoredBlockRead,
+    StoredTx, StoredTxOut, TransactionIndex, TxOutSetAccumulator, TxOutSetError, TxOutSetIndex,
 };
 use zaino_component::{ComponentName, ComponentStatus, Health, Lifecycle, StatusSource};
 use zaino_primitives::types::{
@@ -813,7 +813,7 @@ impl TxOutSetIndex for FakeStore {
                     index,
                 };
                 let output = StoredTxOut::from_output(output);
-                if spent.contains(&outpoint) || is_unspendable(&output.address) {
+                if spent.contains(&outpoint) || is_legacy_unspendable(&output.address) {
                     continue;
                 }
                 set.apply_added_output(&outpoint, output.value, &output.address)

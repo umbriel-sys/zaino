@@ -33,7 +33,7 @@ use zaino_chain_head::{
     ChainHeadTxOutSetService, CreatedTxOut,
 };
 use zaino_chain_store::{
-    is_unspendable, ChainStoreError, ChainStoreReader, ChainStoreService,
+    is_legacy_unspendable, ChainStoreError, ChainStoreReader, ChainStoreService,
     CompactBlockRead as StoreCompactBlockRead, SpentOutputIndex, StoredBlockRead, StoredTxOut,
     TransactionIndex, TxOutSetAccumulator, TxOutSetError, TxOutSetIndex, TXOUT_SET_ENTRY_LEN,
 };
@@ -1410,7 +1410,7 @@ where
                     "the chain head spends an output the store does not hold",
                 ))
             })?;
-            if is_unspendable(&previous.address) {
+            if is_legacy_unspendable(&previous.address) {
                 continue;
             }
             set.apply_removed_output(outpoint, previous.value, &previous.address)
@@ -1463,7 +1463,7 @@ where
         let outpoints: Vec<Outpoint> = outputs
             .iter()
             .zip(0..)
-            .filter(|(output, _)| !is_unspendable(&output.address))
+            .filter(|(output, _)| !is_legacy_unspendable(&output.address))
             .map(|(_, index)| Outpoint { txid, index })
             .collect();
         let spenders = self
@@ -1481,7 +1481,7 @@ fn apply_created(set: &mut TxOutSetAccumulator, created: &[CreatedTxOut]) -> Res
     let mut holders = HashSet::new();
     for created in created {
         let output = StoredTxOut::from_output(&created.output);
-        if is_unspendable(&output.address) {
+        if is_legacy_unspendable(&output.address) {
             continue;
         }
         set.apply_added_output(&created.outpoint, output.value, &output.address)
