@@ -297,7 +297,7 @@ pub trait BackendReader: Send {
     /// `Ok(None)` for an absent key. A range past the value's end is
     /// [`ReadError::RangeOutOfBounds`], not a shorter answer, so a field read
     /// against the wrong layout fails instead of decoding a neighbour.
-    fn get_range(
+    fn get_bytes(
         &self,
         namespace: Namespace,
         key: &[u8],
@@ -315,7 +315,7 @@ pub trait BackendReader: Send {
     ///
     /// A backend may answer the batch at once (sorted, prefetched, in parallel)
     /// where that is cheaper than one read per key; the answers are the same.
-    fn get_many(
+    fn get_batch(
         &self,
         namespace: Namespace,
         keys: &[&[u8]],

@@ -108,7 +108,7 @@ impl<'a, R: BackendReader> Reader<'a, R> {
 
     /// How many transactions the block at `height` holds.
     pub fn tx_count(&self, height: Height) -> Result<Option<u32>, FoldError> {
-        let Some(bytes) = self.backend.get_range(TXIDS, &key(height), COUNT_RANGE)? else {
+        let Some(bytes) = self.backend.get_bytes(TXIDS, &key(height), COUNT_RANGE)? else {
             return Ok(None);
         };
         Ok(Some(le_u32(&bytes, "count")?))
@@ -122,7 +122,7 @@ impl<'a, R: BackendReader> Reader<'a, R> {
         }
         let index = usize::try_from(index).map_err(|_| LayoutError::Overflow)?;
         let range = BLOCK_TXIDS.element_range(LIST, index, TXID_BYTES)?;
-        let Some(bytes) = self.backend.get_range(TXIDS, &key(height), range)? else {
+        let Some(bytes) = self.backend.get_bytes(TXIDS, &key(height), range)? else {
             return Ok(None);
         };
         Ok(Some(txid(&bytes)?))

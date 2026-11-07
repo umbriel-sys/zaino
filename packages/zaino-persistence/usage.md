@@ -98,7 +98,7 @@ always equal for a backend that buffers nothing.
 
 ## Point reads
 
-`BackendReader::get` reads one key of a namespace; `get_many` reads a batch
+`BackendReader::get` reads one key of a namespace; `get_batch` reads a batch
 of keys and answers one slot per key, in order, with the same answers as one
 `get` per key. A backend may serve the batch at once (sorted, prefetched, in
 parallel) where that is cheaper, so prefer it wherever an index resolves many
@@ -106,7 +106,7 @@ keys per block, such as every input's prevout. A key not of the namespace's key
 width (8 bytes for a sequence) fails with `ReadError::WidthMismatch` rather than
 reading as absent.
 
-`get_range` reads one byte range of a value: the same answer as slicing
+`get_bytes` reads one byte range of a value: the same answer as slicing
 `get`'s value, but a backend that maps its files copies only the range out,
 so a field read never pays for the record around it. A range past the value's
 end is `ReadError::RangeOutOfBounds`, not a shorter answer, so a read against

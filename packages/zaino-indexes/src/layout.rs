@@ -173,7 +173,7 @@ impl Layout {
     /// A fixed field's bytes within any record of this layout.
     ///
     /// Known without the record, so a field can be read with
-    /// `BackendReader::get_range`; an index declares its ranges as consts.
+    /// `BackendReader::get_bytes`; an index declares its ranges as consts.
     pub const fn fixed_range(&self, field: usize) -> Result<Range<usize>, LayoutError> {
         let mut start: usize = 0;
         let mut at: usize = 0;
@@ -244,7 +244,7 @@ impl Layout {
 
     /// Element `index` of a list of `width`-byte elements held in the single
     /// variable field `field`: known without the record, for
-    /// `BackendReader::get_range`. Whether the element exists is the
+    /// `BackendReader::get_bytes`. Whether the element exists is the
     /// record's count to say.
     pub fn element_range(
         &self,

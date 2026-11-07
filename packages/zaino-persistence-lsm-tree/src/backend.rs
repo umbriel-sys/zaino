@@ -569,7 +569,7 @@ impl BackendReader for LsmTreeReader {
             .map_err(|error| error.into_read("get"))
     }
 
-    fn get_range(
+    fn get_bytes(
         &self,
         namespace: Namespace,
         key: &[u8],
@@ -583,13 +583,13 @@ impl BackendReader for LsmTreeReader {
             })
         })
         .and_then(|value| value)
-        .map_err(|error| error.into_read("get_range"))?
+        .map_err(|error| error.into_read("get_bytes"))?
         .transpose()
     }
 
     /// A map's keys not in the buffer looked up in one batch (sorted, fences and records
     /// prefetched, parallel from 64 keys); a sequence's one by one
-    fn get_many(
+    fn get_batch(
         &self,
         namespace: Namespace,
         keys: &[&[u8]],
@@ -599,7 +599,7 @@ impl BackendReader for LsmTreeReader {
         }
         guarded(|| self.state.get_many(namespace, keys))
             .and_then(|values| values)
-            .map_err(|error| error.into_read("get_many"))
+            .map_err(|error| error.into_read("get_batch"))
     }
 
     fn scan_range<T, F>(

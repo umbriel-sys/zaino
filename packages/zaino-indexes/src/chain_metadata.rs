@@ -144,13 +144,13 @@ impl<'a, R: BackendReader> Reader<'a, R> {
             ShieldedPool::Ironwood => (IRONWOOD_PRESENT, IRONWOOD_SIZE),
         };
         let key = key(height);
-        let Some(flag) = self.backend.get_range(METADATA, &key, present_at)? else {
+        let Some(flag) = self.backend.get_bytes(METADATA, &key, present_at)? else {
             return Ok(None);
         };
         if !present(&flag)? {
             return Ok(Some(None));
         }
-        let Some(size) = self.backend.get_range(METADATA, &key, size_at)? else {
+        let Some(size) = self.backend.get_bytes(METADATA, &key, size_at)? else {
             return Err(FoldError::continuity(NAME, "record vanished between reads"));
         };
         Ok(Some(Some(TreeSize::from(le_u32(&size, "size")?))))

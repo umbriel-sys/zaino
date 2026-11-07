@@ -33,7 +33,7 @@ let value = EVENT.field(&record, VALUE)?;     // one slice
 # Ok::<(), LayoutError>(())
 ```
 
-`fixed_range` feeds `BackendReader::get_range`, so a reader fetches a field
+`fixed_range` feeds `BackendReader::get_bytes`, so a reader fetches a field
 without copying the record around it. A record that does not fit its layout
 is a `LayoutError` naming the field, never a slice of a neighbour.
 
@@ -94,13 +94,13 @@ The same fold therefore builds the store and the chain head's branches.
 
 Each index module also exposes a `Reader` over any `BackendReader` with the
 typed reads the chain-store ports need. Readers slice fields through the
-layouts and fetch single fields with `get_range`.
+layouts and fetch single fields with `get_bytes`.
 
 | Index | Module | Holds |
 | --- | --- | --- |
 | I-01 | `headers` | height → header and cumulative chain work (`headers`); hash → height (`heights`) |
 | I-02 | `txids` | height → transaction count and txids in block order (`txids`); `Reader::txid(height, index)` is two field reads via `Layout::element_range`, the location → txid lookup the other indexes resolve through |
-| I-03 | `txid_location` | txid → (height, tx index) (`txid_location`); `Reader::positions` batches through `get_many` |
+| I-03 | `txid_location` | txid → (height, tx index) (`txid_location`); `Reader::positions` batches through `get_batch` |
 | I-04 | `transparent` | per height, three columns in wire form: `t_layout` (per tx, cumulative input and output counts), `t_in` (36-byte prevouts), `t_out` (value then script, as a variable-element list); `Reader::output(position, vout)` reads five small fields, never a record |
 | I-05 | `compact_block` | the shielded axes as fixed-width element sequences (`sapling_nf`, `sapling_out`, `orchard_nf`, `orchard_out`, `ironwood_nf`, `ironwood_out`; no per-element index), plus `layout` per height: four `u32` column starts, then per tx four `u16` counts and the `u64` fee; a pool filter reads exactly its columns |
 | I-08 | `chain_metadata` | height → per pool (Sapling, Orchard, Ironwood) a present flag, tree root and cumulative size; a pool before activation is absent, never an empty tree; `Reader::size` is two field reads |

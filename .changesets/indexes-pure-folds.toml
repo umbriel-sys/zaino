@@ -9,7 +9,7 @@ crate's own validated fold input (at least a coinbase, which spends \
 nothing, and one prevout per transparent input), so folds read nothing and \
 the crate no longer depends on `zaino-chain-store`. I-01 holds header and \
 cumulative chain work by height and height by hash, with field reads through \
-`get_range`."""
+`get_bytes`."""
 
 [[changes]]
 crate = "zaino-indexes"

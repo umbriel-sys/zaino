@@ -127,7 +127,7 @@ impl<'a, R: BackendReader> Reader<'a, R> {
             outpoints.iter().copied().map(outpoint_bytes).collect();
         let keys: Vec<&[u8]> = keys.iter().map(|key| key.as_slice()).collect();
         self.backend
-            .get_many(SPENT, &keys)?
+            .get_batch(SPENT, &keys)?
             .into_iter()
             .map(|value| value.map(|bytes| spender(&bytes)).transpose())
             .collect()

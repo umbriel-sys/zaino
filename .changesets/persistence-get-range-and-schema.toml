@@ -2,7 +2,7 @@
 crate = "zaino-persistence"
 kind = "feature"
 description = """
-`BackendReader::get_range` reads one byte range of a value, with a default \
+`BackendReader::get_bytes` reads one byte range of a value, with a default \
 that slices `get` and a shared `ranged` check so a range past the value is \
 `ReadError::RangeOutOfBounds` on every backend. `SchemaDigest` carries the \
 index layer's digest of a directory's namespace layouts for backends to store \
@@ -15,5 +15,5 @@ description = """
 Manifest layout 6: the slot header carries the `SchemaDigest` the directory \
 was written with, and an open under another digest is refused with \
 `ManifestError::Schema`. `LsmTreeConfig` and `verify_dir` take the digest. \
-A directory written under layout 5 is refused at open (resync). `get_range` \
+A directory written under layout 5 is refused at open (resync). `get_bytes` \
 slices the mapped bytes and copies only the range out."""

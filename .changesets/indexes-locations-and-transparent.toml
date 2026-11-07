@@ -3,7 +3,7 @@ crate = "zaino-indexes"
 kind = "feature"
 description = """
 I-03 `txid_location` (txid → height and tx index, batched reads through \
-`get_many`) and I-04 `transparent` (per height, `t_layout`, `t_in` and \
+`get_batch`) and I-04 `transparent` (per height, `t_layout`, `t_in` and \
 `t_out` in wire form; one output read by position without loading a \
 record). Shared field codecs, including a variable-element list readable \
 item by item."""

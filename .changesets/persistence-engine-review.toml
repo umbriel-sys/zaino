@@ -3,7 +3,7 @@ crate = "zaino-persistence"
 kind = "feature"
 description = """
 `BackendReader::durable_tip` names the newest commit of a snapshot that \
-survives a crash, and `BackendReader::get_many` reads a batch of keys with \
+survives a crash, and `BackendReader::get_batch` reads a batch of keys with \
 the answers of one `get` per key (a backend may serve the batch at once). \
 `Verification` carries the checked commit's tip and bytes, and the `serde` \
 feature derives `Serialize` on the verify and footprint reports."""
@@ -20,6 +20,6 @@ read-back, metered by `zaino.lsm.readback_seconds` and pinned by \
 `benches/readback.rs`. A manifest readable only through the page cache no \
 longer refuses the open: it is warned at open, reported by \
 `LsmTreeBackend::manifest_read` and `zaino.store.manifest_read_cached`, and \
-refused by `LsmTreeConfig::strict_manifest_read`. `get_many` looks a map's \
+refused by `LsmTreeConfig::strict_manifest_read`. `get_batch` looks a map's \
 keys up in one prefetched batch, and the bandwidth pacer's debt is a pure \
 function of the clock."""

@@ -297,7 +297,7 @@ impl<'a, R: BackendReader> Reader<'a, R> {
         key: &[u8],
     ) -> Result<Option<u32>, FoldError> {
         let range = layout.fixed_range(COUNT)?;
-        match self.backend.get_range(namespace, key, range)? {
+        match self.backend.get_bytes(namespace, key, range)? {
             Some(bytes) => Ok(Some(le_u32(&bytes, "count")?)),
             None => Ok(None),
         }
@@ -310,7 +310,7 @@ impl<'a, R: BackendReader> Reader<'a, R> {
         range: core::ops::Range<usize>,
     ) -> Result<Vec<u8>, FoldError> {
         self.backend
-            .get_range(namespace, key, range)?
+            .get_bytes(namespace, key, range)?
             .ok_or_else(|| FoldError::continuity(NAME, "record vanished between reads"))
     }
 }

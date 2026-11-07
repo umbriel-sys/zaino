@@ -481,7 +481,7 @@ impl<'a, R: BackendReader> Reader<'a, R> {
     /// Heartwood.
     pub fn epoch_at(&self, height: Height) -> Result<Option<Option<EpochAt>>, FoldError> {
         let key = sequence_key(u64::from(height));
-        let field = |range: Range<usize>| self.backend.get_range(HEIGHTS, &key, range);
+        let field = |range: Range<usize>| self.backend.get_bytes(HEIGHTS, &key, range);
         let (Some(branch), Some(start), Some(length)) =
             (field(BRANCH)?, field(START)?, field(LENGTH)?)
         else {

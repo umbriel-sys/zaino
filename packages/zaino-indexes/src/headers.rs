@@ -172,7 +172,7 @@ impl<'a, R: BackendReader> Reader<'a, R> {
     pub fn hash(&self, height: Height) -> Result<Option<BlockHash>, FoldError> {
         let Some(bytes) =
             self.backend
-                .get_range(HEADERS, &sequence_key(u64::from(height)), HASH_RANGE)?
+                .get_bytes(HEADERS, &sequence_key(u64::from(height)), HASH_RANGE)?
         else {
             return Ok(None);
         };
@@ -183,7 +183,7 @@ impl<'a, R: BackendReader> Reader<'a, R> {
     pub fn chainwork(&self, height: Height) -> Result<Option<AbsoluteChainWork>, FoldError> {
         let Some(bytes) =
             self.backend
-                .get_range(HEADERS, &sequence_key(u64::from(height)), CHAINWORK_RANGE)?
+                .get_bytes(HEADERS, &sequence_key(u64::from(height)), CHAINWORK_RANGE)?
         else {
             return Ok(None);
         };

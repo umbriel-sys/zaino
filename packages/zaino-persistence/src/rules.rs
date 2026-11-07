@@ -189,7 +189,7 @@ pub fn check_key(
 }
 
 /// `range` of `value`, or `RangeOutOfBounds` past its end; every backend's
-/// `get_range` slices through this so an overreach is refused alike.
+/// `get_bytes` slices through this so an overreach is refused alike.
 pub fn ranged<'a>(
     namespace: Namespace,
     value: &'a [u8],

@@ -101,7 +101,7 @@ impl<'a, R: BackendReader> Reader<'a, R> {
         let keys: Vec<[u8; 32]> = txids.iter().map(|txid| <[u8; 32]>::from(*txid)).collect();
         let keys: Vec<&[u8]> = keys.iter().map(|key| key.as_slice()).collect();
         self.backend
-            .get_many(LOCATIONS, &keys)?
+            .get_batch(LOCATIONS, &keys)?
             .into_iter()
             .map(|value| value.map(|bytes| codec::position(NAME, &bytes)).transpose())
             .collect()
