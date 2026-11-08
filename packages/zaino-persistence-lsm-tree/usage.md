@@ -72,8 +72,20 @@ recovery, failure policy), [lsm-deletes.md](./docs/lsm-deletes.md) and
 
 Namespace names are `/`-separated parts of `[A-Za-z0-9_-]`, unique ignoring
 case. A map owns its directory, so no namespace may sit inside a map's path.
-`MANIFEST`, `LOCK`, `MANIFEST.creating` and `TAILS` are reserved, as are the Windows device
-names (`CON`, `PRN`, `AUX`, `NUL`, `COM0`–`COM9`, `LPT0`–`LPT9`), all ignoring case.
+`MANIFEST`, `LOCK`, `MANIFEST.creating`, `TAILS` and `REMOVING` are reserved, as are the
+Windows device names (`CON`, `PRN`, `AUX`, `NUL`, `COM0`–`COM9`, `LPT0`–`LPT9`), all ignoring
+case.
+
+[`LsmTreeOpener`] implements the port's `BackendOpener` with one engine configuration for
+every directory (default tuning).
+
+## Removing a directory
+
+[`remove_dir_all`] deletes an index directory, refused (`WouldBlock`) while a backend holds its
+`LOCK`. It first makes a `REMOVING` marker durable, then removes and syncs every other entry,
+then the marker and the directory. A crash before the marker leaves the directory whole; after
+it, the next `remove_dir_all` or open finishes the removal, so a half-deleted directory is never
+opened as an index. Every crash point is checked in the simulated filesystem.
 
 ## On disk
 

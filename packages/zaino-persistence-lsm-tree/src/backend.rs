@@ -176,6 +176,10 @@ impl LsmTreeBackend {
         path: &Path,
         config: &LsmTreeConfig<'_>,
     ) -> Result<Self, StoreError> {
+        // a removal a crash interrupted is finished, never opened as an index (D-84)
+        if crate::remove::interrupted(fs.as_ref(), path)? {
+            crate::remove::remove_dir_all(fs.as_ref(), path)?;
+        }
         let specs: Arc<[NamespaceSpec]> = config.namespaces.into();
         let tunings = tunings(&specs, config.tuning)?;
         let identity = Identity::new(config.name, config.chain, config.format, config.schema)?;

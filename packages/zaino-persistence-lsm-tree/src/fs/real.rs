@@ -89,6 +89,18 @@ impl Fs for RealFs {
         std::fs::remove_file(path)
     }
 
+    fn remove_dir(&self, path: &Path) -> io::Result<()> {
+        std::fs::remove_dir(path)
+    }
+
+    fn is_dir(&self, path: &Path) -> io::Result<bool> {
+        match std::fs::symlink_metadata(path) {
+            Ok(metadata) => Ok(metadata.is_dir()),
+            Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(false),
+            Err(error) => Err(error),
+        }
+    }
+
     fn set_read_only(&self, path: &Path) -> io::Result<()> {
         use std::os::unix::fs::PermissionsExt as _;
 

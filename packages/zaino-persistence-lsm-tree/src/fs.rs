@@ -73,6 +73,12 @@ pub trait Fs: Send + Sync + fmt::Debug + 'static {
     /// `path` unlinked
     fn remove(&self, path: &Path) -> io::Result<()>;
 
+    /// Empty directory `path` removed
+    fn remove_dir(&self, path: &Path) -> io::Result<()>;
+
+    /// Whether `path` is a directory (`false` when absent)
+    fn is_dir(&self, path: &Path) -> io::Result<bool>;
+
     /// `path` made read-only (`0o444`): a later read-write open of it fails
     fn set_read_only(&self, path: &Path) -> io::Result<()>;
 

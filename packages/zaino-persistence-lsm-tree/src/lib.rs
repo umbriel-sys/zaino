@@ -27,7 +27,9 @@ mod error;
 pub mod fs;
 mod lsm;
 mod manifest;
+mod opener;
 mod pages;
+mod remove;
 mod sequence;
 mod tails;
 #[cfg(test)]
@@ -37,3 +39,5 @@ pub use backend::{verify_dir, LsmTreeBackend, LsmTreeConfig, LsmTreeReader, LsmT
 pub use dir::{disk_bytes, ManifestRead};
 pub use emit::{describe_metrics, METRIC_BUCKETS};
 pub use lsm::{LsmConfig, Tuning, METRIC_BUCKETS as LSM_METRIC_BUCKETS};
+pub use opener::LsmTreeOpener;
+pub use remove::remove_dir_all;

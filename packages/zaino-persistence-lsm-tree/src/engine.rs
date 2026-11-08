@@ -42,7 +42,7 @@ use crate::{
 };
 
 /// Names the directory reserves for itself (never a namespace path component)
-const RESERVED: [&str; 4] = [MANIFEST, LOCK, CREATING, TAILS];
+const RESERVED: [&str; 5] = [MANIFEST, LOCK, CREATING, TAILS, crate::remove::REMOVING];
 
 /// Windows device names, which no file there may take (parts carry no extension: `.` is not a
 /// name character)

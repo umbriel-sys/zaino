@@ -119,6 +119,16 @@ the same answer as decoding `get`'s value, without copying it out where the
 backend holds it in memory. Decode in the closure and return an owned result;
 don't read the backend again from inside it.
 
+## Opening a backend per directory
+
+A store that keeps one directory per index opens them through
+[`BackendOpener`]: `open(dir, identity, namespaces)` creates `dir` if absent
+and refuses one stamped with another [`Identity`] (name, chain, format,
+schema digest) or other namespaces as `OpenError::Mismatch`; `remove(dir)`
+deletes a directory, refused while a backend holds it where the storage can
+tell; `children(dir)` lists the directories under `dir`. The in-memory
+`InMemoryOpener` (feature `testing`) keys directories in a map.
+
 ## Overlay
 
 [`Overlay`] holds the commits above a durable root (`None` = genesis) in memory

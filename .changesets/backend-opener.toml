@@ -1,0 +1,17 @@
+[[changes]]
+crate = "zaino-persistence"
+kind = "feature"
+description = """
+`BackendOpener` and `Identity`: open, list and remove one backend directory \
+per index; `in_memory::InMemoryOpener` for tests.
+"""
+
+[[changes]]
+crate = "zaino-persistence-lsm-tree"
+kind = "feature"
+description = """
+`LsmTreeOpener` implements `BackendOpener`. `remove_dir_all` deletes an index \
+directory crash-safely behind a `REMOVING` marker, refused while open; an open \
+finishes an interrupted removal. `Fs` gains `remove_dir` and `is_dir`; \
+`REMOVING` is a reserved name.
+"""

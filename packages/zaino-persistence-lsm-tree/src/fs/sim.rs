@@ -872,6 +872,39 @@ impl Fs for SimFs {
         Ok(())
     }
 
+    fn remove_dir(&self, path: &Path) -> io::Result<()> {
+        let mut inner = self.lock_inner();
+        if is_root(path) || !inner.image.is_dir(path) {
+            return Err(not_found(path));
+        }
+        if inner
+            .image
+            .volatile
+            .keys()
+            .any(|entry| parent(entry) == path)
+        {
+            return Err(io::Error::new(
+                io::ErrorKind::DirectoryNotEmpty,
+                path.display().to_string(),
+            ));
+        }
+        if inner.fail_removes {
+            return Err(io::Error::other(format!(
+                "sim: injected remove_dir EIO: {}",
+                path.display()
+            )));
+        }
+        inner.mutate(|| format!("remove_dir {}", path.display()))?;
+        inner.image.volatile.remove(path);
+        inner.image.touched(path);
+        inner.record(|| format!("remove_dir {}", path.display()));
+        Ok(())
+    }
+
+    fn is_dir(&self, path: &Path) -> io::Result<bool> {
+        Ok(self.lock_inner().image.is_dir(path))
+    }
+
     fn list(&self, dir: &Path) -> io::Result<Vec<String>> {
         let inner = self.lock_inner();
         if !inner.image.is_dir(dir) {
