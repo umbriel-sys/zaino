@@ -32,7 +32,11 @@ fn whole<T: ZcashDeserialize>(bytes: &[u8]) -> Option<T> {
 }
 
 fn parse(bytes: &[u8]) -> Result<Block, RawBlockError> {
-    parse_block(bytes, ChainMetadata::ZERO)
+    parse_at(bytes, BlockVerification::Off)
+}
+
+fn parse_at(bytes: &[u8], verification: BlockVerification) -> Result<Block, RawBlockError> {
+    parse_block(bytes, ChainMetadata::ZERO, verification)
 }
 
 /// What a block compares by: every field, as `Block` and `Transaction` have
@@ -345,8 +349,12 @@ fn v4_tx(coinbase: Option<&[u8]>, spends: usize, value_balance: i64) -> Vec<u8> 
 }
 
 fn read_tx(bytes: &[u8]) -> Result<ParsedTransaction, RawBlockError> {
+    read_tx_checked(bytes, false)
+}
+
+fn read_tx_checked(bytes: &[u8], check_fields: bool) -> Result<ParsedTransaction, RawBlockError> {
     let mut r = Reader::new(bytes);
-    let parsed = read_transaction(&mut r)?;
+    let parsed = read_transaction(&mut r, check_fields)?;
     r.finish()?;
     Ok(parsed)
 }
@@ -613,5 +621,118 @@ fn block_rules() {
     assert!(matches!(
         parse(&too_large),
         Err(RawBlockError::BlockTooLarge(_))
+    ));
+}
+
+// Verification levels.
+
+const LEVELS: [BlockVerification; 3] = [
+    BlockVerification::Off,
+    BlockVerification::Light,
+    BlockVerification::Full,
+];
+/// Version and previous hash precede it.
+const MERKLE_ROOT_AT: std::ops::Range<usize> = 36..68;
+
+#[test]
+fn every_vector_passes_every_level_alike() {
+    for (network, height, bytes) in vectors() {
+        let off = parse(bytes).expect("vector");
+        for level in LEVELS {
+            let checked = parse_at(bytes, level)
+                .unwrap_or_else(|e| panic!("{network} {height} {level:?}: {e}"));
+            assert_eq!(checked, off, "{network} {height} {level:?}");
+        }
+    }
+}
+
+#[test]
+fn light_checks_the_merkle_root() {
+    for (network, height, bytes) in vectors() {
+        let mut bad = bytes.to_vec();
+        bad[MERKLE_ROOT_AT.start] ^= 1;
+        assert!(parse(&bad).is_ok(), "{network} {height}: Off ignores it");
+        for level in [BlockVerification::Light, BlockVerification::Full] {
+            assert!(
+                matches!(parse_at(&bad, level), Err(RawBlockError::MerkleRoot)),
+                "{network} {height} {level:?}"
+            );
+        }
+    }
+}
+
+#[test]
+fn merkle_root_shapes() {
+    let leaf = |n: u8| [n; 32];
+    let pair = |l: [u8; 32], r: [u8; 32]| sha256d(&[l, r].concat());
+    assert_eq!(merkle_root(vec![leaf(1)]), leaf(1));
+    assert_eq!(merkle_root(vec![leaf(1), leaf(2)]), pair(leaf(1), leaf(2)));
+    assert_eq!(
+        merkle_root(vec![leaf(1), leaf(2), leaf(3)]),
+        pair(pair(leaf(1), leaf(2)), pair(leaf(3), leaf(3))),
+        "an odd level pairs its last node with itself"
+    );
+}
+
+/// Field offsets in the hand-built transactions.
+const ACTION_AT: usize = 25;
+const V4_SPEND_ANCHOR_AT: usize = 100;
+
+#[test]
+fn light_checks_field_elements() {
+    use zaino_consensus::branch_id::NU5;
+    let not_canonical = [0xff; 32];
+    let orchard = shielded_tx(5, NU5, Some(3), None);
+    let anchor_at = ACTION_AT + ACTION_LEN + 1 + 8;
+    for (field, at) in [
+        ("Orchard nullifier", ACTION_AT + 32),
+        ("Orchard note commitment", ACTION_AT + 96),
+        ("Orchard anchor", anchor_at),
+    ] {
+        let mut tx = orchard.clone();
+        tx[at..at + 32].copy_from_slice(&not_canonical);
+        assert!(
+            read_tx_checked(&tx, false).is_ok(),
+            "{field}: Off ignores it"
+        );
+        assert!(
+            matches!(read_tx_checked(&tx, true), Err(RawBlockError::NonCanonical(f)) if f == field),
+            "{field}"
+        );
+    }
+    let mut sapling = v4_tx(None, 1, 0);
+    let at = V4_SPEND_ANCHOR_AT;
+    sapling[at..at + 32].copy_from_slice(&not_canonical);
+    assert!(read_tx_checked(&sapling, false).is_ok());
+    assert!(matches!(
+        read_tx_checked(&sapling, true),
+        Err(RawBlockError::NonCanonical("Sapling anchor"))
+    ));
+    assert!(read_tx_checked(&orchard, true).is_ok(), "zero is canonical");
+}
+
+/// `block` with its header's merkle root set to its txids' root.
+fn with_merkle_root(mut block: Vec<u8>) -> Vec<u8> {
+    let txids = parse(&block)
+        .expect("parses")
+        .transactions()
+        .iter()
+        .map(|tx| tx.txid.into())
+        .collect();
+    block[MERKLE_ROOT_AT].copy_from_slice(&merkle_root(txids));
+    block
+}
+
+#[test]
+fn full_refuses_what_zebra_refuses() {
+    use zaino_consensus::branch_id::NU5;
+    let coinbase = v4_tx(Some(&coinbase_script(push_height(2_000_000))), 0, 0);
+    // An action of zeroed curve points: canonical fields, not a valid action.
+    let block = with_merkle_root(block_of(&[coinbase, shielded_tx(5, NU5, Some(3), None)]));
+    assert!(parse_at(&block, BlockVerification::Light).is_ok());
+    assert!(oracle(&block).is_none(), "zebra refuses it");
+    assert!(matches!(
+        parse_at(&block, BlockVerification::Full),
+        Err(RawBlockError::Upstream(_))
     ));
 }

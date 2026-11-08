@@ -1,0 +1,17 @@
+[[changes]]
+crate = "zaino-source-zcash-rpc"
+kind = "feature"
+description = """
+`ZcashRpcAdapter::with_block_verification(BlockVerification)`: `Light` also \
+checks the header's merkle root and canonical field elements (~13% over the \
+default), `Full` also requires zebra's parse to give the same block. Default \
+`Off`, unchanged behaviour.
+"""
+
+[[changes]]
+crate = "zaino-primitives"
+kind = "feature"
+description = """
+`Block`, `Transaction`, `TransparentData`, `SaplingData` and `OrchardData` \
+derive `PartialEq` and `Eq`.
+"""

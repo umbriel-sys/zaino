@@ -10,3 +10,4 @@ mod parse;
 mod raw_block;
 
 pub use adapter::{Quirks, ZcashRpcAdapter};
+pub use raw_block::BlockVerification;

@@ -123,7 +123,7 @@ fn sapling_digest(sapling: &RawSapling<'_>, v6: bool) -> [u8; 32] {
             for spend in &sapling.spends {
                 compact.update(&spend.nullifier);
                 noncompact.update(spend.cv);
-                if let Some(anchor) = anchor {
+                if let Some(anchor) = &anchor {
                     noncompact.update(anchor);
                 }
                 noncompact.update(spend.rk);
@@ -187,7 +187,7 @@ fn bundle_digest(bundle: Option<&RawOrchard<'_>>, format: &BundleFormat) -> [u8;
             .update(&[bundle.flags])
             .update(&bundle.value_balance.to_le_bytes());
         if format.includes_anchor {
-            h.update(bundle.anchor);
+            h.update(&bundle.anchor);
         }
     }
     digest(&h)

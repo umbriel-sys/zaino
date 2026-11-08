@@ -13,7 +13,7 @@ use super::{
 /// [`Block::transactions`](super::Block::transactions), never restated here.
 /// A `Transaction` outside a block (a mempool transaction) has no position at
 /// all, so there is no value to invent for one.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Transaction {
     /// Transaction id.
     ///
@@ -68,7 +68,7 @@ pub struct PoolBalances {
 }
 
 /// Transparent pool data within a transaction.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct TransparentData {
     /// Transparent inputs (spent outpoints).
     pub inputs: Vec<TransparentInput>,
@@ -95,7 +95,7 @@ pub struct TransparentOutput {
 }
 
 /// Sapling pool data within a transaction.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct SaplingData {
     /// Sapling spends (nullifiers).
     pub spends: Vec<SaplingSpend>,
@@ -124,7 +124,7 @@ pub struct SaplingOutput {
 }
 
 /// Orchard pool data within a transaction.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct OrchardData {
     /// Orchard actions (each is both a spend and an output).
     pub actions: Vec<OrchardAction>,

@@ -186,6 +186,32 @@ pub(crate) enum RawBlockError {
     /// The parts did not form a block.
     #[error("block: {0}")]
     Block(#[from] BlockError),
+    /// The header's merkle root is not the root of the block's txids.
+    #[error("merkle root does not commit to the block's txids")]
+    MerkleRoot,
+    /// A field element encoded at or above its field's modulus.
+    #[error("non-canonical {0}")]
+    NonCanonical(&'static str),
+    /// zebra's parse refused the block.
+    #[error("zebra refused the block: {0}")]
+    Upstream(String),
+    /// zebra's parse gave a different block.
+    #[error("zebra parsed a different block")]
+    UpstreamMismatch,
+}
+
+/// How much of a raw block to check beyond its structure.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum BlockVerification {
+    /// Structure only: the validator has verified the block.
+    #[default]
+    Off,
+    /// Also the header's merkle root over the txids, and every anchor, note
+    /// commitment and Orchard-shaped nullifier as a canonical field element.
+    Light,
+    /// Light, then zebra's own parse (curve points included), which must
+    /// give the same block. Parse-level validity: no proofs or signatures.
+    Full,
 }
 
 /// Parse a zcash-serialized block.
@@ -194,7 +220,88 @@ pub(crate) enum RawBlockError {
 pub(crate) fn parse_block(
     bytes: &[u8],
     chain_metadata: ChainMetadata,
+    verification: BlockVerification,
 ) -> Result<Block, RawBlockError> {
+    let block = parse_checked(bytes, chain_metadata.clone(), verification)?;
+    if verification == BlockVerification::Full && upstream(bytes, chain_metadata)? != block {
+        return Err(RawBlockError::UpstreamMismatch);
+    }
+    Ok(block)
+}
+
+/// zebra's block from `bytes`, which it must consume entirely.
+fn upstream(bytes: &[u8], chain_metadata: ChainMetadata) -> Result<Block, RawBlockError> {
+    use zebra_chain::serialization::ZcashDeserialize as _;
+    let mut cursor = std::io::Cursor::new(bytes);
+    let block = zebra_chain::block::Block::zcash_deserialize(&mut cursor)
+        .map_err(|e| RawBlockError::Upstream(e.to_string()))?;
+    if usize::try_from(cursor.position()).ok() != Some(bytes.len()) {
+        return Err(RawBlockError::Upstream("trailing bytes".into()));
+    }
+    zaino_primitives::zebra::block_from_zebra(&block, chain_metadata)
+        .map_err(|e| RawBlockError::Upstream(e.to_string()))
+}
+
+/// The bitcoin-style merkle root of `txids`: pairs hashed with SHA-256d, an
+/// odd level's last node paired with itself.
+fn merkle_root(txids: Vec<[u8; 32]>) -> [u8; 32] {
+    let mut level = txids;
+    while level.len() > 1 {
+        level = level
+            .chunks(2)
+            .map(|pair| {
+                let mut h = Sha256::new();
+                for node in pair.iter().chain(pair.last()).take(2) {
+                    h.update(node);
+                }
+                Sha256::digest(h.finalize()).into()
+            })
+            .collect();
+    }
+    level.first().copied().unwrap_or_default()
+}
+
+/// Every anchor, note commitment and Orchard-shaped nullifier in `raw` is a
+/// canonical field element (no point is decompressed).
+fn check_fields(raw: &RawTx<'_>) -> Result<(), RawBlockError> {
+    fn canonical(is_some: bool, field: &'static str) -> Result<(), RawBlockError> {
+        match is_some {
+            true => Ok(()),
+            false => Err(RawBlockError::NonCanonical(field)),
+        }
+    }
+    use orchard::note::{ExtractedNoteCommitment as Cmx, Nullifier};
+    use sapling_crypto::note::ExtractedNoteCommitment as Cmu;
+    let sapling = &raw.sapling;
+    let anchors = sapling.spends.iter().filter_map(|spend| spend.anchor);
+    for anchor in anchors.chain(sapling.anchor) {
+        let anchor = sapling_crypto::Anchor::from_bytes(anchor);
+        canonical(anchor.is_some().into(), "Sapling anchor")?;
+    }
+    for output in &sapling.outputs {
+        let cmu = Cmu::from_bytes(&output.note.cm);
+        canonical(cmu.is_some().into(), "Sapling note commitment")?;
+    }
+    for bundle in raw.orchard.iter().chain(raw.ironwood.iter()) {
+        let anchor = orchard::Anchor::from_bytes(bundle.anchor);
+        canonical(anchor.is_some().into(), "Orchard anchor")?;
+        for action in &bundle.actions {
+            let nullifier = Nullifier::from_bytes(&action.nullifier);
+            canonical(nullifier.is_some().into(), "Orchard nullifier")?;
+            let cmx = Cmx::from_bytes(&action.note.cm);
+            canonical(cmx.is_some().into(), "Orchard note commitment")?;
+        }
+    }
+    Ok(())
+}
+
+/// The block, structure checked, plus Light's checks from `Light`.
+fn parse_checked(
+    bytes: &[u8],
+    chain_metadata: ChainMetadata,
+    verification: BlockVerification,
+) -> Result<Block, RawBlockError> {
+    let light = verification != BlockVerification::Off;
     if u64::try_from(bytes.len()).map_or(true, |len| len > zaino_consensus::MAX_BLOCK_BYTES) {
         return Err(RawBlockError::BlockTooLarge(bytes.len()));
     }
@@ -204,7 +311,7 @@ pub(crate) fn parse_block(
     let mut transactions = Vec::with_capacity(count);
     let mut height = None;
     for index in 0..count {
-        let parsed = read_transaction(&mut r)?;
+        let parsed = read_transaction(&mut r, light)?;
         if index == 0 {
             height = parsed.coinbase_height;
         }
@@ -212,6 +319,12 @@ pub(crate) fn parse_block(
     }
     r.finish()?;
     let height = height.ok_or(RawBlockError::NoCoinbaseHeight)?;
+    if light {
+        let txids = transactions.iter().map(|tx| tx.txid.into()).collect();
+        if merkle_root(txids) != header.merkle_root {
+            return Err(RawBlockError::MerkleRoot);
+        }
+    }
     Ok(Block::try_new(
         header.into_header(height),
         transactions,
@@ -318,6 +431,8 @@ struct RawOutput<'a> {
 
 struct RawSpend<'a> {
     cv: &'a [u8],
+    /// v4's per-spend anchor; v5/v6 share one.
+    anchor: Option<[u8; 32]>,
     nullifier: [u8; 32],
     rk: &'a [u8],
 }
@@ -348,7 +463,7 @@ struct RawSapling<'a> {
     /// Zero when there are no spends or outputs.
     value_balance: i64,
     /// The v5/v6 shared anchor, present with spends.
-    anchor: Option<&'a [u8]>,
+    anchor: Option<[u8; 32]>,
 }
 
 impl RawSapling<'_> {
@@ -369,7 +484,7 @@ struct RawOrchard<'a> {
     actions: Vec<RawAction<'a>>,
     flags: u8,
     value_balance: i64,
-    anchor: &'a [u8],
+    anchor: [u8; 32],
 }
 
 /// The ZIP 244 header fields of a v5/v6 transaction.
@@ -395,7 +510,11 @@ struct ParsedTransaction {
     coinbase_height: Option<Height>,
 }
 
-fn read_transaction(r: &mut Reader<'_>) -> Result<ParsedTransaction, RawBlockError> {
+/// One transaction; `check_fields` also runs [`check_fields`] on it.
+fn read_transaction(
+    r: &mut Reader<'_>,
+    check_fields: bool,
+) -> Result<ParsedTransaction, RawBlockError> {
     let start = r.pos();
     let header = r.u32()?;
     let number = header & 0x7FFF_FFFF;
@@ -424,6 +543,9 @@ fn read_transaction(r: &mut Reader<'_>) -> Result<ParsedTransaction, RawBlockErr
         TxVersion::Sprout { .. } | TxVersion::V3 | TxVersion::V4 => read_pre_v5(r, version)?,
         TxVersion::V5 | TxVersion::V6 => read_v5_family(r, start, version)?,
     };
+    if check_fields {
+        self::check_fields(&raw)?;
+    }
     let txid = match &raw.zip244 {
         Some(header) => txid::zip244(&raw, header),
         None => sha256d(r.since(start)?),
@@ -509,7 +631,7 @@ fn read_v5_family<'a>(
         sapling.value_balance = r.i64()?;
     }
     if !sapling.spends.is_empty() {
-        sapling.anchor = Some(r.take(32)?);
+        sapling.anchor = Some(r.array()?);
     }
     let spends = sapling.spends.len();
     r.skip_each(spends, GROTH_PROOF_LEN)?;
@@ -570,16 +692,22 @@ fn skip_joinsplit(r: &mut Reader<'_>, proof_len: usize) -> Result<(), RawBlockEr
 
 fn read_spend_v4<'a>(r: &mut Reader<'a>) -> Result<RawSpend<'a>, RawBlockError> {
     let cv = r.take(32)?;
-    r.skip(32)?; // anchor
+    let anchor = Some(r.array()?);
     let nullifier = r.array()?;
     let rk = r.take(32)?;
     r.skip(SPEND_V4_AUTH_LEN)?;
-    Ok(RawSpend { cv, nullifier, rk })
+    Ok(RawSpend {
+        cv,
+        anchor,
+        nullifier,
+        rk,
+    })
 }
 
 fn read_spend_v5<'a>(r: &mut Reader<'a>) -> Result<RawSpend<'a>, RawBlockError> {
     Ok(RawSpend {
         cv: r.take(32)?,
+        anchor: None,
         nullifier: r.array()?,
         rk: r.take(32)?,
     })
@@ -657,7 +785,7 @@ fn read_orchard_bundle<'a>(
         return Err(RawBlockError::Flags { pool, flags });
     }
     let value_balance = r.i64()?;
-    let anchor = r.take(32)?;
+    let anchor = r.array()?;
     r.var_bytes()?; // proofs
     r.skip_each(actions.len(), SIGNATURE_LEN)?;
     r.skip(SIGNATURE_LEN)?; // bindingSig

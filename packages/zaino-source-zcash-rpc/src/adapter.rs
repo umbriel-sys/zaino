@@ -6,7 +6,8 @@ use zaino_source::{
     FailureMode, GetBlockError, GetChainTipError, GetTreestateError, NonDomainError, QueryError,
 };
 
-use crate::{parse, raw_block};
+use crate::parse;
+use crate::raw_block::{self, BlockVerification};
 
 /// Zcash JSON-RPC adapter.
 ///
@@ -17,6 +18,7 @@ use crate::{parse, raw_block};
 pub struct ZcashRpcAdapter {
     rpc: RpcClient,
     quirks: Quirks,
+    verification: BlockVerification,
 }
 
 impl ZcashRpcAdapter {
@@ -28,7 +30,19 @@ impl ZcashRpcAdapter {
     /// Wrap an existing [`RpcClient`], reading the replies the spec leaves to
     /// the node through `quirks`.
     pub fn with_quirks(rpc: RpcClient, quirks: Quirks) -> Self {
-        Self { rpc, quirks }
+        Self {
+            rpc,
+            quirks,
+            verification: BlockVerification::default(),
+        }
+    }
+
+    /// Check raw blocks to `verification` (default [`BlockVerification::Off`]).
+    pub fn with_block_verification(self, verification: BlockVerification) -> Self {
+        Self {
+            verification,
+            ..self
+        }
     }
 }
 
@@ -244,7 +258,7 @@ impl zaino_source::OneShotGetBlock for ZcashRpcAdapter {
         // them off this block.
         let chain_metadata = ChainMetadata::ZERO;
 
-        raw_block::parse_block(&raw_bytes, chain_metadata)
+        raw_block::parse_block(&raw_bytes, chain_metadata, self.verification)
             .map_err(|e| NonDomainError::from_cause(FailureMode::Parse, e).into())
     }
 }
@@ -466,7 +480,7 @@ impl zaino_source::OneShotGetBlockByHash for ZcashRpcAdapter {
 
         // Tree sizes are indexed state, not block data — see `GetBlock`.
         let chain_metadata = ChainMetadata::ZERO;
-        raw_block::parse_block(&raw_bytes, chain_metadata)
+        raw_block::parse_block(&raw_bytes, chain_metadata, self.verification)
             .map_err(|e| NonDomainError::from_cause(FailureMode::Parse, e).into())
     }
 }

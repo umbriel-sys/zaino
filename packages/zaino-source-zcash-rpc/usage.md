@@ -38,6 +38,20 @@ adapter is an optional accelerator, not an alternative.
   `zaino_primitives::zebra`; the tests check this against zebra's block
   vectors and arbitrary blocks for every upgrade, including v6.
 
+### Block verification
+
+`ZcashRpcAdapter::with_block_verification` sets how much more each raw block
+is checked, for use against a validator you don't fully trust or while
+diagnosing one:
+
+| `BlockVerification` | Checks | Cost (zebra's shielded vectors) |
+|---|---|---|
+| `Off` (default) | structure only | 1× |
+| `Light` | + the header's merkle root over the txids; anchors, note commitments and Orchard-shaped nullifiers as canonical field elements | ~1.13× |
+| `Full` | + zebra's own parse, curve points included, which must give the same block | ~24× |
+
+Neither level checks proofs, signatures or consensus rules.
+
 ## Error classification: the part that matters
 
 Every method must decide whether a validator's error reply is an *answer*
