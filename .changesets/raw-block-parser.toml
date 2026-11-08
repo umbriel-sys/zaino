@@ -1,0 +1,10 @@
+[[changes]]
+crate = "zaino-source-zcash-rpc"
+kind = "feature"
+description = """
+Raw blocks from `getblock` are parsed by zaino's own parser rather than \
+`zebra-chain`'s deserializer: structure is checked as upstream checks it, but \
+no curve point is decompressed, and txids are computed directly (SHA-256d to \
+v4, ZIP 244 / ZIP 229 from v5, including v6 with Ironwood). The domain block \
+is unchanged; about 29x faster on zebra's shielded block vectors.
+"""

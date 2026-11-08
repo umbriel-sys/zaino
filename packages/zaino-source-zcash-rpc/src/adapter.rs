@@ -5,15 +5,14 @@ use zaino_rpc::RpcClient;
 use zaino_source::{
     FailureMode, GetBlockError, GetChainTipError, GetTreestateError, NonDomainError, QueryError,
 };
-use zebra_chain::serialization::ZcashDeserializeInto;
 
-use crate::parse;
+use crate::{parse, raw_block};
 
 /// Zcash JSON-RPC adapter.
 ///
 /// Implements zaino-source query traits by delegating to an [`RpcClient`],
-/// parsing replies as the zcash RPC spec defines them (raw blocks are
-/// deserialized with `zebra-chain`), and converting to domain types.
+/// parsing replies as the zcash RPC spec defines them (raw blocks by zaino's
+/// own non-validating parser), and converting to domain types.
 /// Single-attempt — wrap with [`zaino_source::ValidatorClient`] for retries.
 pub struct ZcashRpcAdapter {
     rpc: RpcClient,
@@ -238,11 +237,6 @@ impl zaino_source::OneShotGetBlock for ZcashRpcAdapter {
         // Hex decode.
         let raw_bytes = parse::parse_raw_block(&value).map_err(from_parse)?;
 
-        // Deserialize via zebra-chain.
-        let zebra_block: zebra_chain::block::Block = raw_bytes
-            .zcash_deserialize_into()
-            .map_err(|e| from_parse(parse::ParseError::Deserialize(e.to_string())))?;
-
         // Cumulative tree sizes are indexed state, not present in the block
         // bytes, so they are zero here and populated by the caller that tracks
         // them (via `GetTreestate` or its own index). Zero is a placeholder,
@@ -250,7 +244,7 @@ impl zaino_source::OneShotGetBlock for ZcashRpcAdapter {
         // them off this block.
         let chain_metadata = ChainMetadata::ZERO;
 
-        zaino_primitives::zebra::block_from_zebra(&zebra_block, chain_metadata)
+        raw_block::parse_block(&raw_bytes, chain_metadata)
             .map_err(|e| NonDomainError::from_cause(FailureMode::Parse, e).into())
     }
 }
@@ -470,13 +464,9 @@ impl zaino_source::OneShotGetBlockByHash for ZcashRpcAdapter {
             })
             .await?;
 
-        let zebra_block: zebra_chain::block::Block = raw_bytes
-            .zcash_deserialize_into()
-            .map_err(|e| from_parse(parse::ParseError::Deserialize(e.to_string())))?;
-
         // Tree sizes are indexed state, not block data — see `GetBlock`.
         let chain_metadata = ChainMetadata::ZERO;
-        zaino_primitives::zebra::block_from_zebra(&zebra_block, chain_metadata)
+        raw_block::parse_block(&raw_bytes, chain_metadata)
             .map_err(|e| NonDomainError::from_cause(FailureMode::Parse, e).into())
     }
 }

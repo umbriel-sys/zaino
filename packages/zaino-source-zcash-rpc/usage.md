@@ -26,9 +26,17 @@ adapter is an optional accelerator, not an alternative.
   marks optional and some nodes omit (`chainwork`, `finalRoot`) are tolerated;
   nothing else is.
 - `adapter.rs` — the port impls, and the error classification below, which is
-  the part most likely to be got wrong. Raw block bytes are deserialized with
-  `zebra-chain`, the spec steward's parser, and converted through
-  `zaino_primitives::zebra`.
+  the part most likely to be got wrong.
+- `raw_block.rs` — raw block bytes → domain `Block`, with no curve
+  arithmetic. It enforces the structure `zcash_primitives` and `zebra-chain`
+  check when parsing: lengths, canonical CompactSizes, versions and version
+  groups, known branch ids and pool activation, reserved flag bits, value
+  ranges, BIP 34 coinbase heights. It does not check that curve points or
+  field elements are valid: the validator has already verified the block.
+  Txids are computed here (SHA-256d up to v4, ZIP 244 / ZIP 229 from v5). On
+  every block zebra accepts, the result matches `zebra-chain` +
+  `zaino_primitives::zebra`; the tests check this against zebra's block
+  vectors and arbitrary blocks for every upgrade, including v6.
 
 ## Error classification: the part that matters
 

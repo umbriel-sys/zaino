@@ -7,5 +7,6 @@
 
 mod adapter;
 mod parse;
+mod raw_block;
 
 pub use adapter::{Quirks, ZcashRpcAdapter};

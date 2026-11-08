@@ -6303,19 +6303,24 @@ dependencies = [
 name = "zaino-source-zcash-rpc"
 version = "0.2.2"
 dependencies = [
+ "blake2b_simd",
  "hex",
  "incrementalmerkletree",
+ "proptest",
  "sapling-crypto",
  "serde",
  "serde_json",
+ "sha2 0.10.9",
  "thiserror 2.0.20",
  "tokio",
  "tracing",
+ "zaino-consensus",
  "zaino-primitives",
  "zaino-rpc",
  "zaino-source",
  "zcash_primitives",
  "zebra-chain",
+ "zebra-test",
 ]
 
 [[package]]
