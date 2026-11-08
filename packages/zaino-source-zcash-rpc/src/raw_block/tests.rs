@@ -9,7 +9,7 @@ use zaino_primitives::types::{Block, ChainMetadata, ShieldedPool};
 use zaino_primitives::zebra::block_from_zebra;
 use zebra_chain::block::{arbitrary::LedgerState, Block as ZebraBlock};
 use zebra_chain::parameters::NetworkUpgrade;
-use zebra_chain::serialization::{ZcashDeserializeInto, ZcashSerialize};
+use zebra_chain::serialization::{ZcashDeserialize, ZcashDeserializeInto, ZcashSerialize};
 use zebra_test::vectors::{MAINNET_BLOCKS, TESTNET_BLOCKS};
 
 use super::*;
@@ -20,8 +20,15 @@ const HEADER_LEN: usize = 4 + 32 * 3 + 4 + 4 + 32 + 3 + 1344;
 
 /// The oracle's block, or `None` where it refuses the bytes.
 fn oracle(bytes: &[u8]) -> Option<Block> {
-    let zebra: ZebraBlock = bytes.zcash_deserialize_into().ok()?;
-    block_from_zebra(&zebra, ChainMetadata::ZERO).ok()
+    block_from_zebra(&whole(bytes)?, ChainMetadata::ZERO).ok()
+}
+
+/// zebra's reading of `bytes`, which must consume them all: its deserializer
+/// ignores trailing input, which this parser refuses.
+fn whole<T: ZcashDeserialize>(bytes: &[u8]) -> Option<T> {
+    let mut cursor = std::io::Cursor::new(bytes);
+    let value = T::zcash_deserialize(&mut cursor).ok()?;
+    (cursor.position() == bytes.len() as u64).then_some(value)
 }
 
 fn parse(bytes: &[u8]) -> Result<Block, RawBlockError> {
@@ -182,6 +189,84 @@ fn arbitrary_blocks_match_the_oracle() {
         );
     }
     assert!(v6 > 0, "no v6 transaction was compared");
+}
+
+/// The oracle's transaction, or `None` where it refuses the bytes.
+fn oracle_tx(bytes: &[u8]) -> Option<Transaction> {
+    let zebra: zebra_chain::transaction::Transaction = whole(bytes)?;
+    zaino_primitives::zebra::transaction_from_zebra(&zebra).ok()
+}
+
+/// `zcash_primitives`' arbitrary transactions under every branch, with
+/// arbitrary Sapling, Orchard and Ironwood bundles: each parses as the oracle
+/// does, its txid is `zcash_primitives`' own, and every pool is exercised.
+#[test]
+fn arbitrary_transactions_match_the_oracle() {
+    use proptest::strategy::ValueTree as _;
+    use zcash_primitives::transaction::testing::arb_tx;
+    use zcash_protocol::consensus::BranchId;
+    let mut runner = proptest::test_runner::TestRunner::deterministic();
+    let (mut sapling, mut orchard, mut ironwood) = (0, 0, 0);
+    for branch in [
+        BranchId::Sprout,
+        BranchId::Overwinter,
+        BranchId::Sapling,
+        BranchId::Blossom,
+        BranchId::Heartwood,
+        BranchId::Canopy,
+        BranchId::Nu5,
+        BranchId::Nu6,
+        BranchId::Nu6_1,
+        BranchId::Nu6_2,
+        BranchId::Nu6_3,
+        BranchId::Nu7,
+    ] {
+        let mut accepted = 0;
+        // Few cases: arbitrary shielded bundles are slow to generate and decode.
+        for case in 0..16 {
+            let tx = arb_tx(branch)
+                .new_tree(&mut runner)
+                .expect("strategy")
+                .current();
+            let mut bytes = Vec::new();
+            tx.write(&mut bytes).expect("writes");
+            let parsed = read_tx(&bytes).map(|parsed| parsed.transaction);
+            let Some(expected) = oracle_tx(&bytes) else {
+                assert!(
+                    parsed.is_err(),
+                    "{branch:?} case {case}: parsed what the oracle refused"
+                );
+                continue;
+            };
+            let parsed = parsed.unwrap_or_else(|e| panic!("{branch:?} case {case}: {e}"));
+            // The re-read txid, not `tx`'s: a generated bundle need not survive a
+            // write and read unchanged (its in-memory txid can differ).
+            let reread = zcash_primitives::transaction::Transaction::read(&bytes[..], branch)
+                .expect("zcash_primitives reads what it wrote");
+            assert_eq!(
+                <[u8; 32]>::from(parsed.txid),
+                *reread.txid().as_ref(),
+                "{branch:?} case {case}"
+            );
+            assert_eq!(
+                format!("{parsed:?}"),
+                format!("{expected:?}"),
+                "{branch:?} case {case}"
+            );
+            sapling += parsed.sapling.spends.len() + parsed.sapling.outputs.len();
+            orchard += parsed.orchard.actions.len();
+            ironwood += parsed.ironwood.actions.len();
+            accepted += 1;
+        }
+        assert!(
+            accepted >= 8,
+            "{branch:?}: the oracle accepted {accepted}/16"
+        );
+    }
+    assert!(
+        sapling > 0 && orchard > 0 && ironwood > 0,
+        "pools unexercised: {sapling} {orchard} {ironwood}"
+    );
 }
 
 // Hand-built inputs, one per rule.

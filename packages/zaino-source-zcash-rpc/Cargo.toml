@@ -36,6 +36,8 @@ tracing = ["dep:tracing"]
 proptest.workspace = true
 tokio = { workspace = true, features = ["macros", "rt", "net", "io-util"] }
 zaino-primitives = { workspace = true, features = ["zebra"] }
+zcash_primitives = { workspace = true, features = ["test-dependencies"] }
+zcash_protocol.workspace = true
 zebra-chain = { workspace = true, features = ["proptest-impl"] }
 zebra-test.workspace = true
 
