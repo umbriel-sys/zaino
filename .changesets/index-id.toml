@@ -1,0 +1,16 @@
+[[changes]]
+crate = "zaino-indexes"
+kind = "breaking"
+description = """
+`Index::DEPENDENCIES` is split into `READS` (the indexes an answer joins) and \
+`BUILDS_FROM` (the indexes the ingest reads to build it: I-03 and I-04 for \
+I-05, I-10 and I-11).
+"""
+
+[[changes]]
+crate = "zaino-indexes"
+kind = "feature"
+description = """
+`IndexId` and `IndexState`: every index as a runtime value, with its schema, \
+dependencies, `resume` and `fold`.
+"""

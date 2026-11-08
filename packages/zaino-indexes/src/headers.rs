@@ -86,7 +86,8 @@ pub struct State {
 
 impl Index for Headers {
     const SCHEMA: Schema = SCHEMA;
-    const DEPENDENCIES: &'static [&'static str] = &[];
+    const READS: &'static [&'static str] = &[];
+    const BUILDS_FROM: &'static [&'static str] = &[];
     type State = State;
 
     fn resume<R: BackendReader>(backend: &R) -> Result<Option<State>, FoldError> {

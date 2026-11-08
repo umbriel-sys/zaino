@@ -24,6 +24,7 @@ mod codec;
 pub mod compact_block;
 pub mod headers;
 pub mod history_tree;
+mod id;
 mod index;
 mod layout;
 mod legacy_tree;
@@ -41,6 +42,7 @@ pub use block::{
     CompletedSubtree, FoldBlock, FoldBlockError, FoldBlockParts, FoldTx, NoteFrontier,
     PoolFrontiers,
 };
+pub use id::{IndexId, IndexState};
 pub use index::{Fold, FoldError, Index};
 pub use layout::{Field, FieldWidth, Layout, LayoutError};
 pub use legacy_tree::LegacyTreeError;

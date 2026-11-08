@@ -69,14 +69,23 @@ the digest in CI.
 
 ## Indexes: a schema and a fold
 
-Every index implements `Index`: its `SCHEMA`, the `DEPENDENCIES` enabled
-with it (the indexes its readers compose answers from), a `State` carried
+Every index implements `Index`: its `SCHEMA`; `READS`, the indexes its
+answers join (txids live only in I-02, headers in I-01, roots in I-08), so an
+answer is served up to the lowest of their heights; `BUILDS_FROM`, the
+indexes the ingest reads to build it (I-03 and I-04 resolve prevouts for
+I-05, I-10 and I-11), so they are built ahead of it; a `State` carried
 from block to block, `resume` (the state after what a directory already
 holds) and `fold`, which returns the block's `WriteOp`s and the state after
 them. The caller adopts the returned state only once the ops are applied, so
 a failed commit leaves the index at its last committed block. Continuity is
 checked in the fold (a block must extend the state's tip) and refused as
 `FoldError::Continuity` naming the index.
+
+`IndexId` names every index as a runtime value, for a set chosen at run
+time: `IndexId::ALL`, `name`/`from_name`, `schema`, `reads`, `builds_from`,
+and `resume`/`fold` dispatching to the index's impl over `IndexState`, the
+enum of their states (a state given to another index's fold is refused).
+The set is closed: a library user enables a subset, never adds an index.
 
 A fold is pure: it reads nothing. Its input is a `FoldBlock`, the crate's
 own block vocabulary, built only through `FoldBlock::try_new(FoldBlockParts)`

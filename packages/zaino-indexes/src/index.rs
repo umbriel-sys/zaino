@@ -20,9 +20,13 @@ pub trait Index {
     /// The disk schema: name, format, namespaces.
     const SCHEMA: Schema;
 
-    /// Names of the indexes enabled with this one: those its readers
-    /// compose answers from.
-    const DEPENDENCIES: &'static [&'static str];
+    /// Names of the indexes its answers join (enabled with it; an answer is
+    /// served up to the lowest of their heights and its own).
+    const READS: &'static [&'static str];
+
+    /// Names of the indexes the ingest reads to build it (enabled with it
+    /// and built ahead of it): I-03 and I-04 where the fold needs prevouts.
+    const BUILDS_FROM: &'static [&'static str];
 
     /// What the fold carries from one block to the next (the last block's
     /// hash and height at least; a running total where the index keeps one).

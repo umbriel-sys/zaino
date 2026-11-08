@@ -135,8 +135,8 @@ pub struct State {
 
 impl Index for HistoryTree {
     const SCHEMA: Schema = SCHEMA;
-    const DEPENDENCIES: &'static [&'static str] =
-        &[crate::headers::NAME, crate::chain_metadata::NAME];
+    const READS: &'static [&'static str] = &[];
+    const BUILDS_FROM: &'static [&'static str] = &[];
     type State = State;
 
     fn resume<R: BackendReader>(backend: &R) -> Result<Option<State>, FoldError> {

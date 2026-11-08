@@ -96,7 +96,8 @@ pub struct State {
 
 impl Index for TxOutSet {
     const SCHEMA: Schema = SCHEMA;
-    const DEPENDENCIES: &'static [&'static str] =
+    const READS: &'static [&'static str] = &[];
+    const BUILDS_FROM: &'static [&'static str] =
         &[crate::txid_location::NAME, crate::transparent::NAME];
     type State = State;
 

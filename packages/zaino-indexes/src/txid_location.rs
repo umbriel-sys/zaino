@@ -45,7 +45,8 @@ pub struct State {
 
 impl Index for TxidLocation {
     const SCHEMA: Schema = SCHEMA;
-    const DEPENDENCIES: &'static [&'static str] = &[crate::txids::NAME];
+    const READS: &'static [&'static str] = &[crate::txids::NAME];
+    const BUILDS_FROM: &'static [&'static str] = &[];
     type State = State;
 
     fn resume<R: BackendReader>(backend: &R) -> Result<Option<State>, FoldError> {

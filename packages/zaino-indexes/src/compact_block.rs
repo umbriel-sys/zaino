@@ -152,13 +152,14 @@ pub struct State {
 
 impl Index for CompactBlock {
     const SCHEMA: Schema = SCHEMA;
-    const DEPENDENCIES: &'static [&'static str] = &[
+    const READS: &'static [&'static str] = &[
         crate::headers::NAME,
         crate::txids::NAME,
-        crate::txid_location::NAME,
         crate::transparent::NAME,
         crate::chain_metadata::NAME,
     ];
+    const BUILDS_FROM: &'static [&'static str] =
+        &[crate::txid_location::NAME, crate::transparent::NAME];
     type State = State;
 
     fn resume<R: BackendReader>(backend: &R) -> Result<Option<State>, FoldError> {

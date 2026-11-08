@@ -97,12 +97,9 @@ pub struct State {
 
 impl Index for AddressHistory {
     const SCHEMA: Schema = SCHEMA;
-    const DEPENDENCIES: &'static [&'static str] = &[
-        crate::txids::NAME,
-        crate::txid_location::NAME,
-        crate::transparent::NAME,
-        crate::spent::NAME,
-    ];
+    const READS: &'static [&'static str] = &[crate::txids::NAME, crate::spent::NAME];
+    const BUILDS_FROM: &'static [&'static str] =
+        &[crate::txid_location::NAME, crate::transparent::NAME];
     type State = State;
 
     fn resume<R: BackendReader>(backend: &R) -> Result<Option<State>, FoldError> {
