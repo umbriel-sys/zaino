@@ -94,12 +94,15 @@ validator.
 
 ## The quirk table
 
-`Quirks` holds the readings the spec leaves to the node, one function per
+`Quirks` holds the readings the spec leaves to the node, one field per
 reading; `Quirks::default()` has none, so a reply the spec does not define is a
 failure, never a guess. The crate that knows which node answers fills the
 table: `zaino-source-zebra::rpc_adapter` builds this adapter with zebrad's
-(its `-8 more than {cap} … match` result cap). A new node-specific reading
-goes in the table, not in a `match` here, so this crate's name stays true.
+(its `-8 more than {cap} … match` result cap, and
+`unchecked_address_network`: zebrad answers another network's address empty,
+so the adapter refuses it as `InvalidAddress` itself, reading the node's
+network once from `getblockchaininfo`). A new node-specific reading goes in
+the table, not in a `match` here, so this crate's name stays true.
 
 ## Byte order at this boundary
 

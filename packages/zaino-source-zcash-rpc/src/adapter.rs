@@ -19,6 +19,8 @@ pub struct ZcashRpcAdapter {
     rpc: RpcClient,
     quirks: Quirks,
     verification: BlockVerification,
+    /// The node's network, read once when a quirk needs it.
+    network: std::sync::OnceLock<zaino_primitives::types::Network>,
 }
 
 impl ZcashRpcAdapter {
@@ -34,7 +36,44 @@ impl ZcashRpcAdapter {
             rpc,
             quirks,
             verification: BlockVerification::default(),
+            network: std::sync::OnceLock::new(),
         }
+    }
+
+    /// The node's network, from `getblockchaininfo`'s `chain`, read once.
+    async fn network<E>(&self) -> Result<zaino_primitives::types::Network, QueryError<E>>
+    where
+        E: std::fmt::Debug + std::fmt::Display,
+    {
+        if let Some(network) = self.network.get() {
+            return Ok(*network);
+        }
+        let network = self
+            .call_parsed("getblockchaininfo", vec![], parse::parse_network)
+            .await?;
+        Ok(*self.network.get_or_init(|| network))
+    }
+
+    /// The first of `addresses` not for the node's network, checked only under
+    /// [`Quirks::unchecked_address_network`]; otherwise the node checks.
+    async fn foreign_address<'a, E>(
+        &self,
+        addresses: &'a [String],
+    ) -> Result<Option<&'a str>, QueryError<E>>
+    where
+        E: std::fmt::Debug + std::fmt::Display,
+    {
+        if !self.quirks.unchecked_address_network {
+            return Ok(None);
+        }
+        let network = self.network().await?;
+        Ok(addresses
+            .iter()
+            .find(|address| {
+                !zaino_primitives::types::TransparentAddress::try_new(address.as_str())
+                    .is_ok_and(|parsed| parsed.is_for(network))
+            })
+            .map(String::as_str))
     }
 
     /// Check raw blocks to `verification` (default [`BlockVerification::Off`]).
@@ -55,6 +94,9 @@ pub struct Quirks {
     /// rows, answering the cap. The spec has no such refusal: without this,
     /// every such reply is a failure.
     pub result_cap: Option<fn(&NonDomainError) -> Option<usize>>,
+    /// The node answers another network's address empty where zcashd refuses
+    /// it; the adapter then checks each address's network itself.
+    pub unchecked_address_network: bool,
 }
 
 impl zaino_source::ValidatorSource for ZcashRpcAdapter {
@@ -340,7 +382,7 @@ fn txid_to_display_hex(txid: TransactionId) -> String {
     hex::encode(bytes)
 }
 
-fn addresses_param(addresses: Vec<String>) -> serde_json::Value {
+fn addresses_param(addresses: &[String]) -> serde_json::Value {
     serde_json::json!({ "addresses": addresses })
 }
 
@@ -415,6 +457,7 @@ impl ZcashRpcAdapter {
     async fn call_parsed_or_invalid_address<T, E>(
         &self,
         method: &'static str,
+        addresses: &[String],
         params: Vec<serde_json::Value>,
         parse: impl FnOnce(&serde_json::Value) -> Result<T, parse::ParseError>,
         invalid: impl FnOnce(String) -> E,
@@ -423,6 +466,11 @@ impl ZcashRpcAdapter {
     where
         E: std::fmt::Debug + std::fmt::Display,
     {
+        if let Some(address) = self.foreign_address(addresses).await? {
+            return Err(QueryError::Domain(invalid(format!(
+                "an address for another network: {address}"
+            ))));
+        }
         self.call_parsed_classified(method, params, None, parse, |error| {
             invalid_address_or_fetch(&self.quirks, error, invalid, too_many)
         })
@@ -711,7 +759,8 @@ impl zaino_source::OneShotGetAddressBalance for ZcashRpcAdapter {
     > {
         self.call_parsed_or_invalid_address(
             "getaddressbalance",
-            vec![addresses_param(addresses)],
+            &addresses,
+            vec![addresses_param(&addresses)],
             parse::parse_address_balance,
             zaino_source::GetAddressBalanceError::InvalidAddress,
             |_| None,
@@ -737,6 +786,7 @@ impl zaino_source::OneShotGetAddressDeltas for ZcashRpcAdapter {
         })];
         self.call_parsed_or_invalid_address(
             "getaddressdeltas",
+            &addresses,
             params,
             parse::parse_address_deltas,
             zaino_source::GetAddressDeltasError::InvalidAddress,
@@ -760,6 +810,7 @@ impl zaino_source::OneShotGetAddressTxids for ZcashRpcAdapter {
         })];
         self.call_parsed_or_invalid_address(
             "getaddresstxids",
+            &addresses,
             params,
             parse::parse_txids,
             zaino_source::GetAddressTxidsError::InvalidAddress,
@@ -777,7 +828,8 @@ impl zaino_source::OneShotGetAddressUtxos for ZcashRpcAdapter {
     {
         self.call_parsed_or_invalid_address(
             "getaddressutxos",
-            vec![addresses_param(addresses)],
+            &addresses,
+            vec![addresses_param(&addresses)],
             parse::parse_address_utxos,
             zaino_source::GetAddressUtxosError::InvalidAddress,
             |limit| Some(zaino_source::GetAddressUtxosError::TooManyResults { limit }),
@@ -1260,6 +1312,7 @@ mod classification_tests {
         };
         let quirks = Quirks {
             result_cap: Some(cap),
+            ..Quirks::default()
         };
 
         assert!(matches!(

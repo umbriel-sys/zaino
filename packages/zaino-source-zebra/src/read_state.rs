@@ -428,6 +428,7 @@ impl zaino_source::OneShotGetAddressBalance for ZebraReadStateAdapter {
     > {
         let valid = parse_addresses(
             addresses,
+            &self.network,
             zaino_source::GetAddressBalanceError::InvalidAddress,
         )?;
 
@@ -455,6 +456,7 @@ impl zaino_source::OneShotGetAddressBalance for ZebraReadStateAdapter {
 /// retrying will not change that.
 fn parse_addresses<E>(
     addresses: Vec<String>,
+    network: &Network,
     invalid_address: impl Fn(String) -> E,
 ) -> Result<
     std::collections::HashSet<zebra_chain::transparent::Address>,
@@ -478,6 +480,11 @@ where
                     &address,
                     &"TEX addresses are not supported by the address index",
                 )),
+                // Another network's address can never match: zcashd refuses
+                // it, so this does too (D-88) rather than answering empty.
+                Ok(parsed) if parsed.network_kind() != network.t_addr_kind() => {
+                    Err(invalid(&address, &"an address for another network"))
+                }
                 Ok(parsed) => Ok(parsed),
                 Err(e) => Err(invalid(&address, &e)),
             }
@@ -518,6 +525,7 @@ impl zaino_source::OneShotGetAddressUtxos for ZebraReadStateAdapter {
 
         let valid = parse_addresses(
             addresses,
+            &self.network,
             zaino_source::GetAddressUtxosError::InvalidAddress,
         )?;
 
@@ -612,6 +620,7 @@ impl zaino_source::OneShotGetAddressTxids for ZebraReadStateAdapter {
         let request = ReadRequest::TransactionIdsByAddresses {
             addresses: parse_addresses(
                 addresses,
+                &self.network,
                 zaino_source::GetAddressTxidsError::InvalidAddress,
             )?,
             height_range: zebra_chain::block::Height(u32::from(start))
@@ -684,6 +693,7 @@ impl zaino_source::OneShotGetAddressDeltas for ZebraReadStateAdapter {
         let request = ReadRequest::TransactionIdsByAddresses {
             addresses: parse_addresses(
                 addresses.clone(),
+                &self.network,
                 zaino_source::GetAddressDeltasError::InvalidAddress,
             )?,
             height_range: zebra_chain::block::Height(u32::from(start))
@@ -1675,6 +1685,7 @@ mod address_query_tests {
     use zaino_source::{QueryError, MAX_ADDRESS_QUERY_RESULTS};
     use zcash_address::{ToAddress as _, ZcashAddress};
     use zcash_protocol::consensus::NetworkType;
+    use zebra_chain::parameters::Network;
 
     use zaino_source::GetAddressBalanceError::InvalidAddress;
 
@@ -1685,7 +1696,7 @@ mod address_query_tests {
     fn tex_addresses_are_refused() {
         for network in [NetworkType::Main, NetworkType::Test, NetworkType::Regtest] {
             let tex = ZcashAddress::from_tex(network, [7; 20]).encode();
-            let refused = parse_addresses(vec![tex.clone()], InvalidAddress)
+            let refused = parse_addresses(vec![tex.clone()], &Network::Mainnet, InvalidAddress)
                 .expect_err("a TEX address must be refused");
             assert!(
                 matches!(&refused, QueryError::Domain(InvalidAddress(why)) if why.contains("TEX")),
@@ -1697,12 +1708,32 @@ mod address_query_tests {
     /// A string that is no address is the port's `InvalidAddress`, not a fault.
     #[test]
     fn malformed_addresses_are_invalid_address() {
-        let refused = parse_addresses(vec!["not an address".to_owned()], InvalidAddress)
-            .expect_err("refused");
+        let refused = parse_addresses(
+            vec!["not an address".to_owned()],
+            &Network::Mainnet,
+            InvalidAddress,
+        )
+        .expect_err("refused");
         assert!(
             matches!(&refused, QueryError::Domain(InvalidAddress(_))),
             "{refused:?}"
         );
+    }
+
+    /// Another network's address is refused as zcashd refuses it (D-88);
+    /// testnet and regtest share their transparent encoding.
+    #[test]
+    fn another_networks_address_is_invalid_address() {
+        let mainnet = ZcashAddress::from_transparent_p2pkh(NetworkType::Main, [7; 20]).encode();
+        let testnet = ZcashAddress::from_transparent_p2pkh(NetworkType::Test, [7; 20]).encode();
+        let regtest = Network::new_regtest(Default::default());
+        assert!(matches!(
+            parse_addresses(vec![mainnet.clone()], &regtest, InvalidAddress),
+            Err(QueryError::Domain(InvalidAddress(why))) if why.contains("another network")
+        ));
+        assert!(parse_addresses(vec![testnet.clone()], &regtest, InvalidAddress).is_ok());
+        assert!(parse_addresses(vec![mainnet], &Network::Mainnet, InvalidAddress).is_ok());
+        assert!(parse_addresses(vec![testnet], &Network::Mainnet, InvalidAddress).is_err());
     }
 
     /// The probe asks for one row past the cap, so an oversize answer is seen.

@@ -8,8 +8,8 @@
 use std::collections::BTreeSet;
 
 use zaino_primitives::types::{
-    AddressBalance, AddressDelta, Height, SignedZatoshis, TransactionId, TransparentAddress, Utxo,
-    Zatoshis, ZatoshisFlowSum,
+    AddressBalance, AddressDelta, Height, Network, SignedZatoshis, TransactionId,
+    TransparentAddress, Utxo, Zatoshis, ZatoshisFlowSum,
 };
 use zaino_source::{
     GetAddressBalanceError, GetAddressDeltasError, GetAddressTxidsError, GetAddressUtxosError,
@@ -21,16 +21,21 @@ use super::ledger::{address_of, Ledger};
 use crate::chain::Served;
 use crate::MockChain;
 
-/// The requested addresses, validated as the port defines.
+/// The requested addresses, validated as the port defines: transparent, and
+/// for the node's network.
 fn requested<E: std::fmt::Debug + std::fmt::Display>(
     addresses: Vec<String>,
+    network: Network,
     invalid: impl Fn(String) -> E,
 ) -> Result<BTreeSet<String>, QueryError<E>> {
     addresses
         .into_iter()
         .map(
             |address| match TransparentAddress::try_new(address.clone()) {
-                Ok(_) => Ok(address),
+                Ok(parsed) if parsed.is_for(network) => Ok(address),
+                Ok(_) => Err(QueryError::Domain(invalid(format!(
+                    "an address for another network: {address}"
+                )))),
                 Err(why) => Err(QueryError::Domain(invalid(format!(
                     "invalid transparent address `{address}`: {why}"
                 )))),
@@ -63,8 +68,8 @@ impl zaino_source::OneShotGetAddressBalance for MockChain {
         addresses: Vec<String>,
     ) -> Result<AddressBalance, QueryError<GetAddressBalanceError>> {
         let served = self.enter("get_address_balance")?;
-        let wanted = requested(addresses, GetAddressBalanceError::InvalidAddress)?;
         let network = served.facts().network;
+        let wanted = requested(addresses, network, GetAddressBalanceError::InvalidAddress)?;
         let ledger = Ledger::of(&served);
         let mut received = Vec::new();
         let mut unspent = Vec::new();
@@ -95,8 +100,8 @@ impl zaino_source::OneShotGetAddressUtxos for MockChain {
         addresses: Vec<String>,
     ) -> Result<Vec<Utxo>, QueryError<GetAddressUtxosError>> {
         let served = self.enter("get_address_utxos")?;
-        let wanted = requested(addresses, GetAddressUtxosError::InvalidAddress)?;
         let network = served.facts().network;
+        let wanted = requested(addresses, network, GetAddressUtxosError::InvalidAddress)?;
         let ledger = Ledger::of(&served);
         let mut rows: Vec<_> = ledger
             .outputs
@@ -190,7 +195,11 @@ impl zaino_source::OneShotGetAddressTxids for MockChain {
                 end,
             }));
         }
-        let wanted = requested(addresses, GetAddressTxidsError::InvalidAddress)?;
+        let wanted = requested(
+            addresses,
+            served.facts().network,
+            GetAddressTxidsError::InvalidAddress,
+        )?;
         let ledger = Ledger::of(&served);
         let txids = touching(&served, &ledger, &wanted, start, end);
         capped(txids.len(), |limit| GetAddressTxidsError::TooManyResults {
@@ -218,8 +227,8 @@ impl zaino_source::OneShotGetAddressDeltas for MockChain {
                 end,
             }));
         }
-        let wanted = requested(addresses, GetAddressDeltasError::InvalidAddress)?;
         let network = served.facts().network;
+        let wanted = requested(addresses, network, GetAddressDeltasError::InvalidAddress)?;
         let ledger = Ledger::of(&served);
         let located = touching(&served, &ledger, &wanted, start, end);
         capped(located.len(), |limit| {

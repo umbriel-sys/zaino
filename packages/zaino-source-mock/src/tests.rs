@@ -91,7 +91,8 @@ async fn a_synthetic_chain_keeps_the_whole_contract() {
     contract::treestates(&chain).await.expect("treestates");
     contract::transactions(&chain).await.expect("transactions");
     contract::subtrees(&chain).await.expect("subtrees");
-    contract::address_index(&chain, &miner())
+    let foreign = crate::address_of(&MINER_SCRIPT, Network::Mainnet).expect("a P2PKH script");
+    contract::address_index(&chain, &miner(), &foreign)
         .await
         .expect("address index");
     contract::chain_info(&chain).await.expect("chain info");

@@ -1,0 +1,34 @@
+[[changes]]
+crate = "zaino-primitives"
+kind = "feature"
+description = """
+`TransparentAddress::is_for(network)`: whether a node on that network accepts \
+the address (testnet and regtest share an encoding).
+"""
+
+[[changes]]
+crate = "zaino-source-zebra"
+kind = "fix"
+description = """
+An address for another network is `InvalidAddress` on every address port, \
+through read-state and through the RPC adapter, as zcashd answers it. zebrad \
+answered such queries empty.
+"""
+
+[[changes]]
+crate = "zaino-source-zcash-rpc"
+kind = "feature"
+description = """
+`Quirks::unchecked_address_network`: the adapter refuses another network's \
+address as `InvalidAddress` itself, reading the node's network once from \
+`getblockchaininfo`.
+"""
+
+[[changes]]
+crate = "zaino-source-mock"
+kind = "fix"
+description = """
+The mock refuses another network's address as `InvalidAddress`, and \
+`contract::address_index` takes such an address and checks every port \
+refuses it.
+"""

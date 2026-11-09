@@ -280,8 +280,9 @@ where
 /// and positive ones to its receipts; its UTXOs sum to its balance; its txids
 /// are the deltas' transactions in order; each debit's outpoint is spent per
 /// `getspentinfo` and absent per `gettxout`, each UTXO present per
-/// `gettxout`; a malformed address is `InvalidAddress` on every port.
-pub async fn address_index<S>(source: &S, address: &str) -> Result<(), Broken>
+/// `gettxout`; a malformed address, and `foreign` (valid, for another
+/// network), are `InvalidAddress` on every port.
+pub async fn address_index<S>(source: &S, address: &str, foreign: &str) -> Result<(), Broken>
 where
     S: zaino_source::OneShotGetBestBlockHeight
         + zaino_source::OneShotGetAddressBalance
@@ -397,41 +398,44 @@ where
     ensure(matched == debits.len(), || {
         format!("{} debits, {matched} matched to credits", debits.len())
     })?;
-    let invalid = vec!["not an address".to_owned()];
-    ensure(
-        matches!(
-            source.get_address_balance(invalid.clone()).await,
-            Err(QueryError::Domain(GetAddressBalanceError::InvalidAddress(
-                _
-            )))
-        ),
-        || "balance: InvalidAddress".to_owned(),
-    )?;
-    ensure(
-        matches!(
-            source.get_address_utxos(invalid.clone()).await,
-            Err(QueryError::Domain(GetAddressUtxosError::InvalidAddress(_)))
-        ),
-        || "utxos: InvalidAddress".to_owned(),
-    )?;
-    ensure(
-        matches!(
-            source
-                .get_address_txids(invalid.clone(), Height::GENESIS, tip)
-                .await,
-            Err(QueryError::Domain(GetAddressTxidsError::InvalidAddress(_)))
-        ),
-        || "txids: InvalidAddress".to_owned(),
-    )?;
-    ensure(
-        matches!(
-            source
-                .get_address_deltas(invalid, Height::GENESIS, tip)
-                .await,
-            Err(QueryError::Domain(GetAddressDeltasError::InvalidAddress(_)))
-        ),
-        || "deltas: InvalidAddress".to_owned(),
-    )
+    for invalid in ["not an address", foreign] {
+        let invalid = vec![invalid.to_owned()];
+        ensure(
+            matches!(
+                source.get_address_balance(invalid.clone()).await,
+                Err(QueryError::Domain(GetAddressBalanceError::InvalidAddress(
+                    _
+                )))
+            ),
+            || format!("balance {invalid:?}: InvalidAddress"),
+        )?;
+        ensure(
+            matches!(
+                source.get_address_utxos(invalid.clone()).await,
+                Err(QueryError::Domain(GetAddressUtxosError::InvalidAddress(_)))
+            ),
+            || format!("utxos {invalid:?}: InvalidAddress"),
+        )?;
+        ensure(
+            matches!(
+                source
+                    .get_address_txids(invalid.clone(), Height::GENESIS, tip)
+                    .await,
+                Err(QueryError::Domain(GetAddressTxidsError::InvalidAddress(_)))
+            ),
+            || format!("txids {invalid:?}: InvalidAddress"),
+        )?;
+        ensure(
+            matches!(
+                source
+                    .get_address_deltas(invalid.clone(), Height::GENESIS, tip)
+                    .await,
+                Err(QueryError::Domain(GetAddressDeltasError::InvalidAddress(_)))
+            ),
+            || format!("deltas {invalid:?}: InvalidAddress"),
+        )?;
+    }
+    Ok(())
 }
 
 /// The mempool listings agree, each member is located in the mempool, and

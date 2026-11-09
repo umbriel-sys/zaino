@@ -49,8 +49,8 @@ Raw-byte ports answer only for blocks carrying their bytes (`MockBlock::raw`).
 `contract::{blocks, tree_roots, treestates, transactions, subtrees,
 address_index, mempool, chain_info}` check, through the ports alone, what
 every source must answer: heights and hashes agree and link, refusals are the
-ports' domain errors (an unknown hash, a height past the tip, an invalid
-address), treestates carry no root, address deltas carry credits and debits
+ports' domain errors (an unknown hash, a height past the tip, a malformed
+address or one for another network), treestates carry no root, address deltas carry credits and debits
 that sum to the balance, every credit is spent (per `getspentinfo`, absent
 from `gettxout`) or a UTXO, and more. They discover the chain through the
 source checked, so the live suite runs the same checks against zebrad and
