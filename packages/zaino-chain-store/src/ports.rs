@@ -56,7 +56,9 @@ use crate::txout_set::TxOutSetAccumulator;
 /// - blocks by hash, and transactions, which only the passthrough mode needs —
 ///   a store configured to hold nothing answers reads from the validator, and
 ///   so asks questions a building store never does;
-/// - commitment tree roots, which are not derivable from a block alone.
+/// - commitment tree roots, which are not derivable from a block alone;
+/// - treestates and subtree roots, for the note frontiers and completed
+///   subtrees an index fold takes beside each block (D-85).
 ///
 /// Blocks are asked for parsed rather than raw. A store that took bytes would
 /// have to parse them itself, duplicating work the source adapter has already
@@ -70,6 +72,8 @@ pub trait ChainStoreSource:
     + zaino_source::OneShotGetBlockByHash
     + zaino_source::OneShotGetCommitmentTreeRoots
     + zaino_source::OneShotGetTransaction
+    + zaino_source::OneShotGetTreestate
+    + zaino_source::OneShotGetSubtreeRoots
     + Send
     + Sync
     + 'static
@@ -82,6 +86,8 @@ impl<T> ChainStoreSource for T where
         + zaino_source::OneShotGetBlockByHash
         + zaino_source::OneShotGetCommitmentTreeRoots
         + zaino_source::OneShotGetTransaction
+        + zaino_source::OneShotGetTreestate
+        + zaino_source::OneShotGetSubtreeRoots
         + Send
         + Sync
         + 'static

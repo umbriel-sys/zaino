@@ -192,6 +192,36 @@ impl OneShotGetCommitmentTreeRoots for FakeValidator {
     }
 }
 
+/// The zainodb store never asks: no treestate is held.
+impl zaino_source::OneShotGetTreestate for FakeValidator {
+    async fn get_treestate(
+        &self,
+        height: Height,
+    ) -> Result<zaino_primitives::types::Treestate, QueryError<zaino_source::GetTreestateError>>
+    {
+        Err(QueryError::Domain(
+            zaino_source::GetTreestateError::HeightNotFound(height),
+        ))
+    }
+}
+
+/// The zainodb store never asks: no pool's subtrees are held.
+impl zaino_source::OneShotGetSubtreeRoots for FakeValidator {
+    async fn get_subtree_roots(
+        &self,
+        pool: zaino_primitives::types::ShieldedPool,
+        _start_index: u16,
+        _limit: Option<u16>,
+    ) -> Result<
+        Vec<zaino_primitives::types::SubtreeRoot>,
+        QueryError<zaino_source::GetSubtreeRootsError>,
+    > {
+        Err(QueryError::Domain(
+            zaino_source::GetSubtreeRootsError::PoolUnavailable(pool),
+        ))
+    }
+}
+
 impl OneShotGetTransaction for FakeValidator {
     /// Where a transaction is, and nothing useful in `bytes`.
     ///
