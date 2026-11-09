@@ -1,0 +1,33 @@
+[package]
+name = "zaino-chain-store-service"
+version = "0.1.0"
+description = "The chain store runtime: a configurable set of indexes over any Storage, built from the validator."
+authors = { workspace = true }
+repository = { workspace = true }
+homepage = { workspace = true }
+edition = { workspace = true }
+license = { workspace = true }
+readme = { workspace = true }
+keywords = { workspace = true }
+categories = { workspace = true }
+
+[dependencies]
+zaino-chain-store = { workspace = true }
+zaino-indexes = { version = "0.1.0", path = "../zaino-indexes" }
+zaino-persistence = { version = "0.1.0", path = "../zaino-persistence" }
+zaino-primitives = { workspace = true, features = ["serde"] }
+zaino-source = { workspace = true }
+blake2 = { workspace = true }
+serde = { workspace = true, features = ["derive"] }
+thiserror.workspace = true
+tokio = { workspace = true, features = ["sync"] }
+tracing.workspace = true
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["macros", "rt"] }
+zaino-persistence = { version = "0.1.0", path = "../zaino-persistence", features = ["testing"] }
+zaino-source-mock.workspace = true
+
+[lints.rust]
+unsafe_code = "forbid"
+missing_docs = "warn"

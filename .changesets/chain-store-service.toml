@@ -1,0 +1,15 @@
+[[changes]]
+crate = "zaino-chain-store-service"
+kind = "feature"
+description = """
+New crate: the chain store runtime over any `Storage`. `ChainStore::boot` \
+locks the store, resolves the configured index set (named sets, enable, \
+disable, closed over `READS` and `BUILDS_FROM`), deletes stale index \
+directories (`delete_stale`), opens one directory per index (a schema \
+mismatch is rebuilt, corruption per `on_corruption`), checks each tip against \
+the validator (another chain is rebuilt; a tip the validator has not reached \
+is held, unserved, until it has) and records `METADATA`. `build_to` is the \
+only write path; watermark, per-index serviceability and store capabilities \
+are published. Sets needing prevouts are refused until the ingest resolves \
+them.
+"""

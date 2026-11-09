@@ -217,6 +217,7 @@ mistakes its design is trying to prevent.
 - [`zaino-mempool-service`](./packages/zaino-mempool-service/usage.md): spawning and consuming the mempool.
 - [`zaino-chain-head`](./packages/zaino-chain-head/usage.md): the chain head's ports, why reads live on the snapshot, and why there is no way to make it synchronise.
 - [`zaino-chain-head-service`](./packages/zaino-chain-head-service/usage.md): the chain head runtime, its two testing styles, and the properties to keep when editing the advance path.
+- [`zaino-chain-store-service`](./packages/zaino-chain-store-service/usage.md): the chain store runtime: configuring the index set, what boot checks and repairs, and `build_to`.
 - [`zaino-encoding`](./packages/zaino-encoding/usage.md): the versioned record format, and why nested fields must have their version pinned.
 - [`zaino-chain-store`](./packages/zaino-chain-store/usage.md): the finalised state's ports, why the chunk is the block-read primitive, and why a read past the watermark is not a miss.
 - [`zaino-chain-store-zainodb`](./packages/zaino-chain-store-zainodb/usage.md): the LMDB store, its on-disk compatibility contract, and why its checksums are load-bearing.

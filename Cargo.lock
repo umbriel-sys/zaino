@@ -6096,6 +6096,23 @@ dependencies = [
 ]
 
 [[package]]
+name = "zaino-chain-store-service"
+version = "0.1.0"
+dependencies = [
+ "blake2",
+ "serde",
+ "thiserror 2.0.20",
+ "tokio",
+ "tracing",
+ "zaino-chain-store",
+ "zaino-indexes",
+ "zaino-persistence",
+ "zaino-primitives",
+ "zaino-source",
+ "zaino-source-mock",
+]
+
+[[package]]
 name = "zaino-chain-store-zainodb"
 version = "0.2.0"
 dependencies = [
