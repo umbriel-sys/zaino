@@ -908,9 +908,11 @@ impl zaino_source::OneShotGetTreestateByHash for ZebraReadStateAdapter {
         zaino_primitives::types::Treestate,
         QueryError<zaino_source::GetTreestateByHashError, ReadStateError>,
     > {
-        self.treestate(hash_or_height(hash))
-            .await
-            .map_err(QueryError::from)
+        self.treestate(zebra_chain::block::Hash(hash.into()))
+            .await?
+            .ok_or(QueryError::Domain(
+                zaino_source::GetTreestateByHashError::BlockNotFound(hash),
+            ))
     }
 }
 
@@ -922,8 +924,15 @@ impl zaino_source::OneShotGetTreestate for ZebraReadStateAdapter {
         zaino_primitives::types::Treestate,
         QueryError<zaino_source::GetTreestateError, ReadStateError>,
     > {
-        let id = zebra_chain::block::Height(u32::from(height)).into();
-        self.treestate(id).await.map_err(QueryError::from)
+        let not_found = QueryError::Domain(zaino_source::GetTreestateError::HeightNotFound(height));
+        let zebra_height = zebra_chain::block::Height(u32::from(height));
+        let hash = match read(&self.state, ReadRequest::BestChainBlockHash(zebra_height)).await? {
+            ReadResponse::BlockHash(Some(hash)) => hash,
+            ReadResponse::BlockHash(None) => return Err(not_found),
+            _ => return Err(unexpected_response("BlockHash").into()),
+        };
+        // reorged out between the two reads: the height no longer names it
+        self.treestate(hash).await?.ok_or(not_found)
     }
 }
 
@@ -1003,38 +1012,60 @@ impl ZebraReadStateAdapter {
         }
     }
 
-    /// Serialised commitment trees for a block, one per pool; `None` for a
-    /// pool not active at that block (`pool_if_active`).
+    /// The height and time of block `hash` in any chain; `None` when the
+    /// state holds no such block. A best-chain block is read by header; only
+    /// a side-chain block costs a whole-block read.
+    async fn block_identity(
+        &self,
+        hash: zebra_chain::block::Hash,
+    ) -> Result<Option<(zebra_chain::block::Height, u32)>, ReadStateError> {
+        match read(&self.state, ReadRequest::Depth(hash)).await? {
+            ReadResponse::Depth(Some(_)) => {
+                match read(&self.state, ReadRequest::BlockHeader(hash.into())).await? {
+                    ReadResponse::BlockHeader { header, height, .. } => {
+                        Ok(Some((height, header.time.timestamp() as u32)))
+                    }
+                    _ => Err(unexpected_response("BlockHeader")),
+                }
+            }
+            ReadResponse::Depth(None) => {
+                match read(&self.state, ReadRequest::AnyChainBlock(hash.into())).await? {
+                    ReadResponse::Block(Some(block)) => {
+                        let height = block.coinbase_height().ok_or_else(|| {
+                            ReadStateError::off_contract(format!("block {hash} has no height"))
+                        })?;
+                        Ok(Some((height, block.header.time.timestamp() as u32)))
+                    }
+                    ReadResponse::Block(None) => Ok(None),
+                    _ => Err(unexpected_response("AnyChainBlock")),
+                }
+            }
+            _ => Err(unexpected_response("Depth")),
+        }
+    }
+
+    /// Serialised commitment trees for block `hash` in any chain, one per
+    /// pool (`None` for a pool not active at that block, `pool_if_active`);
+    /// `None` when the state holds no such block.
     ///
-    /// Shared by the height- and hash-addressed queries, which differ only in
-    /// how the block is named.
+    /// Shared by the height- and hash-addressed queries: a height is resolved
+    /// to its best-chain hash first.
     async fn treestate(
         &self,
-        id: zebra_state::HashOrHeight,
-    ) -> Result<zaino_primitives::types::Treestate, ReadStateError> {
-        // The header read identifies the block the trees belong to. A treestate
-        // is only meaningful against one block, so it is fetched alongside
-        // rather than left for the caller to pair up.
-        let (header, sapling, orchard, ironwood) = tokio::join!(
-            read(&self.state, ReadRequest::BlockHeader(id)),
-            read(&self.state, ReadRequest::SaplingTree(id)),
-            read(&self.state, ReadRequest::OrchardTree(id)),
-            read(&self.state, ReadRequest::IronwoodTree(id)),
+        hash: zebra_chain::block::Hash,
+    ) -> Result<Option<zaino_primitives::types::Treestate>, ReadStateError> {
+        // The block's identity and its trees, read together: a treestate is
+        // only meaningful against one block.
+        let (identity, sapling, orchard, ironwood) = tokio::join!(
+            self.block_identity(hash),
+            read(&self.state, ReadRequest::AnyChainSaplingTree(hash)),
+            read(&self.state, ReadRequest::AnyChainOrchardTree(hash)),
+            read(&self.state, ReadRequest::AnyChainIronwoodTree(hash)),
         );
-
-        let (block_hash, zebra_height, time) = match header? {
-            ReadResponse::BlockHeader {
-                header,
-                hash,
-                height,
-                ..
-            } => (
-                BlockHash::from(hash.0),
-                height,
-                header.time.timestamp() as u32,
-            ),
-            _ => return Err(unexpected_response("BlockHeader")),
+        let Some((zebra_height, time)) = identity? else {
+            return Ok(None);
         };
+        let block_hash = BlockHash::from(hash.0);
         let height = Height::try_from(zebra_height.0).map_err(ReadStateError::invalid_data)?;
 
         let pool = |upgrade, final_state: Option<Vec<u8>>| {
@@ -1062,14 +1093,14 @@ impl ZebraReadStateAdapter {
             _ => return Err(unexpected_response("IronwoodTree")),
         };
 
-        Ok(zaino_primitives::types::Treestate {
+        Ok(Some(zaino_primitives::types::Treestate {
             block_hash,
             height,
             time,
             sapling,
             orchard,
             ironwood,
-        })
+        }))
     }
 }
 
