@@ -1,0 +1,18 @@
+[[changes]]
+crate = "zaino-source-mock"
+kind = "feature"
+description = """
+New dev-only crate: `MockChain`, one deterministic fake validator \
+implementing every `zaino-source` port as real validators answer; \
+`ChainBuilder` for synthetic chains (spends, shielded notes with consistent \
+roots, treestates and subtrees, branches); controls for serving, mining, \
+reorgs, mempools, faults and call counts; and `contract`, the source contract \
+checked through the ports, for the mock and live validators alike.
+"""
+
+[[changes]]
+crate = "zaino-primitives"
+kind = "feature"
+description = """
+`TreeRoots` derives `PartialEq` and `Eq`.
+"""

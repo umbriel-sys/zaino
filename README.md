@@ -208,6 +208,7 @@ mistakes its design is trying to prevent.
 - [`zaino-persistence-lsm-tree`](./packages/zaino-persistence-lsm-tree/usage.md): the on-disk backend, how to open and tune it, and what a failed write or merge leaves behind.
 - [`zaino-indexes`](./packages/zaino-indexes/usage.md): per-field record layouts, index schemas and the digest a directory is stamped with.
 - [`zaino-source`](./packages/zaino-source/usage.md): the ports, the domain/fetch error split, and `Resilient`.
+- [`zaino-source-mock`](./packages/zaino-source-mock/usage.md): the one fake validator every crate tests against, and the contract that keeps it honest.
 - [`zaino-rpc`](./packages/zaino-rpc/usage.md): JSON-RPC transport, and what it does not do.
 - [`zaino-source-zcash-rpc`](./packages/zaino-source-zcash-rpc/usage.md): the JSON-RPC adapter, its error classification, and the quirk table that keeps it validator-agnostic.
 - [`zaino-source-zebra`](./packages/zaino-source-zebra/usage.md): the composite and its three routing rules, the read-state adapter and what it cannot answer, and zebrad's quirks.

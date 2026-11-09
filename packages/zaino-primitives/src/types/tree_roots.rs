@@ -9,7 +9,7 @@ use super::{TreeRoot, TreeSize};
 /// validator reported none. Consumers that need a defaulted root for an
 /// inactive pool apply that default at their own boundary rather than having
 /// it baked in here — an absent root and a zero root are different facts.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TreeRoots {
     /// Sapling tree root and cumulative size, if pool is active.
     pub sapling: Option<TreeRootInfo>,

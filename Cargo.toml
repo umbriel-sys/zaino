@@ -14,6 +14,7 @@ members = [
     "packages/zaino-address",
     "packages/zaino-source-macros",
     "packages/zaino-source",
+    "packages/zaino-source-mock",
     "packages/zaino-rpc",
     "packages/zaino-source-zcash-rpc",
     "packages/zaino-source-zebra",
@@ -184,6 +185,8 @@ zaino-address = { path = "packages/zaino-address", version = "0.1.2" }
 # ask, so each consumer's bound names exactly the capabilities it uses and an
 # adapter that cannot answer a question simply does not implement it.
 zaino-source = { path = "packages/zaino-source", version = "0.2.2" }
+# One fake validator implementing every source port, for every crate's tests (dev-only).
+zaino-source-mock = { path = "packages/zaino-source-mock" }
 zaino-source-macros = { path = "packages/zaino-source-macros", version = "0.1.1" }
 zaino-mempool = { path = "packages/zaino-mempool", version = "0.2.2" }
 zaino-mempool-service = { path = "packages/zaino-mempool-service", version = "0.2.2" }
@@ -217,8 +220,7 @@ zaino-chain-store = { path = "packages/zaino-chain-store", version = "0.1.1" }
 # built from. Named for the backend rather than for the role: a second
 # implementation is expected, and neither should be able to claim to be *the*
 # chain store. Consumers depend on the ports; this is what a deployment picks.
-zaino-chain-store-zainodb = { path = "packages/zaino-chain-store-zainodb", version = "0.2.0" }
-# ChainView: the unified chain read surface, composed from the two tiers above
+zaino-chain-store-zainodb = { path = "packages/zaino-chain-store-zainodb", version = "0.2.0" }# ChainView: the unified chain read surface, composed from the two tiers above
 # and validator passthrough. Unlike the subsystems it composes, this is one
 # crate rather than a domain/adapter pair — the composer is generic over the
 # ports either side, so it names no implementation and can sit beside the

@@ -1,0 +1,30 @@
+[package]
+name = "zaino-source-mock"
+version = "0.1.0"
+description = "One deterministic fake validator implementing every zaino-source port, for every crate's tests."
+publish = false
+authors = { workspace = true }
+repository = { workspace = true }
+homepage = { workspace = true }
+edition = { workspace = true }
+license = { workspace = true }
+readme = { workspace = true }
+keywords = { workspace = true }
+categories = { workspace = true }
+
+[dependencies]
+zaino-source = { workspace = true }
+zaino-primitives = { workspace = true }
+blake2 = { workspace = true }
+hex = { workspace = true }
+zcash_address = { workspace = true }
+zcash_protocol = { workspace = true }
+tokio = { workspace = true, features = ["sync"] }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["macros", "rt"] }
+zaino-indexes = { path = "../zaino-indexes" }
+
+[lints.rust]
+unsafe_code = "forbid"
+missing_docs = "warn"

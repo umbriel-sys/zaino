@@ -6350,6 +6350,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "zaino-source-mock"
+version = "0.1.0"
+dependencies = [
+ "blake2",
+ "hex",
+ "tokio",
+ "zaino-indexes",
+ "zaino-primitives",
+ "zaino-source",
+ "zcash_address",
+ "zcash_protocol",
+]
+
+[[package]]
 name = "zaino-source-zcash-rpc"
 version = "0.2.2"
 dependencies = [
