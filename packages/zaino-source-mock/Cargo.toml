@@ -25,10 +25,14 @@ zaino-consensus.workspace = true
 jubjub = "0.11"
 pasta_curves = "0.6"
 group = "0.14"
+incrementalmerkletree.workspace = true
+sapling-crypto.workspace = true
+orchard.workspace = true
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["macros", "rt"] }
 zaino-indexes = { path = "../zaino-indexes" }
+zcash_primitives.workspace = true
 
 [lints.rust]
 unsafe_code = "forbid"

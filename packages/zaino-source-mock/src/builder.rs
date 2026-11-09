@@ -8,9 +8,10 @@
 //! `Full` costs ~24x. Each coinbase pays [`FAN`]
 //! outputs; a block's transparent spends spend its parent's coinbase
 //! outputs, so spends are valid on every branch; a [`BlockSpec::seed`] tells
-//! two branches apart. Shielded notes are never decryptable, and commitment
-//! roots, tree sizes, treestates (in zcashd's legacy encoding) and completed
-//! subtrees are synthetic but agree with the notes. `block_commitments` is a
+//! two branches apart. Shielded notes are never decryptable, but their
+//! commitment trees are real: roots, treestates (zcashd's legacy encoding)
+//! and completed subtree roots are hashed from the notes, and each bundle
+//! anchors to its tree's root after the parent. `block_commitments` is a
 //! tag.
 
 use blake2::{digest::consts::U32, Blake2b, Digest as _};
@@ -24,6 +25,7 @@ use crate::block::{MockBlock, PoolTrees, RawBlock};
 use crate::chain::{MockChain, NodeFacts};
 use crate::encode::{self, Action, Input, Note, Output, Tx};
 use crate::schedule::Activations;
+use crate::tree;
 
 /// Outputs each coinbase pays: the most transparent spends a block can make.
 pub const FAN: u32 = 8;
@@ -38,7 +40,6 @@ pub const SAPLING_PER_BLOCK: u32 = 2_000;
 /// The most Orchard-shaped actions one block holds.
 pub const ACTIONS_PER_BLOCK: u32 = 600;
 
-const LEAVES_PER_SUBTREE: u64 = 1 << 16;
 /// Regtest's minimum difficulty.
 const REGTEST_BITS: u32 = 0x200f_0f0f;
 const GENESIS_TIME: u32 = 1_700_000_000;
@@ -266,7 +267,9 @@ pub fn next_block(
                 .collect(),
             orchard: actions(ShieldedPool::Orchard, spec.orchard),
             ironwood: actions(ShieldedPool::Ironwood, spec.ironwood),
-            anchor: encode::field(tag("anchor", 0)),
+            // a bundle anchors to its tree's root after the parent
+            orchard_anchor: parent_root(parent, ShieldedPool::Orchard),
+            ironwood_anchor: parent_root(parent, ShieldedPool::Ironwood),
             ..Tx::empty()
         });
     }
@@ -282,55 +285,37 @@ pub fn next_block(
         if !activations.active(pool, height) {
             continue;
         }
-        let before = parent
-            .and_then(|parent| pool_size(&parent.tree_roots, pool))
-            .unwrap_or(0);
-        let size = before.saturating_add(u64::from(count));
+        let parent_tree = parent.and_then(|parent| pool_tree(&parent.trees, pool));
+        let parent_info = parent.and_then(|parent| pool_root(&parent.tree_roots, pool));
+        if let (0, Some(tree), Some(info)) = (count, parent_tree, parent_info) {
+            // no notes: the parent's tree, unhashed
+            set_pool(
+                &mut tree_roots,
+                &mut trees,
+                pool,
+                info.clone(),
+                tree.clone(),
+            );
+            continue;
+        }
+        let leaves: Vec<[u8; 32]> = (0..count).map(|n| commitment(pool, n)).collect();
+        let grown = tree::grow(
+            pool,
+            parent_tree.map(|tree| tree.final_state.as_slice()),
+            &leaves,
+        )
+        .unwrap_or_else(|| panic!("the builder's {pool} tree did not grow"));
         let info = TreeRootInfo {
-            root: TreeRoot::from(tag(&format!("{pool} root"), size)),
-            size: TreeSize::try_from(size).unwrap_or(TreeSize::ZERO),
-        };
-        let parent_tree = parent.and_then(|parent| match pool {
-            ShieldedPool::Sapling => parent.trees.sapling.as_ref(),
-            ShieldedPool::Orchard => parent.trees.orchard.as_ref(),
-            ShieldedPool::Ironwood => parent.trees.ironwood.as_ref(),
-        });
-        let parent_leaf = parent_tree
-            .and_then(|tree| last_leaf(&tree.final_state))
-            .unwrap_or([0; 32]);
-        let (leaf, previous) = match count {
-            0 => (parent_leaf, [0; 32]),
-            1 => (commitment(pool, 0), parent_leaf),
-            n => (
-                commitment(pool, n.saturating_sub(1)),
-                commitment(pool, n.saturating_sub(2)),
-            ),
-        };
-        let final_state = match (count, parent_tree) {
-            // nothing added: the parent's tree as it was
-            (0, Some(tree)) => tree.final_state.clone(),
-            _ => legacy_tree(size, leaf, previous, |level, index| {
-                hash(&[
-                    b"node",
-                    pool.to_string().as_bytes(),
-                    &level.to_le_bytes(),
-                    &index.to_le_bytes(),
-                ])
-            }),
+            root: TreeRoot::from(grown.root),
+            size: TreeSize::try_from(grown.size).unwrap_or(TreeSize::ZERO),
         };
         let tree = PoolTreestate {
             // both adapters answer roots through `get_commitment_tree_roots`, never here
             final_root: None,
-            final_state,
+            final_state: grown.final_state,
         };
-        match pool {
-            ShieldedPool::Sapling => (tree_roots.sapling, trees.sapling) = (Some(info), Some(tree)),
-            ShieldedPool::Orchard => (tree_roots.orchard, trees.orchard) = (Some(info), Some(tree)),
-            ShieldedPool::Ironwood => {
-                (tree_roots.ironwood, trees.ironwood) = (Some(info), Some(tree))
-            }
-        }
-        for index in before / LEAVES_PER_SUBTREE..size / LEAVES_PER_SUBTREE {
+        set_pool(&mut tree_roots, &mut trees, pool, info, tree);
+        for (index, root) in grown.subtrees {
             let Ok(index16) = u16::try_from(index) else {
                 continue;
             };
@@ -338,7 +323,7 @@ pub fn next_block(
                 pool,
                 index16,
                 SubtreeRoot {
-                    root: TreeRoot::from(tag(&format!("{pool} subtree"), index)),
+                    root: TreeRoot::from(root),
                     end_height: Height::try_from(height).unwrap_or(Height::GENESIS),
                 },
             ));
@@ -419,8 +404,46 @@ impl Tx {
             sapling: Vec::new(),
             orchard: Vec::new(),
             ironwood: Vec::new(),
-            anchor: [0; 32],
+            orchard_anchor: [0; 32],
+            ironwood_anchor: [0; 32],
         }
+    }
+}
+
+/// `pool`'s tree root after `parent` (the empty root before the pool has one).
+fn parent_root(parent: Option<&MockBlock>, pool: ShieldedPool) -> [u8; 32] {
+    parent
+        .and_then(|parent| pool_root(&parent.tree_roots, pool))
+        .map_or_else(|| tree::empty_root(pool), |info| info.root.into())
+}
+
+fn pool_root(roots: &TreeRoots, pool: ShieldedPool) -> Option<&TreeRootInfo> {
+    match pool {
+        ShieldedPool::Sapling => roots.sapling.as_ref(),
+        ShieldedPool::Orchard => roots.orchard.as_ref(),
+        ShieldedPool::Ironwood => roots.ironwood.as_ref(),
+    }
+}
+
+fn set_pool(
+    roots: &mut TreeRoots,
+    trees: &mut PoolTrees,
+    pool: ShieldedPool,
+    info: TreeRootInfo,
+    tree: PoolTreestate,
+) {
+    match pool {
+        ShieldedPool::Sapling => (roots.sapling, trees.sapling) = (Some(info), Some(tree)),
+        ShieldedPool::Orchard => (roots.orchard, trees.orchard) = (Some(info), Some(tree)),
+        ShieldedPool::Ironwood => (roots.ironwood, trees.ironwood) = (Some(info), Some(tree)),
+    }
+}
+
+fn pool_tree(trees: &PoolTrees, pool: ShieldedPool) -> Option<&PoolTreestate> {
+    match pool {
+        ShieldedPool::Sapling => trees.sapling.as_ref(),
+        ShieldedPool::Orchard => trees.orchard.as_ref(),
+        ShieldedPool::Ironwood => trees.ironwood.as_ref(),
     }
 }
 
@@ -468,22 +491,8 @@ pub fn legacy_tree(
     bytes
 }
 
-/// The last leaf a legacy-encoded tree holds.
-fn last_leaf(bytes: &[u8]) -> Option<[u8; 32]> {
-    let left: [u8; 32] = bytes.get(1..33)?.try_into().ok()?;
-    match bytes.get(33) {
-        Some(1) => bytes.get(34..66)?.try_into().ok(),
-        _ => Some(left),
-    }
-}
-
 fn pool_size(roots: &TreeRoots, pool: ShieldedPool) -> Option<u64> {
-    let info = match pool {
-        ShieldedPool::Sapling => roots.sapling.as_ref(),
-        ShieldedPool::Orchard => roots.orchard.as_ref(),
-        ShieldedPool::Ironwood => roots.ironwood.as_ref(),
-    }?;
-    Some(u64::from(info.size.get()))
+    pool_root(roots, pool).map(|info| u64::from(info.size.get()))
 }
 
 fn hash(parts: &[&[u8]]) -> [u8; 32] {

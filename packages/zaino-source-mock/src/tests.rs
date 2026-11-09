@@ -68,20 +68,30 @@ fn height(n: u32) -> Height {
     Height::try_from(n).expect("small heights")
 }
 
-/// Spends, notes in both pools, and the first Sapling subtree completed at
-/// [`SUBTREE_HEIGHT`].
+/// Spends, and notes in both pools.
 fn rich() -> MockChain {
     ChainBuilder::new()
         .blocks(4)
-        .block(BlockSpec::spends(3))
-        .notes(ShieldedPool::Sapling, 66_000)
+        .block(BlockSpec::spends(3).notes(ShieldedPool::Sapling, 5))
         .block(BlockSpec::spends(2).notes(ShieldedPool::Orchard, 5))
         .blocks(3)
         .build()
 }
 
-/// 2,000 notes a block from height 6: 65,536 reached at 38.
-const SUBTREE_HEIGHT: u32 = 38;
+/// [`rich`], then the first Sapling subtree completed at [`SUBTREE_HEIGHT`]:
+/// ~3 s of real hashing, so only for the tests about subtrees.
+fn with_subtree() -> MockChain {
+    ChainBuilder::new()
+        .blocks(4)
+        .block(BlockSpec::spends(3).notes(ShieldedPool::Sapling, 5))
+        .block(BlockSpec::spends(2).notes(ShieldedPool::Orchard, 5))
+        .notes(ShieldedPool::Sapling, 66_000)
+        .blocks(3)
+        .build()
+}
+
+/// 2,000 notes a block from height 7 onto 5: 65,536 reached at 39.
+const SUBTREE_HEIGHT: u32 = 39;
 
 fn miner() -> String {
     crate::address_of(&MINER_SCRIPT, Network::Regtest).expect("a P2PKH script")
@@ -89,7 +99,7 @@ fn miner() -> String {
 
 #[tokio::test]
 async fn a_synthetic_chain_keeps_the_whole_contract() {
-    let chain = rich();
+    let chain = with_subtree();
     contract::blocks(&chain).await.expect("blocks");
     contract::tree_roots(&chain).await.expect("tree roots");
     contract::treestates(&chain).await.expect("treestates");
@@ -140,7 +150,7 @@ async fn a_pool_the_node_lacks_is_unavailable() {
 #[tokio::test]
 async fn a_completed_subtree_is_served_at_its_block() {
     use zaino_source::OneShotGetSubtreeRoots as _;
-    let chain = rich();
+    let chain = with_subtree();
     let roots = chain
         .get_subtree_roots(ShieldedPool::Sapling, 0, None)
         .await
@@ -194,6 +204,62 @@ fn every_block_shape_passes_full_verification() {
     let formats: Vec<u32> = (0..=4).map(|at| version(at, 0)).collect();
     assert_eq!(formats, [1, 1, 3, 4, 5], "coinbase formats by height");
     assert_eq!(version(5, 2), 6, "the Ironwood transaction is v6");
+}
+
+/// Every treestate, read by upstream's legacy decoder, has the root and size
+/// the mock reports for its block, in every pool.
+#[test]
+fn every_treestate_has_its_reported_root() {
+    use crate::{Activations, Upgrade};
+    use zcash_primitives::merkle_tree::read_commitment_tree;
+
+    fn upstream<H>(bytes: &[u8]) -> ([u8; 32], u64)
+    where
+        H: zcash_primitives::merkle_tree::HashSer + incrementalmerkletree::Hashable + Clone,
+    {
+        let tree = read_commitment_tree::<H, _, 32>(bytes).expect("decodes");
+        let mut root = Vec::new();
+        tree.root().write(&mut root).expect("writes");
+        (root.try_into().expect("32 bytes"), tree.size() as u64)
+    }
+
+    let mut builder = ChainBuilder::with(
+        crate::NodeFacts::regtest(),
+        Activations::through(Upgrade::Nu6_3, 1),
+    );
+    for notes in [1, 2, 3, 0, 7, 64, 129] {
+        builder = builder.block(
+            BlockSpec::spends(1)
+                .notes(ShieldedPool::Sapling, notes)
+                .notes(ShieldedPool::Orchard, notes)
+                .notes(ShieldedPool::Ironwood, notes),
+        );
+    }
+    for block in builder.into_blocks().iter().skip(1) {
+        let pools = [
+            (&block.trees.sapling, &block.tree_roots.sapling, true),
+            (&block.trees.orchard, &block.tree_roots.orchard, false),
+            (&block.trees.ironwood, &block.tree_roots.ironwood, false),
+        ];
+        for (tree, info, sapling) in pools {
+            let (tree, info) = (
+                tree.as_ref().expect("active"),
+                info.as_ref().expect("active"),
+            );
+            let (root, size) = match sapling {
+                true => upstream::<sapling_crypto::Node>(&tree.final_state),
+                false => upstream::<orchard::tree::MerkleHashOrchard>(&tree.final_state),
+            };
+            let reported: [u8; 32] = info.root.into();
+            assert_eq!(root, reported, "height {}", block.height());
+            assert_eq!(
+                size,
+                u64::from(info.size.get()),
+                "height {}",
+                block.height()
+            );
+        }
+    }
 }
 
 /// A spec over a block's bytes is refused, not silently split.

@@ -62,8 +62,10 @@ pub(crate) struct Tx {
     pub(crate) sapling: Vec<Note>,
     pub(crate) orchard: Vec<Action>,
     pub(crate) ironwood: Vec<Action>,
-    /// The Orchard-shaped bundles' anchor (canonical).
-    pub(crate) anchor: [u8; 32],
+    /// The Orchard bundle's anchor: a root of the Orchard tree.
+    pub(crate) orchard_anchor: [u8; 32],
+    /// The Ironwood bundle's anchor: a root of the Ironwood tree.
+    pub(crate) ironwood_anchor: [u8; 32],
 }
 
 /// The header fields the builder chooses.
@@ -178,9 +180,9 @@ pub(crate) fn transaction(tx: &Tx, upgrade: Option<Upgrade>) -> Vec<u8> {
             if !tx.sapling.is_empty() {
                 filler(&mut w, SIGNATURE_LEN, 0x55); // bindingSigSapling
             }
-            orchard_bundle(&mut w, &tx.orchard, tx.anchor);
+            orchard_bundle(&mut w, &tx.orchard, tx.orchard_anchor);
             if v6 {
-                orchard_bundle(&mut w, &tx.ironwood, tx.anchor);
+                orchard_bundle(&mut w, &tx.ironwood, tx.ironwood_anchor);
             }
         }
     }

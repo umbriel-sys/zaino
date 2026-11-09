@@ -31,9 +31,17 @@ with `ChainBuilder::notes`.
 
 Each coinbase pays `FAN` outputs to `MINER_SCRIPT`; a block's spends pay
 `RECIPIENT_SCRIPT` from its parent's coinbase, so spends are valid on every
-branch. Commitment roots, tree sizes, treestates (zcashd's legacy encoding)
-and completed subtrees are synthetic but agree with the notes;
-`block_commitments` is a tag. `BlockSpec::seeded` gives a branch distinct
+branch. Commitment trees are real: roots, treestates (zcashd's legacy
+encoding) and completed subtree roots are hashed from the notes, and each
+Orchard-shaped bundle anchors to its tree's root after the parent.
+`block_commitments` is a tag.
+
+Real hashing has a price: a completed subtree is 65,536 notes, ~3–4 s of CPU
+to build (Pedersen). Keep shared test chains note-light and build a subtree
+only in the tests about subtrees. A block without notes reuses its parent's
+tree, unhashed.
+
+`BlockSpec::seeded` gives a branch distinct
 hashes; `next_block` builds one block on any parent. `NodeFacts` holds what a
 node reports about itself (network, schedule, version, peers, fees, subsidy).
 

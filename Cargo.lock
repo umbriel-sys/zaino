@@ -6374,8 +6374,11 @@ dependencies = [
  "blake2",
  "group",
  "hex",
+ "incrementalmerkletree",
  "jubjub",
+ "orchard",
  "pasta_curves",
+ "sapling-crypto",
  "tokio",
  "zaino-consensus",
  "zaino-indexes",
@@ -6383,6 +6386,7 @@ dependencies = [
  "zaino-source",
  "zaino-source-zcash-rpc",
  "zcash_address",
+ "zcash_primitives",
  "zcash_protocol",
 ]
 

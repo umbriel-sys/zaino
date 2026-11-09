@@ -19,6 +19,7 @@ pub mod contract;
 mod encode;
 mod ports;
 mod schedule;
+mod tree;
 
 pub use block::{MockBlock, PoolTrees, RawBlock};
 pub use builder::{

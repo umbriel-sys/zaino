@@ -43,15 +43,38 @@ fn config(enable: &[IndexId]) -> ChainStoreServiceConfig {
     }
 }
 
-/// Spends throughout, and Sapling notes completing the first subtree.
+/// Spends throughout, and notes in both pools.
 fn chain() -> MockChain {
     ChainBuilder::new()
         .blocks(3)
-        .block(BlockSpec::spends(2))
-        .notes(ShieldedPool::Sapling, 66_000)
+        .block(BlockSpec::spends(2).notes(ShieldedPool::Sapling, 5))
         .block(BlockSpec::spends(1).notes(ShieldedPool::Orchard, 3))
         .blocks(2)
         .build()
+}
+
+/// The tree-state index builds over a completed subtree (~3 s of real
+/// hashing, so only here).
+#[tokio::test]
+async fn the_tree_state_builds_over_a_completed_subtree() {
+    let chain = ChainBuilder::new()
+        .blocks(2)
+        .notes(ShieldedPool::Sapling, 66_000)
+        .blocks(1)
+        .build();
+    let store = boot(
+        &config(&[IndexId::TreeState]),
+        &InMemoryStorage::new(),
+        &chain,
+    )
+    .await
+    .expect("boots");
+    let tip = tip_of(&chain);
+    store.build_to(tip.height).await.expect("builds");
+    assert_eq!(
+        store.serviceability(IndexId::TreeState),
+        Serviceability::ToHeight(tip.height)
+    );
 }
 
 fn height(n: u32) -> Height {
