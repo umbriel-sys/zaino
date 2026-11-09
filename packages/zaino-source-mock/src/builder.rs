@@ -288,10 +288,40 @@ pub fn next_block(
             root,
             size: TreeSize::try_from(size).unwrap_or(TreeSize::ZERO),
         };
+        let parent_tree = parent.and_then(|parent| match pool {
+            ShieldedPool::Sapling => parent.trees.sapling.as_ref(),
+            ShieldedPool::Orchard => parent.trees.orchard.as_ref(),
+            ShieldedPool::Ironwood => parent.trees.ironwood.as_ref(),
+        });
+        let parent_leaf = parent_tree
+            .and_then(|tree| last_leaf(&tree.final_state))
+            .unwrap_or([0; 32]);
+        let commitment = |n: u32| match pool {
+            ShieldedPool::Sapling => note("sapling cmu", n),
+            ShieldedPool::Orchard => note("orchard cmx", n),
+            ShieldedPool::Ironwood => note("ironwood cmx", n),
+        };
+        let (leaf, previous) = match count {
+            0 => (parent_leaf, [0; 32]),
+            1 => (commitment(0), parent_leaf),
+            n => (commitment(n - 1), commitment(n - 2)),
+        };
+        let final_state = match (count, parent_tree) {
+            // nothing added: the parent's tree as it was
+            (0, Some(tree)) => tree.final_state.clone(),
+            _ => legacy_tree(size, leaf, previous, |level, index| {
+                hash(&[
+                    b"node",
+                    pool.to_string().as_bytes(),
+                    &level.to_le_bytes(),
+                    &index.to_le_bytes(),
+                ])
+            }),
+        };
         let tree = PoolTreestate {
             // both adapters answer roots through `get_commitment_tree_roots`, never here
             final_root: None,
-            final_state: legacy_tree(size, |n| tag(&format!("{pool} node"), n)),
+            final_state,
         };
         match pool {
             ShieldedPool::Sapling => (tree_roots.sapling, trees.sapling) = (Some(info), Some(tree)),
@@ -353,32 +383,57 @@ pub fn next_block(
     }
 }
 
-/// zcashd's legacy `CommitmentTree` encoding of a tree of `size` leaves,
-/// nodes from `node` (the empty tree for 0).
-pub fn legacy_tree(size: u64, node: impl Fn(u64) -> [u8; 32]) -> Vec<u8> {
-    let mut bytes = Vec::new();
-    let optional = |present: bool, at: u64, bytes: &mut Vec<u8>| match present {
-        true => {
+/// zcashd's legacy `CommitmentTree` encoding of a tree of `size` leaves (the
+/// empty tree for 0): `leaf` is the last note, `previous` the one before it
+/// (the left leaf at an even size), and `node(level, index)` each complete
+/// left subtree the frontier holds above the leaves.
+pub fn legacy_tree(
+    size: u64,
+    leaf: [u8; 32],
+    previous: [u8; 32],
+    node: impl Fn(u32, u64) -> [u8; 32],
+) -> Vec<u8> {
+    let optional = |value: Option<[u8; 32]>, bytes: &mut Vec<u8>| match value {
+        Some(value) => {
             bytes.push(1);
-            bytes.extend(node(at));
+            bytes.extend(value);
         }
-        false => bytes.push(0),
+        None => bytes.push(0),
     };
-    if size == 0 {
+    let Some(position) = size.checked_sub(1) else {
         return vec![0, 0, 0];
+    };
+    let mut bytes = Vec::new();
+    match position % 2 {
+        0 => {
+            optional(Some(leaf), &mut bytes);
+            optional(None, &mut bytes);
+        }
+        _ => {
+            optional(Some(previous), &mut bytes);
+            optional(Some(leaf), &mut bytes);
+        }
     }
-    let right = size.is_multiple_of(2);
-    optional(true, 0, &mut bytes);
-    optional(right, 1, &mut bytes);
-    // leaves held by the parents: an even count
-    let parents = size - 1 - u64::from(right);
-    let levels = 64 - u64::from(parents.leading_zeros());
-    let count = levels.saturating_sub(1);
-    bytes.push(u8::try_from(count).unwrap_or(0));
-    for level in 1..=count {
-        optional(parents & (1 << level) != 0, 1 + level, &mut bytes);
+    // parent at level L iff bit L of the position: the left sibling subtree
+    let levels = (64 - position.leading_zeros()).saturating_sub(1);
+    bytes.push(u8::try_from(levels).unwrap_or(0));
+    for level in 1..=levels {
+        let present = position & (1 << level) != 0;
+        optional(
+            present.then(|| node(level, (position >> level) ^ 1)),
+            &mut bytes,
+        );
     }
     bytes
+}
+
+/// The last leaf a legacy-encoded tree holds.
+fn last_leaf(bytes: &[u8]) -> Option<[u8; 32]> {
+    let left: [u8; 32] = bytes.get(1..33)?.try_into().ok()?;
+    match bytes.get(33) {
+        Some(1) => bytes.get(34..66)?.try_into().ok(),
+        _ => Some(left),
+    }
 }
 
 /// A synthetic block's size: its parts at their encoded widths (header with

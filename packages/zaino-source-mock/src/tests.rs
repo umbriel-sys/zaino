@@ -112,24 +112,36 @@ async fn a_completed_subtree_is_served_at_its_block() {
 }
 
 /// The synthetic treestate of every size decodes, through the real legacy
-/// decoder, to a frontier at the size.
+/// decoder, to a frontier at the size whose leaf is the last note and whose
+/// first ommer, at an even size, is the note before it.
 #[test]
 fn legacy_trees_decode_to_their_size() {
+    let (leaf, previous) = ([1; 32], [2; 32]);
+    let node = |level: u32, index: u64| {
+        let mut bytes = [0; 32];
+        bytes[..4].copy_from_slice(&level.to_le_bytes());
+        bytes[4..12].copy_from_slice(&index.to_le_bytes());
+        bytes
+    };
     assert_eq!(
-        zaino_indexes::NoteFrontier::from_legacy_tree(&legacy_tree(0, |n| [n as u8; 32])),
+        zaino_indexes::NoteFrontier::from_legacy_tree(&legacy_tree(0, leaf, previous, node)),
         Ok(None)
     );
     for size in (1u64..300).chain([65_535, 65_536, 65_537, 1 << 20, (1 << 32) - 1]) {
         let frontier =
-            zaino_indexes::NoteFrontier::from_legacy_tree(&legacy_tree(size, |n| [n as u8; 32]))
+            zaino_indexes::NoteFrontier::from_legacy_tree(&legacy_tree(size, leaf, previous, node))
                 .expect("decodes")
                 .expect("not empty");
         assert_eq!(frontier.position + 1, size, "size {size}");
+        assert_eq!(frontier.leaf, leaf, "size {size}");
         assert_eq!(
             frontier.ommers.len() as u32,
             frontier.position.count_ones(),
             "size {size}"
         );
+        if size % 2 == 0 {
+            assert_eq!(frontier.ommers.first(), Some(&previous), "size {size}");
+        }
     }
 }
 
