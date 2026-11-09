@@ -128,16 +128,16 @@ pub struct Call {
 }
 
 impl NodeFacts {
-    /// A regtest node with no upgrades scheduled and no peers.
+    /// A regtest node on the default schedule, with no peers.
     pub fn regtest() -> Self {
         Self::of(Network::Regtest)
     }
 
-    /// A node on `network` with no upgrades scheduled and no peers.
+    /// A node on `network` on the default schedule, with no peers.
     pub fn of(network: Network) -> Self {
         Self {
             network,
-            upgrades: Vec::new(),
+            upgrades: crate::Activations::default().upgrades(),
             version: 6_000_000,
             build: "mock".to_owned(),
             subversion: "/MockChain:0.1.0/".to_owned(),

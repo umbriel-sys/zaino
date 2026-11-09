@@ -68,16 +68,20 @@ fn height(n: u32) -> Height {
     Height::try_from(n).expect("small heights")
 }
 
-/// Spends every block, notes in both pools, and one block completing the
-/// first Sapling subtree.
+/// Spends, notes in both pools, and the first Sapling subtree completed at
+/// [`SUBTREE_HEIGHT`].
 fn rich() -> MockChain {
     ChainBuilder::new()
         .blocks(4)
-        .block(BlockSpec::spends(3).notes(ShieldedPool::Sapling, 70_000))
+        .block(BlockSpec::spends(3))
+        .notes(ShieldedPool::Sapling, 66_000)
         .block(BlockSpec::spends(2).notes(ShieldedPool::Orchard, 5))
         .blocks(3)
         .build()
 }
+
+/// 2,000 notes a block from height 6: 65,536 reached at 38.
+const SUBTREE_HEIGHT: u32 = 38;
 
 fn miner() -> String {
     crate::address_of(&MINER_SCRIPT, Network::Regtest).expect("a P2PKH script")
@@ -142,7 +146,68 @@ async fn a_completed_subtree_is_served_at_its_block() {
         .await
         .expect("answered");
     assert_eq!(roots.len(), 1);
-    assert_eq!(roots[0].end_height, height(5));
+    assert_eq!(roots[0].end_height, height(SUBTREE_HEIGHT));
+}
+
+/// Every block shape the builder makes, re-parsed at `Full`, is the block it
+/// built: zebra's parse agrees with ours on every format (v1, v3, v4, v5,
+/// v6), every coinbase height encoding, spends, and full blocks.
+#[test]
+fn every_block_shape_passes_full_verification() {
+    use crate::{Activations, Upgrade, ACTIONS_PER_BLOCK, SAPLING_PER_BLOCK};
+    use zaino_source_zcash_rpc::{parse_block, BlockVerification};
+
+    let activations = Activations::none()
+        .at(Upgrade::Overwinter, 2)
+        .at(Upgrade::Sapling, 3)
+        .at(Upgrade::Nu5, 4)
+        .at(Upgrade::Nu6_3, 5);
+    let blocks = ChainBuilder::with(crate::NodeFacts::regtest(), activations)
+        .blocks(2)
+        .block(BlockSpec::spends(2).notes(ShieldedPool::Sapling, 3))
+        .block(
+            BlockSpec::spends(3)
+                .notes(ShieldedPool::Sapling, 2)
+                .notes(ShieldedPool::Orchard, 2),
+        )
+        .block(BlockSpec::spends(1).notes(ShieldedPool::Ironwood, 2))
+        .blocks(260)
+        .block(BlockSpec::default().notes(ShieldedPool::Sapling, SAPLING_PER_BLOCK))
+        .block(BlockSpec::default().notes(ShieldedPool::Orchard, ACTIONS_PER_BLOCK))
+        .block(BlockSpec::default().notes(ShieldedPool::Ironwood, ACTIONS_PER_BLOCK))
+        .into_blocks();
+    for built in &blocks {
+        let raw = built.raw.as_ref().expect("every built block has bytes");
+        let full = parse_block(
+            &raw.block,
+            built.block.chain_metadata.clone(),
+            BlockVerification::Full,
+        )
+        .unwrap_or_else(|error| panic!("height {}: {error}", built.height()));
+        assert_eq!(full, built.block, "height {}", built.height());
+        assert_eq!(built.size, raw.block.len() as u64);
+    }
+    let version = |at: usize, tx: usize| {
+        let bytes = &blocks[at].raw.as_ref().expect("bytes").transactions[tx];
+        u32::from_le_bytes(bytes[..4].try_into().expect("a version")) & 0x7fff_ffff
+    };
+    let formats: Vec<u32> = (0..=4).map(|at| version(at, 0)).collect();
+    assert_eq!(formats, [1, 1, 3, 4, 5], "coinbase formats by height");
+    assert_eq!(version(5, 2), 6, "the Ironwood transaction is v6");
+}
+
+/// A spec over a block's bytes is refused, not silently split.
+#[test]
+#[should_panic(expected = "exceeds MAX_BLOCK_BYTES")]
+fn an_oversized_block_is_refused() {
+    ChainBuilder::new().block(BlockSpec::default().notes(ShieldedPool::Sapling, 3_000));
+}
+
+/// Notes in a pool before it activates are refused.
+#[test]
+#[should_panic(expected = "before the pool activates")]
+fn notes_before_their_pool_are_refused() {
+    ChainBuilder::new().block(BlockSpec::default().notes(ShieldedPool::Ironwood, 1));
 }
 
 /// The synthetic treestate of every size decodes, through the real legacy

@@ -80,7 +80,7 @@ const MIN_COINBASE_SCRIPT_LEN: usize = 2;
 const MAX_COINBASE_SCRIPT_LEN: usize = 100;
 
 /// The genesis coinbase script, which predates BIP 34 and carries no height.
-const GENESIS_COINBASE_SCRIPT_SIG: [u8; 77] = [
+pub const GENESIS_COINBASE_SCRIPT_SIG: [u8; 77] = [
     4, 255, 255, 7, 31, 1, 4, 69, 90, 99, 97, 115, 104, 48, 98, 57, 99, 52, 101, 101, 102, 56, 98,
     55, 99, 99, 52, 49, 55, 101, 101, 53, 48, 48, 49, 101, 51, 53, 48, 48, 57, 56, 52, 98, 54, 102,
     101, 97, 51, 53, 54, 56, 51, 97, 55, 99, 97, 99, 49, 52, 49, 97, 48, 52, 51, 99, 52, 50, 48,
@@ -89,7 +89,7 @@ const GENESIS_COINBASE_SCRIPT_SIG: [u8; 77] = [
 
 /// Errors from [`parse_block`].
 #[derive(Debug, Clone, thiserror::Error)]
-pub(crate) enum RawBlockError {
+pub enum RawBlockError {
     /// Input ended inside a field.
     #[error("truncated: {needed} bytes needed at offset {offset}")]
     Truncated {
@@ -217,7 +217,7 @@ pub enum BlockVerification {
 /// Parse a zcash-serialized block.
 ///
 /// `chain_metadata` is indexed state, not block data, so the caller supplies it.
-pub(crate) fn parse_block(
+pub fn parse_block(
     bytes: &[u8],
     chain_metadata: ChainMetadata,
     verification: BlockVerification,
@@ -244,7 +244,7 @@ fn upstream(bytes: &[u8], chain_metadata: ChainMetadata) -> Result<Block, RawBlo
 
 /// The bitcoin-style merkle root of `txids`: pairs hashed with SHA-256d, an
 /// odd level's last node paired with itself.
-fn merkle_root(txids: Vec<[u8; 32]>) -> [u8; 32] {
+pub fn merkle_root(txids: Vec<[u8; 32]>) -> [u8; 32] {
     let mut level = txids;
     while level.len() > 1 {
         level = level

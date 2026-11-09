@@ -52,6 +52,11 @@ diagnosing one:
 
 Neither level checks proofs, signatures or consensus rules.
 
+The parser is public for other crates reading consensus bytes:
+`parse_block(bytes, chain_metadata, verification)`, `merkle_root(txids)` and
+`GENESIS_COINBASE_SCRIPT_SIG` (the one coinbase without a BIP 34 height).
+`zaino-source-mock` builds its blocks through it.
+
 ## Error classification: the part that matters
 
 Every method must decide whether a validator's error reply is an *answer*

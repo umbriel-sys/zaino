@@ -8,7 +8,7 @@ use zaino_indexes::IndexId;
 use zaino_persistence::{in_memory::InMemoryStorage, Identity, SchemaDigest, Storage as _};
 use zaino_primitives::types::{BlockRef, Height, Network, ShieldedPool};
 use zaino_source::FailureMode;
-use zaino_source_mock::{next_block, Activations, BlockSpec, ChainBuilder, MockChain};
+use zaino_source_mock::{next_block, Activations, BlockSpec, ChainBuilder, MockBlock, MockChain};
 
 use crate::config::{ChainStoreServiceConfig, IndexesConfig, OnCorruption};
 use crate::metadata::{self, Metadata};
@@ -47,7 +47,8 @@ fn config(enable: &[IndexId]) -> ChainStoreServiceConfig {
 fn chain() -> MockChain {
     ChainBuilder::new()
         .blocks(3)
-        .block(BlockSpec::spends(2).notes(ShieldedPool::Sapling, 70_000))
+        .block(BlockSpec::spends(2))
+        .notes(ShieldedPool::Sapling, 66_000)
         .block(BlockSpec::spends(1).notes(ShieldedPool::Orchard, 3))
         .blocks(2)
         .build()
@@ -267,23 +268,8 @@ async fn a_tip_the_validator_does_not_have_is_rebuilt() {
             .expect("boots");
         store.build_to(tip_of(&chain).height).await.expect("builds");
     }
-    let parent = chain.block_at(3).expect("loaded");
-    let activations = Activations::default();
     // a different chain of the same height: the stored tip's height, another block
-    let mut branch = vec![next_block(
-        Some(&parent),
-        &activations,
-        BlockSpec::spends(1).seeded(7),
-    )];
-    while branch.len() < 4 {
-        let last = branch.last().expect("seeded");
-        branch.push(next_block(
-            Some(last),
-            &activations,
-            BlockSpec::spends(1).seeded(7),
-        ));
-    }
-    chain.reorg(4, branch);
+    reorg_from_4(&chain, 7);
     let store = boot(&config(&PLAIN), &storage, &chain)
         .await
         .expect("reboots");
@@ -371,6 +357,22 @@ async fn a_failed_fetch_leaves_the_store_consistent_and_a_retry_finishes() {
     assert_eq!(store.subscribe_watermark().borrow().tip, Some(tip));
 }
 
+/// Replaces the served chain from height 4 with a `seed` branch reaching the
+/// same tip height.
+fn reorg_from_4(chain: &MockChain, seed: u64) {
+    let top = u32::from(chain.tip().expect("loaded").height());
+    let mut branch: Vec<MockBlock> = Vec::new();
+    for _ in 4..=top {
+        let parent = branch.last().cloned().or_else(|| chain.block_at(3));
+        branch.push(next_block(
+            parent.as_ref(),
+            &Activations::default(),
+            BlockSpec::spends(1).seeded(seed),
+        ));
+    }
+    chain.reorg(4, branch);
+}
+
 /// A store built past the validator's tip boots, holds those indexes back
 /// (not served), and checks them once the validator reaches them.
 async fn built_then_behind() -> (InMemoryStorage, MockChain, BlockRef) {
@@ -405,7 +407,7 @@ async fn a_validator_behind_holds_the_indexes_until_it_catches_up() {
         .await
         .expect("nothing to build yet");
     assert_eq!(store.subscribe_watermark().borrow().tip, None, "still held");
-    chain.mine(10);
+    chain.mine(u32::MAX);
     let fetched = chain.calls("get_block");
     store
         .build_to(tip.height)
@@ -426,27 +428,12 @@ async fn a_validator_behind_holds_the_indexes_until_it_catches_up() {
 #[tokio::test]
 async fn a_validator_behind_on_another_chain_rebuilds_once_it_catches_up() {
     let (storage, chain, _) = built_then_behind().await;
-    let parent = chain.block_at(3).expect("loaded");
-    let activations = Activations::default();
-    let mut branch = vec![next_block(
-        Some(&parent),
-        &activations,
-        BlockSpec::spends(1).seeded(5),
-    )];
-    while branch.len() < 4 {
-        let last = branch.last().expect("seeded");
-        branch.push(next_block(
-            Some(last),
-            &activations,
-            BlockSpec::spends(1).seeded(5),
-        ));
-    }
-    chain.reorg(4, branch);
+    reorg_from_4(&chain, 5);
     chain.serve_to(4);
     let store = boot(&config(&PLAIN), &storage, &chain)
         .await
         .expect("boots behind");
-    chain.mine(10);
+    chain.mine(u32::MAX);
     let tip = tip_of(&chain);
     store
         .build_to(tip.height)

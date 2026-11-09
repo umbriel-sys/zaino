@@ -1,24 +1,29 @@
-//! Synthetic chains: deterministic, any shape a test needs, built in
-//! microseconds.
+//! Synthetic chains: deterministic, any shape a test needs.
 //!
-//! Every hash is BLAKE2b of what it names, so the same specs always give the
-//! same chain, and a [`BlockSpec::seed`] tells two branches apart. Each
-//! coinbase pays [`FAN`] outputs; a block's transparent spends spend its
-//! parent's coinbase outputs, so spends are valid on every branch. Shielded
-//! notes are counted, never decryptable: roots, tree sizes, treestates (in
-//! zcashd's legacy encoding) and completed subtrees agree with the counts.
+//! Every block is encoded to consensus bytes in the format its height's
+//! upgrade requires, and its domain [`Block`] is parsed from those bytes by
+//! the raw parser at [`BlockVerification::Light`]: txids, merkle root and
+//! hash are real. The mock's tests check every block shape at
+//! [`BlockVerification::Full`], where zebra's parse must agree; building at
+//! `Full` costs ~24x. Each coinbase pays [`FAN`]
+//! outputs; a block's transparent spends spend its parent's coinbase
+//! outputs, so spends are valid on every branch; a [`BlockSpec::seed`] tells
+//! two branches apart. Shielded notes are never decryptable, and commitment
+//! roots, tree sizes, treestates (in zcashd's legacy encoding) and completed
+//! subtrees are synthetic but agree with the notes. `block_commitments` is a
+//! tag.
 
 use blake2::{digest::consts::U32, Blake2b, Digest as _};
 use zaino_primitives::types::{
-    Block, BlockCommitments, BlockHash, BlockHeader, ChainMetadata, CompactCiphertext,
-    CompactDifficulty, EphemeralKey, EquihashSolution, Height, MerkleRoot, NoteCommitment,
-    Nullifier, OrchardAction, OrchardData, PoolTreestate, SaplingData, SaplingOutput, Script,
-    ShieldedPool, SubtreeRoot, Transaction, TransactionId, TransparentData, TransparentInput,
-    TransparentOutput, TreeRoot, TreeRootInfo, TreeRoots, TreeSize, Zatoshis,
+    ChainMetadata, Height, PoolTreestate, ShieldedPool, SubtreeRoot, TreeRoot, TreeRootInfo,
+    TreeRoots, TreeSize,
 };
+use zaino_source_zcash_rpc::{merkle_root, parse_block, BlockVerification};
 
-use crate::block::{MockBlock, PoolTrees};
+use crate::block::{MockBlock, PoolTrees, RawBlock};
 use crate::chain::{MockChain, NodeFacts};
+use crate::encode::{self, Action, Input, Note, Output, Tx};
+use crate::schedule::Activations;
 
 /// Outputs each coinbase pays: the most transparent spends a block can make.
 pub const FAN: u32 = 8;
@@ -28,6 +33,10 @@ pub const COINBASE_OUTPUT: u64 = 100_000;
 pub const MINER_SCRIPT: [u8; 25] = p2pkh([0x11; 20]);
 /// The script every spend pays (P2PKH, key hash `0x22..`).
 pub const RECIPIENT_SCRIPT: [u8; 25] = p2pkh([0x22; 20]);
+/// The most Sapling outputs one block holds.
+pub const SAPLING_PER_BLOCK: u32 = 2_000;
+/// The most Orchard-shaped actions one block holds.
+pub const ACTIONS_PER_BLOCK: u32 = 600;
 
 const LEAVES_PER_SUBTREE: u64 = 1 << 16;
 /// Regtest's minimum difficulty.
@@ -98,28 +107,6 @@ impl BlockSpec {
     }
 }
 
-/// Which pools are active from which height.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct Activations {
-    /// Sapling from this height (`None` = never).
-    pub sapling: Option<u32>,
-    /// Orchard from this height.
-    pub orchard: Option<u32>,
-    /// Ironwood from this height.
-    pub ironwood: Option<u32>,
-}
-
-impl Default for Activations {
-    /// Sapling and Orchard from genesis, no Ironwood.
-    fn default() -> Self {
-        Self {
-            sapling: Some(0),
-            orchard: Some(0),
-            ironwood: None,
-        }
-    }
-}
-
 /// Builds a synthetic chain from genesis.
 #[derive(Debug, Clone)]
 pub struct ChainBuilder {
@@ -135,14 +122,15 @@ impl Default for ChainBuilder {
 }
 
 impl ChainBuilder {
-    /// A regtest chain holding its genesis block.
+    /// A regtest chain on the default schedule, holding its genesis block.
     pub fn new() -> Self {
         Self::with(NodeFacts::regtest(), Activations::default())
     }
 
-    /// A chain for `facts` with pools active per `activations`, holding its
-    /// genesis block.
-    pub fn with(facts: NodeFacts, activations: Activations) -> Self {
+    /// A chain for `facts` on `activations`, which also become the facts'
+    /// reported upgrades, holding its genesis block.
+    pub fn with(mut facts: NodeFacts, activations: Activations) -> Self {
+        facts.upgrades = activations.upgrades();
         let genesis = next_block(None, &activations, BlockSpec::default());
         Self {
             facts,
@@ -163,6 +151,23 @@ impl ChainBuilder {
         (0..count).fold(self, |builder, _| builder.block(BlockSpec::spends(1)))
     }
 
+    /// Appends blocks adding `total` notes to `pool`, as many per block as
+    /// fit.
+    pub fn notes(self, pool: ShieldedPool, total: u32) -> Self {
+        let per_block = match pool {
+            ShieldedPool::Sapling => SAPLING_PER_BLOCK,
+            ShieldedPool::Orchard | ShieldedPool::Ironwood => ACTIONS_PER_BLOCK,
+        };
+        let mut builder = self;
+        let mut left = total;
+        while left > 0 {
+            let count = left.min(per_block);
+            builder = builder.block(BlockSpec::default().notes(pool, count));
+            left = left.saturating_sub(count);
+        }
+        builder
+    }
+
     /// The blocks so far.
     pub fn into_blocks(self) -> Vec<MockBlock> {
         self.blocks
@@ -175,92 +180,95 @@ impl ChainBuilder {
 }
 
 /// The block holding `spec` on top of `parent` (`None` = genesis).
+///
+/// # Panics
+///
+/// On a spec the chain cannot hold: notes in a pool not yet active, or more
+/// than a block's bytes allow (spread them with [`ChainBuilder::notes`]).
 pub fn next_block(
     parent: Option<&MockBlock>,
     activations: &Activations,
     spec: BlockSpec,
 ) -> MockBlock {
     let height = parent.map_or(0, |parent| u32::from(parent.height()).saturating_add(1));
-    let prev_hash = parent.map_or(BlockHash::from([0; 32]), MockBlock::hash);
-    let parent_bytes = <[u8; 32]>::from(prev_hash);
+    let prev_hash = parent.map_or([0; 32], |parent| <[u8; 32]>::from(parent.hash()));
     let tag = |what: &str, n: u64| {
         hash(&[
             what.as_bytes(),
-            &parent_bytes,
+            &prev_hash,
             &height.to_le_bytes(),
             &spec.seed.to_le_bytes(),
             &n.to_le_bytes(),
         ])
     };
-
-    let coinbase = Transaction {
-        txid: TransactionId::from(tag("coinbase", 0)),
-        transparent: TransparentData {
-            inputs: Vec::new(),
-            outputs: (0..FAN)
-                .map(|_| TransparentOutput {
-                    value: zatoshis(COINBASE_OUTPUT),
-                    script: Script::new(MINER_SCRIPT.to_vec()),
-                })
-                .collect(),
-        },
-        sapling: SaplingData::default(),
-        orchard: OrchardData::default(),
-        ironwood: OrchardData::default(),
+    let added = [spec.sapling, spec.orchard, spec.ironwood];
+    for (pool, count) in ShieldedPool::ALL.into_iter().zip(added) {
+        if count > 0 && !activations.active(pool, height) {
+            panic!("{count} {pool} notes at height {height}, before the pool activates");
+        }
+    }
+    let commitment = |pool: ShieldedPool, n: u32| {
+        encode::field(tag(&format!("{pool} commitment"), u64::from(n)))
     };
-    let mut transactions = vec![coinbase];
-    let parent_coinbase = parent.and_then(|parent| parent.block.transactions().first());
-    if let Some(funding) = parent_coinbase {
+
+    let mut transactions = vec![Tx {
+        inputs: vec![Input {
+            prev_txid: [0; 32],
+            prev_index: u32::MAX,
+            script: encode::coinbase_script(height, spec.seed),
+            sequence: u32::MAX,
+        }],
+        outputs: (0..FAN)
+            .map(|_| Output {
+                value: COINBASE_OUTPUT,
+                script: MINER_SCRIPT.to_vec(),
+            })
+            .collect(),
+        expiry: height,
+        ..Tx::empty()
+    }];
+    if let Some(funding) = parent.and_then(|parent| parent.block.transactions().first()) {
         for output in 0..spec.spends.min(FAN) {
-            transactions.push(Transaction {
-                txid: TransactionId::from(tag("spend", u64::from(output))),
-                transparent: TransparentData {
-                    inputs: vec![TransparentInput {
-                        prev_txid: funding.txid,
-                        prev_index: output,
-                    }],
-                    outputs: vec![TransparentOutput {
-                        value: zatoshis(COINBASE_OUTPUT - 1_000),
-                        script: Script::new(RECIPIENT_SCRIPT.to_vec()),
-                    }],
-                },
-                sapling: SaplingData::default(),
-                orchard: OrchardData::default(),
-                ironwood: OrchardData::default(),
+            transactions.push(Tx {
+                inputs: vec![Input {
+                    prev_txid: <[u8; 32]>::from(funding.txid),
+                    prev_index: output,
+                    script: P2PKH_SCRIPT_SIG.to_vec(),
+                    // the seed tells a sibling branch's spend apart
+                    sequence: u32::MAX.wrapping_sub(spec.seed as u32),
+                }],
+                outputs: vec![Output {
+                    value: COINBASE_OUTPUT.saturating_sub(1_000),
+                    script: RECIPIENT_SCRIPT.to_vec(),
+                }],
+                ..Tx::empty()
             });
         }
     }
-
-    let mut shielded = Transaction {
-        txid: TransactionId::from(tag("shielded", 0)),
-        transparent: TransparentData::default(),
-        sapling: SaplingData::default(),
-        orchard: OrchardData::default(),
-        ironwood: OrchardData::default(),
-    };
-    let note = |pool: &str, n: u32| tag(pool, u64::from(n));
-    shielded.sapling.outputs = (0..spec.sapling)
-        .map(|n| SaplingOutput {
-            cmu: NoteCommitment::from(note("sapling cmu", n)),
-            ephemeral_key: EphemeralKey::from(note("sapling epk", n)),
-            enc_ciphertext: CompactCiphertext::from([0x5a; 52]),
-        })
-        .collect();
-    let actions = |pool: &str, count: u32| -> Vec<OrchardAction> {
+    let actions = |pool: ShieldedPool, count: u32| -> Vec<Action> {
         (0..count)
-            .map(|n| OrchardAction {
-                nullifier: Nullifier::from(note(&format!("{pool} nf"), n)),
-                cmx: NoteCommitment::from(note(&format!("{pool} cmx"), n)),
-                ephemeral_key: EphemeralKey::from(note(&format!("{pool} epk"), n)),
-                enc_ciphertext: CompactCiphertext::from([0xa5; 52]),
+            .map(|n| Action {
+                nullifier: encode::field(tag(&format!("{pool} nullifier"), u64::from(n))),
+                note: Note {
+                    cm: commitment(pool, n),
+                    index: n as usize,
+                },
             })
             .collect()
     };
-    shielded.orchard.actions = actions("orchard", spec.orchard);
-    shielded.ironwood.actions = actions("ironwood", spec.ironwood);
-    let added = [spec.sapling, spec.orchard, spec.ironwood];
     if added.iter().any(|count| *count > 0) {
-        transactions.push(shielded);
+        transactions.push(Tx {
+            sapling: (0..spec.sapling)
+                .map(|n| Note {
+                    cm: commitment(ShieldedPool::Sapling, n),
+                    index: n as usize,
+                })
+                .collect(),
+            orchard: actions(ShieldedPool::Orchard, spec.orchard),
+            ironwood: actions(ShieldedPool::Ironwood, spec.ironwood),
+            anchor: encode::field(tag("anchor", 0)),
+            ..Tx::empty()
+        });
     }
 
     let mut tree_roots = TreeRoots {
@@ -271,21 +279,15 @@ pub fn next_block(
     let mut trees = PoolTrees::default();
     let mut subtrees = Vec::new();
     for (pool, count) in ShieldedPool::ALL.into_iter().zip(added) {
-        let from = match pool {
-            ShieldedPool::Sapling => activations.sapling,
-            ShieldedPool::Orchard => activations.orchard,
-            ShieldedPool::Ironwood => activations.ironwood,
-        };
-        if from.is_none_or(|from| height < from) {
+        if !activations.active(pool, height) {
             continue;
         }
         let before = parent
             .and_then(|parent| pool_size(&parent.tree_roots, pool))
             .unwrap_or(0);
         let size = before.saturating_add(u64::from(count));
-        let root = TreeRoot::from(tag(&format!("{pool} root"), size));
         let info = TreeRootInfo {
-            root,
+            root: TreeRoot::from(tag(&format!("{pool} root"), size)),
             size: TreeSize::try_from(size).unwrap_or(TreeSize::ZERO),
         };
         let parent_tree = parent.and_then(|parent| match pool {
@@ -296,15 +298,13 @@ pub fn next_block(
         let parent_leaf = parent_tree
             .and_then(|tree| last_leaf(&tree.final_state))
             .unwrap_or([0; 32]);
-        let commitment = |n: u32| match pool {
-            ShieldedPool::Sapling => note("sapling cmu", n),
-            ShieldedPool::Orchard => note("orchard cmx", n),
-            ShieldedPool::Ironwood => note("ironwood cmx", n),
-        };
         let (leaf, previous) = match count {
             0 => (parent_leaf, [0; 32]),
-            1 => (commitment(0), parent_leaf),
-            n => (commitment(n - 1), commitment(n - 2)),
+            1 => (commitment(pool, 0), parent_leaf),
+            n => (
+                commitment(pool, n.saturating_sub(1)),
+                commitment(pool, n.saturating_sub(2)),
+            ),
         };
         let final_state = match (count, parent_tree) {
             // nothing added: the parent's tree as it was
@@ -344,42 +344,83 @@ pub fn next_block(
             ));
         }
     }
-
     let size = |pool| {
         pool_size(&tree_roots, pool)
             .and_then(|size| TreeSize::try_from(size).ok())
             .unwrap_or(TreeSize::ZERO)
     };
-    let header = BlockHeader {
-        hash: BlockHash::from(tag("block", 0)),
-        version: 4,
-        prev_hash,
-        height: Height::try_from(height).unwrap_or(Height::GENESIS),
-        time: GENESIS_TIME.saturating_add(height.saturating_mul(75)),
-        merkle_root: MerkleRoot::from(tag("merkle", 0)),
-        block_commitments: BlockCommitments::from([0; 32]),
-        bits: CompactDifficulty::try_from_bits(REGTEST_BITS)
-            .unwrap_or_else(|_| panic!("regtest bits are valid")),
-        nonce: tag("nonce", 0),
-        solution: EquihashSolution::Regtest([0; 36]),
+    let metadata = ChainMetadata {
+        sapling_tree_size: size(ShieldedPool::Sapling),
+        orchard_tree_size: size(ShieldedPool::Orchard),
+        ironwood_tree_size: size(ShieldedPool::Ironwood),
     };
-    let block = Block::try_new(
-        header,
-        transactions,
-        ChainMetadata {
-            sapling_tree_size: size(ShieldedPool::Sapling),
-            orchard_tree_size: size(ShieldedPool::Orchard),
-            ironwood_tree_size: size(ShieldedPool::Ironwood),
-        },
-    )
-    .unwrap_or_else(|_| panic!("a block always holds its coinbase"));
+
+    let upgrade = activations.in_force(height);
+    let encoded: Vec<Vec<u8>> = transactions
+        .iter()
+        .map(|tx| encode::transaction(tx, upgrade))
+        .collect();
+    let mut header = encode::Header {
+        prev_hash,
+        merkle_root: [0; 32],
+        block_commitments: tag("block commitments", 0),
+        time: GENESIS_TIME.saturating_add(height.saturating_mul(75)),
+        bits: REGTEST_BITS,
+        nonce: tag("nonce", 0),
+    };
+    let provisional = encode::block(&encode::header(&header), &encoded);
+    if provisional.len() as u64 > zaino_consensus::MAX_BLOCK_BYTES {
+        panic!(
+            "a block of {} bytes at height {height} exceeds MAX_BLOCK_BYTES; spread notes with \
+             ChainBuilder::notes",
+            provisional.len()
+        );
+    }
+    let txids = parse_block(&provisional, metadata.clone(), BlockVerification::Off)
+        .unwrap_or_else(|error| panic!("the builder encoded an unparsable block: {error}"))
+        .transactions()
+        .iter()
+        .map(|tx| <[u8; 32]>::from(tx.txid))
+        .collect();
+    header.merkle_root = merkle_root(txids);
+    let header = encode::header(&header);
+    let bytes = encode::block(&header, &encoded);
+    let block = parse_block(&bytes, metadata, BlockVerification::Light)
+        .unwrap_or_else(|error| panic!("the builder encoded an invalid block: {error}"));
     MockBlock {
-        size: estimated_size(&block),
+        size: bytes.len() as u64,
         block,
         tree_roots,
         trees,
         subtrees,
-        raw: None,
+        raw: Some(RawBlock {
+            block: bytes,
+            header,
+            transactions: encoded,
+        }),
+    }
+}
+
+/// A P2PKH spend's shape: a 71-byte signature push, a 33-byte key push.
+const P2PKH_SCRIPT_SIG: [u8; 106] = {
+    let mut script = [0x30_u8; 106];
+    script[0] = 71;
+    script[72] = 33;
+    script[73] = 0x02;
+    script
+};
+
+impl Tx {
+    fn empty() -> Self {
+        Self {
+            inputs: Vec::new(),
+            outputs: Vec::new(),
+            expiry: 0,
+            sapling: Vec::new(),
+            orchard: Vec::new(),
+            ironwood: Vec::new(),
+            anchor: [0; 32],
+        }
     }
 }
 
@@ -436,22 +477,6 @@ fn last_leaf(bytes: &[u8]) -> Option<[u8; 32]> {
     }
 }
 
-/// A synthetic block's size: its parts at their encoded widths (header with
-/// a regtest solution, inputs, outputs, Sapling outputs, actions).
-fn estimated_size(block: &Block) -> u64 {
-    let parts: usize = block
-        .transactions()
-        .iter()
-        .map(|tx| {
-            20 + 41 * tx.transparent.inputs.len()
-                + 34 * tx.transparent.outputs.len()
-                + 948 * tx.sapling.outputs.len()
-                + 820 * (tx.orchard.actions.len() + tx.ironwood.actions.len())
-        })
-        .sum();
-    u64::try_from(177 + parts).unwrap_or(u64::MAX)
-}
-
 fn pool_size(roots: &TreeRoots, pool: ShieldedPool) -> Option<u64> {
     let info = match pool {
         ShieldedPool::Sapling => roots.sapling.as_ref(),
@@ -459,10 +484,6 @@ fn pool_size(roots: &TreeRoots, pool: ShieldedPool) -> Option<u64> {
         ShieldedPool::Ironwood => roots.ironwood.as_ref(),
     }?;
     Some(u64::from(info.size.get()))
-}
-
-fn zatoshis(value: u64) -> Zatoshis {
-    Zatoshis::new(value).unwrap_or_else(|_| panic!("{value} zatoshis is in range"))
 }
 
 fn hash(parts: &[&[u8]]) -> [u8; 32] {

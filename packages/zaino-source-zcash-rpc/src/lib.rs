@@ -10,4 +10,6 @@ mod parse;
 mod raw_block;
 
 pub use adapter::{Quirks, ZcashRpcAdapter};
-pub use raw_block::BlockVerification;
+pub use raw_block::{
+    merkle_root, parse_block, BlockVerification, RawBlockError, GENESIS_COINBASE_SCRIPT_SIG,
+};

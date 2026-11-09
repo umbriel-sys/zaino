@@ -6,23 +6,36 @@ does (D-88). Add it as a dev-dependency; never hand-roll a source.
 
 ## A chain
 
-`ChainBuilder` builds synthetic chains in microseconds, the same specs always
-giving the same chain:
+`ChainBuilder` builds synthetic chains, the same specs always giving the same
+chain:
 
 ```rust,ignore
-let chain = ChainBuilder::new()           // regtest, genesis, Sapling + Orchard from genesis
+let chain = ChainBuilder::new()           // regtest, upgrades through NU6.2 at height 1
     .blocks(4)                            // each spends one parent coinbase output
-    .block(BlockSpec::spends(3).notes(ShieldedPool::Sapling, 70_000))
+    .block(BlockSpec::spends(3).notes(ShieldedPool::Orchard, 5))
+    .notes(ShieldedPool::Sapling, 66_000) // as many per block as fit
     .build();
 ```
 
+Every block is real consensus bytes (`MockBlock::raw`) in the format its
+height's upgrade requires (v1, v3, v4, v5, v6), and its domain block is
+parsed from them: txids, merkle roots and hashes are real. The builder parses
+at `Light`; the mock's own tests check every block shape at `Full` against
+zebra. One schedule, `Activations` (network-upgrade heights), sets the
+formats, branch ids and active pools, and `ChainBuilder::with` reports it as
+`NodeFacts.upgrades`.
+
+A spec a chain cannot hold panics: notes in a pool not yet active, or more
+than a block's 2 MB (`SAPLING_PER_BLOCK`, `ACTIONS_PER_BLOCK`); spread notes
+with `ChainBuilder::notes`.
+
 Each coinbase pays `FAN` outputs to `MINER_SCRIPT`; a block's spends pay
 `RECIPIENT_SCRIPT` from its parent's coinbase, so spends are valid on every
-branch. Shielded notes are counted: roots, tree sizes, treestates (zcashd's
-legacy encoding) and completed subtrees agree with the counts.
-`BlockSpec::seeded` gives a branch distinct hashes; `next_block` builds one
-block on any parent. `NodeFacts` holds what a node reports about itself
-(network, schedule, version, peers, fees, subsidy).
+branch. Commitment roots, tree sizes, treestates (zcashd's legacy encoding)
+and completed subtrees are synthetic but agree with the notes;
+`block_commitments` is a tag. `BlockSpec::seeded` gives a branch distinct
+hashes; `next_block` builds one block on any parent. `NodeFacts` holds what a
+node reports about itself (network, schedule, version, peers, fees, subsidy).
 
 ## Driving it
 
@@ -46,7 +59,8 @@ another:
 - `peak_in_flight()`: the most calls ever in flight at once. Each call yields
   once before answering, so concurrent calls overlap.
 
-Raw-byte ports answer only for blocks carrying their bytes (`MockBlock::raw`).
+Raw-byte ports answer only for blocks carrying their bytes (`MockBlock::raw`):
+every built block does; a hand-made `MockBlock` may not.
 
 ## The contract
 

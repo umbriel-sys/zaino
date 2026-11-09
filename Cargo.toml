@@ -223,7 +223,8 @@ zaino-chain-store = { path = "packages/zaino-chain-store", version = "0.1.1" }
 # chain store. Consumers depend on the ports; this is what a deployment picks.
 zaino-chain-store-zainodb = { path = "packages/zaino-chain-store-zainodb", version = "0.2.0" }
 # The new chain store runtime: a configurable set of indexes over any Storage.
-zaino-chain-store-service = { path = "packages/zaino-chain-store-service", version = "0.1.0" }# ChainView: the unified chain read surface, composed from the two tiers above
+zaino-chain-store-service = { path = "packages/zaino-chain-store-service", version = "0.1.0" }
+# ChainView: the unified chain read surface, composed from the two tiers above
 # and validator passthrough. Unlike the subsystems it composes, this is one
 # crate rather than a domain/adapter pair — the composer is generic over the
 # ports either side, so it names no implementation and can sit beside the
