@@ -555,7 +555,7 @@ mod tests {
                 enc_ciphertext: CompactCiphertext::from([2; 52]),
             })
             .collect();
-        let shielded = FoldTx::try_new(compact, Default::default(), Vec::new()).expect("tx");
+        let shielded = FoldTx::try_new(compact, Default::default(), Some(Vec::new())).expect("tx");
         let subtrees = ((before >> 16)..(after >> 16))
             .map(|index| CompletedSubtree {
                 pool: ShieldedPool::Sapling,

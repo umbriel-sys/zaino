@@ -513,7 +513,7 @@ fn fee(tx: &FoldTx) -> Result<Zatoshis, FoldError> {
         .try_fold(0i128, |total, balance: SignedZatoshis| {
             total.checked_add(i128::from(balance.as_i64()))
         });
-    let total = sum(tx.prevouts())
+    let total = sum(tx.resolved_prevouts(NAME)?)
         .zip(sum(&tx.compact().transparent_outputs))
         .and_then(|(inputs, outputs)| inputs.checked_sub(outputs))
         .zip(shielded)
@@ -592,7 +592,7 @@ mod tests {
             value: zats(spent),
             script: Script::from(vec![]),
         }];
-        FoldTx::try_new(compact, balances, prevouts).expect("paired")
+        FoldTx::try_new(compact, balances, Some(prevouts)).expect("paired")
     }
 
     /// Layouts, fees and every column read back per height; positions run

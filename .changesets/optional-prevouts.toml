@@ -1,0 +1,8 @@
+[[changes]]
+crate = "zaino-indexes"
+kind = "breaking"
+description = """
+`FoldTx` prevouts are optional (`None` = not resolved), so a set with no \
+index building from I-03 + I-04 resolves nothing; I-05, I-10 and I-11 refuse \
+an unresolved block as `FoldError::Unresolved`.
+"""

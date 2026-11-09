@@ -164,7 +164,8 @@ impl Index for TxOutSet {
         };
         for tx in txs {
             let compact = tx.compact();
-            for (input, prevout) in compact.transparent_inputs.iter().zip(tx.prevouts()) {
+            let prevouts = tx.resolved_prevouts(NAME)?;
+            for (input, prevout) in compact.transparent_inputs.iter().zip(prevouts) {
                 let script = prevout.script.as_bytes();
                 if is_unspendable(script) {
                     continue;
@@ -378,7 +379,7 @@ mod tests {
             .collect();
         compact.transparent_outputs = outputs;
         let prevouts = spends.into_iter().map(|(_, output)| output).collect();
-        FoldTx::try_new(compact, PoolBalances::default(), prevouts).expect("paired")
+        FoldTx::try_new(compact, PoolBalances::default(), Some(prevouts)).expect("paired")
     }
 
     /// The set recomputed from scratch, as zcashd defines it.

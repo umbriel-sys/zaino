@@ -91,8 +91,8 @@ A fold is pure: it reads nothing. Its input is a `FoldBlock`, the crate's
 own block vocabulary, built only through `FoldBlock::try_new(FoldBlockParts)`
 and `FoldTx::try_new` (or `FoldTx::from_transaction` from a parsed
 transaction), which refuse a block without a coinbase, a coinbase that
-spends, prevouts that do not pair one-to-one with a transaction's
-transparent inputs, and frontiers or completed subtrees that disagree with
+spends, prevouts that (where given) do not pair one-to-one with a
+transaction's transparent inputs, and frontiers or completed subtrees that disagree with
 the block's tree sizes. Beside its transactions a `FoldBlock` carries its
 consensus branch (`zaino_primitives::types::branch_at` over the validator's
 schedule, so every historic block has the branch it was mined under), its
@@ -100,7 +100,9 @@ tree roots, the frontier of each pool it changed and the subtrees it
 completed. `NoteFrontier::from_legacy_tree` reads a frontier from zcashd's
 legacy `CommitmentTree` encoding (`z_gettreestate`'s `finalState`, zebra's
 `to_rpc_bytes`), which both source backends answer treestates in, without
-hashing. Whoever folds resolves the prevouts first: the chain
+hashing. Prevouts are `None` unless resolved; only an index building from
+I-03 and I-04 reads them, and refuses an unresolved block as
+`FoldError::Unresolved`. Whoever folds such an index resolves them first: the chain
 store from its own indexes, the chain head from its window and the store.
 The same fold therefore builds the store and the chain head's branches.
 

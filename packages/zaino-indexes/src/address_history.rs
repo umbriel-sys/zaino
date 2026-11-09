@@ -119,7 +119,7 @@ impl Index for AddressHistory {
         for (tx_index, tx) in (0u32..).zip(txs) {
             let position = BlockTxPosition::new(reference.height, tx_index);
             let received = (0u32..).zip(&tx.compact().transparent_outputs);
-            let spent = (0u32..).zip(tx.prevouts());
+            let spent = (0u32..).zip(tx.resolved_prevouts(NAME)?);
             let events = received
                 .map(|(index, output)| (index, EventKind::Received, output))
                 .chain(spent.map(|(index, prevout)| (index, EventKind::Spent, prevout)));
@@ -282,7 +282,7 @@ mod tests {
             })
             .collect();
         compact.transparent_outputs = outputs;
-        FoldTx::try_new(compact, PoolBalances::default(), spends).expect("paired")
+        FoldTx::try_new(compact, PoolBalances::default(), Some(spends)).expect("paired")
     }
 
     fn key_of(hash: u8) -> TransparentAddressKey {

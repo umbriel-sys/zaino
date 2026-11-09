@@ -175,7 +175,7 @@ mod tests {
                 script: Script::from(vec![]),
             })
             .collect();
-        FoldTx::try_new(compact, PoolBalances::default(), prevouts).expect("paired")
+        FoldTx::try_new(compact, PoolBalances::default(), Some(prevouts)).expect("paired")
     }
 
     fn outpoint(txid: u8, index: u32) -> Outpoint {

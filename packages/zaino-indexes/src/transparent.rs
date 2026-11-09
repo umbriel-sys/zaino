@@ -406,7 +406,7 @@ mod tests {
         let prevouts = inputs.iter().map(|_| out(1, b"p")).collect();
         compact.transparent_inputs = inputs;
         compact.transparent_outputs = outputs;
-        FoldTx::try_new(compact, PoolBalances::default(), prevouts).expect("paired")
+        FoldTx::try_new(compact, PoolBalances::default(), Some(prevouts)).expect("paired")
     }
 
     /// Whole-block and per-output reads return exactly what was folded,

@@ -73,6 +73,13 @@ pub enum FoldError {
     /// A UTXO-set total left its range: a double spend or a misread value.
     #[error("txout set: {0}")]
     TxOutSet(#[from] zaino_primitives::txout_commitment::TxOutSetError),
+    /// The fold reads prevouts the block was built without (the index is
+    /// built only beside its `BUILDS_FROM`).
+    #[error("{index}: prevouts not resolved")]
+    Unresolved {
+        /// The index that needed them.
+        index: &'static str,
+    },
 }
 
 impl FoldError {

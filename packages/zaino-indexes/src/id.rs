@@ -176,6 +176,38 @@ mod tests {
         }
     }
 
+    /// A block whose spend has no resolved prevouts folds into every index
+    /// except those building from I-03 + I-04, which refuse it by name: the
+    /// lists are checked against what the folds read.
+    #[test]
+    fn exactly_the_indexes_building_from_prevouts_need_them() {
+        use zaino_primitives::types::{PoolBalances, TransactionId, TransparentInput};
+
+        use crate::testing::{block, block_with, tx};
+        use crate::{FoldError, FoldTx};
+
+        let mut spend = tx(101).compact().clone();
+        spend.transparent_inputs.push(TransparentInput {
+            prev_txid: TransactionId::from([7; 32]),
+            prev_index: 0,
+        });
+        let unresolved = FoldTx::try_new(spend, PoolBalances::default(), None).expect("unchecked");
+        let next = block_with(1, vec![tx(100), unresolved]);
+        for &id in IndexId::ALL {
+            let genesis = id.fold(None, &block(0)).expect("genesis folds").next;
+            let folded = id.fold(Some(&genesis), &next);
+            match id.builds_from().next() {
+                Some(_) => assert!(
+                    matches!(folded, Err(FoldError::Unresolved { index }) if index == id.name()),
+                    "{}: {:?}",
+                    id.name(),
+                    folded.err()
+                ),
+                None => assert!(folded.is_ok(), "{}: {:?}", id.name(), folded.err()),
+            }
+        }
+    }
+
     #[test]
     fn prevout_readers_build_from_i03_and_i04() {
         let prevouts = [IndexId::TxidLocation, IndexId::Transparent];

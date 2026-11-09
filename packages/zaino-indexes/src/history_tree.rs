@@ -566,7 +566,7 @@ mod tests {
             enc_ciphertext: [4; 52].into(),
         };
         compact.orchard_actions = vec![action; orchard];
-        FoldTx::try_new(compact, Default::default(), Vec::new()).expect("no inputs")
+        FoldTx::try_new(compact, Default::default(), Some(Vec::new())).expect("no inputs")
     }
 
     /// Block `n` under `branch`, every pool active, committing to `commits`.
