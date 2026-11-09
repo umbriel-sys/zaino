@@ -641,16 +641,12 @@ impl zaino_source::OneShotGetAddressTxids for ZebraReadStateAdapter {
 /// which maps an address and height range to the transactions touching it, and
 /// the transactions themselves.
 ///
-/// # What this reports, and what it does not
+/// # What this reports
 ///
-/// Only *receives* (outputs paying a requested address) are reported. A spend
-/// is an input naming a previous output, and the state service does not resolve
-/// that outpoint back to the address and value it paid; recovering spends would
-/// mean fetching every spent transaction as well. the legacy full node reports both, so a
-/// caller comparing against it sees the receive half of each address's history.
-/// This matches the behaviour of the connector this replaced, which built the
-/// same answer through a verbose-transaction shape whose inputs likewise
-/// carried no address.
+/// Both halves, as zcashd's `getaddressdeltas` does: each output paying a
+/// requested address is a credit under the output's index, and each input
+/// spending such an output is a debit (the spent value, negated) under the
+/// input's index. Spends are resolved by fetching each funding transaction once.
 impl zaino_source::OneShotGetAddressDeltas for ZebraReadStateAdapter {
     async fn get_address_deltas(
         &self,
