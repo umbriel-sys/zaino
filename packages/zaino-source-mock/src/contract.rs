@@ -15,8 +15,8 @@ use zaino_primitives::types::{
 use zaino_source::{
     GetAddressBalanceError, GetAddressDeltasError, GetAddressTxidsError, GetAddressUtxosError,
     GetBlockByHashError, GetBlockError, GetCommitmentTreeRootsByHeightError,
-    GetCommitmentTreeRootsError, GetSpentInfoError, GetTransactionError, GetTreestateByHashError,
-    GetTreestateError, QueryError,
+    GetCommitmentTreeRootsError, GetSpentInfoError, GetSubtreeRootsError, GetTransactionError,
+    GetTreestateByHashError, GetTreestateError, QueryError,
 };
 
 /// A broken rule, named.
@@ -239,17 +239,22 @@ where
 }
 
 /// Subtree roots end in ascending order at or below the tip, and `limit`
-/// and `start_index` bound the answer.
+/// and `start_index` bound the answer. Sapling and Orchard are always
+/// answered; Ironwood may be `PoolUnavailable` (zcashd lacks it).
 pub async fn subtrees<S>(source: &S) -> Result<(), Broken>
 where
     S: zaino_source::OneShotGetBestBlockHeight + zaino_source::OneShotGetSubtreeRoots,
 {
     let tip = tip(source).await?;
-    for pool in [ShieldedPool::Sapling, ShieldedPool::Orchard] {
-        let all = answered(
-            "subtree roots",
-            source.get_subtree_roots(pool, 0, None).await,
-        )?;
+    for pool in ShieldedPool::ALL {
+        let all = match source.get_subtree_roots(pool, 0, None).await {
+            Err(QueryError::Domain(GetSubtreeRootsError::PoolUnavailable(refused)))
+                if pool == ShieldedPool::Ironwood && refused == pool =>
+            {
+                continue;
+            }
+            answer => answered("subtree roots", answer)?,
+        };
         ensure(
             all.windows(2)
                 .all(|pair| matches!(pair, [a, b] if a.end_height <= b.end_height))

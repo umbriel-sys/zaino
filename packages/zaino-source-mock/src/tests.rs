@@ -100,6 +100,39 @@ async fn a_synthetic_chain_keeps_the_whole_contract() {
     contract::mempool(&chain).await.expect("mempool");
 }
 
+/// A zcashd-like node refuses the pool it lacks and keeps the contract; an
+/// inactive pool it has is answered empty.
+#[tokio::test]
+async fn a_pool_the_node_lacks_is_unavailable() {
+    use zaino_source::{GetSubtreeRootsError, OneShotGetSubtreeRoots as _};
+    let built = rich();
+    let blocks: Vec<_> = (0..=9)
+        .map(|at| built.block_at(at).expect("loaded"))
+        .collect();
+    let chain = MockChain::new(
+        crate::NodeFacts {
+            subtree_pools: vec![ShieldedPool::Sapling, ShieldedPool::Orchard],
+            ..crate::NodeFacts::regtest()
+        },
+        blocks,
+    );
+    assert!(matches!(
+        chain
+            .get_subtree_roots(ShieldedPool::Ironwood, 0, None)
+            .await,
+        Err(QueryError::Domain(GetSubtreeRootsError::PoolUnavailable(
+            ShieldedPool::Ironwood
+        )))
+    ));
+    assert!(matches!(
+        chain
+            .get_subtree_roots(ShieldedPool::Orchard, 0, None)
+            .await,
+        Ok(roots) if roots.is_empty()
+    ));
+    contract::subtrees(&chain).await.expect("subtrees");
+}
+
 #[tokio::test]
 async fn a_completed_subtree_is_served_at_its_block() {
     use zaino_source::OneShotGetSubtreeRoots as _;

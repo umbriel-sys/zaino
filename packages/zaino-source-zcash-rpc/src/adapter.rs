@@ -944,8 +944,29 @@ impl zaino_source::OneShotGetSubtreeRoots for ZcashRpcAdapter {
         if let Some(limit) = limit {
             params.push(serde_json::Value::Number(limit.into()));
         }
-        self.call_parsed("z_getsubtreesbyindex", params, parse::parse_subtree_roots)
-            .await
+        self.call_parsed_classified(
+            "z_getsubtreesbyindex",
+            params,
+            None,
+            parse::parse_subtree_roots,
+            |error| pool_unavailable_or_fetch(error, pool),
+        )
+        .await
+    }
+}
+
+/// zcashd refuses a pool it lacks with `-8`, its only `-8` on this method;
+/// zebrad answers every pool it names.
+fn pool_unavailable_or_fetch(
+    error: zaino_rpc::RpcError,
+    pool: zaino_primitives::types::ShieldedPool,
+) -> QueryError<zaino_source::GetSubtreeRootsError> {
+    let error: NonDomainError = error.into();
+    match error.mode {
+        FailureMode::RpcError(-8) => {
+            QueryError::Domain(zaino_source::GetSubtreeRootsError::PoolUnavailable(pool))
+        }
+        _ => QueryError::NonDomain(error),
     }
 }
 
@@ -1420,6 +1441,34 @@ mod classification_tests {
             classified,
             QueryError::Domain(GetStandardFeeError::Unsupported)
         ));
+    }
+
+    /// zcashd's `-8` for a pool it lacks is the port's `PoolUnavailable`; its
+    /// `-1` (method disabled) and transport failures stay faults.
+    #[test]
+    fn an_unsupported_pool_is_pool_unavailable() {
+        use zaino_primitives::types::ShieldedPool;
+        use zaino_source::GetSubtreeRootsError;
+
+        let lacking = pool_unavailable_or_fetch(
+            rpc(-8, "Requested pool must be \"sapling\" or \"orchard\""),
+            ShieldedPool::Ironwood,
+        );
+        assert!(matches!(
+            lacking,
+            QueryError::Domain(GetSubtreeRootsError::PoolUnavailable(
+                ShieldedPool::Ironwood
+            ))
+        ));
+        for code in [-1, -28, -32603] {
+            assert!(
+                matches!(
+                    pool_unavailable_or_fetch(rpc(code, "other"), ShieldedPool::Sapling),
+                    QueryError::NonDomain(_)
+                ),
+                "code {code} says nothing about the pool"
+            );
+        }
     }
 
     /// Everything else is a failure to reach or be served by the node. In

@@ -90,7 +90,7 @@ impl zaino_source::OneShotGetTreestateByHash for MockChain {
 
 impl zaino_source::OneShotGetSubtreeRoots for MockChain {
     /// Completed subtrees of `pool` on the served best chain, from
-    /// `start_index`, at most `limit`.
+    /// `start_index`, at most `limit`; a pool the node lacks is refused.
     async fn get_subtree_roots(
         &self,
         pool: ShieldedPool,
@@ -107,6 +107,9 @@ impl zaino_source::OneShotGetSubtreeRoots for MockChain {
                 },
             )
             .await?;
+        if !served.facts().subtree_pools.contains(&pool) {
+            return refused(GetSubtreeRootsError::PoolUnavailable(pool));
+        }
         let limit = limit.map_or(usize::MAX, usize::from);
         Ok(served
             .best_chain()

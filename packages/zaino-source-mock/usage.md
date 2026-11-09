@@ -63,4 +63,6 @@ zcashd: a mock that drifts from a real validator fails a test.
 Where zcashd and zebra legitimately differ (zebra omits chain work; its
 difficulty divides by its exact 256-bit limit), the mock answers as zcashd
 does and the contract accepts both. `NodeFacts::chainwork = false` answers
-chain work as zebra does: never.
+chain work as zebra does: never. Subtree roots are answered for all three
+pools, as zebra does; `NodeFacts::subtree_pools` without Ironwood refuses it
+as zcashd does (`PoolUnavailable`).

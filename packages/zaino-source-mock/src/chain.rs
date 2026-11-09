@@ -64,6 +64,9 @@ pub struct NodeFacts {
     pub standard_fee: Option<zaino_primitives::types::rpc::StandardFee>,
     /// Whether chain work is answered, as zcashd does; zebra answers none.
     pub chainwork: bool,
+    /// The pools `z_getsubtreesbyindex` answers: all three, as zebra; zcashd
+    /// lacks Ironwood.
+    pub subtree_pools: Vec<zaino_primitives::types::ShieldedPool>,
 }
 
 /// A port call's arguments, as the mock received them.
@@ -147,6 +150,7 @@ impl NodeFacts {
             subsidy: None,
             standard_fee: None,
             chainwork: true,
+            subtree_pools: zaino_primitives::types::ShieldedPool::ALL.to_vec(),
         }
     }
 }

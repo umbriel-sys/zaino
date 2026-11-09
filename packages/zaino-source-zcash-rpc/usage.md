@@ -68,6 +68,7 @@ per class rather than once per method:
 | `submission_rejection` | `sendrawtransaction` | `-22`, `-25..=-27` → the rejection reason |
 | `spent_info_rejection` | `getspentinfo` | `-5` → `NotSpent`, `-32601` → `Unsupported` |
 | `method_missing_or_fetch` | `getrawmempool`, `getstandardfee` | `-32601` → the port's "unavailable"/`Unsupported` |
+| `pool_unavailable_or_fetch` | `z_getsubtreesbyindex` | `-8` → `PoolUnavailable` (zcashd lacks Ironwood; the pool is the only parameter it checks with `-8`) |
 
 The remaining whole-node-state queries (`getblockchaininfo`, `getmininginfo`, …)
 deliberately use plain `call_parsed`: their only domain error is "validator not
