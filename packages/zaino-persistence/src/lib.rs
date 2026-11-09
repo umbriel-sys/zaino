@@ -19,9 +19,9 @@
 mod backend;
 mod chunk;
 mod error;
-mod opener;
 mod overlay;
 mod rules;
+mod storage;
 mod verify;
 
 pub use backend::{
@@ -30,12 +30,12 @@ pub use backend::{
     ScanRange, SchemaDigest, Width, WriteOp, SEQUENCE_KEY_LEN,
 };
 pub use error::{CommitError, FlushError, FootprintError, OpenError, Part, ReadError, VerifyError};
-pub use opener::{BackendOpener, Identity};
 pub use overlay::{Overlay, RebaseError};
 pub use rules::{
     check_commit, check_key, check_keys, check_shape, check_specs, is_empty_range, ranged,
     CommitState, KeyState,
 };
+pub use storage::{Identity, Storage};
 pub use verify::{NamespaceFootprint, Problem, Unit, Verification};
 
 // test support (feature `testing`, never in production builds): asserting is its job

@@ -119,15 +119,22 @@ the same answer as decoding `get`'s value, without copying it out where the
 backend holds it in memory. Decode in the closure and return an owned result;
 don't read the backend again from inside it.
 
-## Opening a backend per directory
+## Storage: index directories and store files
 
-A store that keeps one directory per index opens them through
-[`BackendOpener`]: `open(dir, identity, namespaces)` creates `dir` if absent
-and refuses one stamped with another [`Identity`] (name, chain, format,
-schema digest) or other namespaces as `OpenError::Mismatch`; `remove(dir)`
-deletes a directory, refused while a backend holds it where the storage can
-tell; `children(dir)` lists the directories under `dir`. The in-memory
-`InMemoryOpener` (feature `testing`) keys directories in a map.
+A store that keeps one directory per index touches disk only through
+[`Storage`]:
+
+- `open(dir, identity, namespaces)` creates `dir` if absent and refuses one
+  stamped with another [`Identity`] (name, chain, format, schema digest) or
+  other namespaces as `OpenError::Mismatch`;
+- `remove(dir)` deletes a directory, refused while a backend holds it where
+  the storage can tell; `children(dir)` lists the directories under `dir`;
+- `lock(root)` holds the store exclusively until the guard drops;
+- `read_meta(root, name)` / `write_meta(root, name, bytes)` read and replace
+  a store file atomically and durably (old bytes or new, whole). The bytes
+  are the caller's format.
+
+`in_memory::InMemoryStorage` (feature `testing`) keeps all of it in maps.
 
 ## Overlay
 

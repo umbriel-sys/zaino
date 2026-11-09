@@ -75,24 +75,7 @@ impl IndexDir {
         identity: Identity,
         strict: bool,
     ) -> Result<Opened, ManifestError> {
-        let mut missing = Vec::new();
-        for level in path
-            .ancestors()
-            .filter(|level| !level.as_os_str().is_empty())
-        {
-            match fs.list(level) {
-                Ok(_) => break,
-                Err(error) if error.kind() == io::ErrorKind::NotFound => missing.push(level),
-                Err(error) => return Err(error.into()),
-            }
-        }
-        fs.create_dir_all(path)?;
-        let mut parents: Vec<&Path> = missing.iter().map(|level| parent_dir(level)).collect();
-        parents.push(parent_dir(path));
-        parents.dedup();
-        for parent in parents {
-            fs.sync_dir(parent)?;
-        }
+        create_dir_durable(fs.as_ref(), path)?;
         let lock = fs.lock(&path.join(LOCK))?;
 
         if fs.open_existing(&path.join(CREATING))?.is_some() {
@@ -229,6 +212,30 @@ fn parent_dir(path: &Path) -> &Path {
         Some(parent) if !parent.as_os_str().is_empty() => parent,
         _ => Path::new("."),
     }
+}
+
+/// `path` created if absent, every new level and `path` itself durably in its parent (else a
+/// power loss drops the directory and all under it)
+pub(crate) fn create_dir_durable(fs: &dyn Fs, path: &Path) -> io::Result<()> {
+    let mut missing = Vec::new();
+    for level in path
+        .ancestors()
+        .filter(|level| !level.as_os_str().is_empty())
+    {
+        match fs.list(level) {
+            Ok(_) => break,
+            Err(error) if error.kind() == io::ErrorKind::NotFound => missing.push(level),
+            Err(error) => return Err(error),
+        }
+    }
+    fs.create_dir_all(path)?;
+    let mut parents: Vec<&Path> = missing.iter().map(|level| parent_dir(level)).collect();
+    parents.push(parent_dir(path));
+    parents.dedup();
+    for parent in parents {
+        fs.sync_dir(parent)?;
+    }
+    Ok(())
 }
 
 /// Bytes of every file under `path`, subdirectories included (plain `stat`s, no lock)

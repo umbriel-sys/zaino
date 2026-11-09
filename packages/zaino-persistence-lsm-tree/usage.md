@@ -76,8 +76,9 @@ case. A map owns its directory, so no namespace may sit inside a map's path.
 Windows device names (`CON`, `PRN`, `AUX`, `NUL`, `COM0`–`COM9`, `LPT0`–`LPT9`), all ignoring
 case.
 
-[`LsmTreeOpener`] implements the port's `BackendOpener` with one engine configuration for
-every directory (default tuning).
+[`LsmTreeStorage`] implements the port's `Storage` on an [`fs::Fs`]: index directories opened
+with one engine configuration (default tuning), the store `LOCK`, and store files written to
+`<name>.tmp`, synced and renamed in (every new directory level durable in its parent).
 
 ## Removing a directory
 

@@ -18,8 +18,8 @@ use crate::error::{CommitError, FlushError, FootprintError, OpenError, ReadError
 use crate::rules::{check_commit, check_key, check_specs, CommitState, KeyState};
 use crate::verify::{NamespaceFootprint, Verification};
 
-mod opener;
-pub use opener::InMemoryOpener;
+mod storage;
+pub use storage::{InMemoryLock, InMemoryStorage};
 
 /// The current state; a commit swaps in a new one, readers keep the one they took.
 type Store = Arc<Mutex<Arc<State>>>;

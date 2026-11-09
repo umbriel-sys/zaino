@@ -1,5 +1,5 @@
-//! Opening a backend per directory (D-75): what a multi-index store asks of
-//! its storage.
+//! What a multi-index store asks of its storage (D-75): one backend
+//! directory per index, plus the store's lock and metadata files.
 
 use std::path::Path;
 
@@ -12,8 +12,7 @@ use crate::error::OpenError;
 pub struct Identity<'a> {
     /// The index's name.
     pub name: &'a str,
-    /// The chain its data belongs to (network, genesis hash, regtest
-    /// activations; opaque here).
+    /// The chain its data belongs to (opaque here).
     pub chain: &'a str,
     /// The layout version.
     pub format: u16,
@@ -21,10 +20,12 @@ pub struct Identity<'a> {
     pub schema: SchemaDigest,
 }
 
-/// Opens, lists and removes backend directories.
-pub trait BackendOpener: Send + Sync + 'static {
+/// Index directories and store files, all a store touches on disk.
+pub trait Storage: Send + Sync + 'static {
     /// The backend it opens.
     type Backend: Backend;
+    /// Held while the store runs; dropping it releases the store.
+    type Lock: Send + Sync + 'static;
 
     /// `dir` (created if absent) as `identity` holding `namespaces`; a
     /// directory stamped otherwise is [`OpenError::Mismatch`].
@@ -41,4 +42,15 @@ pub trait BackendOpener: Send + Sync + 'static {
 
     /// The names of the directories directly under `dir` (none when absent).
     fn children(&self, dir: &Path) -> Result<Vec<String>, OpenError>;
+
+    /// The store at `root` (created if absent) held exclusively; another
+    /// holder is refused.
+    fn lock(&self, root: &Path) -> Result<Self::Lock, OpenError>;
+
+    /// File `name` under `root`; `None` when absent.
+    fn read_meta(&self, root: &Path, name: &str) -> Result<Option<Vec<u8>>, OpenError>;
+
+    /// File `name` under `root` replaced by `bytes` atomically and durably:
+    /// a crash leaves the old bytes or the new, whole.
+    fn write_meta(&self, root: &Path, name: &str, bytes: &[u8]) -> Result<(), OpenError>;
 }
