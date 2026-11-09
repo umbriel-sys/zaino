@@ -19,7 +19,7 @@ use zaino_source::{
 use super::fault;
 use super::ledger::{address_of, Ledger};
 use crate::chain::Served;
-use crate::MockChain;
+use crate::{CallArg, MockChain};
 
 /// The requested addresses, validated as the port defines: transparent, and
 /// for the node's network.
@@ -42,6 +42,13 @@ fn requested<E: std::fmt::Debug + std::fmt::Display>(
             },
         )
         .collect()
+}
+
+fn addresses_arg(addresses: &[String], range: Option<(Height, Height)>) -> CallArg {
+    CallArg::Addresses {
+        addresses: addresses.to_vec(),
+        range,
+    }
 }
 
 fn capped<E>(rows: usize, too_many: impl FnOnce(usize) -> E) -> Result<(), QueryError<E>>
@@ -67,7 +74,9 @@ impl zaino_source::OneShotGetAddressBalance for MockChain {
         &self,
         addresses: Vec<String>,
     ) -> Result<AddressBalance, QueryError<GetAddressBalanceError>> {
-        let served = self.enter("get_address_balance")?;
+        let served = self
+            .enter("get_address_balance", addresses_arg(&addresses, None))
+            .await?;
         let network = served.facts().network;
         let wanted = requested(addresses, network, GetAddressBalanceError::InvalidAddress)?;
         let ledger = Ledger::of(&served);
@@ -99,7 +108,9 @@ impl zaino_source::OneShotGetAddressUtxos for MockChain {
         &self,
         addresses: Vec<String>,
     ) -> Result<Vec<Utxo>, QueryError<GetAddressUtxosError>> {
-        let served = self.enter("get_address_utxos")?;
+        let served = self
+            .enter("get_address_utxos", addresses_arg(&addresses, None))
+            .await?;
         let network = served.facts().network;
         let wanted = requested(addresses, network, GetAddressUtxosError::InvalidAddress)?;
         let ledger = Ledger::of(&served);
@@ -188,7 +199,12 @@ impl zaino_source::OneShotGetAddressTxids for MockChain {
         start: Height,
         end: Height,
     ) -> Result<Vec<TransactionId>, QueryError<GetAddressTxidsError>> {
-        let served = self.enter("get_address_txids")?;
+        let served = self
+            .enter(
+                "get_address_txids",
+                addresses_arg(&addresses, Some((start, end))),
+            )
+            .await?;
         if !range_ok(&served, start, end, true) {
             return Err(QueryError::Domain(GetAddressTxidsError::InvalidRange {
                 start,
@@ -220,7 +236,12 @@ impl zaino_source::OneShotGetAddressDeltas for MockChain {
         start: Height,
         end: Height,
     ) -> Result<Vec<AddressDelta>, QueryError<GetAddressDeltasError>> {
-        let served = self.enter("get_address_deltas")?;
+        let served = self
+            .enter(
+                "get_address_deltas",
+                addresses_arg(&addresses, Some((start, end))),
+            )
+            .await?;
         if !range_ok(&served, start, end, false) {
             return Err(QueryError::Domain(GetAddressDeltasError::InvalidRange {
                 start,

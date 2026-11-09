@@ -21,7 +21,7 @@ use zaino_source::{
 use super::ledger::{address_of, pool_values, Ledger, POOLS};
 use super::{fault, refused};
 use crate::chain::Served;
-use crate::{MockBlock, MockChain};
+use crate::{CallArg, MockBlock, MockChain};
 
 /// zcashd's `GetDifficulty`: the network's minimum-difficulty target over
 /// `bits`'s, both from their compact forms (zebra divides by its exact
@@ -46,8 +46,12 @@ fn confirmations(served: &Served<'_>, block: &MockBlock) -> BlockConfirmations {
     }
 }
 
-/// Cumulative work from genesis through `block`, along its own chain.
+/// Cumulative work from genesis through `block`, along its own chain; none
+/// from a node that answers none.
 fn chainwork(served: &Served<'_>, block: &MockBlock) -> Option<AbsoluteChainWork> {
+    if !served.facts().chainwork {
+        return None;
+    }
     let mut chain = vec![block];
     while let Some(parent) = chain
         .last()
@@ -154,7 +158,9 @@ impl zaino_source::OneShotGetBlockVerbose for MockChain {
         &self,
         height: Height,
     ) -> Result<BlockVerbose, QueryError<GetBlockVerboseError>> {
-        let served = self.enter("get_block_verbose")?;
+        let served = self
+            .enter("get_block_verbose", CallArg::Height(height))
+            .await?;
         match served.at(height) {
             Some(block) => verbose(&served, block),
             None => refused(GetBlockVerboseError::HeightNotFound(height)),
@@ -167,7 +173,9 @@ impl zaino_source::OneShotGetBlockVerboseByHash for MockChain {
         &self,
         hash: BlockHash,
     ) -> Result<BlockVerbose, QueryError<GetBlockVerboseError>> {
-        let served = self.enter("get_block_verbose_by_hash")?;
+        let served = self
+            .enter("get_block_verbose_by_hash", CallArg::Hash(hash))
+            .await?;
         match served.by_hash(hash) {
             Some(block) => verbose(&served, block),
             None => refused(GetBlockVerboseError::BlockNotFound(hash)),
@@ -180,7 +188,7 @@ impl zaino_source::OneShotGetBlockHeader for MockChain {
         &self,
         hash: BlockHash,
     ) -> Result<BlockHeaderVerbose, QueryError<GetBlockHeaderError>> {
-        let served = self.enter("get_block_header")?;
+        let served = self.enter("get_block_header", CallArg::Hash(hash)).await?;
         let Some(block) = served.by_hash(hash) else {
             return refused(GetBlockHeaderError::BlockNotFound(hash));
         };
@@ -233,7 +241,7 @@ impl zaino_source::OneShotGetBlockDeltas for MockChain {
         &self,
         hash: BlockHash,
     ) -> Result<BlockDeltas, QueryError<GetBlockDeltasError>> {
-        let served = self.enter("get_block_deltas")?;
+        let served = self.enter("get_block_deltas", CallArg::Hash(hash)).await?;
         let Some(block) = served.by_hash(hash) else {
             return refused(GetBlockDeltasError::BlockNotFound(hash));
         };
@@ -322,7 +330,7 @@ impl zaino_source::OneShotGetBlockchainInfo for MockChain {
     async fn get_blockchain_info(
         &self,
     ) -> Result<BlockchainInfo, QueryError<GetBlockchainInfoError>> {
-        let served = self.enter("get_blockchain_info")?;
+        let served = self.enter("get_blockchain_info", CallArg::None).await?;
         let Some(tip) = served.tip() else {
             return refused(GetBlockchainInfoError::NotReady);
         };
@@ -365,7 +373,7 @@ impl zaino_source::OneShotGetBlockchainInfo for MockChain {
 
 impl zaino_source::OneShotGetDifficulty for MockChain {
     async fn get_difficulty(&self) -> Result<Difficulty, QueryError<GetDifficultyError>> {
-        let served = self.enter("get_difficulty")?;
+        let served = self.enter("get_difficulty", CallArg::None).await?;
         match served.tip() {
             Some(tip) => Ok(difficulty(
                 tip.block.header.bits.as_bits(),
@@ -378,7 +386,7 @@ impl zaino_source::OneShotGetDifficulty for MockChain {
 
 impl zaino_source::OneShotGetMiningInfo for MockChain {
     async fn get_mining_info(&self) -> Result<MiningInfo, QueryError<GetMiningInfoError>> {
-        let served = self.enter("get_mining_info")?;
+        let served = self.enter("get_mining_info", CallArg::None).await?;
         let Some(tip) = served.tip() else {
             return refused(GetMiningInfoError::NotReady);
         };
@@ -400,10 +408,12 @@ impl zaino_source::OneShotGetMiningInfo for MockChain {
 impl zaino_source::OneShotGetNetworkSolPs for MockChain {
     async fn get_network_sol_ps(
         &self,
-        _blocks: Option<u32>,
-        _height: Option<Height>,
+        blocks: Option<u32>,
+        height: Option<Height>,
     ) -> Result<u64, QueryError<GetNetworkSolPsError>> {
-        let served = self.enter("get_network_sol_ps")?;
+        let served = self
+            .enter("get_network_sol_ps", CallArg::SolPs { blocks, height })
+            .await?;
         match served.tip() {
             Some(_) => Ok(served.facts().network_sol_ps),
             None => refused(GetNetworkSolPsError::NotReady),
@@ -413,7 +423,7 @@ impl zaino_source::OneShotGetNetworkSolPs for MockChain {
 
 impl zaino_source::OneShotGetNodeInfo for MockChain {
     async fn get_node_info(&self) -> Result<NodeInfo, QueryError<GetNodeInfoError>> {
-        let served = self.enter("get_node_info")?;
+        let served = self.enter("get_node_info", CallArg::None).await?;
         let Some(tip) = served.tip() else {
             return refused(GetNodeInfoError::NotReady);
         };
@@ -438,7 +448,7 @@ impl zaino_source::OneShotGetNodeInfo for MockChain {
 
 impl zaino_source::OneShotGetPeerInfo for MockChain {
     async fn get_peer_info(&self) -> Result<Vec<PeerInfo>, QueryError<GetPeerInfoError>> {
-        let served = self.enter("get_peer_info")?;
+        let served = self.enter("get_peer_info", CallArg::None).await?;
         Ok(served.facts().peers.clone())
     }
 }
@@ -450,7 +460,9 @@ impl zaino_source::OneShotGetBlockSubsidy for MockChain {
         &self,
         height: Height,
     ) -> Result<BlockSubsidy, QueryError<GetBlockSubsidyError>> {
-        let served = self.enter("get_block_subsidy")?;
+        let served = self
+            .enter("get_block_subsidy", CallArg::Height(height))
+            .await?;
         if served
             .tip_height()
             .is_none_or(|tip| u32::from(height) > tip)
@@ -467,7 +479,7 @@ impl zaino_source::OneShotGetBlockSubsidy for MockChain {
 
 impl zaino_source::OneShotGetStandardFee for MockChain {
     async fn get_standard_fee(&self) -> Result<StandardFee, QueryError<GetStandardFeeError>> {
-        let served = self.enter("get_standard_fee")?;
+        let served = self.enter("get_standard_fee", CallArg::None).await?;
         match served.facts().standard_fee {
             Some(fee) => Ok(fee),
             None => refused(GetStandardFeeError::Unsupported),

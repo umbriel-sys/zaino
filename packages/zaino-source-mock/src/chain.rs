@@ -1,6 +1,7 @@
 //! The chain the mock serves, and everything a test controls about it.
 
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{HashMap, HashSet};
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
 
 use tokio::sync::watch;
@@ -61,6 +62,66 @@ pub struct NodeFacts {
     pub subsidy: Option<zaino_primitives::types::rpc::BlockSubsidy>,
     /// The standard fee; `None` = `Unsupported` (a validator without it).
     pub standard_fee: Option<zaino_primitives::types::rpc::StandardFee>,
+    /// Whether chain work is answered, as zcashd does; zebra answers none.
+    pub chainwork: bool,
+}
+
+/// A port call's arguments, as the mock received them.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CallArg {
+    /// No arguments.
+    None,
+    /// A height.
+    Height(Height),
+    /// A block hash.
+    Hash(BlockHash),
+    /// A transaction id.
+    Txid(TransactionId),
+    /// Addresses, with the height range where the port takes one.
+    Addresses {
+        /// The addresses.
+        addresses: Vec<String>,
+        /// The range, inclusive.
+        range: Option<(Height, Height)>,
+    },
+    /// A `gettxout` query.
+    TxOut {
+        /// The transaction.
+        txid: TransactionId,
+        /// The output.
+        index: zaino_primitives::types::OutputIndex,
+        /// Whether mempool spends count.
+        include_mempool: bool,
+    },
+    /// An outpoint.
+    Outpoint(zaino_primitives::types::rpc::SpentOutpoint),
+    /// A subtree roots query.
+    Subtrees {
+        /// The pool.
+        pool: zaino_primitives::types::ShieldedPool,
+        /// The first subtree.
+        start_index: u16,
+        /// The most answered.
+        limit: Option<u16>,
+    },
+    /// A solution rate query.
+    SolPs {
+        /// The averaging window.
+        blocks: Option<u32>,
+        /// The height.
+        height: Option<Height>,
+    },
+    /// Transaction bytes.
+    Bytes(Vec<u8>),
+}
+
+/// One port call, in the order received.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Call {
+    /// The port's method name.
+    pub port: &'static str,
+    /// Its arguments.
+    pub arg: CallArg,
 }
 
 impl NodeFacts {
@@ -85,6 +146,7 @@ impl NodeFacts {
             size_on_disk: 0,
             subsidy: None,
             standard_fee: None,
+            chainwork: true,
         }
     }
 }
@@ -104,7 +166,7 @@ struct State {
     txids: HashMap<TransactionId, Vec<(BlockHash, u32)>>,
     faults: Vec<Fault>,
     stale_roots: usize,
-    calls: BTreeMap<&'static str, u64>,
+    calls: Vec<Call>,
     shutdown: bool,
     sent: Vec<Vec<u8>>,
     scripted: HashMap<Vec<u8>, Result<TransactionId, SendRawTransactionError>>,
@@ -119,11 +181,24 @@ struct State {
 pub struct MockChain {
     state: Arc<Mutex<State>>,
     blocks_received: Arc<watch::Sender<()>>,
+    /// Calls in flight now, and the most ever at once.
+    in_flight: Arc<AtomicUsize>,
+    peak_in_flight: Arc<AtomicUsize>,
 }
 
 /// A port's view of the state for one call.
 pub(crate) struct Served<'a> {
     state: MutexGuard<'a, State>,
+    _in_flight: InFlight,
+}
+
+/// Counts one call in flight until dropped.
+struct InFlight(Arc<AtomicUsize>);
+
+impl Drop for InFlight {
+    fn drop(&mut self) {
+        self.0.fetch_sub(1, Ordering::AcqRel);
+    }
 }
 
 impl MockChain {
@@ -139,7 +214,7 @@ impl MockChain {
             txids: HashMap::new(),
             faults: Vec::new(),
             stale_roots: 0,
-            calls: BTreeMap::new(),
+            calls: Vec::new(),
             shutdown: false,
             sent: Vec::new(),
             scripted: HashMap::new(),
@@ -150,6 +225,8 @@ impl MockChain {
         Self {
             state: Arc::new(Mutex::new(state)),
             blocks_received: Arc::new(watch::channel(()).0),
+            in_flight: Arc::new(AtomicUsize::new(0)),
+            peak_in_flight: Arc::new(AtomicUsize::new(0)),
         }
     }
 
@@ -228,6 +305,11 @@ impl MockChain {
         state.served = None;
     }
 
+    /// Makes `block` known off the best chain: a side block, served by hash.
+    pub fn know(&self, block: MockBlock) {
+        self.lock().insert_known(block);
+    }
+
     /// The current best block at `height`, served or not.
     pub fn block_at(&self, height: u32) -> Option<MockBlock> {
         let state = self.lock();
@@ -285,8 +367,22 @@ impl MockChain {
     }
 
     /// How many times `port` (its method name) was called.
-    pub fn calls(&self, port: &str) -> u64 {
-        self.lock().calls.get(port).copied().unwrap_or(0)
+    pub fn calls(&self, port: &str) -> usize {
+        self.lock()
+            .calls
+            .iter()
+            .filter(|call| call.port == port)
+            .count()
+    }
+
+    /// Every call, in the order received.
+    pub fn call_log(&self) -> Vec<Call> {
+        self.lock().calls.clone()
+    }
+
+    /// The most calls ever in flight at once.
+    pub fn peak_in_flight(&self) -> usize {
+        self.peak_in_flight.load(Ordering::Acquire)
     }
 
     /// Whether `shutdown` ran.
@@ -308,20 +404,39 @@ impl MockChain {
         self.lock().sent.clone()
     }
 
-    /// One call to `port`: counted, then failed if a fault is armed for it.
-    pub(crate) fn enter<E>(&self, port: &'static str) -> Result<Served<'_>, QueryError<E>>
+    /// One call to `port`: logged, failed if a fault is armed for it, else
+    /// in flight until the view drops. Yields first, so concurrent calls
+    /// overlap.
+    pub(crate) async fn enter<E>(
+        &self,
+        port: &'static str,
+        arg: CallArg,
+    ) -> Result<Served<'_>, QueryError<E>>
     where
         E: std::fmt::Debug + std::fmt::Display,
     {
-        let mut state = self.lock();
-        *state.calls.entry(port).or_default() += 1;
-        if let Some(mode) = state.take_fault(port) {
+        let fault = {
+            let mut state = self.lock();
+            state.calls.push(Call { port, arg });
+            state.take_fault(port)
+        };
+        if let Some(mode) = fault {
             return Err(QueryError::NonDomain(NonDomainError::new(
                 mode,
                 format!("mock: {port} failed as armed"),
             )));
         }
-        Ok(Served { state })
+        let now = self
+            .in_flight
+            .fetch_add(1, Ordering::AcqRel)
+            .saturating_add(1);
+        self.peak_in_flight.fetch_max(now, Ordering::AcqRel);
+        let in_flight = InFlight(Arc::clone(&self.in_flight));
+        tokio::task::yield_now().await;
+        Ok(Served {
+            state: self.lock(),
+            _in_flight: in_flight,
+        })
     }
 
     pub(crate) fn wake(&self) -> watch::Receiver<()> {
@@ -335,6 +450,11 @@ impl MockChain {
 
 impl State {
     fn push_best(&mut self, block: MockBlock) {
+        let hash = self.insert_known(block);
+        self.best.push(hash);
+    }
+
+    fn insert_known(&mut self, block: MockBlock) -> BlockHash {
         let hash = block.hash();
         for (position, tx) in (0u32..).zip(block.block.transactions()) {
             let places = self.txids.entry(tx.txid).or_default();
@@ -343,7 +463,7 @@ impl State {
             }
         }
         self.known.insert(hash, Arc::new(block));
-        self.best.push(hash);
+        hash
     }
 
     fn last_height(&self) -> u32 {

@@ -11,11 +11,11 @@ use zaino_source::{
 
 use super::{fault, refused};
 use crate::chain::Served;
-use crate::{MockBlock, MockChain};
+use crate::{CallArg, MockBlock, MockChain};
 
 impl zaino_source::OneShotGetBlock for MockChain {
     async fn get_block(&self, height: Height) -> Result<Block, QueryError<GetBlockError>> {
-        let served = self.enter("get_block")?;
+        let served = self.enter("get_block", CallArg::Height(height)).await?;
         match served.at(height) {
             Some(block) => Ok(block.block.clone()),
             None => refused(GetBlockError::HeightNotFound(height)),
@@ -28,7 +28,7 @@ impl zaino_source::OneShotGetBlockByHash for MockChain {
         &self,
         hash: BlockHash,
     ) -> Result<Block, QueryError<GetBlockByHashError>> {
-        let served = self.enter("get_block_by_hash")?;
+        let served = self.enter("get_block_by_hash", CallArg::Hash(hash)).await?;
         match served.by_hash(hash) {
             Some(block) => Ok(block.block.clone()),
             None => refused(GetBlockByHashError::NotFound(hash)),
@@ -50,7 +50,7 @@ fn raw<E: std::fmt::Debug + std::fmt::Display>(
 
 impl zaino_source::OneShotGetRawBlock for MockChain {
     async fn get_raw_block(&self, height: Height) -> Result<Vec<u8>, QueryError<GetBlockError>> {
-        let served = self.enter("get_raw_block")?;
+        let served = self.enter("get_raw_block", CallArg::Height(height)).await?;
         match served.at(height) {
             Some(block) => raw(block, |raw| raw.block.clone()),
             None => refused(GetBlockError::HeightNotFound(height)),
@@ -63,7 +63,9 @@ impl zaino_source::OneShotGetRawBlockByHash for MockChain {
         &self,
         hash: BlockHash,
     ) -> Result<Vec<u8>, QueryError<GetBlockByHashError>> {
-        let served = self.enter("get_raw_block_by_hash")?;
+        let served = self
+            .enter("get_raw_block_by_hash", CallArg::Hash(hash))
+            .await?;
         match served.by_hash(hash) {
             Some(block) => raw(block, |raw| raw.block.clone()),
             None => refused(GetBlockByHashError::NotFound(hash)),
@@ -76,7 +78,9 @@ impl zaino_source::OneShotGetRawBlockHeader for MockChain {
         &self,
         hash: BlockHash,
     ) -> Result<Vec<u8>, QueryError<GetBlockHeaderError>> {
-        let served = self.enter("get_raw_block_header")?;
+        let served = self
+            .enter("get_raw_block_header", CallArg::Hash(hash))
+            .await?;
         match served.by_hash(hash) {
             Some(block) => raw(block, |raw| raw.header.clone()),
             None => refused(GetBlockHeaderError::BlockNotFound(hash)),
@@ -89,7 +93,9 @@ impl zaino_source::OneShotGetPreIndexCompactBlock for MockChain {
         &self,
         height: Height,
     ) -> Result<PreIndexCompactBlock, QueryError<GetBlockError>> {
-        let served = self.enter("get_pre_index_compact_block")?;
+        let served = self
+            .enter("get_pre_index_compact_block", CallArg::Height(height))
+            .await?;
         match served.at(height) {
             Some(block) => Ok(PreIndexCompactBlock::from(&block.block)),
             None => refused(GetBlockError::HeightNotFound(height)),
@@ -99,7 +105,7 @@ impl zaino_source::OneShotGetPreIndexCompactBlock for MockChain {
 
 impl zaino_source::OneShotGetBestBlockHeight for MockChain {
     async fn get_best_block_height(&self) -> Result<Height, QueryError<GetBestBlockHeightError>> {
-        let served = self.enter("get_best_block_height")?;
+        let served = self.enter("get_best_block_height", CallArg::None).await?;
         match served.tip() {
             Some(tip) => Ok(tip.height()),
             None => refused(GetBestBlockHeightError::NotReady),
@@ -109,7 +115,7 @@ impl zaino_source::OneShotGetBestBlockHeight for MockChain {
 
 impl zaino_source::OneShotGetChainTip for MockChain {
     async fn get_chain_tip(&self) -> Result<(BlockHash, Height), QueryError<GetChainTipError>> {
-        let served = self.enter("get_chain_tip")?;
+        let served = self.enter("get_chain_tip", CallArg::None).await?;
         match served.tip() {
             Some(tip) => Ok((tip.hash(), tip.height())),
             None => refused(GetChainTipError::NotReady),
@@ -121,7 +127,7 @@ impl zaino_source::OneShotGetChainTips for MockChain {
     /// The active tip, and each side branch's tip with its length back to
     /// the best chain.
     async fn get_chain_tips(&self) -> Result<Vec<ChainTip>, QueryError<GetChainTipsError>> {
-        let served = self.enter("get_chain_tips")?;
+        let served = self.enter("get_chain_tips", CallArg::None).await?;
         let Some(tip) = served.tip() else {
             return refused(GetChainTipsError::NotReady);
         };

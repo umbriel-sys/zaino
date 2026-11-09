@@ -7,14 +7,16 @@ use zaino_source::{
 };
 
 use super::refused;
-use crate::{MockBlock, MockChain};
+use crate::{CallArg, MockBlock, MockChain};
 
 impl zaino_source::OneShotGetCommitmentTreeRoots for MockChain {
     async fn get_commitment_tree_roots(
         &self,
         block: BlockHash,
     ) -> Result<TreeRoots, QueryError<GetCommitmentTreeRootsError>> {
-        let served = self.enter("get_commitment_tree_roots")?;
+        let served = self
+            .enter("get_commitment_tree_roots", CallArg::Hash(block))
+            .await?;
         match served.by_hash(block) {
             Some(found) => Ok(found.tree_roots.clone()),
             None => refused(GetCommitmentTreeRootsError::BlockNotFound(block)),
@@ -29,7 +31,12 @@ impl zaino_source::OneShotGetCommitmentTreeRootsByHeight for MockChain {
         &self,
         height: Height,
     ) -> Result<(BlockHash, TreeRoots), QueryError<GetCommitmentTreeRootsByHeightError>> {
-        let mut served = self.enter("get_commitment_tree_roots_by_height")?;
+        let mut served = self
+            .enter(
+                "get_commitment_tree_roots_by_height",
+                CallArg::Height(height),
+            )
+            .await?;
         let Some(found) = served.at(height) else {
             return refused(GetCommitmentTreeRootsByHeightError::HeightNotFound(height));
         };
@@ -58,7 +65,7 @@ impl zaino_source::OneShotGetTreestate for MockChain {
         &self,
         height: Height,
     ) -> Result<Treestate, QueryError<GetTreestateError>> {
-        let served = self.enter("get_treestate")?;
+        let served = self.enter("get_treestate", CallArg::Height(height)).await?;
         match served.at(height) {
             Some(block) => Ok(treestate(block)),
             None => refused(GetTreestateError::HeightNotFound(height)),
@@ -71,7 +78,9 @@ impl zaino_source::OneShotGetTreestateByHash for MockChain {
         &self,
         hash: BlockHash,
     ) -> Result<Treestate, QueryError<GetTreestateByHashError>> {
-        let served = self.enter("get_treestate_by_hash")?;
+        let served = self
+            .enter("get_treestate_by_hash", CallArg::Hash(hash))
+            .await?;
         match served.by_hash(hash) {
             Some(block) => Ok(treestate(block)),
             None => refused(GetTreestateByHashError::BlockNotFound(hash)),
@@ -88,7 +97,16 @@ impl zaino_source::OneShotGetSubtreeRoots for MockChain {
         start_index: u16,
         limit: Option<u16>,
     ) -> Result<Vec<SubtreeRoot>, QueryError<GetSubtreeRootsError>> {
-        let served = self.enter("get_subtree_roots")?;
+        let served = self
+            .enter(
+                "get_subtree_roots",
+                CallArg::Subtrees {
+                    pool,
+                    start_index,
+                    limit,
+                },
+            )
+            .await?;
         let limit = limit.map_or(usize::MAX, usize::from);
         Ok(served
             .best_chain()

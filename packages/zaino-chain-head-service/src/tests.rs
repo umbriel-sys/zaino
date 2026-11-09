@@ -126,7 +126,7 @@ impl MockValidator {
 
     /// How many hash-addressed roots reads this validator has answered.
     fn roots_by_hash_reads(&self) -> usize {
-        usize::try_from(self.chain.calls("get_commitment_tree_roots")).expect("a test's count")
+        self.chain.calls("get_commitment_tree_roots")
     }
 
     /// The next `count` chain-tip reads fail as a transport fault (`None` =

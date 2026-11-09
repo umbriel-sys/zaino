@@ -346,7 +346,7 @@ async fn concurrent_builds_are_one_build() {
     assert_eq!(store.subscribe_watermark().borrow().tip, Some(tip));
     assert_eq!(
         chain.calls("get_block"),
-        u64::from(u32::from(tip.height)) + 1,
+        usize::try_from(u32::from(tip.height)).expect("small heights") + 1,
         "each block fetched once"
     );
 }

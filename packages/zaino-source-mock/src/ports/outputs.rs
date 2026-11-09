@@ -8,7 +8,7 @@ use zaino_primitives::types::{
 use zaino_source::{GetSpentInfoError, GetTxOutError, QueryError, SendRawTransactionError};
 
 use super::ledger::{address_of, Ledger};
-use crate::MockChain;
+use crate::{CallArg, MockChain};
 
 /// zcashd's `scriptPubKey` for a script: disassembly, type, signatures and
 /// address for the standard forms.
@@ -53,7 +53,16 @@ impl zaino_source::OneShotGetTxOut for MockChain {
         index: OutputIndex,
         include_mempool: bool,
     ) -> Result<Option<TxOut>, QueryError<GetTxOutError>> {
-        let served = self.enter("get_tx_out")?;
+        let served = self
+            .enter(
+                "get_tx_out",
+                CallArg::TxOut {
+                    txid,
+                    index,
+                    include_mempool,
+                },
+            )
+            .await?;
         let Some(tip) = served.tip() else {
             return Ok(None);
         };
@@ -106,7 +115,9 @@ impl zaino_source::OneShotGetSpentInfo for MockChain {
         &self,
         outpoint: SpentOutpoint,
     ) -> Result<SpentInfo, QueryError<GetSpentInfoError>> {
-        let served = self.enter("get_spent_info")?;
+        let served = self
+            .enter("get_spent_info", CallArg::Outpoint(outpoint))
+            .await?;
         let ledger = Ledger::of(&served);
         match ledger.spenders.get(&(outpoint.txid, outpoint.index)) {
             Some(spender) => Ok(SpentInfo {
@@ -126,7 +137,9 @@ impl zaino_source::OneShotSendRawTransaction for MockChain {
         &self,
         transaction: Vec<u8>,
     ) -> Result<TransactionId, QueryError<SendRawTransactionError>> {
-        let mut served = self.enter("send_raw_transaction")?;
+        let mut served = self
+            .enter("send_raw_transaction", CallArg::Bytes(transaction.clone()))
+            .await?;
         let answer = served.scripted_send(&transaction);
         served.record_sent(transaction);
         match answer {

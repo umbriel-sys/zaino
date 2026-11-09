@@ -204,6 +204,104 @@ async fn a_reorg_keeps_the_displaced_blocks_as_a_side_branch() {
         .expect("contract after reorg");
 }
 
+/// Every call is logged in order with its arguments, failed ones included.
+#[tokio::test]
+async fn the_call_log_records_ports_and_arguments() {
+    use crate::{Call, CallArg};
+    let chain = ChainBuilder::new().blocks(2).build();
+    let tip = chain.block_at(2).expect("loaded").hash();
+    chain.fail_ports(&["get_block"], Some(1), FailureMode::Timeout);
+    assert!(chain.get_block(height(1)).await.is_err());
+    assert!(chain.get_block_by_hash(tip).await.is_ok());
+    assert!(chain.get_best_block_height().await.is_ok());
+    assert_eq!(
+        chain.call_log(),
+        [
+            Call {
+                port: "get_block",
+                arg: CallArg::Height(height(1))
+            },
+            Call {
+                port: "get_block_by_hash",
+                arg: CallArg::Hash(tip)
+            },
+            Call {
+                port: "get_best_block_height",
+                arg: CallArg::None
+            },
+        ]
+    );
+}
+
+/// Concurrent calls overlap and are counted; sequential ones never do.
+#[tokio::test]
+async fn the_peak_in_flight_counts_overlapping_calls() {
+    let chain = ChainBuilder::new().blocks(3).build();
+    for at in 0..3 {
+        assert!(chain.get_block(height(at)).await.is_ok());
+    }
+    assert_eq!(chain.peak_in_flight(), 1);
+    let (a, b, c) = tokio::join!(
+        chain.get_block(height(0)),
+        chain.get_block(height(1)),
+        chain.get_block(height(2)),
+    );
+    assert!(a.is_ok() && b.is_ok() && c.is_ok());
+    assert_eq!(chain.peak_in_flight(), 3);
+}
+
+/// A known side block is served by hash, off the best chain, and never by
+/// height.
+#[tokio::test]
+async fn a_known_side_block_is_served_by_hash_only() {
+    use zaino_primitives::types::BlockConfirmations;
+    use zaino_source::OneShotGetBlockHeader as _;
+    let chain = ChainBuilder::new().blocks(3).build();
+    let parent = chain.block_at(1).expect("loaded");
+    let side = crate::next_block(
+        Some(&parent),
+        &crate::Activations::default(),
+        BlockSpec::default().seeded(7),
+    );
+    chain.know(side.clone());
+    let header = chain
+        .get_block_header(side.hash())
+        .await
+        .expect("known by hash");
+    assert_eq!(header.confirmations, BlockConfirmations::NotInBestChain);
+    let best = chain.get_block(height(2)).await.expect("best");
+    assert_ne!(best.header.hash, side.hash());
+    assert_eq!(chain.tip().map(|tip| tip.height()), Some(height(3)));
+}
+
+/// A node that answers no chain work (zebra) answers none on any port.
+#[tokio::test]
+async fn a_node_without_chainwork_answers_none() {
+    use zaino_source::{
+        OneShotGetBlockHeader as _, OneShotGetBlockVerbose as _, OneShotGetBlockchainInfo as _,
+    };
+    let built = ChainBuilder::new().blocks(2).build();
+    let blocks: Vec<_> = (0..=2)
+        .map(|at| built.block_at(at).expect("loaded"))
+        .collect();
+    for chainwork in [true, false] {
+        let chain = MockChain::new(
+            crate::NodeFacts {
+                chainwork,
+                ..crate::NodeFacts::regtest()
+            },
+            blocks.clone(),
+        );
+        let tip = chain.tip().expect("loaded").hash();
+        let verbose = chain.get_block_verbose(height(2)).await.expect("answered");
+        let header = chain.get_block_header(tip).await.expect("answered");
+        let info = chain.get_blockchain_info().await.expect("answered");
+        assert_eq!(verbose.chainwork.is_some(), chainwork);
+        assert_eq!(header.chainwork.is_some(), chainwork);
+        assert_eq!(info.chain_work.is_some(), chainwork);
+    }
+}
+
 #[tokio::test]
 async fn armed_failures_calls_and_stale_roots() {
     let chain = ChainBuilder::new().blocks(2).build();

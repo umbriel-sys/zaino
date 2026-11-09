@@ -9,7 +9,7 @@ use zaino_source::{
 };
 
 use super::{fault, refused};
-use crate::MockChain;
+use crate::{CallArg, MockChain};
 
 impl zaino_source::OneShotGetTransaction for MockChain {
     /// Where `txid` is, with its bytes where the chain has them (else empty).
@@ -17,7 +17,7 @@ impl zaino_source::OneShotGetTransaction for MockChain {
         &self,
         txid: TransactionId,
     ) -> Result<TransactionResponse, QueryError<GetTransactionError>> {
-        let served = self.enter("get_transaction")?;
+        let served = self.enter("get_transaction", CallArg::Txid(txid)).await?;
         let Some((location, mined)) = served.locate(txid) else {
             return refused(GetTransactionError::NotFound(txid));
         };
@@ -44,7 +44,7 @@ impl zaino_source::OneShotGetMempoolTxids for MockChain {
     async fn get_mempool_txids(
         &self,
     ) -> Result<Vec<TransactionId>, QueryError<GetMempoolTxidsError>> {
-        let served = self.enter("get_mempool_txids")?;
+        let served = self.enter("get_mempool_txids", CallArg::None).await?;
         Ok(served
             .mempool()
             .into_iter()
@@ -58,7 +58,7 @@ impl zaino_source::OneShotGetMempoolMetadata for MockChain {
     async fn get_mempool_metadata(
         &self,
     ) -> Result<Vec<MempoolTxMeta>, QueryError<GetMempoolMetadataError>> {
-        let served = self.enter("get_mempool_metadata")?;
+        let served = self.enter("get_mempool_metadata", CallArg::None).await?;
         let Some(height) = served
             .mempool_height()
             .and_then(|height| Height::try_from(height).ok())
@@ -82,7 +82,9 @@ impl zaino_source::OneShotGetRawMempoolTransaction for MockChain {
         &self,
         txid: TransactionId,
     ) -> Result<Vec<u8>, QueryError<GetRawMempoolTransactionError>> {
-        let served = self.enter("get_raw_mempool_transaction")?;
+        let served = self
+            .enter("get_raw_mempool_transaction", CallArg::Txid(txid))
+            .await?;
         match served.mempool().into_iter().find(|(tx, _)| tx.txid == txid) {
             Some((_, Some(bytes))) => Ok(bytes),
             Some((_, None)) => Err(fault(format!("mempool transaction {txid} has no bytes"))),
@@ -95,7 +97,7 @@ impl zaino_source::OneShotGetMempoolSourceTip for MockChain {
     /// The tip the mempool ports serve at (held behind by
     /// [`MockChain::mine_ahead_of_mempool`]).
     async fn get_mempool_source_tip(&self) -> Result<(BlockHash, Height), QueryError<Infallible>> {
-        let served = self.enter("get_mempool_source_tip")?;
+        let served = self.enter("get_mempool_source_tip", CallArg::None).await?;
         served
             .mempool_height()
             .and_then(|height| served.at(Height::try_from(height).ok()?))
