@@ -426,7 +426,10 @@ impl zaino_source::OneShotGetAddressBalance for ZebraReadStateAdapter {
         zaino_primitives::types::AddressBalance,
         QueryError<zaino_source::GetAddressBalanceError, ReadStateError>,
     > {
-        let valid = parse_addresses(addresses)?;
+        let valid = parse_addresses(
+            addresses,
+            zaino_source::GetAddressBalanceError::InvalidAddress,
+        )?;
 
         match read(&self.state, ReadRequest::AddressBalance(valid)).await? {
             ReadResponse::AddressBalance { balance, received } => {
@@ -447,10 +450,12 @@ impl zaino_source::OneShotGetAddressBalance for ZebraReadStateAdapter {
 
 /// Validate transparent addresses before they reach the state service.
 ///
-/// Rejection here is a domain error, not a transport one: the caller asked
-/// about something that is not an address, and retrying will not change that.
+/// Rejection here is the port's domain error (`InvalidAddress`), as on the
+/// RPC path: the caller asked about something that is not an address, and
+/// retrying will not change that.
 fn parse_addresses<E>(
     addresses: Vec<String>,
+    invalid_address: impl Fn(String) -> E,
 ) -> Result<
     std::collections::HashSet<zebra_chain::transparent::Address>,
     QueryError<E, ReadStateError>,
@@ -459,7 +464,7 @@ where
     E: std::fmt::Debug + std::fmt::Display,
 {
     let invalid = |address: &str, reason: &dyn std::fmt::Display| {
-        QueryError::NonDomain(ReadStateError::off_contract(format!(
+        QueryError::Domain(invalid_address(format!(
             "invalid transparent address `{address}`: {reason}"
         )))
     };
@@ -511,7 +516,10 @@ impl zaino_source::OneShotGetAddressUtxos for ZebraReadStateAdapter {
     > {
         use zaino_primitives::types::{Script, TransparentAddress, Utxo, Zatoshis};
 
-        let valid = parse_addresses(addresses)?;
+        let valid = parse_addresses(
+            addresses,
+            zaino_source::GetAddressUtxosError::InvalidAddress,
+        )?;
 
         let response = read(
             &self.state,
@@ -602,7 +610,10 @@ impl zaino_source::OneShotGetAddressTxids for ZebraReadStateAdapter {
         }
 
         let request = ReadRequest::TransactionIdsByAddresses {
-            addresses: parse_addresses(addresses)?,
+            addresses: parse_addresses(
+                addresses,
+                zaino_source::GetAddressTxidsError::InvalidAddress,
+            )?,
             height_range: zebra_chain::block::Height(u32::from(start))
                 ..=zebra_chain::block::Height(u32::from(end)),
             max_entries: ADDRESS_QUERY_PROBE,
@@ -671,7 +682,10 @@ impl zaino_source::OneShotGetAddressDeltas for ZebraReadStateAdapter {
         }
 
         let request = ReadRequest::TransactionIdsByAddresses {
-            addresses: parse_addresses(addresses.clone())?,
+            addresses: parse_addresses(
+                addresses.clone(),
+                zaino_source::GetAddressDeltasError::InvalidAddress,
+            )?,
             height_range: zebra_chain::block::Height(u32::from(start))
                 ..=zebra_chain::block::Height(u32::from(end)),
             max_entries: ADDRESS_QUERY_PROBE,
@@ -801,14 +815,15 @@ impl zaino_source::OneShotGetCommitmentTreeRoots for ZebraReadStateAdapter {
     > {
         use zaino_primitives::types::TreeRoots;
 
-        let id = hash_or_height(block);
+        let hash = zebra_chain::block::Hash(block.into());
 
         // Read the three pools concurrently: they are independent reads and the
-        // caller waits for all of them regardless.
+        // caller waits for all of them regardless. The any-chain reads find a
+        // side-chain block too, as zcashd's `getblock` does.
         let (sapling, orchard, ironwood) = tokio::join!(
-            read(&self.state, ReadRequest::SaplingTree(id)),
-            read(&self.state, ReadRequest::OrchardTree(id)),
-            read(&self.state, ReadRequest::IronwoodTree(id)),
+            read(&self.state, ReadRequest::AnyChainSaplingTree(hash)),
+            read(&self.state, ReadRequest::AnyChainOrchardTree(hash)),
+            read(&self.state, ReadRequest::AnyChainIronwoodTree(hash)),
         );
 
         // Unlike the RPC path, the state service hands back a live tree, so the
@@ -835,6 +850,13 @@ impl zaino_source::OneShotGetCommitmentTreeRoots for ZebraReadStateAdapter {
             _ => return Err(unexpected_response("IronwoodTree").into()),
         };
 
+        // The state seeds every tree at genesis, so a block it holds has one:
+        // no tree at all is a block it does not hold.
+        if sapling.is_none() && orchard.is_none() && ironwood.is_none() {
+            return Err(QueryError::Domain(
+                zaino_source::GetCommitmentTreeRootsError::BlockNotFound(block),
+            ));
+        }
         Ok(TreeRoots {
             sapling,
             orchard,
@@ -1623,19 +1645,33 @@ mod address_query_tests {
     use zcash_address::{ToAddress as _, ZcashAddress};
     use zcash_protocol::consensus::NetworkType;
 
+    use zaino_source::GetAddressBalanceError::InvalidAddress;
+
     /// TEX addresses on every network parse as zebra addresses but are refused,
-    /// as zebrad 7 refuses them, rather than answering empty.
+    /// as zebrad 7 refuses them, rather than answering empty: the port's
+    /// `InvalidAddress`, as on the RPC path.
     #[test]
     fn tex_addresses_are_refused() {
         for network in [NetworkType::Main, NetworkType::Test, NetworkType::Regtest] {
             let tex = ZcashAddress::from_tex(network, [7; 20]).encode();
-            let refused = parse_addresses::<String>(vec![tex.clone()])
+            let refused = parse_addresses(vec![tex.clone()], InvalidAddress)
                 .expect_err("a TEX address must be refused");
             assert!(
-                matches!(&refused, QueryError::NonDomain(e) if e.to_string().contains("TEX")),
+                matches!(&refused, QueryError::Domain(InvalidAddress(why)) if why.contains("TEX")),
                 "{tex}: {refused:?}"
             );
         }
+    }
+
+    /// A string that is no address is the port's `InvalidAddress`, not a fault.
+    #[test]
+    fn malformed_addresses_are_invalid_address() {
+        let refused = parse_addresses(vec!["not an address".to_owned()], InvalidAddress)
+            .expect_err("refused");
+        assert!(
+            matches!(&refused, QueryError::Domain(InvalidAddress(_))),
+            "{refused:?}"
+        );
     }
 
     /// The probe asks for one row past the cap, so an oversize answer is seen.
