@@ -32,7 +32,10 @@ fn branch_ids(count: u32) -> Vec<u16> {
 }
 
 /// A stepped chain head synced to `validator`'s tip.
-async fn synced(validator: &MockValidator, max_depth: u32) -> Arc<ChainHeadService<MockValidator>> {
+async fn synced(
+    validator: &MockValidator,
+    max_depth: u32,
+) -> Arc<ChainHeadService<zaino_source_mock::MockChain>> {
     let service = stepped(validator, max_depth).await;
     service
         .advance_once()
@@ -217,7 +220,10 @@ const HANDOFF_DEPTH: u32 = 30;
 
 /// A chain head in steady state: its graph filled past the trim floor, so the
 /// floor rather than the anchor is what its oldest retained block sits on.
-async fn in_steady_state() -> (MockValidator, Arc<ChainHeadService<MockValidator>>) {
+async fn in_steady_state() -> (
+    MockValidator,
+    Arc<ChainHeadService<zaino_source_mock::MockChain>>,
+) {
     let validator = MockValidator::linear(200);
     let service = synced(&validator, HANDOFF_DEPTH).await;
     for id in 200..260u16 {

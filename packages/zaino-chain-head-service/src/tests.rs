@@ -1,9 +1,6 @@
-//! Tests over a mock validator.
-//!
-//! The mock is local to this crate rather than shared: ChainHead's driven port
-//! is six questions, and a purpose-built fake that can be told to reorg, to
-//! stall, or to move its tip mid-reconcile is worth more here than a general
-//! harness.
+//! Tests over the shared fake validator (`zaino-source-mock`), driven by block
+//! ids through [`MockValidator`]: told to extend, reorg, stall its tip reads
+//! or answer stale roots.
 //!
 //! Two styles, chosen per test:
 //!
@@ -17,11 +14,7 @@
 
 mod reorg_depth;
 
-use std::{
-    collections::HashMap,
-    sync::{Arc, Mutex},
-    time::Duration,
-};
+use std::{sync::Arc, time::Duration};
 
 use tokio_util::sync::CancellationToken;
 use zaino_chain_head::{
@@ -32,13 +25,8 @@ use zaino_primitives::types::{
     Block, BlockCommitments, BlockHash, BlockHeader, BlockRef, ChainMetadata, EquihashSolution,
     Height, MerkleRoot, RelativeChainWork, Transaction, TransactionId, TreeRoots,
 };
-use zaino_source::{
-    FailureMode, GetBlockByHashError, GetBlockError, GetChainTipError, GetChainTipsError,
-    GetCommitmentTreeRootsByHeightError, GetCommitmentTreeRootsError, NonDomainError,
-    OneShotGetBlock, OneShotGetBlockByHash, OneShotGetChainTip, OneShotGetChainTips,
-    OneShotGetCommitmentTreeRoots, OneShotGetCommitmentTreeRootsByHeight, QueryError,
-    SubscribeBlocks,
-};
+use zaino_source::FailureMode;
+use zaino_source_mock::{MockBlock, MockChain, NodeFacts, PoolTrees};
 
 use crate::{
     error::ChainHeadAdvanceError,
@@ -96,192 +84,88 @@ fn coinbase(id: u16) -> Transaction {
     }
 }
 
-#[derive(Default)]
-struct MockState {
-    /// Every block the validator knows, canonical or not.
-    blocks: HashMap<BlockHash, Block>,
-    /// The best chain, indexed by height.
-    best_chain: Vec<BlockHash>,
-    /// Fail this many more calls before answering normally.
-    fail_calls: usize,
-    /// Answer this many more by-height roots reads with a hash no block has.
-    stale_roots_answers: usize,
-    /// How many hash-addressed roots reads have been answered.
-    roots_by_hash_reads: usize,
+/// One id-named block as the shared mock serves it: no pools, so no roots
+/// or trees.
+fn mock_block(h: u32, id: u16, parent: u16) -> MockBlock {
+    MockBlock {
+        block: block(h, id, parent),
+        tree_roots: TreeRoots {
+            sapling: None,
+            orchard: None,
+            ironwood: None,
+        },
+        trees: PoolTrees::default(),
+        subtrees: Vec::new(),
+        raw: None,
+        size: 0,
+    }
 }
 
-/// A validator whose chain the test controls.
+/// The shared fake validator (`zaino-source-mock`), driven by block ids so
+/// test chains read as `1 -> 2 -> 3`.
 #[derive(Clone)]
 struct MockValidator {
-    state: Arc<Mutex<MockState>>,
+    chain: MockChain,
 }
 
 impl MockValidator {
     /// A best chain of `len` blocks, ids `0..len`, block `n` at height `n`.
     fn linear(len: u16) -> Self {
-        let mut state = MockState::default();
-        for id in 0..len {
-            let h = u32::from(id);
-            let parent = id.saturating_sub(1);
-            state.blocks.insert(hash(id), block(h, id, parent));
-            state.best_chain.push(hash(id));
-        }
+        let blocks = (0..len)
+            .map(|id| mock_block(u32::from(id), id, id.saturating_sub(1)))
+            .collect();
         Self {
-            state: Arc::new(Mutex::new(state)),
+            chain: MockChain::new(NodeFacts::regtest(), blocks),
         }
-    }
-
-    fn lock(&self) -> std::sync::MutexGuard<'_, MockState> {
-        self.state.lock().expect("mock state mutex poisoned")
     }
 
     /// Makes the next `count` by-height roots reads name a block the walk did not fetch.
     fn answer_stale_roots(&self, count: usize) {
-        self.lock().stale_roots_answers = count;
+        self.chain.answer_stale_roots(count);
     }
 
     /// How many hash-addressed roots reads this validator has answered.
     fn roots_by_hash_reads(&self) -> usize {
-        self.lock().roots_by_hash_reads
+        usize::try_from(self.chain.calls("get_commitment_tree_roots")).expect("a test's count")
+    }
+
+    /// The next `count` chain-tip reads fail as a transport fault (`None` =
+    /// every one).
+    fn fail_tip_reads(&self, count: Option<u32>) {
+        self.chain
+            .fail_ports(&["get_chain_tip"], count, FailureMode::Connection);
     }
 
     /// Appends one block to the best chain.
     fn extend(&self, id: u16) {
-        let mut state = self.lock();
-        let h = u32::try_from(state.best_chain.len()).expect("test chain height in range");
-        let parent = state.best_chain.last().map(id_of).unwrap_or(0);
-        state.blocks.insert(hash(id), block(h, id, parent));
-        state.best_chain.push(hash(id));
+        let tip = self.chain.tip().expect("a test chain");
+        let h = u32::from(tip.height()) + 1;
+        self.chain.extend(mock_block(h, id, id_of(&tip.hash())));
     }
 
     /// Replaces the best chain from `from_height` upwards with `ids`, leaving
     /// the displaced blocks known but no longer canonical.
     fn reorg(&self, from_height: u32, ids: &[u16]) {
-        let mut state = self.lock();
-        state.best_chain.truncate(from_height as usize);
-        for (offset, &id) in ids.iter().enumerate() {
-            let h = from_height + offset as u32;
-            let parent = state.best_chain.last().map(id_of).unwrap_or(0);
-            state.blocks.insert(hash(id), block(h, id, parent));
-            state.best_chain.push(hash(id));
-        }
+        let mut parent = from_height
+            .checked_sub(1)
+            .and_then(|below| self.chain.block_at(below))
+            .map_or(0, |block| id_of(&block.hash()));
+        let blocks = (from_height..)
+            .zip(ids)
+            .map(|(h, &id)| {
+                let block = mock_block(h, id, parent);
+                parent = id;
+                block
+            })
+            .collect();
+        self.chain.reorg(from_height, blocks);
     }
 
     fn tip(&self) -> (BlockHash, Height) {
-        let state = self.lock();
-        let index = state.best_chain.len() - 1;
-        let h = u32::try_from(index).expect("test chain height in range");
-        (state.best_chain[index], height(h))
+        let tip = self.chain.tip().expect("a test chain");
+        (tip.hash(), tip.height())
     }
 }
-
-fn transport_failure<E: std::fmt::Debug + std::fmt::Display>() -> QueryError<E> {
-    QueryError::NonDomain(NonDomainError::new(FailureMode::Connection, "mock is down"))
-}
-
-impl zaino_source::ValidatorSource for MockValidator {
-    type NonDomain = zaino_source::NonDomainError;
-}
-
-impl OneShotGetChainTip for MockValidator {
-    async fn get_chain_tip(&self) -> Result<(BlockHash, Height), QueryError<GetChainTipError>> {
-        {
-            let mut state = self.lock();
-            if state.fail_calls > 0 {
-                state.fail_calls -= 1;
-                return Err(transport_failure());
-            }
-        }
-        Ok(self.tip())
-    }
-}
-
-impl OneShotGetChainTips for MockValidator {
-    async fn get_chain_tips(&self) -> Result<Vec<ChainTip>, QueryError<GetChainTipsError>> {
-        let state = self.lock();
-        let active_index = state.best_chain.len() - 1;
-        let active_height = u32::try_from(active_index).expect("test chain height in range");
-        let tips = vec![ChainTip {
-            height: height(active_height),
-            hash: state.best_chain[active_index],
-            branch_len: 0,
-            status: ChainTipStatus::Active,
-        }];
-        Ok(tips)
-    }
-}
-
-impl OneShotGetBlock for MockValidator {
-    async fn get_block(&self, height: Height) -> Result<Block, QueryError<GetBlockError>> {
-        let state = self.lock();
-        state
-            .best_chain
-            .get(u32::from(height) as usize)
-            .and_then(|hash| state.blocks.get(hash))
-            .cloned()
-            .ok_or(QueryError::Domain(GetBlockError::HeightNotFound(height)))
-    }
-}
-
-impl OneShotGetBlockByHash for MockValidator {
-    async fn get_block_by_hash(
-        &self,
-        hash: BlockHash,
-    ) -> Result<Block, QueryError<GetBlockByHashError>> {
-        self.lock()
-            .blocks
-            .get(&hash)
-            .cloned()
-            .ok_or(QueryError::Domain(GetBlockByHashError::NotFound(hash)))
-    }
-}
-
-impl OneShotGetCommitmentTreeRoots for MockValidator {
-    async fn get_commitment_tree_roots(
-        &self,
-        _block: BlockHash,
-    ) -> Result<TreeRoots, QueryError<GetCommitmentTreeRootsError>> {
-        self.lock().roots_by_hash_reads += 1;
-        Ok(TreeRoots {
-            sapling: None,
-            orchard: None,
-            ironwood: None,
-        })
-    }
-}
-
-impl OneShotGetCommitmentTreeRootsByHeight for MockValidator {
-    async fn get_commitment_tree_roots_by_height(
-        &self,
-        height: Height,
-    ) -> Result<(BlockHash, TreeRoots), QueryError<GetCommitmentTreeRootsByHeightError>> {
-        let mut state = self.lock();
-        let best_chain_hash = state
-            .best_chain
-            .get(u32::from(height) as usize)
-            .copied()
-            .ok_or(QueryError::Domain(
-                GetCommitmentTreeRootsByHeightError::HeightNotFound(height),
-            ))?;
-        let hash = if state.stale_roots_answers > 0 {
-            state.stale_roots_answers -= 1;
-            hash(u16::MAX)
-        } else {
-            best_chain_hash
-        };
-        drop(state);
-        Ok((
-            hash,
-            TreeRoots {
-                sapling: None,
-                orchard: None,
-                ironwood: None,
-            },
-        ))
-    }
-}
-
-impl SubscribeBlocks for MockValidator {}
 
 /// A config that keeps the background task asleep, so tests step the runtime
 /// themselves.
@@ -316,12 +200,9 @@ fn running_config(max_depth: u32) -> ChainHeadConfig {
 }
 
 /// An anchored chain head with no writer, for stepped tests.
-async fn stepped(
-    validator: &MockValidator,
-    max_depth: u32,
-) -> Arc<ChainHeadService<MockValidator>> {
+async fn stepped(validator: &MockValidator, max_depth: u32) -> Arc<ChainHeadService<MockChain>> {
     ChainHeadService::spawn_without_writer(
-        Arc::new(validator.clone()),
+        Arc::new(validator.chain.clone()),
         test_config(max_depth),
         CancellationToken::new(),
     )
@@ -334,9 +215,9 @@ async fn stepped_selecting(
     validator: &MockValidator,
     max_depth: u32,
     selection: TipSelection,
-) -> Arc<ChainHeadService<MockValidator>> {
+) -> Arc<ChainHeadService<MockChain>> {
     ChainHeadService::spawn_without_writer_selecting(
-        Arc::new(validator.clone()),
+        Arc::new(validator.chain.clone()),
         test_config(max_depth),
         selection,
         CancellationToken::new(),
@@ -346,12 +227,9 @@ async fn stepped_selecting(
 }
 
 /// A chain head with its writer running, for behaviour tests.
-async fn running(
-    validator: &MockValidator,
-    max_depth: u32,
-) -> Arc<ChainHeadService<MockValidator>> {
+async fn running(validator: &MockValidator, max_depth: u32) -> Arc<ChainHeadService<MockChain>> {
     ChainHeadService::spawn(
-        Arc::new(validator.clone()),
+        Arc::new(validator.chain.clone()),
         running_config(max_depth),
         CancellationToken::new(),
     )
@@ -363,7 +241,7 @@ async fn running(
 ///
 /// Bounded so a genuine failure surfaces as a panic rather than a hang.
 async fn wait_for(
-    service: &ChainHeadService<MockValidator>,
+    service: &ChainHeadService<MockChain>,
     what: &str,
     predicate: impl Fn(&MapBackedSnapshot) -> bool,
 ) -> Arc<MapBackedSnapshot> {
@@ -387,7 +265,7 @@ pub(crate) fn best_chain_hashes(snapshot: &impl ChainHeadSnapshot) -> Vec<BlockH
 /// five-block chain `0 -> 4`.
 async fn synced_on_five_blocks(
     selection: TipSelection,
-) -> (MockValidator, Arc<ChainHeadService<MockValidator>>) {
+) -> (MockValidator, Arc<ChainHeadService<MockChain>>) {
     let validator = MockValidator::linear(5);
     let service = stepped_selecting(&validator, 100, selection).await;
     step_to_tip(&service, &validator).await;
@@ -397,7 +275,7 @@ async fn synced_on_five_blocks(
 /// Applies `validator.reorg(from_height, ids)`, advances once, and returns the
 /// published snapshot.
 async fn reorg_and_advance(
-    service: &ChainHeadService<MockValidator>,
+    service: &ChainHeadService<MockChain>,
     validator: &MockValidator,
     from_height: u32,
     ids: &[u16],
@@ -416,7 +294,7 @@ fn block_ref(h: u32, id: u16) -> BlockRef {
 }
 
 /// Advances the stepped service to the source's current tip.
-async fn step_to_tip(service: &ChainHeadService<MockValidator>, validator: &MockValidator) {
+async fn step_to_tip(service: &ChainHeadService<MockChain>, validator: &MockValidator) {
     let _ = validator.tip();
     service.advance_once().await.expect("advance succeeds");
 }
@@ -582,10 +460,10 @@ async fn a_re_anchor_moves_the_work_anchor() {
 #[tokio::test]
 async fn spawn_fails_when_the_validator_never_answers() {
     let validator = MockValidator::linear(5);
-    validator.lock().fail_calls = usize::MAX;
+    validator.fail_tip_reads(None);
 
     let error = ChainHeadService::spawn(
-        Arc::new(validator),
+        Arc::new(validator.chain),
         test_config(100),
         CancellationToken::new(),
     )
@@ -602,7 +480,7 @@ async fn spawn_fails_when_the_validator_never_answers() {
 #[tokio::test]
 async fn spawn_retries_a_transient_failure() {
     let validator = MockValidator::linear(5);
-    validator.lock().fail_calls = 2;
+    validator.fail_tip_reads(Some(2));
 
     let service = stepped(&validator, 100).await;
 
@@ -990,7 +868,7 @@ async fn a_failed_advance_leaves_the_snapshot_intact() {
     step_to_tip(&service, &validator).await;
     let before = service.subscriber().current().best_tip();
 
-    validator.lock().fail_calls = usize::MAX;
+    validator.fail_tip_reads(None);
     let _ = service.advance_once().await;
 
     assert_eq!(service.subscriber().current().best_tip(), before);
@@ -1006,11 +884,8 @@ async fn a_block_labelled_with_the_wrong_height_fails_the_advance() {
     step_to_tip(&service, &validator).await;
     let before = service.subscriber().current().best_tip();
 
-    {
-        let mut state = validator.lock();
-        state.blocks.insert(hash(5), block(9, 5, 4));
-        state.best_chain.push(hash(5));
-    }
+    // the next best block, labelled height 9
+    validator.chain.extend(mock_block(9, 5, 4));
     let outcome = service.advance_once().await;
 
     assert!(

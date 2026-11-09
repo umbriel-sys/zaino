@@ -109,6 +109,9 @@ task, the wake handling or the backoff ladder is the thing under test.
 Reach for stepped first. A running test that polls for a condition is slower and
 can pass for the wrong reason.
 
+Both styles run against `zaino-source-mock`'s `MockChain`, the fake validator
+every crate shares; the test module drives it by block id (`MockValidator`).
+
 `spawn_without_writer` is not a `sync` method under another name — it does not
 exist in a production build, and it advances nothing on its own. Do not
 "promote" either of these to production visibility for a caller's convenience;

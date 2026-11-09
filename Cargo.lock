@@ -6079,6 +6079,7 @@ dependencies = [
  "zaino-consensus",
  "zaino-primitives",
  "zaino-source",
+ "zaino-source-mock",
  "zaino-status",
 ]
 
