@@ -9,10 +9,9 @@
 //! a database from them and assert on what comes back — so the data sits with
 //! the code it exercises.
 //!
-//! `zaino-state`'s remaining suites need the same chain. Rather than a second
-//! copy or a path reaching across crates, they take this crate's `testing`
-//! feature and call [`vectors_dir`]. The feature is dev-dependency-only, so
-//! none of this reaches a shipped build.
+//! `zaino-chain`'s suites read the same chain through this crate's `testing`
+//! feature. The feature is dev-dependency-only, so none of this reaches a
+//! shipped build.
 
 use std::fs::File;
 use std::io::BufReader;

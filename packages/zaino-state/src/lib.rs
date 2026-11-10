@@ -95,7 +95,7 @@ pub use zaino_primitives::types::MempoolInfo;
 /// instead. The rest of this list shrinks the same way.
 pub(crate) use chain_index::types::{BlockHash, IndexedBlock};
 #[cfg(test)]
-pub(crate) use chain_index::types::{Height, Outpoint, TransactionHash};
+pub(crate) use chain_index::types::{Height, Outpoint};
 
 #[cfg(feature = "test_dependencies")]
 /// allow public access to additional APIs, for testing

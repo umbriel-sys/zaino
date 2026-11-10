@@ -21,39 +21,29 @@ use zaino_chain::ChainViewSnapshot as _;
 
 use crate::chain_index::chain_view::BestTip as _;
 
-use super::{load_test_vectors_and_sync_chain_index, poll::poll_until, MockchainMode};
+use super::{served_tip, synced, MockchainMode};
 use crate::chain_index::ChainIndex;
 
 /// The chain head reaches the validator's tip, and ChainIndex serves it.
 #[tokio::test(flavor = "multi_thread")]
 async fn chain_head_reaches_the_validator_tip() {
-    let (_blocks, _indexer, index_reader, mockchain) =
-        load_test_vectors_and_sync_chain_index(MockchainMode::Active).await;
+    let index = synced(MockchainMode::Active).await;
 
-    let target_tip = mockchain.source().active_height();
-    poll_until(
-        "chain index to serve the validator's tip",
-        Duration::from_secs(10),
-        Duration::from_millis(50),
-        || async {
-            let tip = index_reader.snapshot_nonfinalized_state().best_tip();
-            (u32::from(tip.height) == target_tip).then_some(())
-        },
-    )
-    .await;
+    let tip = index.reader.snapshot_nonfinalized_state().best_tip();
+    assert_eq!(u32::from(tip.height), served_tip(&index.source));
 }
 
 /// Every announced tip must already resolve through the same local index view.
 #[tokio::test(flavor = "multi_thread")]
 async fn indexed_tip_events_name_index_readable_blocks() {
     // Given
-    let (_blocks, _indexer, index_reader, mockchain) =
-        load_test_vectors_and_sync_chain_index(MockchainMode::Active).await;
+    let index = synced(MockchainMode::Active).await;
+    let index_reader = &index.reader;
     let mut tips = index_reader.indexed_tip_stream();
     let initial = tips.next().await.expect("the stream starts with a tip");
 
     // When
-    mockchain.source().mine_blocks(1);
+    index.source.source().mine(1);
     let updated = tokio::time::timeout(Duration::from_secs(10), tips.next())
         .await
         .expect("the updated tip arrives before the deadline")
@@ -81,20 +71,9 @@ async fn indexed_tip_events_name_index_readable_blocks() {
 /// until a client asks for exactly those blocks.
 #[tokio::test(flavor = "multi_thread")]
 async fn layers_meet_without_a_gap() {
-    let (_blocks, _indexer, index_reader, mockchain) =
-        load_test_vectors_and_sync_chain_index(MockchainMode::Active).await;
-
-    let target_tip = mockchain.source().active_height();
-    poll_until(
-        "chain index to serve the validator's tip",
-        Duration::from_secs(10),
-        Duration::from_millis(50),
-        || async {
-            let tip = index_reader.snapshot_nonfinalized_state().best_tip();
-            (u32::from(tip.height) == target_tip).then_some(())
-        },
-    )
-    .await;
+    let index = synced(MockchainMode::Active).await;
+    let index_reader = &index.reader;
+    let target_tip = served_tip(&index.source);
 
     let snapshot = index_reader.snapshot_nonfinalized_state();
     let range = snapshot.serviceable_range();

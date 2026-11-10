@@ -5,10 +5,7 @@ use tokio::time::{sleep, Duration};
 use zaino_chain_head::ChainHeadConfig;
 use zaino_status::{Status as _, StatusType};
 
-use super::{
-    load_test_vectors_and_sync_chain_index,
-    load_test_vectors_and_sync_chain_index_with_chain_head_config, MockchainMode,
-};
+use super::{served_tip, synced, synced_with, MockchainMode};
 use crate::chain_index::chain_view::BestTip as _;
 use crate::chain_index::{chain_head, combine_component_statuses, ChainIndex};
 
@@ -39,14 +36,13 @@ fn max_backoff_window(config: &ChainHeadConfig) -> Duration {
 /// the index to `CriticalError`, which would stop the server.
 #[tokio::test(flavor = "multi_thread")]
 async fn survives_transient_source_failure() {
-    let (_blocks, _indexer, index_reader, mockchain) =
-        load_test_vectors_and_sync_chain_index(MockchainMode::Active).await;
+    let index = synced(MockchainMode::Active).await;
 
-    mockchain.source().set_failing(true);
+    index.source.source().set_failing(true);
     sleep(Duration::from_secs(2)).await;
 
     assert_ne!(
-        index_reader.status(),
+        index.reader.status(),
         StatusType::CriticalError,
         "a transient source failure must not escalate to CriticalError"
     );
@@ -57,15 +53,11 @@ async fn survives_transient_source_failure() {
 #[tokio::test(flavor = "multi_thread")]
 async fn escalates_to_critical_after_persistent_failure() {
     let config = fast_chain_head_config();
-    let (_blocks, _indexer, index_reader, mockchain) =
-        load_test_vectors_and_sync_chain_index_with_chain_head_config(
-            MockchainMode::Active,
-            config.clone(),
-        )
-        .await;
+    let index = synced_with(MockchainMode::Active, config.clone()).await;
+    let index_reader = &index.reader;
 
     let start = Instant::now();
-    mockchain.source().set_failing(true);
+    index.source.source().set_failing(true);
 
     // 5× slack over the nominal backoff sum to absorb scheduling jitter.
     let max_time_to_critical = max_backoff_window(&config) * 5;
@@ -138,8 +130,8 @@ fn the_fold_accounts_for_every_component() {
 /// permanent.
 #[tokio::test(flavor = "multi_thread")]
 async fn status_recovers_after_a_transient_source_failure() {
-    let (_blocks, _indexer, index_reader, mockchain) =
-        load_test_vectors_and_sync_chain_index(MockchainMode::Active).await;
+    let index = synced(MockchainMode::Active).await;
+    let (index_reader, mockchain) = (&index.reader, &index.source);
 
     mockchain.source().set_failing(true);
     super::poll::poll_until(
@@ -164,34 +156,20 @@ async fn status_recovers_after_a_transient_source_failure() {
     .await;
 }
 
-/// Moved here from the integration test
-/// `chain_cache::sync_large_chain_zebrad`. That test contained one
-/// whitebox read — `snapshot.best_tip.height` (W11 in the issue #1044
-/// audit) — asserting the indexer tip matched the validator tip after
-/// ~150 blocks were produced in a burst. That property is about the sync
-/// loop absorbing many new source blocks between iterations, not about
-/// chain-cache shape, so it belongs next to the other sync-loop tests
-/// and inside the crate where the snapshot's fields are reachable.
-///
+/// Several blocks appearing on the source before the next sync iteration
+/// are absorbed: the index converges on the source's tip.
 /// `sync_blocks_after_startup` covers the one-block-at-a-time trickle.
-/// This test covers the distinct case where multiple blocks appear on
-/// the source before the next sync iteration runs. Porting to
-/// `MockSource` (which implements `BlockchainReader`) keeps the
-/// indexer's production sync code in the loop while removing the podman
-/// / live-validator fixture dependency the original test required.
 #[tokio::test(flavor = "multi_thread")]
 async fn tip_converges_after_burst_mine() {
-    let (_blocks, _indexer, index_reader, mockchain) =
-        load_test_vectors_and_sync_chain_index(MockchainMode::Active).await;
+    let index = synced(MockchainMode::Active).await;
+    let index_reader = &index.reader;
 
-    let initial_tip = mockchain.source().active_height();
-    mockchain.source().mine_blocks(20);
-    let expected_tip = mockchain.source().active_height();
+    let initial_tip = served_tip(&index.source);
+    index.source.source().mine(20);
+    let expected_tip = served_tip(&index.source);
     assert!(
         expected_tip > initial_tip,
-        "mockchain did not advance: burst mine was a no-op \
-         (initial_tip={initial_tip}, max_chain_height={})",
-        mockchain.source().max_chain_height(),
+        "mockchain did not advance: burst mine was a no-op (initial_tip={initial_tip})",
     );
 
     super::poll::poll_until(
@@ -222,30 +200,18 @@ async fn finalised_index_follows_a_burst_mine_past_the_seam() {
     use crate::chain_index::OPERATIONAL_NFS_DEPTH;
 
     // Starts below the window so the store begins at genesis, then jumps to the
-    // corpus tip: 170 > depth (100), and the resulting gap > the background threshold.
+    // chain tip: 170 > depth (100), and the resulting gap > the background threshold.
     const INITIAL_TIP: u32 = 30;
     const BURST: u32 = 170;
 
     super::init_tracing();
-    let blocks = super::load_test_vectors().unwrap().blocks;
-    let source = super::build_active_mockchain_source(INITIAL_TIP, blocks);
+    let activations = zaino_source_mock::Activations::default();
+    let source = super::mock_source(&activations, super::chain_blocks());
+    source.source().serve_to(INITIAL_TIP);
     let temp_dir = tempfile::tempdir().unwrap();
-    let config = super::ChainIndexConfig {
-        storage: super::StorageConfig {
-            database: super::DatabaseConfig {
-                path: temp_dir.path().to_path_buf(),
-                ..Default::default()
-            },
-            ..Default::default()
-        },
-        ephemeral: false,
-        mempool: Default::default(),
-        db_version: 1,
-        network: super::ActivationHeights::default().to_regtest_network(),
-    };
     let indexer = super::NodeBackedChainIndex::new_with_chain_head_config(
         source.clone(),
-        config,
+        super::index_config(&temp_dir, &activations),
         fast_chain_head_config(),
     )
     .await
@@ -263,9 +229,9 @@ async fn finalised_index_follows_a_burst_mine_past_the_seam() {
     )
     .await;
 
-    source.source().mine_blocks(BURST);
-    let tip = source.source().active_height();
-    assert_eq!(tip, INITIAL_TIP + BURST, "the corpus must cover the burst");
+    source.source().mine(BURST);
+    let tip = served_tip(&source);
+    assert_eq!(tip, INITIAL_TIP + BURST, "the chain must cover the burst");
     let seam = tip - OPERATIONAL_NFS_DEPTH;
 
     let frontier = super::poll::poll_until(

@@ -333,6 +333,27 @@ async fn serving_mining_and_waking() {
     );
 }
 
+/// The schedule configures a regtest node with the heights it schedules,
+/// leaving the rest unactivated.
+#[test]
+fn the_schedule_configures_a_regtest_node() {
+    use crate::{Activations, Upgrade};
+
+    let heights = Activations::default()
+        .at(Upgrade::Nu6_3, 7)
+        .activation_heights();
+    assert_eq!(
+        (
+            heights.overwinter,
+            heights.nu6_2,
+            heights.nu6_3,
+            heights.nu7
+        ),
+        (Some(1), Some(1), Some(7), None)
+    );
+    assert_eq!(Activations::none().activation_heights().sapling, None);
+}
+
 #[tokio::test]
 async fn a_reorg_keeps_the_displaced_blocks_as_a_side_branch() {
     let chain = ChainBuilder::new().blocks(5).build();

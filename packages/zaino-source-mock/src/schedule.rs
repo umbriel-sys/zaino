@@ -3,7 +3,8 @@
 
 use zaino_consensus::branch_id;
 use zaino_primitives::types::{
-    ConsensusBranchId, Height, NetworkUpgradeInfo, NetworkUpgradeStatus, ShieldedPool,
+    ActivationHeights, ConsensusBranchId, Height, NetworkUpgradeInfo, NetworkUpgradeStatus,
+    ShieldedPool,
 };
 
 /// A network upgrade the builder schedules.
@@ -148,6 +149,30 @@ impl Activations {
     pub fn active(&self, pool: ShieldedPool, height: u32) -> bool {
         self.in_force(height)
             .is_some_and(|upgrade| upgrade >= Upgrade::of_pool(pool))
+    }
+
+    /// The schedule as a regtest node is configured with it.
+    pub fn activation_heights(&self) -> ActivationHeights {
+        let at = |upgrade: Upgrade| {
+            self.heights
+                .iter()
+                .find(|(scheduled, _)| *scheduled == upgrade)
+                .map(|(_, height)| *height)
+        };
+        ActivationHeights {
+            before_overwinter: Some(1),
+            overwinter: at(Upgrade::Overwinter),
+            sapling: at(Upgrade::Sapling),
+            blossom: at(Upgrade::Blossom),
+            heartwood: at(Upgrade::Heartwood),
+            canopy: at(Upgrade::Canopy),
+            nu5: at(Upgrade::Nu5),
+            nu6: at(Upgrade::Nu6),
+            nu6_1: at(Upgrade::Nu6_1),
+            nu6_2: at(Upgrade::Nu6_2),
+            nu6_3: at(Upgrade::Nu6_3),
+            nu7: at(Upgrade::Nu7),
+        }
     }
 
     /// The schedule as a validator reports it (status set against the tip

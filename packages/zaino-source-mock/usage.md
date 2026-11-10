@@ -23,7 +23,8 @@ parsed from them: txids, merkle roots and hashes are real. The builder parses
 at `Light`; the mock's own tests check every block shape at `Full` against
 zebra. One schedule, `Activations` (network-upgrade heights), sets the
 formats, branch ids and active pools, and `ChainBuilder::with` reports it as
-`NodeFacts.upgrades`.
+`NodeFacts.upgrades`. Code under test that takes a network gets the same
+schedule from `Activations::activation_heights()`.
 
 A spec a chain cannot hold panics: notes in a pool not yet active, or more
 than a block's 2 MB (`SAPLING_PER_BLOCK`, `ACTIONS_PER_BLOCK`); spread notes

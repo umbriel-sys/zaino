@@ -3,8 +3,8 @@
 //! # Available to dependants, behind `testing`
 //!
 //! [`vectors`] is compiled into a normal build when the `testing` feature is
-//! on, so `zaino-state`'s remaining suites can read the same chain rather than
-//! keeping a second copy of it. That feature is dev-dependency-only —
+//! on, so `zaino-chain`'s suites can read the same chain rather than keeping a
+//! second copy of it. That feature is dev-dependency-only —
 //! `resolver = "2"` keeps dev-dependency features out of production graphs — so
 //! none of this reaches a shipped build.
 //!
