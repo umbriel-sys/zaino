@@ -2,7 +2,7 @@
 //!
 //! One trait per question a consumer can ask about the chain.
 //! Implementations (adapters) bridge to a specific transport
-//! (JSON-RPC, Zebra ReadState, mock).
+//! (JSON-RPC, Zebra ReadState).
 //!
 //! Consumers compose traits via bounds:
 //! ```ignore
@@ -165,11 +165,5 @@ pub trait ValidatorSource: Send + Sync {
     type NonDomain: std::error::Error + Send + Sync + 'static + Into<NonDomainError>;
 }
 
-// `cfg(test)` as well as the feature: without it this crate's own tests never
-// compile the mock, so neither its tests nor `ValidatorClient`'s integration tests
-// run in a bare `cargo test` — nothing in the workspace enables `testing`, and
-// the gap is invisible because a module that is not compiled reports no
-// failures. The feature stays so downstream crates can opt in; `cfg(test)`
-// makes the mock's own coverage unconditional.
-#[cfg(any(test, feature = "testing"))]
-pub mod mock;
+#[cfg(test)]
+mod scripted;

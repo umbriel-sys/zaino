@@ -104,107 +104,110 @@ impl Drop for PolledChainTip {
     }
 }
 
-#[cfg(all(test, feature = "testing"))]
+// Time is paused in every test here: the poll interval elapses only as the
+// runtime advances it, so each test sees an exact number of polls.
+#[cfg(test)]
 mod tests {
     use super::*;
-    use crate::mock::{self, MockChain};
-    use zaino_primitives::types::{
-        Block, BlockHash, BlockHeader, ChainMetadata, EquihashSolution, Height,
-    };
+    use crate::scripted::{hash, height, Scripted};
+    use crate::FailureMode;
 
-    fn height(h: u32) -> Height {
-        Height::try_from(h).expect("valid height")
-    }
+    const INTERVAL: Duration = Duration::from_millis(10);
 
-    fn hash(byte: u8) -> BlockHash {
-        BlockHash::from([byte; 32])
-    }
-
-    fn test_block(h: u32, hash_byte: u8) -> Block {
-        let header = BlockHeader {
-            hash: hash(hash_byte),
-            version: 4,
-            prev_hash: BlockHash::ZERO,
-            height: height(h),
-            time: 0,
-            merkle_root: [0; 32].into(),
-            block_commitments: [0; 32].into(),
-            bits: zaino_primitives::types::CompactDifficulty::try_from_bits(0x2007_ffff)
-                .expect("valid nBits"),
-            nonce: [0; 32],
-            solution: EquihashSolution::Regtest([0; 36]),
-        };
-        Block::try_new(
-            header,
-            vec![mock::coinbase(hash(hash_byte))],
-            ChainMetadata::ZERO,
-        )
-        .expect("a test block carries its coinbase")
+    /// A poller over a source at tip `(1, 0)`, and the source.
+    async fn polled() -> (PolledChainTip, Scripted) {
+        let source = Scripted::default().with_tip(hash(1), height(0));
+        let polled = PolledChainTip::spawn(source.clone(), INTERVAL)
+            .await
+            .expect("seeded from the initial read");
+        (polled, source)
     }
 
     /// The constructor must not hand back a subscription seeded with a
     /// placeholder, so it reads once and fails if that read fails.
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn spawn_fails_when_the_source_has_no_tip() {
-        let result = PolledChainTip::spawn(MockChain::new(), Duration::from_millis(10)).await;
-
-        assert!(
-            result.is_err(),
-            "empty chain should not seed a subscription"
-        );
+        let result = PolledChainTip::spawn(Scripted::default(), INTERVAL).await;
+        assert!(result.is_err(), "no tip must not seed a subscription");
     }
 
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn current_reading_is_available_immediately() {
-        let chain = MockChain::new().with_block(test_block(0, 1));
-
-        let polled = PolledChainTip::spawn(chain, Duration::from_secs(60))
-            .await
-            .expect("seeded from the initial read");
-
+        let (polled, source) = polled().await;
         let observation = polled.current();
-        assert_eq!(observation.height, height(0));
-        assert_eq!(observation.hash, hash(1));
-        assert!(observation.age() < Duration::from_secs(1));
+        assert_eq!((observation.hash, observation.height), (hash(1), height(0)));
+        assert_eq!(source.calls(), 1, "read once, at construction");
     }
 
-    /// A subscriber must see readings continue to arrive while the tip is
-    /// unchanged — that is what distinguishes a quiet chain from a dead poller.
-    #[tokio::test]
-    async fn republishes_an_unchanged_tip_so_age_stays_current() {
-        let chain = MockChain::new().with_block(test_block(0, 1));
-
-        let polled = PolledChainTip::spawn(chain, Duration::from_millis(5))
-            .await
-            .expect("seeded");
+    /// Readings keep arriving while the tip is unchanged: that is what tells
+    /// a quiet chain from a dead poller.
+    #[tokio::test(start_paused = true)]
+    async fn republishes_an_unchanged_tip() {
+        let (polled, source) = polled().await;
         let mut subscriber = polled
             .subscribe_to_chain_tip()
             .expect("always subscribable");
 
-        subscriber.changed().await.expect("poller publishes again");
-
+        subscriber
+            .changed()
+            .await
+            .expect("the poller publishes again");
         let observation = *subscriber.borrow_and_update();
-        assert_eq!(observation.hash, hash(1), "tip did not change");
-        assert!(
-            observation.age() < Duration::from_secs(1),
-            "reading is fresh"
-        );
+        assert_eq!((observation.hash, observation.height), (hash(1), height(0)));
+        assert_eq!(source.calls(), 2);
     }
 
-    /// Dropping the subscription must stop the background poll, or a
-    /// short-lived subscriber would query the validator forever.
-    #[tokio::test]
-    async fn dropping_stops_the_poll_task() {
-        let chain = MockChain::new().with_block(test_block(0, 1));
+    #[tokio::test(start_paused = true)]
+    async fn a_new_tip_reaches_subscribers() {
+        let (polled, source) = polled().await;
+        let mut subscriber = polled
+            .subscribe_to_chain_tip()
+            .expect("always subscribable");
 
-        let polled = PolledChainTip::spawn(chain, Duration::from_millis(5))
+        source.set_tip(hash(2), height(1));
+        subscriber.changed().await.expect("the poller publishes");
+        let observation = *subscriber.borrow_and_update();
+        assert_eq!((observation.hash, observation.height), (hash(2), height(1)));
+    }
+
+    /// A failing source publishes nothing, so the last reading stands and
+    /// ages; polling goes on, and the first success publishes again.
+    #[tokio::test(start_paused = true)]
+    async fn a_failing_source_keeps_the_last_reading_and_recovers() {
+        let (polled, source) = polled().await;
+        let mut subscriber = polled
+            .subscribe_to_chain_tip()
+            .expect("always subscribable");
+        let seeded = polled.current();
+
+        source.set_failing(Some(FailureMode::Timeout));
+        tokio::time::sleep(INTERVAL * 5 + INTERVAL / 2).await;
+        assert!(!subscriber.has_changed().expect("the poller lives"));
+        assert_eq!(polled.current(), seeded, "the last reading stands");
+        assert_eq!(source.calls(), 6, "polling went on through the failures");
+
+        source.set_failing(None);
+        subscriber
+            .changed()
             .await
-            .expect("seeded");
-        let task = polled.task.abort_handle();
+            .expect("the poller publishes again");
+        assert_ne!(polled.current(), seeded);
+    }
+
+    /// Dropping the subscription stops the background poll, or a short-lived
+    /// subscriber would query the validator forever: the aborted task drops
+    /// the sender, which closes every receiver.
+    #[tokio::test(start_paused = true)]
+    async fn dropping_stops_the_poll_task() {
+        let (polled, _source) = polled().await;
+        let mut subscriber = polled
+            .subscribe_to_chain_tip()
+            .expect("always subscribable");
 
         drop(polled);
-        tokio::task::yield_now().await;
-
-        assert!(task.is_finished(), "poll task outlived its subscription");
+        assert!(
+            subscriber.changed().await.is_err(),
+            "the poll task outlived its subscription"
+        );
     }
 }

@@ -223,21 +223,14 @@ impl<T> ChainIndexSourcePorts for T where T: GetBlock + GetChainTip + /* ... */ 
 An alias states a requirement of its consumer, not a capability of this crate.
 `zaino-source` should not have to know who its consumers are.
 
-## Testing: `MockChain`
+## Testing
 
-Behind the `testing` feature (and always on for this crate's own tests):
-
-```rust
-use zaino_source::mock::MockChain;
-
-let mock = MockChain::new()
-    .with_block(block)
-    .fail_next(2, FailureMode::Timeout);   // failure injection
-```
-
-If you add a mock module elsewhere, gate it `#[cfg(any(test, feature = "..."))]`
-— a bare `#[cfg(feature = ...)]` that nothing in the workspace enables means the
-module never compiles and its tests silently never run.
+A fake validator for consumers' tests is `zaino-source-mock`'s `MockChain`
+(D-87); this crate ships none. Its own tests run on a scripted `#[cfg(test)]`
+source: every generated resilient port is tested through `ValidatorClient`
+(retried, delegated with its arguments, its failure translated), and
+`PolledChainTip` on paused time. Never feature-gate a test of code that
+always exists: a feature nothing enables means it silently never runs.
 
 ## Related
 
