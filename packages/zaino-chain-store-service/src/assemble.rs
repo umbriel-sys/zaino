@@ -1,13 +1,12 @@
-//! One [`FoldBlock`] from the validator (D-78, D-85): the block, its tree
-//! roots, its branch, and (where C2 is built) the frontiers and subtrees it
-//! produced. Prevouts stay unresolved until the step-4 resolver.
+//! One block's [`FoldBlockParts`] from the validator (D-85, D-96): the
+//! block, checked against its merkle root, its tree roots, its branch, and
+//! (where C2 is built) the frontiers and subtrees it produced. Prevouts are
+//! left to the resolver.
 
 use std::fmt;
 
 use zaino_chain_store::{ChainStoreSource, ChainStoreSourceError};
-use zaino_indexes::{
-    CompletedSubtree, FoldBlock, FoldBlockParts, FoldTx, NoteFrontier, PoolFrontiers,
-};
+use zaino_indexes::{CompletedSubtree, FoldBlockParts, FoldTx, NoteFrontier, PoolFrontiers};
 use zaino_primitives::types::{
     branch_at, Block, Height, NetworkUpgradeInfo, PoolTreestate, ShieldedPool, Transaction,
     TreeRoots,
@@ -17,14 +16,14 @@ use zaino_source::QueryError;
 /// Leaves in one completed subtree.
 const SUBTREE_LEAVES: u64 = 1 << 16;
 
-/// The block at `height`, ready to fold; `trees` = fetch frontiers and
-/// subtrees (only C2 reads them).
+/// The block at `height`, its prevouts unresolved; `trees` = fetch
+/// frontiers and subtrees (only C2 reads them).
 pub(crate) async fn assemble<S: ChainStoreSource>(
     source: &S,
     schedule: &[NetworkUpgradeInfo],
     height: Height,
     trees: bool,
-) -> Result<FoldBlock, ChainStoreSourceError> {
+) -> Result<FoldBlockParts, ChainStoreSourceError> {
     let block = source
         .get_block(height)
         .await
@@ -34,6 +33,11 @@ pub(crate) async fn assemble<S: ChainStoreSource>(
         return Err(ChainStoreSourceError::inconsistent_data(format!(
             "asked for block {height}, got {}",
             header.height
+        )));
+    }
+    if !block.merkle_root_matches() {
+        return Err(ChainStoreSourceError::inconsistent_data(format!(
+            "block {height}: its merkle root does not commit to its transactions"
         )));
     }
     let tree_roots = source
@@ -50,7 +54,7 @@ pub(crate) async fn assemble<S: ChainStoreSource>(
         .map(|tx| FoldTx::from_transaction(tx, None))
         .collect::<Result<_, _>>()
         .map_err(inconsistent)?;
-    FoldBlock::try_new(FoldBlockParts {
+    Ok(FoldBlockParts {
         branch: branch_at(schedule, height),
         header,
         transactions,
@@ -58,7 +62,6 @@ pub(crate) async fn assemble<S: ChainStoreSource>(
         frontiers,
         subtrees,
     })
-    .map_err(inconsistent)
 }
 
 /// The frontier of each pool `block` added notes to, and the subtrees it
@@ -207,7 +210,9 @@ where
     }
 }
 
-fn inconsistent(error: impl std::error::Error + Send + Sync + 'static) -> ChainStoreSourceError {
+pub(crate) fn inconsistent(
+    error: impl std::error::Error + Send + Sync + 'static,
+) -> ChainStoreSourceError {
     ChainStoreSourceError::InconsistentData {
         message: error.to_string(),
         cause: Some(Box::new(error)),

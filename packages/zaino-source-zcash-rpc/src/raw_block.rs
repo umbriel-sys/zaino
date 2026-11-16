@@ -242,25 +242,6 @@ fn upstream(bytes: &[u8], chain_metadata: ChainMetadata) -> Result<Block, RawBlo
         .map_err(|e| RawBlockError::Upstream(e.to_string()))
 }
 
-/// The bitcoin-style merkle root of `txids`: pairs hashed with SHA-256d, an
-/// odd level's last node paired with itself.
-pub fn merkle_root(txids: Vec<[u8; 32]>) -> [u8; 32] {
-    let mut level = txids;
-    while level.len() > 1 {
-        level = level
-            .chunks(2)
-            .map(|pair| {
-                let mut h = Sha256::new();
-                for node in pair.iter().chain(pair.last()).take(2) {
-                    h.update(node);
-                }
-                Sha256::digest(h.finalize()).into()
-            })
-            .collect();
-    }
-    level.first().copied().unwrap_or_default()
-}
-
 /// Every anchor, note commitment and Orchard-shaped nullifier in `raw` is a
 /// canonical field element (no point is decompressed).
 fn check_fields(raw: &RawTx<'_>) -> Result<(), RawBlockError> {
@@ -320,8 +301,8 @@ fn parse_checked(
     r.finish()?;
     let height = height.ok_or(RawBlockError::NoCoinbaseHeight)?;
     if light {
-        let txids = transactions.iter().map(|tx| tx.txid.into()).collect();
-        if merkle_root(txids) != header.merkle_root {
+        let txids = transactions.iter().map(|tx| tx.txid.into());
+        if <[u8; 32]>::from(MerkleRoot::of(txids)) != header.merkle_root {
             return Err(RawBlockError::MerkleRoot);
         }
     }

@@ -271,6 +271,11 @@ impl FoldTx {
         })
     }
 
+    /// This transaction with `prevouts` resolved, paired with its inputs.
+    pub fn with_prevouts(self, prevouts: Vec<TransparentOutput>) -> Result<Self, FoldBlockError> {
+        Self::try_new(self.compact, self.balances, Some(prevouts))
+    }
+
     /// A parsed transaction with its prevouts, `None` where not resolved.
     pub fn from_transaction(
         tx: &Transaction,

@@ -11,9 +11,11 @@ chain:
 
 ```rust,ignore
 let chain = ChainBuilder::new()           // regtest, upgrades through NU6.2 at height 1
-    .blocks(4)                            // each spends one parent coinbase output
-    .block(BlockSpec::spends(3).notes(ShieldedPool::Orchard, 5))
+    .block(BlockSpec::default().notes(ShieldedPool::Orchard, 5))
     .notes(ShieldedPool::Sapling, 66_000) // as many per block as fit
+    .matured()                            // empty blocks through height 100
+    .blocks(4)                            // each with one spend
+    .block(BlockSpec::spends(3).chained(2))
     .build();
 ```
 
@@ -30,9 +32,21 @@ A spec a chain cannot hold panics: notes in a pool not yet active, or more
 than a block's 2 MB (`SAPLING_PER_BLOCK`, `ACTIONS_PER_BLOCK`); spread notes
 with `ChainBuilder::notes`.
 
-Each coinbase pays `FAN` outputs to `MINER_SCRIPT`; a block's spends pay
-`RECIPIENT_SCRIPT` from its parent's coinbase, so spends are valid on every
-branch. Commitment trees are real: roots, treestates (zcashd's legacy
+Each coinbase pays `FAN` outputs to `MINER_SCRIPT`, output `n` paying
+`COINBASE_OUTPUT + n` zatoshis, so every output is distinct. Spends pay
+`RECIPIENT_SCRIPT` and follow consensus, so a real validator would accept
+every chain:
+- `BlockSpec::spends(n)` spends the parent's ordinary outputs first (allowed
+  one block deep), then the outputs of the coinbase maturing at the block's
+  height (`COINBASE_MATURITY`, 100 blocks);
+- the genesis coinbase is never spent, so before height 101 there is nothing
+  to spend: `ChainBuilder::matured()` fills blocks through height 100;
+- `BlockSpec::chained(n)` adds transactions each spending the output of the
+  transaction before it in the same block;
+- `n` is a maximum: fewer are made where fewer are spendable.
+
+Spends follow the parent's state, so they are valid on every branch.
+Commitment trees are real: roots, treestates (zcashd's legacy
 encoding) and completed subtree roots are hashed from the notes, and each
 Orchard-shaped bundle anchors to its tree's root after the parent.
 `block_commitments` is a tag.

@@ -50,8 +50,8 @@ pub enum ConvertError {
 /// Rejects a source shorter than the prefix with the length actually seen;
 /// bytes past the prefix are the rest of the full ciphertext and are dropped.
 fn compact_prefix(enc: &[u8]) -> Result<CompactCiphertext, ConvertError> {
-    let head = enc.len().min(CompactCiphertext::LENGTH);
-    Ok(CompactCiphertext::try_new(&enc[..head])?)
+    let head = enc.get(..CompactCiphertext::LENGTH).unwrap_or(enc);
+    Ok(CompactCiphertext::try_new(head)?)
 }
 
 /// Convert a zebra block into a domain [`Block`].

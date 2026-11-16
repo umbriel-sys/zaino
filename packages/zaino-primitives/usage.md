@@ -66,7 +66,10 @@ use zaino_primitives::types::rpc::{BlockDeltas, MiningInfo, NodeInfo, PeerInfo};
   transparent-script family `Script` / `ScriptType` / `classify_script` /
   `TransparentAddressKey` / `TransparentAddress` (all four families below);
   `Transaction::pool_balances` gives each shielded pool's value balance as a
-  `PoolBalances`.
+  `PoolBalances`. `MerkleRoot::of(txids)` is the transaction merkle root
+  (SHA-256d pairs, an odd level's last node paired with itself), and
+  `Block::merkle_root_matches` checks a block's header against its
+  transactions: the one check a fetched block gets whatever its source.
 - `types::rpc` — the response shapes for passthrough RPCs, in domain
   vocabulary rather than any interface's: `BlockDeltas`, `BlockchainInfo`,
   `ChainTip`, `MiningInfo`, `NodeInfo`, `PeerInfo`, `SpentInfo`, `TxOut`,

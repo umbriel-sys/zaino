@@ -59,12 +59,16 @@ impl AbsoluteChainWork {
 
     /// Reads the 32 big-endian byte form back, the inverse of [`to_be_bytes`](Self::to_be_bytes).
     pub fn from_be_bytes(bytes: [u8; 32]) -> Result<Self, ChainWorkBytesError> {
+        let read = |half: &[u8]| {
+            half.iter().fold(0u128, |value, byte| {
+                value.wrapping_shl(8) | u128::from(*byte)
+            })
+        };
         let (high, low) = bytes.split_at(16);
-        let high = u128::from_be_bytes(high.try_into().expect("split_at(16) leaves 16 bytes"));
+        let (high, low) = (read(high), read(low));
         if high != 0 {
             return Err(ChainWorkBytesError::OverWidth { high });
         }
-        let low = u128::from_be_bytes(low.try_into().expect("split_at(16) leaves 16 bytes"));
         NonZeroU128::new(low)
             .map(Self)
             .ok_or(ChainWorkBytesError::Zero)

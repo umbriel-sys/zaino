@@ -6101,12 +6101,14 @@ name = "zaino-chain-store-service"
 version = "0.1.0"
 dependencies = [
  "blake2",
+ "futures",
  "serde",
  "tempfile",
  "thiserror 2.0.20",
  "tokio",
  "tracing",
  "zaino-chain-store",
+ "zaino-component",
  "zaino-indexes",
  "zaino-persistence",
  "zaino-persistence-lsm-tree",
@@ -6286,6 +6288,7 @@ dependencies = [
  "orchard",
  "proptest",
  "serde",
+ "sha2 0.10.9",
  "thiserror 2.0.20",
  "zaino-consensus",
  "zcash_address",

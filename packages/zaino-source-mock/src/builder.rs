@@ -16,20 +16,24 @@
 
 use blake2::{digest::consts::U32, Blake2b, Digest as _};
 use zaino_primitives::types::{
-    ChainMetadata, Height, PoolTreestate, ShieldedPool, SubtreeRoot, TreeRoot, TreeRootInfo,
-    TreeRoots, TreeSize,
+    Block, ChainMetadata, Height, MerkleRoot, PoolTreestate, ShieldedPool, SubtreeRoot, TreeRoot,
+    TreeRootInfo, TreeRoots, TreeSize,
 };
-use zaino_source_zcash_rpc::{merkle_root, parse_block, BlockVerification};
+use zaino_source_zcash_rpc::{parse_block, BlockVerification};
 
-use crate::block::{MockBlock, PoolTrees, RawBlock};
+use crate::block::{MockBlock, PoolTrees, RawBlock, Spendable};
 use crate::chain::{MockChain, NodeFacts};
 use crate::encode::{self, Action, Input, Note, Output, Tx};
 use crate::schedule::Activations;
 use crate::tree;
 
-/// Outputs each coinbase pays: the most transparent spends a block can make.
+/// Outputs each coinbase pays.
 pub const FAN: u32 = 8;
-/// Each coinbase output's value.
+/// Blocks a coinbase output waits before it can be spent (consensus).
+pub const COINBASE_MATURITY: u32 = 100;
+/// What each spend pays in fees.
+const FEE: u64 = 1_000;
+/// Coinbase output `n` pays this plus `n` zatoshis: each output distinct.
 pub const COINBASE_OUTPUT: u64 = 100_000;
 /// The script every coinbase output pays (P2PKH, key hash `0x11..`).
 pub const MINER_SCRIPT: [u8; 25] = p2pkh([0x11; 20]);
@@ -63,8 +67,14 @@ pub const fn p2pkh(hash: [u8; 20]) -> [u8; 25] {
 /// What one block holds beyond its coinbase.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct BlockSpec {
-    /// Transactions each spending one parent coinbase output (at most [`FAN`]).
+    /// Transactions each spending one output the block may spend: its
+    /// parent's ordinary outputs first, then the coinbase maturing at its
+    /// height; fewer where fewer are spendable (none before height
+    /// [`COINBASE_MATURITY`] + 1 without ordinary outputs).
     pub spends: u32,
+    /// Transactions each spending the output of the transaction before it in
+    /// this block, after the spends (none without a spend to follow).
+    pub chained: u32,
     /// Sapling outputs added.
     pub sapling: u32,
     /// Orchard actions added.
@@ -87,6 +97,11 @@ impl BlockSpec {
     /// With `seed`.
     pub fn seeded(self, seed: u64) -> Self {
         Self { seed, ..self }
+    }
+
+    /// With `n` transactions each spending the one before it in the block.
+    pub fn chained(self, n: u32) -> Self {
+        Self { chained: n, ..self }
     }
 
     /// With `count` notes added to `pool`.
@@ -145,6 +160,16 @@ impl ChainBuilder {
         let block = next_block(self.blocks.last(), &self.activations, spec);
         self.blocks.push(block);
         self
+    }
+
+    /// Appends empty blocks through height [`COINBASE_MATURITY`], so the
+    /// next block can spend the first matured coinbase.
+    pub fn matured(self) -> Self {
+        let height = self
+            .blocks
+            .last()
+            .map_or(0, |block| u32::from(block.height()));
+        (height..COINBASE_MATURITY).fold(self, |builder, _| builder.block(BlockSpec::default()))
     }
 
     /// Appends `count` blocks each with one transparent spend.
@@ -220,31 +245,46 @@ pub fn next_block(
             sequence: u32::MAX,
         }],
         outputs: (0..FAN)
-            .map(|_| Output {
-                value: COINBASE_OUTPUT,
+            .map(|index| Output {
+                value: coinbase_output(index),
                 script: MINER_SCRIPT.to_vec(),
             })
             .collect(),
         expiry: height,
         ..Tx::empty()
     }];
-    if let Some(funding) = parent.and_then(|parent| parent.block.transactions().first()) {
-        for output in 0..spec.spends.min(FAN) {
-            transactions.push(Tx {
-                inputs: vec![Input {
-                    prev_txid: <[u8; 32]>::from(funding.txid),
-                    prev_index: output,
-                    script: P2PKH_SCRIPT_SIG.to_vec(),
-                    // the seed tells a sibling branch's spend apart
-                    sequence: u32::MAX.wrapping_sub(spec.seed as u32),
-                }],
-                outputs: vec![Output {
-                    value: COINBASE_OUTPUT.saturating_sub(1_000),
-                    script: RECIPIENT_SCRIPT.to_vec(),
-                }],
-                ..Tx::empty()
-            });
+    let spend = |prev_txid: [u8; 32], prev_index: u32, value: u64| Tx {
+        inputs: vec![Input {
+            prev_txid,
+            prev_index,
+            script: P2PKH_SCRIPT_SIG.to_vec(),
+            // the seed tells a sibling branch's spend apart
+            sequence: u32::MAX.wrapping_sub(spec.seed as u32),
+        }],
+        outputs: vec![Output {
+            value: value.saturating_sub(FEE),
+            script: RECIPIENT_SCRIPT.to_vec(),
+        }],
+        ..Tx::empty()
+    };
+    let upgrade = activations.in_force(height);
+    for (txid, index, value) in spendable_at(parent, height)
+        .into_iter()
+        .filter(|(_, _, value)| *value > FEE)
+        .take(spec.spends as usize)
+    {
+        transactions.push(spend(txid, index, value));
+    }
+    for _ in 0..spec.chained {
+        let Some(last) = transactions.last().filter(|_| transactions.len() > 1) else {
+            break;
+        };
+        let value = last.outputs.first().map_or(0, |output| output.value);
+        if value <= FEE {
+            break;
         }
+        let txid = txid_of(last, upgrade);
+        transactions.push(spend(txid, 0, value));
     }
     let actions = |pool: ShieldedPool, count: u32| -> Vec<Action> {
         (0..count)
@@ -340,7 +380,6 @@ pub fn next_block(
         ironwood_tree_size: size(ShieldedPool::Ironwood),
     };
 
-    let upgrade = activations.in_force(height);
     let encoded: Vec<Vec<u8>> = transactions
         .iter()
         .map(|tx| encode::transaction(tx, upgrade))
@@ -361,19 +400,21 @@ pub fn next_block(
             provisional.len()
         );
     }
-    let txids = parse_block(&provisional, metadata.clone(), BlockVerification::Off)
-        .unwrap_or_else(|error| panic!("the builder encoded an unparsable block: {error}"))
+    let parsed = parse_block(&provisional, metadata.clone(), BlockVerification::Off)
+        .unwrap_or_else(|error| panic!("the builder encoded an unparsable block: {error}"));
+    let txids = parsed
         .transactions()
         .iter()
-        .map(|tx| <[u8; 32]>::from(tx.txid))
-        .collect();
-    header.merkle_root = merkle_root(txids);
+        .map(|tx| <[u8; 32]>::from(tx.txid));
+    header.merkle_root = MerkleRoot::of(txids).into();
     let header = encode::header(&header);
     let bytes = encode::block(&header, &encoded);
     let block = parse_block(&bytes, metadata, BlockVerification::Light)
         .unwrap_or_else(|error| panic!("the builder encoded an invalid block: {error}"));
+    let spendable = spendable_after(parent, &block);
     MockBlock {
         size: bytes.len() as u64,
+        spendable,
         block,
         tree_roots,
         trees,
@@ -384,6 +425,108 @@ pub fn next_block(
             transactions: encoded,
         }),
     }
+}
+
+/// Coinbase output `index`'s value.
+fn coinbase_output(index: u32) -> u64 {
+    COINBASE_OUTPUT.saturating_add(u64::from(index))
+}
+
+/// What a block at `height` on `parent` may spend, in order: the parent's
+/// ordinary outputs, then the outputs of the coinbase maturing at `height`.
+fn spendable_at(parent: Option<&MockBlock>, height: u32) -> Vec<([u8; 32], u32, u64)> {
+    let Some(parent) = parent else {
+        return Vec::new();
+    };
+    let mut spendable = parent.spendable.ordinary.clone();
+    let matured = parent
+        .spendable
+        .coinbases
+        .front()
+        .filter(|(mined, _)| mined.saturating_add(COINBASE_MATURITY) == height);
+    if let Some((_, txid)) = matured {
+        spendable.extend((0..FAN).map(|index| (*txid, index, coinbase_output(index))));
+    }
+    spendable
+}
+
+/// What `block`'s children may spend: its ordinary outputs no transaction
+/// in it spent, and its coinbase joining the maturing window.
+fn spendable_after(parent: Option<&MockBlock>, block: &Block) -> Spendable {
+    let height = u32::from(block.header.height);
+    let spent: std::collections::HashSet<([u8; 32], u32)> = block
+        .transactions()
+        .iter()
+        .flat_map(|tx| &tx.transparent.inputs)
+        .map(|input| (<[u8; 32]>::from(input.prev_txid), input.prev_index))
+        .collect();
+    let ordinary = block
+        .transactions()
+        .iter()
+        .skip(1)
+        .flat_map(|tx| {
+            let txid = <[u8; 32]>::from(tx.txid);
+            (0u32..)
+                .zip(&tx.transparent.outputs)
+                .map(move |(index, output)| (txid, index, u64::from(output.value)))
+        })
+        .filter(|(txid, index, _)| !spent.contains(&(*txid, *index)))
+        .collect();
+    let mut coinbases = parent
+        .map(|parent| parent.spendable.coinbases.clone())
+        .unwrap_or_default();
+    if let Some(coinbase) = block.transactions().first().filter(|_| height > 0) {
+        coinbases.push_back((height, <[u8; 32]>::from(coinbase.txid)));
+    }
+    // a child spends only the coinbase maturing at its own height
+    while coinbases
+        .front()
+        .is_some_and(|(mined, _)| mined.saturating_add(COINBASE_MATURITY) <= height)
+    {
+        coinbases.pop_front();
+    }
+    Spendable {
+        ordinary,
+        coinbases,
+    }
+}
+
+/// `tx`'s txid, from a block holding only it behind a coinbase-shaped parse.
+fn txid_of(tx: &Tx, upgrade: Option<crate::schedule::Upgrade>) -> [u8; 32] {
+    let coinbase = Tx {
+        inputs: vec![Input {
+            prev_txid: [0; 32],
+            prev_index: u32::MAX,
+            script: encode::coinbase_script(1, 0),
+            sequence: u32::MAX,
+        }],
+        ..Tx::empty()
+    };
+    let encoded = vec![
+        encode::transaction(&coinbase, upgrade),
+        encode::transaction(tx, upgrade),
+    ];
+    let header = encode::Header {
+        prev_hash: [0; 32],
+        merkle_root: [0; 32],
+        block_commitments: [0; 32],
+        time: GENESIS_TIME,
+        bits: REGTEST_BITS,
+        nonce: [0; 32],
+    };
+    let bytes = encode::block(&encode::header(&header), &encoded);
+    let metadata = ChainMetadata {
+        sapling_tree_size: TreeSize::ZERO,
+        orchard_tree_size: TreeSize::ZERO,
+        ironwood_tree_size: TreeSize::ZERO,
+    };
+    let parsed = parse_block(&bytes, metadata, BlockVerification::Off)
+        .unwrap_or_else(|error| panic!("the builder encoded an unparsable spend: {error}"));
+    parsed
+        .transactions()
+        .get(1)
+        .map(|tx| <[u8; 32]>::from(tx.txid))
+        .unwrap_or_else(|| panic!("the spend parsed away"))
 }
 
 /// A P2PKH spend's shape: a 71-byte signature push, a 33-byte key push.

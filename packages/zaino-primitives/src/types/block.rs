@@ -96,6 +96,12 @@ impl Block {
         &self.transactions
     }
 
+    /// Whether the header's merkle root commits to these transactions.
+    pub fn merkle_root_matches(&self) -> bool {
+        let txids = self.transactions.iter().map(|tx| <[u8; 32]>::from(tx.txid));
+        MerkleRoot::of(txids) == self.header.merkle_root
+    }
+
     /// The coinbase transaction — the first in block order.
     ///
     /// Position is the sole authority for coinbase-ness: the coinbase is

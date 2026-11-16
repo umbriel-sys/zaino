@@ -10,6 +10,8 @@
 //! The one transparent-by-location store: compact blocks compose their
 //! transparent axis from it, and prevouts resolve through it.
 
+use std::collections::BTreeMap;
+
 use zaino_persistence::{sequence_key, BackendReader, Namespace, WriteOp};
 use zaino_primitives::types::{
     BlockRef, BlockTxPosition, Height, OutputIndex, Script, TransparentData, TransparentInput,
@@ -251,6 +253,94 @@ impl<'a, R: BackendReader> Reader<'a, R> {
             )
     }
 
+    /// [`output`](Self::output) for each of `wanted`, in order, in height
+    /// order: each height's layout and outputs read once, in place, however
+    /// many are wanted there.
+    pub fn outputs(
+        &self,
+        wanted: &[(BlockTxPosition, OutputIndex)],
+    ) -> Result<Vec<Option<TransparentOutput>>, FoldError> {
+        let mut by_height: BTreeMap<Height, Vec<usize>> = BTreeMap::new();
+        for (slot, (position, _)) in wanted.iter().enumerate() {
+            by_height.entry(position.height).or_default().push(slot);
+        }
+        let mut found = vec![None; wanted.len()];
+        for (height, slots) in by_height {
+            let key = key(height);
+            // per wanted slot: the item its output is in the height's list
+            let items = self.backend.with_value(T_LAYOUT, &key, |layout| {
+                let spans: Vec<&[u8]> = elements(
+                    NAME,
+                    record_count(&LAYOUT, layout)?,
+                    LAYOUT.field(layout, LIST)?,
+                    SPAN_BYTES,
+                )?
+                .collect();
+                slots
+                    .iter()
+                    .map(|slot| {
+                        let Some((position, vout)) = wanted.get(*slot) else {
+                            return Ok(None);
+                        };
+                        let tx = usize::try_from(position.tx_index)
+                            .map_err(|_| LayoutError::Overflow)?;
+                        let Some(own) = spans.get(tx) else {
+                            return Ok(None);
+                        };
+                        let before = match tx.checked_sub(1).and_then(|at| spans.get(at)) {
+                            Some(previous) => span_counts(previous)?.1,
+                            None => 0,
+                        };
+                        let through = span_counts(own)?.1;
+                        let vout = usize::try_from(*vout).map_err(|_| LayoutError::Overflow)?;
+                        Ok(before
+                            .checked_add(vout)
+                            .filter(|item| *item < through)
+                            .map(|item| (*slot, item)))
+                    })
+                    .collect::<Result<Vec<_>, FoldError>>()
+            })?;
+            let Some(items) = items.transpose()? else {
+                continue;
+            };
+            let items: Vec<(usize, usize)> = items.into_iter().flatten().collect();
+            if items.is_empty() {
+                continue;
+            }
+            let read = self.backend.with_value(T_OUT, &key, |record| {
+                let list = var_items(
+                    NAME,
+                    record_count(&OUTPUTS, record)?,
+                    OUTPUTS.field(record, LIST)?,
+                )?;
+                items
+                    .iter()
+                    .map(|(slot, item)| {
+                        let bytes = list.get(*item).ok_or_else(|| {
+                            FoldError::continuity(
+                                NAME,
+                                format!("an output past the list at {height}"),
+                            )
+                        })?;
+                        Ok((*slot, output(bytes)?))
+                    })
+                    .collect::<Result<Vec<_>, FoldError>>()
+            })?;
+            let Some(read) = read.transpose()? else {
+                return Err(FoldError::continuity(
+                    NAME,
+                    format!("outputs missing at {height}"),
+                ));
+            };
+            for (slot, output) in read {
+                if let Some(found) = found.get_mut(slot) {
+                    *found = Some(output);
+                }
+            }
+        }
+        Ok(found)
+    }
+
     /// Output `vout` of the transaction at `position`: a handful of field
     /// reads, never a whole record. `None` where there is no such output.
     pub fn output(
@@ -466,6 +556,22 @@ mod tests {
             None
         );
         let above = Height::try_from(1).expect("1");
+        // batched: every output, one past each, a missing transaction and an
+        // unknown height, shuffled and repeated, agree with the single reads
+        let mut wanted = vec![(BlockTxPosition::new(above, 0), 0)];
+        for (tx_index, tx) in (0u32..).zip(&expected) {
+            let at = BlockTxPosition::new(height, tx_index);
+            let past = codec::count(tx.outputs.len()).expect("small");
+            wanted.extend((0..=past).rev().map(|vout| (at, vout)));
+        }
+        wanted.push((BlockTxPosition::new(height, 4), 0));
+        wanted.push((BlockTxPosition::new(height, 2), 1));
+        let singles: Vec<_> = wanted
+            .iter()
+            .map(|(at, vout)| reader.output(*at, *vout).expect("read"))
+            .collect();
+        assert_eq!(reader.outputs(&wanted).expect("read"), singles);
+        assert!(reader.outputs(&[]).expect("read").is_empty());
         assert_eq!(
             reader
                 .transactions(above)

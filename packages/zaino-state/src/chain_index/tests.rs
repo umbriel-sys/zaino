@@ -38,12 +38,13 @@ use zaino_primitives::types::{rpc::StandardFee, ShieldedPool, Zatoshis};
 /// conversion production runs.
 pub(crate) type MockSource = ValidatorSource<MockChain>;
 
-/// The suites' chain tip: genesis plus 200 blocks, so the finalised seam
-/// (depth 100 under `cfg(test)`) sits at 100.
-const CHAIN_TIP: u32 = 200;
+/// The suites' chain tip: genesis plus 300 blocks, so the finalised seam
+/// (depth 100 under `cfg(test)`) sits at 200, above the first spends (101:
+/// coinbases mature at 100 blocks).
+const CHAIN_TIP: u32 = 300;
 
 /// The tip [`MockchainMode::Active`] serves first; `mine` serves the rest.
-const ACTIVE_TIP: u32 = 150;
+const ACTIVE_TIP: u32 = 250;
 
 /// Which tip the suites' source serves at start.
 ///

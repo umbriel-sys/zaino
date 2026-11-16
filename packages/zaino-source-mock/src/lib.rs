@@ -21,10 +21,10 @@ mod ports;
 mod schedule;
 mod tree;
 
-pub use block::{MockBlock, PoolTrees, RawBlock};
+pub use block::{MockBlock, PoolTrees, RawBlock, Spendable};
 pub use builder::{
-    legacy_tree, next_block, p2pkh, BlockSpec, ChainBuilder, ACTIONS_PER_BLOCK, COINBASE_OUTPUT,
-    FAN, MINER_SCRIPT, RECIPIENT_SCRIPT, SAPLING_PER_BLOCK,
+    legacy_tree, next_block, p2pkh, BlockSpec, ChainBuilder, ACTIONS_PER_BLOCK, COINBASE_MATURITY,
+    COINBASE_OUTPUT, FAN, MINER_SCRIPT, RECIPIENT_SCRIPT, SAPLING_PER_BLOCK,
 };
 pub use chain::{Call, CallArg, Mempool, MockChain, NodeFacts};
 pub use schedule::{Activations, Upgrade};

@@ -26,7 +26,7 @@ use zaino_primitives::types::{
     Height, MerkleRoot, RelativeChainWork, Transaction, TransactionId, TreeRoots,
 };
 use zaino_source::FailureMode;
-use zaino_source_mock::{MockBlock, MockChain, NodeFacts, PoolTrees};
+use zaino_source_mock::{MockBlock, MockChain, NodeFacts, PoolTrees, Spendable};
 
 use crate::{
     error::ChainHeadAdvanceError,
@@ -98,6 +98,7 @@ fn mock_block(h: u32, id: u16, parent: u16) -> MockBlock {
         subtrees: Vec::new(),
         raw: None,
         size: 0,
+        spendable: Spendable::default(),
     }
 }
 

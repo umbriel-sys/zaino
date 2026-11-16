@@ -29,9 +29,7 @@ address_history = "/mnt/fast/zaino" # holds address_history_<format>/
 
 1. locks `<root>/<network>/` (one store per directory) as its primary, its
    record saying `Booting` (`Halted` if boot fails);
-2. resolves the set; until the step-4 prevout resolver, a set with an index
-   building from I-03 + I-04 (I-05, I-10, I-11) is refused
-   (`BootError::PrevoutsUnsupported`);
+2. resolves the set;
 3. deletes every `<index>_<format>` directory the set does not open (old
    formats, disabled indexes) unless `delete_stale = false`; other
    directories are left and logged;
@@ -51,10 +49,51 @@ it gives each block its consensus branch, which the history tree folds.
 
 ## Building
 
-`build_to(target)` is the only write path: one block at a time, each fetched
-once and folded into every index still below it, flushed at the end;
-single-flight. Treestates and subtree roots are fetched only when C2 is built
-and the block added notes to that pool.
+`build_to(target)` is the only write path, single-flight. It runs a staged
+pipeline (D-67, D-96), every stage at once, so the slowest stage alone sets
+the pace:
+
+1. **Fetch:** up to `fetch_concurrency` heights at once, each in its own task.
+   Each block is checked against its merkle root (`Block::merkle_root_matches`),
+   with its tree roots, and, when C2 is built and the block added notes, its
+   treestates and completed subtree roots. Blocks are taken back in height
+   order.
+2. **Resolve:** in height order, the prevout of every transparent input, for
+   the heights an index building from I-03 + I-04 (I-05, I-10, I-11) needs.
+   Each comes from earlier in the same block, or from the in-flight map
+   (outputs of blocks passed on that I-03 and I-04 have not both applied
+   yet), or else from I-03 positions in one sorted batch and then I-04
+   outputs. A prevout found nowhere is the validator's inconsistency.
+3. **Write:** one writer per index on a blocking thread, behind a queue of
+   `queue_bytes`. It folds and commits each block above its tip (the backend
+   writes its buffer when full), and flushes at the end. At most `writers`
+   fold or commit at once. A block goes on once every queue that wants it has
+   room.
+
+Every index is built from the height after the lowest tip, and each skips
+what it holds. An index building from prevouts waits while I-03 or I-04 is
+held back unverified. On a failure nothing more is fetched: each writer
+finishes what it was given, flushes and hands its index back, and the first
+failure is returned. A validator that doesn't answer leaves the record
+`Stalled`; a failed fold or write leaves it `Failed`.
+
+A panic anywhere in the pipeline, ours or a dependency's, is caught and
+reported. It is logged at error level, returned as an error naming the stage
+or index and the panic, and recorded as `Failed`. A writer only borrows its
+index, so a panic never takes the index with it. An index whose writer
+panicked has unknown in-memory state, so it is dropped and reopened from disk
+as boot opens it: from its durable tip, its tip checked against the validator
+at the next build. One that can't be reopened yet stays enabled but closed
+(not served, not announced) and is retried at every build.
+
+```toml
+[ingest]
+fetch_concurrency = 16  # heights fetched at once (latency-bound)
+queue_bytes = 67108864  # bytes queued ahead of each index's writer
+writers = 4             # default: the store's CpuBudget share
+```
+
+The defaults are to be tuned against step 6's mainnet benchmarks.
 
 ## What it answers
 

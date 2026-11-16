@@ -10,7 +10,7 @@ use zaino_primitives::types::{BlockRef, Height, Network, ShieldedPool};
 use zaino_source::FailureMode;
 use zaino_source_mock::{next_block, Activations, BlockSpec, ChainBuilder, MockBlock, MockChain};
 
-use crate::config::{ChainStoreServiceConfig, IndexesConfig, OnCorruption};
+use crate::config::{ChainStoreServiceConfig, IndexesConfig, IngestConfig, OnCorruption};
 use crate::metadata::{self, Metadata};
 use crate::set::NamedSet;
 use crate::store::{BootError, ChainStore, Serviceability};
@@ -40,15 +40,20 @@ fn config(enable: &[IndexId]) -> ChainStoreServiceConfig {
             ..IndexesConfig::default()
         },
         on_corruption: OnCorruption::Rebuild,
+        ingest: IngestConfig::default(),
     }
 }
 
-/// Spends throughout, and notes in both pools.
+/// Notes in both pools; once coinbases mature, spends of coinbase and
+/// ordinary outputs, and spends of outputs earlier in the same block.
 fn chain() -> MockChain {
     ChainBuilder::new()
         .blocks(3)
-        .block(BlockSpec::spends(2).notes(ShieldedPool::Sapling, 5))
-        .block(BlockSpec::spends(1).notes(ShieldedPool::Orchard, 3))
+        .block(BlockSpec::default().notes(ShieldedPool::Sapling, 5))
+        .block(BlockSpec::default().notes(ShieldedPool::Orchard, 3))
+        .matured()
+        .blocks(3)
+        .block(BlockSpec::spends(4).chained(2))
         .blocks(2)
         .build()
 }
@@ -191,15 +196,19 @@ async fn a_reboot_resumes_and_continues() {
 }
 
 #[tokio::test]
-async fn a_set_needing_prevouts_waits_for_the_resolver() {
+async fn a_set_needing_prevouts_builds() {
     let mut lightclient = config(&[]);
     lightclient.indexes.set = Some(NamedSet::Lightclient);
-    let refused = boot(&lightclient, &InMemoryStorage::new(), &chain())
+    let chain = chain();
+    let store = boot(&lightclient, &InMemoryStorage::new(), &chain)
         .await
-        .err();
-    assert!(
-        matches!(refused, Some(BootError::PrevoutsUnsupported(needing)) if needing.contains("compact_block"))
-    );
+        .expect("boots");
+    let tip = tip_of(&chain);
+    store.build_to(tip.height).await.expect("builds");
+    assert_eq!(store.subscribe_watermark().borrow().tip, Some(tip));
+    assert!(store
+        .capabilities()
+        .contains(StoreCapability::CompactBlocks));
 }
 
 #[tokio::test]
@@ -465,4 +474,6 @@ async fn a_validator_behind_on_another_chain_rebuilds_once_it_catches_up() {
     assert_eq!(store.subscribe_watermark().borrow().tip, Some(tip));
 }
 
+mod ingest;
 mod linked;
+mod panics;

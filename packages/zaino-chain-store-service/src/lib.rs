@@ -19,6 +19,7 @@
 
 mod assemble;
 mod config;
+mod ingest;
 mod linked;
 mod metadata;
 mod record;
@@ -27,7 +28,7 @@ mod store;
 #[cfg(test)]
 mod tests;
 
-pub use config::{ChainStoreServiceConfig, IndexesConfig, OnCorruption};
+pub use config::{ChainStoreServiceConfig, IndexesConfig, IngestConfig, OnCorruption};
 pub use linked::{LinkedChainStore, LinkedError, Polling, PrimaryStatus};
 pub use record::{PrimaryState, RecordError};
 pub use set::{IndexSet, NamedSet, SetError};

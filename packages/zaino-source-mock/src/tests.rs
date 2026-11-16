@@ -86,7 +86,10 @@ fn with_subtree() -> MockChain {
         .block(BlockSpec::spends(3).notes(ShieldedPool::Sapling, 5))
         .block(BlockSpec::spends(2).notes(ShieldedPool::Orchard, 5))
         .notes(ShieldedPool::Sapling, 66_000)
+        .matured()
         .blocks(3)
+        .block(BlockSpec::spends(2).chained(2))
+        .blocks(2)
         .build()
 }
 
@@ -167,21 +170,31 @@ fn every_block_shape_passes_full_verification() {
     use crate::{Activations, Upgrade, ACTIONS_PER_BLOCK, SAPLING_PER_BLOCK};
     use zaino_source_zcash_rpc::{parse_block, BlockVerification};
 
+    // NU5 and NU6.3 after coinbase maturity: spends in v4, v5 and v6
     let activations = Activations::none()
         .at(Upgrade::Overwinter, 2)
         .at(Upgrade::Sapling, 3)
-        .at(Upgrade::Nu5, 4)
-        .at(Upgrade::Nu6_3, 5);
+        .at(Upgrade::Nu5, 103)
+        .at(Upgrade::Nu6_3, 105);
     let blocks = ChainBuilder::with(crate::NodeFacts::regtest(), activations)
         .blocks(2)
+        .block(BlockSpec::default().notes(ShieldedPool::Sapling, 3))
+        .matured()
         .block(BlockSpec::spends(2).notes(ShieldedPool::Sapling, 3))
         .block(
             BlockSpec::spends(3)
+                .chained(1)
+                .notes(ShieldedPool::Sapling, 2),
+        )
+        .block(
+            BlockSpec::spends(2)
                 .notes(ShieldedPool::Sapling, 2)
                 .notes(ShieldedPool::Orchard, 2),
         )
+        .block(BlockSpec::spends(1).chained(2))
         .block(BlockSpec::spends(1).notes(ShieldedPool::Ironwood, 2))
-        .blocks(260)
+        .blocks(160)
+        .block(BlockSpec::spends(2).chained(3))
         .block(BlockSpec::default().notes(ShieldedPool::Sapling, SAPLING_PER_BLOCK))
         .block(BlockSpec::default().notes(ShieldedPool::Orchard, ACTIONS_PER_BLOCK))
         .block(BlockSpec::default().notes(ShieldedPool::Ironwood, ACTIONS_PER_BLOCK))
@@ -201,9 +214,70 @@ fn every_block_shape_passes_full_verification() {
         let bytes = &blocks[at].raw.as_ref().expect("bytes").transactions[tx];
         u32::from_le_bytes(bytes[..4].try_into().expect("a version")) & 0x7fff_ffff
     };
-    let formats: Vec<u32> = (0..=4).map(|at| version(at, 0)).collect();
+    let formats: Vec<u32> = [0, 1, 2, 3, 103]
+        .into_iter()
+        .map(|at| version(at, 0))
+        .collect();
     assert_eq!(formats, [1, 1, 3, 4, 5], "coinbase formats by height");
-    assert_eq!(version(5, 2), 6, "the Ironwood transaction is v6");
+    let spends: Vec<u32> = [101, 103].into_iter().map(|at| version(at, 1)).collect();
+    assert_eq!(spends, [4, 5], "spend formats by height");
+    assert_eq!(version(105, 2), 6, "the Ironwood transaction is v6");
+    let chained = &blocks[102].block.transactions()[4];
+    assert_eq!(
+        chained.transparent.inputs[0].prev_txid,
+        blocks[102].block.transactions()[3].txid,
+        "a chained spend spends the transaction before it"
+    );
+}
+
+/// Every spend is one consensus allows: of an output that exists and is
+/// unspent, a coinbase output only 100 blocks deep, the genesis coinbase's
+/// never; spends reach ordinary outputs one block deep and earlier ones in
+/// the same block.
+#[test]
+fn every_spend_is_one_consensus_allows() {
+    use std::collections::HashMap;
+
+    let blocks = ChainBuilder::new()
+        .blocks(5)
+        .matured()
+        .blocks(20)
+        .block(BlockSpec::spends(8).chained(3))
+        .blocks(20)
+        .into_blocks();
+    // outpoint → (height mined, from a coinbase)
+    let mut unspent: HashMap<([u8; 32], u32), (u32, bool)> = HashMap::new();
+    let (mut ordinary, mut within, mut coinbase) = (0, 0, 0);
+    for built in &blocks {
+        let at = u32::from(built.height());
+        for (position, tx) in built.block.transactions().iter().enumerate() {
+            for input in &tx.transparent.inputs {
+                let outpoint = (<[u8; 32]>::from(input.prev_txid), input.prev_index);
+                let (mined, from_coinbase) = unspent
+                    .remove(&outpoint)
+                    .unwrap_or_else(|| panic!("height {at}: spends nothing unspent"));
+                match (from_coinbase, mined == at) {
+                    (true, _) => {
+                        assert!(mined > 0, "height {at}: the genesis coinbase spent");
+                        assert!(
+                            mined + crate::COINBASE_MATURITY <= at,
+                            "height {at}: immature"
+                        );
+                        coinbase += 1;
+                    }
+                    (false, true) => within += 1,
+                    (false, false) => ordinary += 1,
+                }
+            }
+            for index in 0..tx.transparent.outputs.len() as u32 {
+                unspent.insert((<[u8; 32]>::from(tx.txid), index), (at, position == 0));
+            }
+        }
+    }
+    assert!(
+        ordinary > 0 && within > 0 && coinbase > 0,
+        "{ordinary} {within} {coinbase}"
+    );
 }
 
 /// Every treestate, read by upstream's legacy decoder, has the root and size
@@ -356,31 +430,32 @@ fn the_schedule_configures_a_regtest_node() {
 
 #[tokio::test]
 async fn a_reorg_keeps_the_displaced_blocks_as_a_side_branch() {
-    let chain = ChainBuilder::new().blocks(5).build();
-    let displaced = chain.block_at(4).expect("loaded");
-    let displaced_tip = chain.block_at(5).expect("loaded");
-    let parent = chain.block_at(3).expect("loaded");
+    let base = crate::COINBASE_MATURITY;
+    let chain = ChainBuilder::new().matured().blocks(5).build();
+    let displaced = chain.block_at(base + 4).expect("loaded");
+    let displaced_tip = chain.block_at(base + 5).expect("loaded");
+    let parent = chain.block_at(base + 3).expect("loaded");
     let activations = crate::Activations::default();
     let a = crate::next_block(Some(&parent), &activations, BlockSpec::spends(1).seeded(9));
     let b = crate::next_block(Some(&a), &activations, BlockSpec::spends(1).seeded(9));
     let c = crate::next_block(Some(&b), &activations, BlockSpec::default().seeded(9));
-    chain.reorg(4, vec![a, b, c.clone()]);
+    chain.reorg(base + 4, vec![a, b, c.clone()]);
     assert_eq!(
         chain.get_chain_tip().await.ok(),
-        Some((c.hash(), height(6)))
+        Some((c.hash(), height(base + 6)))
     );
     let side = chain
         .get_block_by_hash(displaced.hash())
         .await
         .expect("still known");
-    assert_eq!(side.header.height, height(4));
+    assert_eq!(side.header.height, height(base + 4));
     let tips = chain.get_chain_tips().await.expect("answered");
     let forks: Vec<_> = tips
         .iter()
         .filter(|tip| tip.status == ChainTipStatus::ValidFork)
         .map(|tip| (tip.hash, tip.height, tip.branch_len))
         .collect();
-    assert_eq!(forks, [(displaced_tip.hash(), height(5), 2)]);
+    assert_eq!(forks, [(displaced_tip.hash(), height(base + 5), 2)]);
     let txid = displaced.block.transactions()[1].txid;
     let found = chain.get_transaction(txid).await.expect("known");
     assert_eq!(found.location, TransactionLocation::NonBestChain);
@@ -542,8 +617,13 @@ async fn sends_answer_as_scripted() {
 
 #[tokio::test]
 async fn an_explicit_mempool_is_served() {
-    let chain = ChainBuilder::new().blocks(2).build();
-    let tx = chain.block_at(2).expect("loaded").block.transactions()[1].clone();
+    let chain = ChainBuilder::new().matured().blocks(2).build();
+    let tx = chain
+        .block_at(crate::COINBASE_MATURITY + 2)
+        .expect("loaded")
+        .block
+        .transactions()[1]
+        .clone();
     let mut pending = tx.clone();
     pending.txid = zaino_primitives::types::TransactionId::from([4; 32]);
     chain.set_mempool(Mempool::Explicit(vec![(pending.clone(), None)]));

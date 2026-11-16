@@ -120,16 +120,21 @@ async fn the_record_reports_a_stalled_build_and_its_recovery() {
 
 #[tokio::test]
 async fn a_primary_that_fails_to_boot_is_halted_and_not_running() {
-    let storage = InMemoryStorage::new();
-    let config = config(&[IndexId::AddressHistory]);
-    let refused = boot(&config, &storage, &chain()).await;
-    assert!(refused.is_err(), "prevouts are not resolved yet");
-    let linked = LinkedChainStore::open(&super::config(&[]), storage).expect("linked");
+    let (storage, chain) = (InMemoryStorage::new(), chain());
+    let config = config(&PLAIN);
+    {
+        let store = boot(&config, &storage, &chain).await.expect("boots");
+        store.build_to(height(2)).await.expect("builds");
+    }
+    // the reboot's tip check cannot ask the validator
+    chain.fail_ports(&["get_best_block_height"], None, FailureMode::Connection);
+    assert!(boot(&config, &storage, &chain).await.is_err());
+    let linked = linked(&config, &storage);
     linked.refresh().expect("refreshed");
     let status = linked.primary();
     assert!(!status.running);
     assert!(
-        matches!(&status.state, Some(PrimaryState::Halted(message)) if message.contains("prevouts")),
+        matches!(&status.state, Some(PrimaryState::Halted(message)) if message.contains("best height")),
         "{status:?}"
     );
 }

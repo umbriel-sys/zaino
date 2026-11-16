@@ -661,19 +661,6 @@ fn light_checks_the_merkle_root() {
     }
 }
 
-#[test]
-fn merkle_root_shapes() {
-    let leaf = |n: u8| [n; 32];
-    let pair = |l: [u8; 32], r: [u8; 32]| sha256d(&[l, r].concat());
-    assert_eq!(merkle_root(vec![leaf(1)]), leaf(1));
-    assert_eq!(merkle_root(vec![leaf(1), leaf(2)]), pair(leaf(1), leaf(2)));
-    assert_eq!(
-        merkle_root(vec![leaf(1), leaf(2), leaf(3)]),
-        pair(pair(leaf(1), leaf(2)), pair(leaf(3), leaf(3))),
-        "an odd level pairs its last node with itself"
-    );
-}
-
 /// Field offsets in the hand-built transactions.
 const ACTION_AT: usize = 25;
 const V4_SPEND_ANCHOR_AT: usize = 100;
@@ -713,13 +700,9 @@ fn light_checks_field_elements() {
 
 /// `block` with its header's merkle root set to its txids' root.
 fn with_merkle_root(mut block: Vec<u8>) -> Vec<u8> {
-    let txids = parse(&block)
-        .expect("parses")
-        .transactions()
-        .iter()
-        .map(|tx| tx.txid.into())
-        .collect();
-    block[MERKLE_ROOT_AT].copy_from_slice(&merkle_root(txids));
+    let parsed = parse(&block).expect("parses");
+    let txids = parsed.transactions().iter().map(|tx| tx.txid.into());
+    block[MERKLE_ROOT_AT].copy_from_slice(&<[u8; 32]>::from(MerkleRoot::of(txids)));
     block
 }
 

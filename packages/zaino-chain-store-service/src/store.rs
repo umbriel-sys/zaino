@@ -11,13 +11,11 @@ use zaino_chain_store::{
     StoreWatermark,
 };
 use zaino_indexes::{FoldError, IndexId, IndexState};
-use zaino_persistence::{
-    Backend, BackendReader, BackendWriter, Identity, OpenError, ReadError, Storage,
-};
+use zaino_persistence::{Backend, BackendReader, Identity, OpenError, ReadError, Storage};
 use zaino_primitives::types::{BlockHash, BlockRef, Height, NetworkUpgradeInfo};
 
-use crate::assemble::assemble;
-use crate::config::{network_name, ChainStoreServiceConfig, OnCorruption};
+use crate::config::{network_name, ChainStoreServiceConfig, IngestConfig, OnCorruption};
+use crate::ingest::{self, Ingest};
 use crate::metadata::{self, Metadata};
 use crate::record::{PrimaryRecord, PrimaryState};
 use crate::set::{IndexSet, SetError};
@@ -40,9 +38,6 @@ pub enum BootError {
     /// The index set is malformed.
     #[error("index set")]
     Set(#[from] SetError),
-    /// The set needs prevouts, which the ingest resolves from step 4.
-    #[error("{0} need prevouts, not yet resolved by the ingest")]
-    PrevoutsUnsupported(String),
     /// Storage refused (the store held elsewhere, a directory unopenable).
     #[error("{index}: storage")]
     Storage {
@@ -67,13 +62,13 @@ pub enum BootError {
 }
 
 /// One open index.
-struct Open<B: Backend> {
-    id: IndexId,
+pub(crate) struct Open<B: Backend> {
+    pub(crate) id: IndexId,
     dir: PathBuf,
-    backend: B,
-    writer: B::Writer,
-    state: Option<IndexState>,
-    tip: Option<BlockRef>,
+    pub(crate) backend: Arc<B>,
+    pub(crate) writer: B::Writer,
+    pub(crate) state: Option<IndexState>,
+    pub(crate) tip: Option<BlockRef>,
     /// Its tip is above the validator's, so not yet checked (D-32): not
     /// served or built until it is.
     unverified: bool,
@@ -82,8 +77,16 @@ struct Open<B: Backend> {
 /// Everything `build_to` changes, behind one lock (single-flight).
 struct Built<St: Storage> {
     indexes: Vec<Open<St::Backend>>,
+    /// Indexes whose writer panicked and whose reopen has not yet succeeded.
+    closed: Vec<Closed>,
     target: Option<Height>,
     recorder: Recorder<St>,
+}
+
+/// An index to reopen from disk: not served, retried at every build.
+struct Closed {
+    id: IndexId,
+    dir: PathBuf,
 }
 
 /// The held store and the record linked readers follow (D-95).
@@ -111,15 +114,21 @@ impl<St: Storage> Recorder<St> {
 
     /// Each verified index's durable tip (an unverified one is not served,
     /// so not announced), rewritten when one moved.
-    fn durable(&mut self, storage: &St, indexes: &[Open<St::Backend>]) {
+    fn durable<'a>(
+        &mut self,
+        storage: &St,
+        indexes: impl Iterator<Item = (IndexId, &'a St::Backend)>,
+    ) where
+        St::Backend: 'a,
+    {
         let mut durable = BTreeMap::new();
-        for index in indexes.iter().filter(|index| !index.unverified) {
-            let tip = match index.backend.reader().map(|reader| reader.durable_tip()) {
+        for (id, backend) in indexes {
+            let tip = match backend.reader().map(|reader| reader.durable_tip()) {
                 Ok(Ok(tip)) => tip,
                 // unreadable now: the last announcement stands
-                _ => self.record.durable.get(&index.id).copied().flatten(),
+                _ => self.record.durable.get(&id).copied().flatten(),
             };
-            durable.insert(index.id, tip);
+            durable.insert(id, tip);
         }
         if durable != self.record.durable {
             self.record.durable = durable;
@@ -133,6 +142,14 @@ impl<St: Storage> Recorder<St> {
             tracing::warn!(%error, "primary record not written: linked readers keep the last one");
         }
     }
+}
+
+/// The verified indexes and their backends: what the record announces.
+fn verified<B: Backend>(indexes: &[Open<B>]) -> impl Iterator<Item = (IndexId, &B)> {
+    indexes
+        .iter()
+        .filter(|index| !index.unverified)
+        .map(|index| (index.id, &*index.backend))
 }
 
 /// `error` and each cause under it, on one line.
@@ -156,6 +173,8 @@ pub struct ChainStore<St: Storage, Src> {
     schedule: Arc<[NetworkUpgradeInfo]>,
     set: IndexSet,
     trees: bool,
+    ingest: IngestConfig,
+    on_corruption: OnCorruption,
     built: Mutex<Built<St>>,
     watermark: watch::Sender<StoreWatermark>,
     serviceability: watch::Sender<BTreeMap<IndexId, Serviceability>>,
@@ -185,13 +204,14 @@ impl<St: Storage, Src: ChainStoreSource> ChainStore<St, Src> {
         recorder.set(&storage, PrimaryState::Booting);
         match Self::open_set(config, &storage, &source, &root, &mut recorder).await {
             Ok((set, indexes)) => {
-                recorder.durable(&storage, &indexes);
+                recorder.durable(&storage, verified(&indexes));
                 recorder.set(&storage, PrimaryState::Ready);
                 let tips = || indexes.iter().map(|index| (index.id, served_tip(index)));
                 let (watermark, _) = watch::channel(watermark_of(tips()));
                 let (serviceability, _) = watch::channel(serviceability_of(tips(), None));
                 let built = Built {
                     indexes,
+                    closed: Vec::new(),
                     target: None,
                     recorder,
                 };
@@ -201,6 +221,8 @@ impl<St: Storage, Src: ChainStoreSource> ChainStore<St, Src> {
                     source,
                     schedule,
                     trees: set.contains(IndexId::TreeState),
+                    ingest: config.ingest.clone(),
+                    on_corruption: config.on_corruption,
                     set,
                     built: Mutex::new(built),
                     watermark,
@@ -229,14 +251,6 @@ impl<St: Storage, Src: ChainStoreSource> ChainStore<St, Src> {
             &config.indexes.enable,
             &config.indexes.disable,
         )?;
-        if set.resolves_prevouts() {
-            let needing: Vec<_> = set
-                .iter()
-                .filter(|id| id.builds_from().next().is_some())
-                .map(IndexId::name)
-                .collect();
-            return Err(BootError::PrevoutsUnsupported(needing.join(", ")));
-        }
         let parents = parents(config, root, &set);
         sweep(storage, &parents, &set, config.indexes.delete_stale)?;
         report_change(storage, root, network, &set);
@@ -290,7 +304,11 @@ impl<St: Storage, Src: ChainStoreSource> ChainStore<St, Src> {
     /// The record says `Building`, then `Ready`; a validator that does not
     /// answer is `Stalled`, a failed fold or write `Failed`. Each index's
     /// durable tip is announced as it moves.
-    pub async fn build_to(&self, target: Height) -> Result<(), ChainStoreSourceError> {
+    pub async fn build_to(&self, target: Height) -> Result<(), ChainStoreSourceError>
+    where
+        St::Backend: 'static,
+        <St::Backend as Backend>::Writer: 'static,
+    {
         let mut built = self.built.lock().await;
         let built = &mut *built;
         built.target = Some(built.target.map_or(target, |old| old.max(target)));
@@ -305,16 +323,26 @@ impl<St: Storage, Src: ChainStoreSource> ChainStore<St, Src> {
             ) => PrimaryState::Stalled(causes(error)),
             Err(error) => PrimaryState::Failed(causes(error)),
         };
-        built.recorder.durable(&self.storage, &built.indexes);
+        built
+            .recorder
+            .durable(&self.storage, verified(&built.indexes));
         built.recorder.set(&self.storage, state);
         result
     }
 
+    /// The pipeline over every verified index; one building from prevouts
+    /// waits while I-03 or I-04 is held back.
     async fn build(
         &self,
         built: &mut Built<St>,
         target: Height,
-    ) -> Result<(), ChainStoreSourceError> {
+    ) -> Result<(), ChainStoreSourceError>
+    where
+        St::Backend: 'static,
+        <St::Backend as Backend>::Writer: 'static,
+    {
+        // a closed index still failing to reopen fails this build, after it runs
+        let before = self.reopen(built);
         if built.indexes.iter().any(|index| index.unverified) {
             check_tips(
                 &self.storage,
@@ -333,54 +361,97 @@ impl<St: Storage, Src: ChainStoreSource> ChainStore<St, Src> {
             })?;
             self.publish(built);
         }
-        let start = built
-            .indexes
-            .iter()
-            .filter(|index| !index.unverified)
-            .map(|index| next_height(index.tip))
-            .min();
-        let mut height = match start {
-            Some(Some(start)) => start,
-            // nothing enabled, or every index at the highest height there is
-            _ => {
-                self.publish(built);
-                return Ok(());
-            }
+        let Built {
+            indexes,
+            closed,
+            target: wanted,
+            recorder,
+        } = built;
+        let held = |id: IndexId| {
+            indexes
+                .iter()
+                .any(|index| index.id == id && index.unverified)
         };
-        while height <= target {
-            let block = assemble(self.source.as_ref(), &self.schedule, height, self.trees).await?;
-            let reference = block.reference();
-            for index in built.indexes.iter_mut() {
-                if index.unverified || index.tip.is_some_and(|tip| tip.height >= height) {
-                    continue;
-                }
-                let fold = index
-                    .id
-                    .fold(index.state.as_ref(), &block)
-                    .map_err(|error| fold_error(index.id, error))?;
-                index
-                    .writer
-                    .commit(reference, fold.ops)
-                    .map_err(|error| commit_error(index.id, error))?;
-                index.state = Some(fold.next);
-                index.tip = Some(reference);
-            }
+        let prevouts_held = held(IndexId::TxidLocation) || held(IndexId::Transparent);
+        let (building, waiting): (Vec<_>, Vec<_>) =
+            std::mem::take(indexes).into_iter().partition(|index| {
+                let waits = prevouts_held && index.id.builds_from().next().is_some();
+                !(index.unverified || waits)
+            });
+        let ingest = Ingest {
+            source: &self.source,
+            schedule: &self.schedule,
+            trees: self.trees,
+            config: &self.ingest,
+        };
+        let (returned, result) = ingest::build(building, target, ingest, |running| {
+            let applied = running
+                .iter()
+                .map(|index| (index.id, *index.applied.borrow()));
+            let tips = applied
+                .chain(waiting.iter().map(|index| (index.id, served_tip(index))))
+                .chain(closed.iter().map(|index| (index.id, None)));
+            self.publish_tips(tips, *wanted);
+            let backends = running.iter().map(|index| (index.id, &*index.backend));
             // a backend writes its buffer on its own once full
-            built.recorder.durable(&self.storage, &built.indexes);
-            self.publish(built);
-            height = match height.checked_add(1) {
-                Some(next) => next,
-                None => break,
-            };
+            recorder.durable(&self.storage, backends.chain(verified(&waiting)));
+        })
+        .await;
+        let mut kept = waiting;
+        for back in returned {
+            match back.panicked {
+                // its in-memory state is unknown: dropped, reopened from disk
+                true => closed.push(Closed {
+                    id: back.open.id,
+                    dir: back.open.dir.clone(),
+                }),
+                false => kept.push(back.open),
+            }
         }
-        for index in &built.indexes {
-            index
-                .backend
-                .flush()
-                .map_err(|error| commit_error(index.id, error))?;
-        }
+        *indexes = kept;
+        let reopened = self.reopen(built);
         self.publish(built);
-        Ok(())
+        result.and(reopened).and(before)
+    }
+
+    /// Every closed index reopened from disk as boot opens it (a mismatch
+    /// or corruption rebuilt per `on_corruption`), its tip checked against
+    /// the validator at the next build; one that fails stays closed, its
+    /// failure returned.
+    fn reopen(&self, built: &mut Built<St>) -> Result<(), ChainStoreSourceError> {
+        let mut failure = None;
+        for closed in std::mem::take(&mut built.closed) {
+            match open(
+                &self.storage,
+                &closed.dir,
+                closed.id,
+                self.network,
+                self.on_corruption,
+                &mut built.recorder,
+            ) {
+                Ok(mut reopened) => {
+                    tracing::info!(
+                        index = closed.id.name(),
+                        "reopened after its writer panicked"
+                    );
+                    reopened.unverified = reopened.tip.is_some();
+                    built.indexes.push(reopened);
+                }
+                Err(error) => {
+                    tracing::error!(index = closed.id.name(), error = %causes(&error), "reopen failed: retried at the next build");
+                    failure.get_or_insert(ChainStoreSourceError::Commit {
+                        message: format!("{} reopen", closed.id.name()),
+                        cause: Some(Box::new(error)),
+                    });
+                    built.closed.push(closed);
+                }
+            }
+        }
+        let order = self.set.build_order();
+        built
+            .indexes
+            .sort_by_key(|index| order.iter().position(|id| *id == index.id));
+        failure.map_or(Ok(()), Err)
     }
 
     /// The enabled set.
@@ -415,15 +486,22 @@ impl<St: Storage, Src: ChainStoreSource> ChainStore<St, Src> {
     }
 
     fn publish(&self, built: &Built<St>) {
-        let tips = || {
-            built
-                .indexes
-                .iter()
-                .map(|index| (index.id, served_tip(index)))
-        };
-        self.watermark.send_replace(watermark_of(tips()));
+        let tips = built
+            .indexes
+            .iter()
+            .map(|index| (index.id, served_tip(index)))
+            .chain(built.closed.iter().map(|index| (index.id, None)));
+        self.publish_tips(tips, built.target);
+    }
+
+    fn publish_tips(
+        &self,
+        tips: impl Iterator<Item = (IndexId, Option<BlockRef>)> + Clone,
+        target: Option<Height>,
+    ) {
+        self.watermark.send_replace(watermark_of(tips.clone()));
         self.serviceability
-            .send_replace(serviceability_of(tips(), built.target));
+            .send_replace(serviceability_of(tips, target));
     }
 }
 
@@ -431,7 +509,9 @@ impl<St: Storage, Src: ChainStoreSource> ChainStore<St, Src> {
 impl<St: Storage, Src> Drop for ChainStore<St, Src> {
     fn drop(&mut self) {
         let built = self.built.get_mut();
-        built.recorder.durable(&self.storage, &built.indexes);
+        built
+            .recorder
+            .durable(&self.storage, verified(&built.indexes));
         built.recorder.set(&self.storage, PrimaryState::Stopped);
     }
 }
@@ -478,14 +558,6 @@ const CAPABILITIES: &[(StoreCapability, &[IndexId])] = &[
         &[IndexId::AddressHistory],
     ),
 ];
-
-/// The height after `tip`; genesis for an empty index; `None` past the last.
-fn next_height(tip: Option<BlockRef>) -> Option<Height> {
-    match tip {
-        None => Some(Height::GENESIS),
-        Some(tip) => tip.height.checked_add(1),
-    }
-}
 
 /// An index's tip as served: none while unverified.
 fn served_tip<B: Backend>(index: &Open<B>) -> Option<BlockRef> {
@@ -724,7 +796,7 @@ fn try_open<St: Storage>(
     Ok(Open {
         id,
         dir: dir.to_path_buf(),
-        backend,
+        backend: Arc::new(backend),
         writer,
         state,
         tip,
@@ -813,14 +885,14 @@ async fn validator_hash<Src: ChainStoreSource>(
         .map_err(|error| crate::assemble::query("tip check block", error))
 }
 
-fn fold_error(id: IndexId, error: FoldError) -> ChainStoreSourceError {
+pub(crate) fn fold_error(id: IndexId, error: FoldError) -> ChainStoreSourceError {
     ChainStoreSourceError::InconsistentData {
         message: format!("{} fold", id.name()),
         cause: Some(Box::new(error)),
     }
 }
 
-fn commit_error(
+pub(crate) fn commit_error(
     id: IndexId,
     error: impl std::error::Error + Send + Sync + 'static,
 ) -> ChainStoreSourceError {

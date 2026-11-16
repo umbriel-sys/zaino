@@ -18,6 +18,21 @@ pub struct MockBlock {
     pub raw: Option<RawBlock>,
     /// Its size in bytes: the encoding's, or a synthetic block's estimate.
     pub size: u64,
+    /// What its children may spend.
+    pub spendable: Spendable,
+}
+
+/// What a block's children may spend, as consensus allows: an ordinary
+/// transaction's output at once, a coinbase output once
+/// [`COINBASE_MATURITY`](crate::COINBASE_MATURITY) blocks deep, the genesis
+/// coinbase's never.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Spendable {
+    /// Ordinary transactions' outputs left unspent: txid, index, value.
+    pub(crate) ordinary: Vec<([u8; 32], u32, u64)>,
+    /// The coinbases of the last `COINBASE_MATURITY` blocks, genesis
+    /// excluded, oldest first: height, txid.
+    pub(crate) coinbases: std::collections::VecDeque<(u32, [u8; 32])>,
 }
 
 /// Each pool's tree after a block.
