@@ -2,6 +2,7 @@
 //! resolved), its consensus branch, and the note commitment frontiers it
 //! produced.
 
+pub use zaino_primitives::types::NoteFrontier;
 use zaino_primitives::types::{
     BlockHeader, BlockRef, ConsensusBranchId, PoolBalances, PreIndexCompactTx, ShieldedPool,
     Transaction, TransparentOutput, TreeRootInfo, TreeRoots,
@@ -42,18 +43,6 @@ pub struct FoldBlockParts {
     pub frontiers: PoolFrontiers,
     /// The 2¹⁶-leaf subtrees the block completed.
     pub subtrees: Vec<CompletedSubtree>,
-}
-
-/// A note commitment tree's frontier: its rightmost leaf and the left
-/// siblings on its path, lowest level first, one per 1 bit of `position`.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct NoteFrontier {
-    /// The rightmost leaf's position; the tree holds `position + 1` notes.
-    pub position: u64,
-    /// The rightmost leaf.
-    pub leaf: [u8; 32],
-    /// The left siblings.
-    pub ommers: Vec<[u8; 32]>,
 }
 
 /// Per pool, the frontier after a block that changed that pool's tree.

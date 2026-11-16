@@ -9,6 +9,7 @@
 
 use std::collections::BTreeMap;
 
+use zaino_component::{ComponentName, ComponentStatus, Health, Lifecycle, Progress};
 use zaino_indexes::IndexId;
 use zaino_primitives::types::{BlockHash, BlockRef, Height};
 
@@ -160,6 +161,43 @@ impl PrimaryRecord {
             durable,
         })
     }
+}
+
+/// The store's status for `state`, built to `tip` of `target`.
+pub(crate) fn status_of(
+    state: &PrimaryState,
+    tip: Option<Height>,
+    target: Option<Height>,
+) -> ComponentStatus {
+    let (lifecycle, health, reason) = match state {
+        PrimaryState::Booting => (Lifecycle::Spawning, Health::Healthy, None),
+        PrimaryState::Rebuilding(id) => (
+            Lifecycle::Syncing,
+            Health::Healthy,
+            Some(format!("rebuilding {}", id.name())),
+        ),
+        PrimaryState::Building => (Lifecycle::Syncing, Health::Healthy, None),
+        PrimaryState::Ready => (Lifecycle::Ready, Health::Healthy, None),
+        PrimaryState::Stalled(message) => (
+            Lifecycle::Syncing,
+            Health::Recoverable,
+            Some(message.clone()),
+        ),
+        PrimaryState::Failed(message) => {
+            (Lifecycle::Syncing, Health::Critical, Some(message.clone()))
+        }
+        PrimaryState::Halted(message) => {
+            (Lifecycle::Offline, Health::Offline, Some(message.clone()))
+        }
+        PrimaryState::Stopped => (Lifecycle::Closing, Health::Offline, None),
+    };
+    let mut status = ComponentStatus::new(ComponentName("chain store"), lifecycle, health);
+    status.reason = reason;
+    status.progress = tip.map(|tip| Progress {
+        current: u64::from(u32::from(tip)),
+        target: target.map(|target| u64::from(u32::from(target))),
+    });
+    status
 }
 
 fn put_name(bytes: &mut Vec<u8>, id: IndexId) {

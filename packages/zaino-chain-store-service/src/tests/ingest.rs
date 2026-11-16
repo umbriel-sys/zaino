@@ -16,7 +16,7 @@ use zaino_primitives::types::{Height, MerkleRoot, Outpoint, TransparentOutput};
 use zaino_source::FailureMode;
 use zaino_source_mock::{ChainBuilder, MockChain, NodeFacts};
 
-use super::{boot, chain, config, height, indexes_dir, tip_of};
+use super::{boot, chain, config, height, indexes_dir, schedule, tip_of};
 use crate::assemble::assemble;
 use crate::config::{ChainStoreServiceConfig, IngestConfig};
 use crate::set::NamedSet;
@@ -57,7 +57,7 @@ pub(super) async fn oracle(chain: &MockChain, ids: &[IndexId], tip: Height) -> C
         })
         .collect();
     for at in 0..=u32::from(tip) {
-        let mut parts = assemble(chain, &[], height(at), trees)
+        let mut parts = assemble(chain, &schedule(), height(at), trees)
             .await
             .expect("assembled");
         let transactions = std::mem::take(&mut parts.transactions);

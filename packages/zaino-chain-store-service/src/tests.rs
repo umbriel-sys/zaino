@@ -6,7 +6,7 @@ use std::sync::Arc;
 use zaino_chain_store::StoreCapability;
 use zaino_indexes::IndexId;
 use zaino_persistence::{in_memory::InMemoryStorage, Identity, SchemaDigest, Storage as _};
-use zaino_primitives::types::{BlockRef, Height, Network, ShieldedPool};
+use zaino_primitives::types::{BlockRef, Height, Network, NetworkUpgradeInfo, ShieldedPool};
 use zaino_source::FailureMode;
 use zaino_source_mock::{next_block, Activations, BlockSpec, ChainBuilder, MockBlock, MockChain};
 
@@ -99,13 +99,12 @@ async fn boot(
     storage: &InMemoryStorage,
     chain: &MockChain,
 ) -> Result<ChainStore<InMemoryStorage, MockChain>, BootError> {
-    ChainStore::boot(
-        config,
-        storage.clone(),
-        Arc::new(chain.clone()),
-        Arc::from([]),
-    )
-    .await
+    ChainStore::boot(config, storage.clone(), Arc::new(chain.clone()), schedule()).await
+}
+
+/// The upgrades the test chains activate, as their validator reports them.
+fn schedule() -> Arc<[NetworkUpgradeInfo]> {
+    Arc::from(Activations::default().upgrades())
 }
 
 #[tokio::test]
@@ -477,3 +476,4 @@ async fn a_validator_behind_on_another_chain_rebuilds_once_it_catches_up() {
 mod ingest;
 mod linked;
 mod panics;
+mod reads;

@@ -1,0 +1,57 @@
+[[changes]]
+crate = "zaino-chain-store-service"
+kind = "feature"
+description = """
+The store serves reads (D-97). `ChainStore` is cheap to clone and \
+implements `ChainStoreService`, `ChainStoreIngest` and `StatusSource`. \
+`reader()` returns a `StoreReader`: a snapshot of every enabled index and \
+the watermark, taken without waiting on a build. It implements every read \
+port the store's indexes back: compact blocks, transactions, spent outputs, \
+the txout set, address history, tree state and the history tree. Every \
+answer is bounded by its watermark. `rewind_to` is refused (`Unsupported`), \
+since the store is append-only. `shutdown` flushes and refuses later \
+builds. `LinkedChainStore` is cloneable and serves the same reader and \
+status.
+"""
+
+[[changes]]
+crate = "zaino-chain-store"
+kind = "breaking"
+description = """
+New ports `TreeStateIndex` (pool frontiers, subtree roots) and \
+`HistoryTreeIndex` (ZIP 221 roots, epochs, MMR entries), with capabilities \
+`TreeState` and `HistoryTree`. `StoreCapabilities` widens to `u16`. \
+`ChainStoreError::Unsupported` names an operation a store never performs. \
+`TransparentHistoryIndex` is no longer behind \
+`transparent_address_history_experimental`, which is removed.
+"""
+
+[[changes]]
+crate = "zaino-primitives"
+kind = "feature"
+description = """
+`NoteFrontier` and `PoolFrontier` move here from `zaino-indexes`, which \
+re-exports them. `CompactBlock` and `PreIndexCompactTx` derive `PartialEq` \
+and `Eq`.
+"""
+
+[[changes]]
+crate = "zaino-indexes"
+kind = "breaking"
+description = """
+`frontier_from_legacy_tree` is a free function. `NoteFrontier` and \
+`PoolFrontier` are re-exported from `zaino-primitives`.
+"""
+
+[[changes]]
+crate = "zaino-chain"
+kind = "breaking"
+description = """
+`transparent_address_history_experimental` forwards only to \
+`zaino-chain-head`: the store's address history is always built.
+"""
+
+[[changes]]
+crate = "zaino-state"
+kind = "internal"
+description = "A store's `Unsupported` maps to `Unimplemented`."

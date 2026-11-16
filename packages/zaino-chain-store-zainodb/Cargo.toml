@@ -23,9 +23,7 @@ default = []
 testing = []
 
 # Transparent address history: the on-disk index and the reads over it.
-transparent_address_history_experimental = [
-    "zaino-chain-store/transparent_address_history_experimental",
-]
+transparent_address_history_experimental = []
 
 [dependencies]
 # The ports this backend implements, and the business vocabulary they speak.

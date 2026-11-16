@@ -119,7 +119,7 @@ The two questions are different, and `provenance` is which one you are asking.
 
 ## What a failure means, and what it carries
 
-`ChainStoreError` distinguishes five conditions, and the distinctions are the
+`ChainStoreError` distinguishes these conditions, and the distinctions are the
 point — a caller that collapses them either retries what cannot succeed or
 reports a healthy store as broken.
 
@@ -129,6 +129,7 @@ reports a healthy store as broken.
 | `AboveWatermark` | not this half's to answer | ask the chain head |
 | `InvalidRange` | start above end | fix the request |
 | `Unavailable(capability)` | this deployment does not build that index | route elsewhere; retrying never helps |
+| `Unsupported(operation)` | this store never performs that operation (e.g. rewinding an append-only store) | do not call it; retrying never helps |
 | `MissingRow` | an index points at a row that is not there | the store is damaged |
 | `CorruptRow` | the row *is* there, and holds a value that cannot be read | the store is damaged |
 | `Backend` | the storage engine failed | opaque; do not branch on it |
@@ -422,6 +423,26 @@ Two further limits worth knowing before you design against this crate:
   by design.** The address index keys every output, including non-standard
   scripts; the txout set excludes unspendable ones per `is_unspendable`. Each
   port states which semantics it exposes; do not assume they agree.
+
+## Tree state and history are read, not rebuilt
+
+`TreeStateIndex` (capability `TreeState`) answers per pool:
+- `pool_frontier(pool, height)`: the note commitment frontier after a block.
+  The result is `Absent` before the pool activates, `Empty` while it holds
+  no note, otherwise the position, leaf and ommers. This is enough to render
+  `z_gettreestate` without replaying blocks.
+- `subtree_roots(pool, start, limit)`: completed 2^16-leaf subtrees, each
+  with the height that completed it. The list stops at the watermark.
+
+`HistoryTreeIndex` (capability `HistoryTree`) answers the ZIP 221 history
+tree:
+- `history_root(height)` and `history_epoch(height)`: the root, and the
+  epoch's branch and length, after a block. Both are `None` before
+  Heartwood.
+- `history_entries(height, positions)`: encoded MMR entries for a flyclient
+  proof, `None` for a position the epoch does not hold.
+
+Both ports are bounded by the watermark like every other read.
 
 ## `txout_set` is a partial fold, not an answer
 

@@ -7,9 +7,10 @@ use std::sync::Arc;
 
 use tokio::sync::{watch, Mutex};
 use zaino_chain_store::{
-    ChainStoreSource, ChainStoreSourceError, Provenance, StoreCapabilities, StoreCapability,
-    StoreWatermark,
+    ChainStoreError, ChainStoreIngest, ChainStoreService, ChainStoreSource, ChainStoreSourceError,
+    Provenance, StoreCapabilities, StoreCapability, StoreWatermark,
 };
+use zaino_component::{ComponentStatus, StatusSource};
 use zaino_indexes::{FoldError, IndexId, IndexState};
 use zaino_persistence::{Backend, BackendReader, Identity, OpenError, ReadError, Storage};
 use zaino_primitives::types::{BlockHash, BlockRef, Height, NetworkUpgradeInfo};
@@ -17,7 +18,8 @@ use zaino_primitives::types::{BlockHash, BlockRef, Height, NetworkUpgradeInfo};
 use crate::config::{network_name, ChainStoreServiceConfig, IngestConfig, OnCorruption};
 use crate::ingest::{self, Ingest};
 use crate::metadata::{self, Metadata};
-use crate::record::{PrimaryRecord, PrimaryState};
+use crate::reader::StoreReader;
+use crate::record::{status_of, PrimaryRecord, PrimaryState};
 use crate::set::{IndexSet, SetError};
 
 /// How far one index can answer.
@@ -81,6 +83,8 @@ struct Built<St: Storage> {
     closed: Vec<Closed>,
     target: Option<Height>,
     recorder: Recorder<St>,
+    /// Shut down: builds are refused.
+    shut: bool,
 }
 
 /// An index to reopen from disk: not served, retried at every build.
@@ -89,14 +93,16 @@ struct Closed {
     dir: PathBuf,
 }
 
-/// The held store and the record linked readers follow (D-95).
+/// The held store and the record linked readers follow (D-95); the state is
+/// also published in-process, for the store's status.
 struct Recorder<St: Storage> {
     lock: St::Lock,
     record: PrimaryRecord,
+    state: watch::Sender<PrimaryState>,
 }
 
 impl<St: Storage> Recorder<St> {
-    fn new(lock: St::Lock) -> Self {
+    fn new(lock: St::Lock, state: watch::Sender<PrimaryState>) -> Self {
         Self {
             lock,
             record: PrimaryRecord {
@@ -104,10 +110,12 @@ impl<St: Storage> Recorder<St> {
                 target: None,
                 durable: BTreeMap::new(),
             },
+            state,
         }
     }
 
     fn set(&mut self, storage: &St, state: PrimaryState) {
+        self.state.send_replace(state.clone());
         self.record.state = state;
         self.write(storage);
     }
@@ -164,9 +172,8 @@ fn causes(error: &dyn std::error::Error) -> String {
     line
 }
 
-/// A running store: a set of indexes over `St`, built from `Src`. It holds
-/// the store as its primary and keeps the record linked readers follow.
-pub struct ChainStore<St: Storage, Src> {
+/// What every handle onto one running store shares.
+pub(crate) struct Inner<St: Storage, Src> {
     storage: St,
     network: &'static str,
     source: Arc<Src>,
@@ -178,9 +185,12 @@ pub struct ChainStore<St: Storage, Src> {
     built: Mutex<Built<St>>,
     watermark: watch::Sender<StoreWatermark>,
     serviceability: watch::Sender<BTreeMap<IndexId, Serviceability>>,
+    /// Each enabled index's backend, for readers (which never take `built`).
+    backends: std::sync::RwLock<BTreeMap<IndexId, Arc<St::Backend>>>,
+    state: watch::Receiver<PrimaryState>,
 }
 
-impl<St: Storage, Src: ChainStoreSource> ChainStore<St, Src> {
+impl<St: Storage, Src: ChainStoreSource> Inner<St, Src> {
     /// Boots the store at `<root>/<network>/`: locks it, resolves the set,
     /// deletes stale directories (`delete_stale`), opens each index (a schema
     /// mismatch is rebuilt, corruption per `on_corruption`), checks each tip
@@ -200,7 +210,8 @@ impl<St: Storage, Src: ChainStoreSource> ChainStore<St, Src> {
             index: "store",
             source,
         })?;
-        let mut recorder = Recorder::new(lock);
+        let (state_tx, state) = watch::channel(PrimaryState::Booting);
+        let mut recorder = Recorder::new(lock, state_tx);
         recorder.set(&storage, PrimaryState::Booting);
         match Self::open_set(config, &storage, &source, &root, &mut recorder).await {
             Ok((set, indexes)) => {
@@ -209,9 +220,11 @@ impl<St: Storage, Src: ChainStoreSource> ChainStore<St, Src> {
                 let tips = || indexes.iter().map(|index| (index.id, served_tip(index)));
                 let (watermark, _) = watch::channel(watermark_of(tips()));
                 let (serviceability, _) = watch::channel(serviceability_of(tips(), None));
+                let backends = std::sync::RwLock::new(backends_of(&indexes));
                 let built = Built {
                     indexes,
                     closed: Vec::new(),
+                    shut: false,
                     target: None,
                     recorder,
                 };
@@ -227,6 +240,8 @@ impl<St: Storage, Src: ChainStoreSource> ChainStore<St, Src> {
                     built: Mutex::new(built),
                     watermark,
                     serviceability,
+                    backends,
+                    state,
                 })
             }
             Err(error) => {
@@ -311,6 +326,12 @@ impl<St: Storage, Src: ChainStoreSource> ChainStore<St, Src> {
     {
         let mut built = self.built.lock().await;
         let built = &mut *built;
+        if built.shut {
+            return Err(ChainStoreSourceError::Commit {
+                message: "the store is shut down".to_owned(),
+                cause: None,
+            });
+        }
         built.target = Some(built.target.map_or(target, |old| old.max(target)));
         built.recorder.record.target = built.target;
         built.recorder.set(&self.storage, PrimaryState::Building);
@@ -366,13 +387,11 @@ impl<St: Storage, Src: ChainStoreSource> ChainStore<St, Src> {
             closed,
             target: wanted,
             recorder,
+            ..
         } = built;
-        let held = |id: IndexId| {
-            indexes
-                .iter()
-                .any(|index| index.id == id && index.unverified)
-        };
-        let prevouts_held = held(IndexId::TxidLocation) || held(IndexId::Transparent);
+        let prevouts_held = indexes.iter().any(|index| {
+            index.unverified && matches!(index.id, IndexId::TxidLocation | IndexId::Transparent)
+        });
         let (building, waiting): (Vec<_>, Vec<_>) =
             std::mem::take(indexes).into_iter().partition(|index| {
                 let waits = prevouts_held && index.id.builds_from().next().is_some();
@@ -384,17 +403,29 @@ impl<St: Storage, Src: ChainStoreSource> ChainStore<St, Src> {
             trees: self.trees,
             config: &self.ingest,
         };
+        // what progress needs of the waiting and closed indexes, not the
+        // indexes themselves (their writers stay off the pipeline's futures)
+        let still: Vec<(IndexId, Option<BlockRef>)> = waiting
+            .iter()
+            .map(|index| (index.id, served_tip(index)))
+            .chain(closed.iter().map(|index| (index.id, None)))
+            .collect();
+        let still_verified: Vec<(IndexId, Arc<St::Backend>)> = waiting
+            .iter()
+            .filter(|index| !index.unverified)
+            .map(|index| (index.id, Arc::clone(&index.backend)))
+            .collect();
         let (returned, result) = ingest::build(building, target, ingest, |running| {
             let applied = running
                 .iter()
                 .map(|index| (index.id, *index.applied.borrow()));
-            let tips = applied
-                .chain(waiting.iter().map(|index| (index.id, served_tip(index))))
-                .chain(closed.iter().map(|index| (index.id, None)));
-            self.publish_tips(tips, *wanted);
-            let backends = running.iter().map(|index| (index.id, &*index.backend));
+            self.publish_tips(applied.chain(still.iter().copied()), *wanted);
+            let backends = running
+                .iter()
+                .map(|index| (index.id, &*index.backend))
+                .chain(still_verified.iter().map(|(id, backend)| (*id, &**backend)));
             // a backend writes its buffer on its own once full
-            recorder.durable(&self.storage, backends.chain(verified(&waiting)));
+            recorder.durable(&self.storage, backends);
         })
         .await;
         let mut kept = waiting;
@@ -492,6 +523,69 @@ impl<St: Storage, Src: ChainStoreSource> ChainStore<St, Src> {
             .map(|index| (index.id, served_tip(index)))
             .chain(built.closed.iter().map(|index| (index.id, None)));
         self.publish_tips(tips, built.target);
+        *self
+            .backends
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = backends_of(&built.indexes);
+    }
+
+    /// A reader over every enabled index, answering up to the watermark
+    /// taken first (so each index holds at least that much).
+    fn reader(&self) -> StoreReader<<St::Backend as Backend>::Reader> {
+        let watermark = *self.watermark.borrow();
+        let capabilities = self.capabilities();
+        let backends = self
+            .backends
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone();
+        let readers = backends
+            .into_iter()
+            .filter_map(|(id, backend)| match backend.reader() {
+                Ok(reader) => Some((id, reader)),
+                Err(error) => {
+                    tracing::warn!(index = id.name(), %error, "no reader: its reads are unavailable");
+                    None
+                }
+            })
+            .collect();
+        StoreReader::new(readers, watermark, capabilities, self.status())
+    }
+
+    /// The store's status, from its state and how far it has built.
+    fn status(&self) -> ComponentStatus {
+        let tip = self.watermark.borrow().tip.map(|tip| tip.height);
+        let target = self
+            .serviceability
+            .borrow()
+            .values()
+            .find_map(|state| match state {
+                Serviceability::ToHeight(height) => Some(*height),
+                Serviceability::Absent | Serviceability::Building(_) => None,
+            });
+        status_of(&self.state.borrow(), tip, target)
+    }
+
+    /// Every buffered commit made durable and the record `Stopped`; later
+    /// builds are refused.
+    async fn shutdown(&self) -> Result<(), ChainStoreError> {
+        let mut built = self.built.lock().await;
+        built.shut = true;
+        let mut failure = None;
+        for index in &built.indexes {
+            if let Err(error) = index.backend.flush() {
+                failure.get_or_insert(ChainStoreError::Backend {
+                    message: format!("{} flush at shutdown", index.id.name()),
+                    cause: Some(Box::new(error)),
+                });
+            }
+        }
+        let built = &mut *built;
+        built
+            .recorder
+            .durable(&self.storage, verified(&built.indexes));
+        built.recorder.set(&self.storage, PrimaryState::Stopped);
+        failure.map_or(Ok(()), Err)
     }
 
     fn publish_tips(
@@ -506,7 +600,7 @@ impl<St: Storage, Src: ChainStoreSource> ChainStore<St, Src> {
 }
 
 /// The record says `Stopped`, each index's durable tip announced last.
-impl<St: Storage, Src> Drop for ChainStore<St, Src> {
+impl<St: Storage, Src> Drop for Inner<St, Src> {
     fn drop(&mut self) {
         let built = self.built.get_mut();
         built
@@ -514,6 +608,140 @@ impl<St: Storage, Src> Drop for ChainStore<St, Src> {
             .durable(&self.storage, verified(&built.indexes));
         built.recorder.set(&self.storage, PrimaryState::Stopped);
     }
+}
+
+/// A running store: a set of indexes over `St`, built from `Src`. It holds
+/// the store as its primary and keeps the record linked readers follow.
+/// Cheap to clone: clones share one store, which stops when the last drops.
+pub struct ChainStore<St: Storage, Src> {
+    inner: Arc<Inner<St, Src>>,
+}
+
+impl<St: Storage, Src> Clone for ChainStore<St, Src> {
+    fn clone(&self) -> Self {
+        Self {
+            inner: Arc::clone(&self.inner),
+        }
+    }
+}
+
+impl<St: Storage, Src: ChainStoreSource> ChainStore<St, Src> {
+    /// Boots the store at `<root>/<network>/`: locks it, resolves the set,
+    /// deletes stale directories (`delete_stale`), opens each index (a schema
+    /// mismatch is rebuilt, corruption per `on_corruption`), checks each tip
+    /// against the validator (D-32: a different block is rebuilt), records
+    /// `METADATA`.
+    ///
+    /// The record says `Booting` while it runs and `Halted` if it fails.
+    pub async fn boot(
+        config: &ChainStoreServiceConfig,
+        storage: St,
+        source: Arc<Src>,
+        schedule: Arc<[NetworkUpgradeInfo]>,
+    ) -> Result<Self, BootError> {
+        let inner = Inner::boot(config, storage, source, schedule).await?;
+        Ok(Self {
+            inner: Arc::new(inner),
+        })
+    }
+
+    /// Builds every enabled index through `target` (D-67, D-96): see
+    /// `usage.md`. Single-flight; refused after `shutdown`.
+    pub async fn build_to(&self, target: Height) -> Result<(), ChainStoreSourceError>
+    where
+        St::Backend: 'static,
+        <St::Backend as Backend>::Writer: 'static,
+    {
+        self.inner.build_to(target).await
+    }
+
+    /// The enabled set.
+    pub fn set(&self) -> &IndexSet {
+        self.inner.set()
+    }
+
+    /// Watches the store watermark: the lowest tip among the enabled
+    /// indexes (empty when any is).
+    pub fn subscribe_watermark(&self) -> watch::Receiver<StoreWatermark> {
+        self.inner.subscribe_watermark()
+    }
+
+    /// Watches each index's serviceability.
+    pub fn subscribe_serviceability(&self) -> watch::Receiver<BTreeMap<IndexId, Serviceability>> {
+        self.inner.subscribe_serviceability()
+    }
+
+    /// `id`'s serviceability now.
+    pub fn serviceability(&self, id: IndexId) -> Serviceability {
+        self.inner.serviceability(id)
+    }
+
+    /// What the store answers now (D-81): a capability once each of its
+    /// indexes holds a block.
+    pub fn capabilities(&self) -> StoreCapabilities {
+        self.inner.capabilities()
+    }
+}
+
+impl<St: Storage, Src: ChainStoreSource> StatusSource for ChainStore<St, Src> {
+    fn status(&self) -> ComponentStatus {
+        self.inner.status()
+    }
+}
+
+impl<St, Src> ChainStoreService for ChainStore<St, Src>
+where
+    St: Storage,
+    St::Backend: 'static,
+    <St::Backend as Backend>::Reader: Sync + 'static,
+    Src: ChainStoreSource,
+{
+    type Reader = StoreReader<<St::Backend as Backend>::Reader>;
+
+    fn reader(&self) -> Self::Reader {
+        self.inner.reader()
+    }
+
+    fn subscribe_watermark(&self) -> watch::Receiver<StoreWatermark> {
+        self.inner.subscribe_watermark()
+    }
+}
+
+impl<St, Src> ChainStoreIngest for ChainStore<St, Src>
+where
+    St: Storage,
+    St::Backend: 'static,
+    <St::Backend as Backend>::Writer: 'static,
+    Src: ChainStoreSource,
+{
+    async fn build_to(&self, target: Height) -> Result<(), ChainStoreSourceError> {
+        self.inner.build_to(target).await
+    }
+
+    /// Refused (D-97): the store is append-only; a store on the wrong chain
+    /// is rebuilt at boot instead (D-32).
+    async fn rewind_to(&self, _height: Height) -> Result<(), ChainStoreError> {
+        Err(ChainStoreError::Unsupported(
+            "rewinding: the store is append-only, rebuilt instead",
+        ))
+    }
+
+    /// Resolves once no build is running.
+    async fn wait_until_built(&self) {
+        let _idle = self.inner.built.lock().await;
+    }
+
+    async fn shutdown(&self) -> Result<(), ChainStoreError> {
+        self.inner.shutdown().await
+    }
+}
+
+/// Each index's backend, for readers.
+fn backends_of<B: Backend>(indexes: &[Open<B>]) -> BTreeMap<IndexId, Arc<B>> {
+    indexes
+        .iter()
+        .map(|index| (index.id, Arc::clone(&index.backend)))
+        .collect()
 }
 
 /// Each capability whose indexes all hold a block (D-81).
@@ -555,8 +783,14 @@ const CAPABILITIES: &[(StoreCapability, &[IndexId])] = &[
     (StoreCapability::TxOutSet, &[IndexId::TxOutSet]),
     (
         StoreCapability::TransparentHistory,
-        &[IndexId::AddressHistory],
+        &[
+            IndexId::AddressHistory,
+            IndexId::Txids,
+            IndexId::Transparent,
+        ],
     ),
+    (StoreCapability::TreeState, &[IndexId::TreeState]),
+    (StoreCapability::HistoryTree, &[IndexId::HistoryTree]),
 ];
 
 /// An index's tip as served: none while unverified.

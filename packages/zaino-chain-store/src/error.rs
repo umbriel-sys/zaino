@@ -92,6 +92,11 @@ pub enum ChainStoreError {
     #[error("chain store does not currently offer {0}")]
     Unavailable(StoreCapability),
 
+    /// This store does not perform the operation at all, whatever it holds
+    /// (a store that cannot rewind, say). Retrying will not help.
+    #[error("chain store does not support {0}")]
+    Unsupported(&'static str),
+
     /// A row the store's own indexes reference is missing.
     ///
     /// An internal inconsistency, not a caller error: the store writes a block

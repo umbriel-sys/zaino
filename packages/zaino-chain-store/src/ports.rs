@@ -33,13 +33,15 @@ use futures::Stream;
 use tokio::sync::watch;
 use zaino_component::StatusSource;
 use zaino_primitives::types::{
-    BlockHash, BlockTxPosition, CompactBlock, Height, Outpoint, TransactionId,
+    BlockHash, BlockTxPosition, CompactBlock, Height, Outpoint, PoolFrontier, ShieldedPool,
+    SubtreeRoot, TransactionId,
 };
 
 use crate::block::{FrozenBlock, PoolFilter, StoredBlock};
 use crate::capability::{StoreCapabilities, StoreCapability, StoreSchema, StoreWatermark};
 use crate::error::{ChainStoreError, ChainStoreSourceError};
 use crate::output::{SpenderRef, StoredTxOut};
+use crate::tree::HistoryEpoch;
 use crate::txout_set::TxOutSetAccumulator;
 
 /// Everything a chain store asks of a validator.
@@ -330,12 +332,60 @@ pub trait TxOutSetIndex: ChainStoreReader {
     ) -> impl Future<Output = Result<TxOutSetAccumulator, ChainStoreError>> + Send;
 }
 
+/// Note commitment trees within the finalised range (C2).
+pub trait TreeStateIndex: ChainStoreReader {
+    /// `pool`'s tree after `height`: absent before the pool activates,
+    /// empty before its first note, else its frontier.
+    ///
+    /// `None` for a height the store does not hold; above the watermark is
+    /// [`ChainStoreError::AboveWatermark`].
+    fn pool_frontier(
+        &self,
+        pool: ShieldedPool,
+        height: Height,
+    ) -> impl Future<Output = Result<Option<PoolFrontier>, ChainStoreError>> + Send;
+
+    /// Up to `limit` of `pool`'s completed 2¹⁶ subtree roots from index
+    /// `start`, ascending; only subtrees completed at or below the watermark.
+    fn subtree_roots(
+        &self,
+        pool: ShieldedPool,
+        start: u64,
+        limit: u64,
+    ) -> impl Future<Output = Result<Vec<SubtreeRoot>, ChainStoreError>> + Send;
+}
+
+/// The ZIP 221 chain history tree within the finalised range (C6).
+pub trait HistoryTreeIndex: ChainStoreReader {
+    /// The `hashChainHistoryRoot` committed by the block after `height`:
+    /// `None` before Heartwood or for a height the store does not hold.
+    fn history_root(
+        &self,
+        height: Height,
+    ) -> impl Future<Output = Result<Option<[u8; 32]>, ChainStoreError>> + Send;
+
+    /// The epoch (one per network upgrade) the tree is in after `height`:
+    /// `None` before Heartwood or for a height the store does not hold.
+    fn history_epoch(
+        &self,
+        height: Height,
+    ) -> impl Future<Output = Result<Option<HistoryEpoch>, ChainStoreError>> + Send;
+
+    /// The encoded MMR entries at `positions` of the epoch in force after
+    /// `height`, in the order asked (ZIP 221 entry encoding); `None` for a
+    /// position the epoch does not hold.
+    fn history_entries(
+        &self,
+        height: Height,
+        positions: &[u32],
+    ) -> impl Future<Output = Result<Vec<Option<Vec<u8>>>, ChainStoreError>> + Send;
+}
+
 /// Transparent address history within the finalised range.
 ///
-/// Declared and feature-gated. The chain head declares the matching half
+/// The chain head declares the matching half
 /// (`ChainHeadTransparentHistoryService`), and a complete answer is the two
 /// merged — neither alone is an address's history.
-#[cfg(feature = "transparent_address_history_experimental")]
 pub trait TransparentHistoryIndex: ChainStoreReader {
     /// What happened to `query`'s addresses within its height range.
     ///
@@ -424,10 +474,19 @@ sealed_capability!(
     StoreCapability::TxOutSet
 );
 sealed_capability!(
-    #[cfg(feature = "transparent_address_history_experimental")]
     TransparentHistoryIndexCapability,
     TransparentHistoryIndex,
     StoreCapability::TransparentHistory
+);
+sealed_capability!(
+    TreeStateIndexCapability,
+    TreeStateIndex,
+    StoreCapability::TreeState
+);
+sealed_capability!(
+    HistoryTreeIndexCapability,
+    HistoryTreeIndex,
+    StoreCapability::HistoryTree
 );
 
 /// Driving a chain store forward.

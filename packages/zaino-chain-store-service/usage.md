@@ -103,6 +103,31 @@ The defaults are to be tuned against step 6's mainnet benchmarks.
 (each `StoreCapability` once all its indexes hold a block; no
 `StoredBlocks`).
 
+`ChainStore` is cheap to clone; clones share one store, which stops when the
+last is dropped. It implements the `zaino-chain-store` ports:
+- `ChainStoreService::reader()` returns a `StoreReader`. This is a snapshot
+  of every enabled index plus the watermark, taken without waiting on a
+  build. A group of reads on one reader describes one chain state, even if
+  the store builds further meanwhile. Take a new reader to see newer blocks.
+- `StoreReader` implements `ChainStoreReader`, `CompactBlockRead`,
+  `TransactionIndex`, `SpentOutputIndex`, `TxOutSetIndex`,
+  `TransparentHistoryIndex`, `TreeStateIndex` and `HistoryTreeIndex`.
+  - Every answer is bounded by the reader's watermark: an empty store is
+    `NotReady`, a height above the watermark is `AboveWatermark`, a range is
+    cut at it, and a row an index holds past it is not returned.
+  - A port whose capability is not built is `Unavailable`.
+  - Point reads run inline. Compact ranges read on the blocking pool, 100
+    blocks per chunk.
+- `ChainStoreIngest`:
+  - `build_to` as above;
+  - `wait_until_built` resolves once no build runs;
+  - `shutdown` flushes every index, records `Stopped` and refuses later
+    builds (reads still answer);
+  - `rewind_to` is refused with `Unsupported`. The store is append-only; a
+    store on another chain is rebuilt at boot (D-32).
+- `StatusSource`: the primary's state as a `ComponentStatus`, with the
+  watermark's progress toward the last target.
+
 ## The primary's record
 
 The `ChainStore` is the store's primary. It keeps a record for linked
@@ -132,5 +157,9 @@ An index not announced is `Absent`. A tip the primary has moved past keeps
 the last state until the next refresh. An index that cannot follow (another
 layout or chain, lost data) is not served and is returned as
 `LinkedError::Index` once the rest are refreshed. A stopped primary's durable
-state is still served. The linked store does not yet serve reads (5a step 5),
-and runs no chain head or mempool of its own (D-47).
+state is still served.
+
+A linked store is cheap to clone. Its `reader()` (also `ChainStoreService`)
+is the same `StoreReader`, over the served indexes as of the last refresh.
+Its `StatusSource` reports the primary's state, or `Stopped` once no primary
+is running. It runs no chain head or mempool of its own (D-47).

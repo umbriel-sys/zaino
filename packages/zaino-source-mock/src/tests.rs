@@ -363,12 +363,12 @@ fn legacy_trees_decode_to_their_size() {
         bytes
     };
     assert_eq!(
-        zaino_indexes::NoteFrontier::from_legacy_tree(&legacy_tree(0, leaf, previous, node)),
+        zaino_indexes::frontier_from_legacy_tree(&legacy_tree(0, leaf, previous, node)),
         Ok(None)
     );
     for size in (1u64..300).chain([65_535, 65_536, 65_537, 1 << 20, (1 << 32) - 1]) {
         let frontier =
-            zaino_indexes::NoteFrontier::from_legacy_tree(&legacy_tree(size, leaf, previous, node))
+            zaino_indexes::frontier_from_legacy_tree(&legacy_tree(size, leaf, previous, node))
                 .expect("decodes")
                 .expect("not empty");
         assert_eq!(frontier.position + 1, size, "size {size}");

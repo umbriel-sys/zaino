@@ -66,8 +66,8 @@ pub mod config;
 pub mod error;
 pub mod output;
 pub mod ports;
-#[cfg(feature = "transparent_address_history_experimental")]
 pub mod transparent;
+pub mod tree;
 pub mod txout_set;
 
 pub use block::{FrozenBlock, PoolFilter, StoredBlock, StoredTx};
@@ -90,7 +90,9 @@ pub use txout_set::{
     TxOutSetError, MAX_SCRIPT_SIZE, TXOUT_SET_DOMAIN_TAG, TXOUT_SET_ENTRY_LEN,
 };
 
-#[cfg(feature = "transparent_address_history_experimental")]
-pub use ports::{TransparentHistoryIndex, TransparentHistoryIndexCapability};
-#[cfg(feature = "transparent_address_history_experimental")]
+pub use ports::{
+    HistoryTreeIndex, HistoryTreeIndexCapability, TransparentHistoryIndex,
+    TransparentHistoryIndexCapability, TreeStateIndex, TreeStateIndexCapability,
+};
 pub use transparent::{LocatedOutput, LocatedSpend, StoreAddressEffects, TransparentHistoryQuery};
+pub use tree::HistoryEpoch;

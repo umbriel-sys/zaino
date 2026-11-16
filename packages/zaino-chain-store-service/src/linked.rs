@@ -10,13 +10,15 @@ use std::time::Duration;
 
 use tokio::sync::watch;
 use tokio::task::JoinHandle;
-use zaino_chain_store::{StoreCapabilities, StoreWatermark};
+use zaino_chain_store::{ChainStoreService, StoreCapabilities, StoreWatermark};
+use zaino_component::{ComponentStatus, StatusSource};
 use zaino_indexes::IndexId;
 use zaino_persistence::{OpenError, ReadOnlyBackend, RefreshError, Storage};
 use zaino_primitives::types::{BlockRef, Height};
 
 use crate::config::{network_name, ChainStoreServiceConfig};
-use crate::record::{PrimaryRecord, PrimaryState, RecordError};
+use crate::reader::StoreReader;
+use crate::record::{status_of, PrimaryRecord, PrimaryState, RecordError};
 use crate::set::{IndexSet, SetError};
 use crate::store::{
     capabilities_of, identity, parent_of, parents, serviceability_of, watermark_of, Serviceability,
@@ -193,6 +195,67 @@ impl<St: Storage> LinkedChainStore<St> {
     /// The primary's status at the last refresh.
     pub fn primary(&self) -> PrimaryStatus {
         self.inner.primary.borrow().clone()
+    }
+
+    /// A reader over every served index at the last refresh (D-97), taken
+    /// under the refresh's lock so its watermark and readers agree.
+    pub fn reader(&self) -> StoreReader<<St::ReadOnly as ReadOnlyBackend>::Reader> {
+        let inner = &self.inner;
+        let served = inner
+            .served
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let watermark = *inner.watermark.borrow();
+        let capabilities = capabilities_of(&inner.serviceability.borrow());
+        let readers = inner
+            .indexes
+            .iter()
+            .filter(|(id, _)| served.contains_key(id))
+            .filter_map(|(id, backend)| backend.reader().ok().map(|reader| (*id, reader)))
+            .collect();
+        let status = self.status();
+        StoreReader::new(readers, watermark, capabilities, status)
+    }
+}
+
+impl<St: Storage> Clone for LinkedChainStore<St> {
+    fn clone(&self) -> Self {
+        Self {
+            inner: Arc::clone(&self.inner),
+        }
+    }
+}
+
+/// A linked store's status: its primary's state, offline when no primary
+/// is running.
+impl<St: Storage> StatusSource for LinkedChainStore<St> {
+    fn status(&self) -> ComponentStatus {
+        let primary = self.inner.primary.borrow().clone();
+        let tip = self.inner.watermark.borrow().tip.map(|tip| tip.height);
+        let state = match (primary.running, primary.state) {
+            (true, Some(state)) => state,
+            (true, None) => PrimaryState::Booting,
+            (false, Some(PrimaryState::Halted(message))) => PrimaryState::Halted(message),
+            (false, _) => PrimaryState::Stopped,
+        };
+        status_of(&state, tip, primary.target)
+    }
+}
+
+impl<St> ChainStoreService for LinkedChainStore<St>
+where
+    St: Storage,
+    St::ReadOnly: 'static,
+    <St::ReadOnly as ReadOnlyBackend>::Reader: Sync + 'static,
+{
+    type Reader = StoreReader<<St::ReadOnly as ReadOnlyBackend>::Reader>;
+
+    fn reader(&self) -> Self::Reader {
+        LinkedChainStore::reader(self)
+    }
+
+    fn subscribe_watermark(&self) -> watch::Receiver<StoreWatermark> {
+        self.inner.watermark.subscribe()
     }
 }
 

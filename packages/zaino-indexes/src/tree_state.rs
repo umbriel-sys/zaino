@@ -13,6 +13,7 @@
 //! size change in count and order.
 
 use zaino_persistence::{sequence_key, BackendReader, Namespace, WriteOp};
+pub use zaino_primitives::types::PoolFrontier;
 use zaino_primitives::types::{BlockRef, Height, ShieldedPool};
 
 use crate::block::{pool_root, FoldBlock, NoteFrontier};
@@ -91,17 +92,6 @@ pub const SCHEMA: Schema = Schema::new(
 
 /// A node with its (level, index) address.
 type AddressedNode = ((u8, u64), [u8; 32]);
-
-/// A pool's frontier at a height.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum PoolFrontier {
-    /// The pool is not active at that height.
-    Absent,
-    /// Active, no notes yet.
-    Empty,
-    /// The tree's frontier.
-    Frontier(NoteFrontier),
-}
 
 /// A completed 2¹⁶ subtree.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

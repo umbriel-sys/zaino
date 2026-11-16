@@ -10,7 +10,7 @@ use zaino_persistence::{in_memory::InMemoryStorage, Storage};
 use zaino_persistence_lsm_tree::{fs::RealFs, LsmConfig, LsmTreeStorage};
 use zaino_source::FailureMode;
 
-use super::{boot, built_then_behind, chain, config, height, tip_of, PLAIN};
+use super::{boot, built_then_behind, chain, config, height, schedule, tip_of, PLAIN};
 use crate::config::ChainStoreServiceConfig;
 use crate::linked::{LinkedChainStore, LinkedError, PrimaryStatus};
 use crate::record::PrimaryState;
@@ -208,7 +208,7 @@ async fn a_linked_store_follows_a_primary_on_a_real_filesystem() {
         &config,
         storage.clone(),
         Arc::new(chain.clone()),
-        Arc::from([]),
+        schedule(),
     )
     .await
     .expect("boots");

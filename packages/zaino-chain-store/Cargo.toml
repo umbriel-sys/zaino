@@ -14,14 +14,6 @@ version = "0.1.1"
 [features]
 default = []
 
-# Declares the transparent-address-history capability: its query and effect
-# types, and the `TransparentHistoryIndex` port. Named to match
-# `zaino-chain-head/transparent_address_history_experimental`, which declares
-# the recent-window half of the same capability, and
-# `zaino-state/transparent_address_history_experimental`, which gates the
-# implementation that backs this one.
-transparent_address_history_experimental = []
-
 [dependencies]
 # The domain vocabulary, and the UTXO-set commitment every store computes.
 # This crate names no wire, node, or backend type.

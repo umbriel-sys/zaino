@@ -6,7 +6,10 @@
 use std::fmt;
 
 use zaino_chain_store::{ChainStoreSource, ChainStoreSourceError};
-use zaino_indexes::{CompletedSubtree, FoldBlockParts, FoldTx, NoteFrontier, PoolFrontiers};
+use zaino_indexes::{
+    frontier_from_legacy_tree, CompletedSubtree, FoldBlockParts, FoldTx, NoteFrontier,
+    PoolFrontiers,
+};
 use zaino_primitives::types::{
     branch_at, Block, Height, NetworkUpgradeInfo, PoolTreestate, ShieldedPool, Transaction,
     TreeRoots,
@@ -168,7 +171,7 @@ fn frontier(
     let tree = tree.ok_or_else(|| {
         ChainStoreSourceError::inconsistent_data(format!("{pool} notes added without a treestate"))
     })?;
-    NoteFrontier::from_legacy_tree(&tree.final_state)
+    frontier_from_legacy_tree(&tree.final_state)
         .map_err(inconsistent)?
         .ok_or_else(|| {
             ChainStoreSourceError::inconsistent_data(format!("{pool} treestate empty after notes"))

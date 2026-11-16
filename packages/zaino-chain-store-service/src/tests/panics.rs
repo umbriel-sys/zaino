@@ -19,7 +19,7 @@ use zaino_primitives::types::BlockRef;
 use zaino_source_mock::MockChain;
 
 use super::ingest::{every_index, oracle, stored};
-use super::{chain, config, tip_of};
+use super::{chain, config, schedule, tip_of};
 use crate::record::{PrimaryRecord, PrimaryState};
 use crate::store::{ChainStore, Serviceability};
 
@@ -207,7 +207,7 @@ async fn boot(storage: &Faulty, chain: &MockChain) -> ChainStore<Faulty, MockCha
         &config(&every_index()),
         storage.clone(),
         Arc::new(chain.clone()),
-        Arc::from([]),
+        schedule(),
     )
     .await
     .expect("boots")

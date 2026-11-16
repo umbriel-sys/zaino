@@ -31,7 +31,6 @@ testing = []
 # has a bound no type satisfies: the builder method is there, and unreachable
 # until one does. See the crate docs.
 transparent_address_history_experimental = [
-    "zaino-chain-store/transparent_address_history_experimental",
     "zaino-chain-head/transparent_address_history_experimental",
 ]
 
