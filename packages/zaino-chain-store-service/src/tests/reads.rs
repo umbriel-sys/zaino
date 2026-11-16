@@ -7,8 +7,9 @@ use futures::TryStreamExt as _;
 use zaino_chain_store::{
     ChainStoreError, ChainStoreIngest as _, ChainStoreReader as _, ChainStoreService as _,
     CompactBlockRead as _, HistoryTreeIndex as _, PoolFilter, SpenderRef, SpentOutputIndex as _,
-    StoreCapability, StoredTxOut, TransactionIndex as _, TransparentHistoryIndex as _,
-    TransparentHistoryQuery, TreeStateIndex as _, TxOutSetAccumulator, TxOutSetIndex as _,
+    StoreCapability, StoredHeader, StoredTxOut, TransactionIndex as _,
+    TransparentHistoryIndex as _, TransparentHistoryQuery, TreeRootsIndex as _,
+    TreeStateIndex as _, TxOutSetAccumulator, TxOutSetIndex as _,
 };
 use zaino_component::{Lifecycle, StatusSource as _};
 use zaino_indexes::{frontier_from_legacy_tree, IndexId};
@@ -76,6 +77,73 @@ fn compact(block: &Block, pools: PoolFilter) -> CompactBlock {
         transactions,
         chain_metadata: block.chain_metadata.clone(),
     }
+}
+
+/// Headers, chainwork and tree roots match the chain: the header as mined, the
+/// work accumulated from genesis, the roots the validator reported.
+#[tokio::test]
+async fn headers_chainwork_and_roots_match_the_chain() {
+    let chain = chain();
+    let (store, _) = built(&chain).await;
+    let reader = store.reader();
+    let tip = tip_of(&chain).height;
+    let all = blocks(&chain);
+    let mut expected_headers = Vec::new();
+    let mut chainwork: Option<zaino_primitives::types::AbsoluteChainWork> = None;
+    for block in &all {
+        let work = block.header.bits.to_work();
+        chainwork = Some(match chainwork {
+            None => zaino_primitives::types::AbsoluteChainWork::genesis(work),
+            Some(so_far) => so_far.accumulate(work).expect("fits"),
+        });
+        expected_headers.push(StoredHeader {
+            header: block.header.clone(),
+            chainwork: chainwork.expect("set"),
+        });
+    }
+    assert_eq!(
+        reader.headers_chunk(height(0), tip).await.expect("read"),
+        expected_headers
+    );
+    for (at, expected) in (0u32..).zip(&expected_headers) {
+        assert_eq!(
+            reader.chainwork(height(at)).await.expect("read"),
+            Some(expected.chainwork)
+        );
+    }
+    let expected_roots: Vec<_> = (0..=u32::from(tip))
+        .map(|at| chain.block_at(at).expect("loaded").tree_roots)
+        .collect();
+    assert_eq!(
+        reader.tree_roots_chunk(height(0), tip).await.expect("read"),
+        expected_roots
+    );
+    // truncated at the watermark, refused backwards, bounded for the point read
+    let above = tip.checked_add(5).expect("small");
+    assert_eq!(
+        reader
+            .headers_chunk(height(100), above)
+            .await
+            .expect("read")
+            .len(),
+        all.len() - 100
+    );
+    assert_eq!(
+        reader
+            .tree_roots_chunk(height(100), above)
+            .await
+            .expect("read")
+            .len(),
+        all.len() - 100
+    );
+    assert!(matches!(
+        reader.headers_chunk(height(3), height(2)).await,
+        Err(ChainStoreError::InvalidRange { .. })
+    ));
+    assert!(matches!(
+        reader.chainwork(above).await,
+        Err(ChainStoreError::AboveWatermark { .. })
+    ));
 }
 
 #[tokio::test]

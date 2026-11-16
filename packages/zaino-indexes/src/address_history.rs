@@ -97,7 +97,9 @@ pub struct State {
 
 impl Index for AddressHistory {
     const SCHEMA: Schema = SCHEMA;
-    const READS: &'static [&'static str] = &[crate::txids::NAME, crate::spent::NAME];
+    // Serving joins the txid at each event's position and, for a spend, the
+    // input's prevout; spent status is the caller's join with I-09.
+    const READS: &'static [&'static str] = &[crate::txids::NAME, crate::transparent::NAME];
     const BUILDS_FROM: &'static [&'static str] =
         &[crate::txid_location::NAME, crate::transparent::NAME];
     type State = State;

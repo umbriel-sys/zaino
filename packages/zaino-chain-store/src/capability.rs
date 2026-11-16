@@ -36,8 +36,8 @@ pub enum StoreCapability {
     /// Heights, hashes, and the watermark. Always present: a store that
     /// cannot answer these is not a store.
     Core,
-    /// Indexed blocks, as the store's own projection of them.
-    StoredBlocks,
+    /// Commitment tree roots and sizes after each block.
+    TreeRoots,
     /// Compact blocks, for wallet sync.
     CompactBlocks,
     /// Where a transaction was mined, and what is at a position.
@@ -62,7 +62,7 @@ impl StoreCapability {
     /// and a coherence check over the ports needs something to iterate.
     pub const ALL: [Self; 9] = [
         Self::Core,
-        Self::StoredBlocks,
+        Self::TreeRoots,
         Self::CompactBlocks,
         Self::Transactions,
         Self::SpentOutputs,
@@ -76,7 +76,7 @@ impl StoreCapability {
     const fn bit(self) -> u16 {
         match self {
             Self::Core => 1 << 0,
-            Self::StoredBlocks => 1 << 1,
+            Self::TreeRoots => 1 << 1,
             Self::CompactBlocks => 1 << 2,
             Self::Transactions => 1 << 3,
             Self::SpentOutputs => 1 << 4,
@@ -92,7 +92,7 @@ impl fmt::Display for StoreCapability {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let name = match self {
             StoreCapability::Core => "core reads",
-            StoreCapability::StoredBlocks => "stored blocks",
+            StoreCapability::TreeRoots => "commitment tree roots",
             StoreCapability::CompactBlocks => "compact blocks",
             StoreCapability::Transactions => "the transaction index",
             StoreCapability::SpentOutputs => "the spent-output index",

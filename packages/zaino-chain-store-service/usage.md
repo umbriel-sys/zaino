@@ -100,8 +100,12 @@ The defaults are to be tuned against step 6's mainnet benchmarks.
 `subscribe_watermark` (the lowest tip of the enabled indexes),
 `serviceability(id)` / `subscribe_serviceability` (`Absent`,
 `Building(tip)`, `ToHeight(tip)` once at the last target) and `capabilities`
-(each `StoreCapability` once all its indexes hold a block; no
-`StoredBlocks`).
+(each `StoreCapability` once all its indexes hold a block). A capability's
+indexes are the ones its port reads plus what those declare they read
+(`Index::READS`, D-83), derived rather than listed, so the two cannot drift:
+for example `TransparentHistory` is the address-history index plus txids and
+transparent, and `CompactBlocks` is the compact-block index plus headers,
+txids, transparent and chain metadata.
 
 `ChainStore` is cheap to clone; clones share one store, which stops when the
 last is dropped. It implements the `zaino-chain-store` ports:
@@ -109,7 +113,8 @@ last is dropped. It implements the `zaino-chain-store` ports:
   of every enabled index plus the watermark, taken without waiting on a
   build. A group of reads on one reader describes one chain state, even if
   the store builds further meanwhile. Take a new reader to see newer blocks.
-- `StoreReader` implements `ChainStoreReader`, `CompactBlockRead`,
+- `StoreReader` implements `ChainStoreReader` (hashes, heights, headers with
+  their chainwork, `chainwork` alone), `CompactBlockRead`, `TreeRootsIndex`,
   `TransactionIndex`, `SpentOutputIndex`, `TxOutSetIndex`,
   `TransparentHistoryIndex`, `TreeStateIndex` and `HistoryTreeIndex`.
   - Every answer is bounded by the reader's watermark: an empty store is

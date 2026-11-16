@@ -31,11 +31,15 @@
 //! It does not hold blocks. What it stores is a projection: the fields an
 //! index reads, not the bytes a block hash commits to. Raw blocks and raw
 //! transactions come from the validator, and no port here offers them, so that
-//! a consumer cannot mistake the store for a source of consensus data.
+//! a consumer cannot mistake the store for a source of consensus data. Nor is
+//! there a whole-block read: headers, compact transactions and tree roots are
+//! each read from the index holding them, and a consumer joins them.
 //!
 //! It does not handle reorgs as a read concern. Its history is append-only in
 //! normal operation; [`ChainStoreIngest::rewind_to`] exists as a repair path,
-//! not as part of following the chain.
+//! not as part of following the chain. It is written only through
+//! [`ChainStoreIngest::build_to`]: the store fetches every block from its own
+//! validator, and no consumer hands it blocks.
 //!
 //! [`txout_set`] re-exports Zaino's UTXO-set commitment from
 //! `zaino_primitives::txout_commitment`, its one definition: every store and
@@ -70,7 +74,7 @@ pub mod transparent;
 pub mod tree;
 pub mod txout_set;
 
-pub use block::{FrozenBlock, PoolFilter, StoredBlock, StoredTx};
+pub use block::{PoolFilter, StoredHeader};
 pub use capability::{
     MigrationState, Provenance, SchemaVersion, StoreCapabilities, StoreCapability, StoreSchema,
     StoreWatermark,
@@ -79,10 +83,10 @@ pub use config::ChainStoreConfig;
 pub use error::{ChainStoreError, ChainStoreSourceError};
 pub use output::{SpenderRef, StoredTxOut};
 pub use ports::{
-    ChainStoreFreezeSink, ChainStoreIngest, ChainStoreReader, ChainStoreReaderCapability,
-    ChainStoreService, ChainStoreSource, CompactBlockRead, CompactBlockReadCapability,
-    SpentOutputIndex, SpentOutputIndexCapability, StoredBlockRead, StoredBlockReadCapability,
-    TransactionIndex, TransactionIndexCapability, TxOutSetIndex, TxOutSetIndexCapability,
+    ChainStoreIngest, ChainStoreReader, ChainStoreReaderCapability, ChainStoreService,
+    ChainStoreSource, CompactBlockRead, CompactBlockReadCapability, SpentOutputIndex,
+    SpentOutputIndexCapability, TransactionIndex, TransactionIndexCapability, TreeRootsIndex,
+    TreeRootsIndexCapability, TxOutSetIndex, TxOutSetIndexCapability,
 };
 pub use txout_set::{
     canonical_entry, canonical_entry_parts, commitment_address, entry_digest, entry_digest_parts,

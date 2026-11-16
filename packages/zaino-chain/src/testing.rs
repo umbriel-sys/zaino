@@ -32,19 +32,19 @@ use std::num::NonZeroU32;
 use std::sync::{Arc, Mutex};
 
 use futures::Stream;
-use tokio::sync::{broadcast, watch};
+use tokio::sync::watch;
 
 use zaino_chain_head::{
-    ChainHeadBlock, ChainHeadBlockIter, ChainHeadBlockService, ChainHeadError,
-    ChainHeadFreezeEvents, ChainHeadSnapshot, ChainHeadTransactionLocations,
-    ChainHeadTransactionService, ChainHeadTxPosition, SpenderLocation,
+    ChainHeadBlock, ChainHeadBlockIter, ChainHeadBlockService, ChainHeadError, ChainHeadSnapshot,
+    ChainHeadTransactionLocations, ChainHeadTransactionService, ChainHeadTxPosition,
+    SpenderLocation,
 };
 use zaino_chain_store::{
-    is_legacy_unspendable, ChainStoreError, ChainStoreFreezeSink, ChainStoreIngest,
-    ChainStoreReader, ChainStoreService, ChainStoreSourceError, CompactBlockRead, FrozenBlock,
-    MigrationState, PoolFilter, Provenance, SchemaVersion, SpenderRef, SpentOutputIndex,
-    StoreCapabilities, StoreCapability, StoreSchema, StoreWatermark, StoredBlock, StoredBlockRead,
-    StoredTx, StoredTxOut, TransactionIndex, TxOutSetAccumulator, TxOutSetError, TxOutSetIndex,
+    is_legacy_unspendable, ChainStoreError, ChainStoreIngest, ChainStoreReader, ChainStoreService,
+    ChainStoreSourceError, CompactBlockRead, MigrationState, PoolFilter, Provenance, SchemaVersion,
+    SpenderRef, SpentOutputIndex, StoreCapabilities, StoreCapability, StoreSchema, StoreWatermark,
+    StoredHeader, StoredTxOut, TransactionIndex, TreeRootsIndex, TxOutSetAccumulator,
+    TxOutSetError, TxOutSetIndex,
 };
 use zaino_component::{ComponentName, ComponentStatus, Health, Lifecycle, StatusSource};
 use zaino_primitives::types::{
@@ -196,17 +196,35 @@ pub fn chainwork_at(h: u32) -> AbsoluteChainWork {
     chainwork_of(h)
 }
 
+/// What the fake store holds per block: the parts its index reads serve.
+#[derive(Debug, Clone)]
+struct FakeBlock {
+    header: BlockHeader,
+    transactions: Vec<PreIndexCompactTx>,
+    tree_roots: TreeRoots,
+    chainwork: AbsoluteChainWork,
+}
+
+impl FakeBlock {
+    fn reference(&self) -> BlockRef {
+        BlockRef {
+            hash: self.header.hash,
+            height: self.header.height,
+        }
+    }
+}
+
 /// The stored projection of a block.
 ///
 /// Carries the block's real transactions through, so a store fake serves what
 /// the chain actually holds.
-fn stored_from_block(block: &Block) -> StoredBlock {
-    StoredBlock {
+fn stored_from_block(block: &Block) -> FakeBlock {
+    FakeBlock {
         header: block.header.clone(),
         transactions: block
             .transactions()
             .iter()
-            .map(|tx| StoredTx::transparent_only(PreIndexCompactTx::from(tx)))
+            .map(PreIndexCompactTx::from)
             .collect(),
         tree_roots: empty_tree_roots(),
         chainwork: chainwork_of(u32::from(block.header.height)),
@@ -245,16 +263,16 @@ pub struct FakeStore {
 
 #[derive(Debug)]
 struct FakeStoreInner {
-    /// Behind a lock because a store that can be frozen into grows while it is
-    /// being read, which is the whole point of the sync loop under test.
-    blocks: Mutex<Vec<StoredBlock>>,
+    /// Behind a lock because a store that is built grows while it is being
+    /// read, which is the whole point of the sync loop under test.
+    blocks: Mutex<Vec<FakeBlock>>,
     /// The chain this store builds itself from when asked.
     ///
     /// Empty unless [`FakeStore::buildable_from`] supplied one, so a store that
     /// was never told how to build refuses rather than inventing blocks — the
     /// same distinction the real store draws between having a validator and
     /// having been pointed at a height.
-    buildable: Vec<StoredBlock>,
+    buildable: Vec<FakeBlock>,
     positions: HashMap<[u8; 32], BlockTxPosition>,
     spenders: HashMap<Outpoint, SpenderRef>,
     capabilities: StoreCapabilities,
@@ -281,9 +299,9 @@ impl FakeStore {
         Self::new(Vec::new())
     }
 
-    fn new(blocks: Vec<StoredBlock>) -> Self {
+    fn new(blocks: Vec<FakeBlock>) -> Self {
         let watermark = StoreWatermark {
-            tip: blocks.last().map(StoredBlock::reference),
+            tip: blocks.last().map(FakeBlock::reference),
             provenance: Provenance::Durable,
         };
         let (sender, _) = watch::channel(watermark);
@@ -347,13 +365,13 @@ impl FakeStore {
     }
 
     /// Every block this store holds.
-    fn held(&self) -> std::sync::MutexGuard<'_, Vec<StoredBlock>> {
+    fn held(&self) -> std::sync::MutexGuard<'_, Vec<FakeBlock>> {
         self.inner.blocks.lock().expect("fake store mutex poisoned")
     }
 
     fn watermark_now(&self) -> StoreWatermark {
         StoreWatermark {
-            tip: self.held().last().map(StoredBlock::reference),
+            tip: self.held().last().map(FakeBlock::reference),
             provenance: Provenance::Durable,
         }
     }
@@ -394,7 +412,7 @@ impl FakeStore {
     /// Cloned rather than borrowed: the blocks live behind a lock now, and
     /// holding that lock across an `await` in a caller is how a fake acquires a
     /// deadlock a real store does not have.
-    fn range(&self, start: Height, end: Height) -> Result<Vec<StoredBlock>, ChainStoreError> {
+    fn range(&self, start: Height, end: Height) -> Result<Vec<FakeBlock>, ChainStoreError> {
         if start > end {
             return Err(ChainStoreError::InvalidRange { start, end });
         }
@@ -475,6 +493,47 @@ impl ChainStoreReader for FakeStore {
             .find(|block| block.header.hash == hash)
             .map(|block| block.header.height))
     }
+
+    async fn headers_chunk(
+        &self,
+        start: Height,
+        end: Height,
+    ) -> Result<Vec<StoredHeader>, ChainStoreError> {
+        Ok(self
+            .range(start, end)?
+            .into_iter()
+            .map(|block| StoredHeader {
+                header: block.header,
+                chainwork: block.chainwork,
+            })
+            .collect())
+    }
+
+    async fn chainwork(
+        &self,
+        height: Height,
+    ) -> Result<Option<AbsoluteChainWork>, ChainStoreError> {
+        self.bounded(height)?;
+        Ok(self
+            .held()
+            .get(u32::from(height) as usize)
+            .map(|block| block.chainwork))
+    }
+}
+
+impl TreeRootsIndex for FakeStore {
+    async fn tree_roots_chunk(
+        &self,
+        start: Height,
+        end: Height,
+    ) -> Result<Vec<TreeRoots>, ChainStoreError> {
+        self.require(StoreCapability::TreeRoots)?;
+        Ok(self
+            .range(start, end)?
+            .into_iter()
+            .map(|block| block.tree_roots)
+            .collect())
+    }
 }
 
 /// Always ready: a fake has no database to be unhealthy about.
@@ -495,8 +554,8 @@ impl StatusSource for FakeStore {
 /// Building from the chain this store was told it could build from.
 ///
 /// Deliberately not "fetch whatever is asked for": a store that could always
-/// build to any height would make a freeze gap unreachable, and the gap is the
-/// path the sync loop exists to take.
+/// build to any height would make a failed build unreachable, and that is a
+/// path the sync loop exists to report.
 impl ChainStoreIngest for FakeStore {
     async fn build_to(&self, target: Height) -> Result<(), ChainStoreSourceError> {
         let wanted = u32::from(target) as usize;
@@ -534,73 +593,6 @@ impl ChainStoreIngest for FakeStore {
     }
 }
 
-/// Appending at `tip + 1`, with the same three outcomes a real store has.
-///
-/// Skipping below the tip, refusing a gap, and deriving chainwork rather than
-/// taking it are the contract the sync loop is written against, so a fake that
-/// simply accepted everything would let a loop that never repairs anything
-/// pass.
-impl ChainStoreFreezeSink for FakeStore {
-    async fn freeze(&self, blocks: &[FrozenBlock]) -> Result<(), ChainStoreError> {
-        let mut held = self.held();
-
-        for block in blocks {
-            let expected = held
-                .last()
-                .map_or(0, |tip| u32::from(tip.header.height) + 1);
-            let height = u32::from(block.header.height);
-
-            if height < expected {
-                continue;
-            }
-            if height > expected {
-                let store_tip = held.last().map(|tip| tip.header.height);
-                drop(held);
-                return Err(ChainStoreError::FreezeGap {
-                    store_tip,
-                    first_frozen: block.header.height,
-                });
-            }
-
-            // Derived here rather than taken from the caller, as the real
-            // store does.
-            held.push(StoredBlock {
-                header: block.header.clone(),
-                transactions: block.transactions.clone(),
-                tree_roots: block.tree_roots.clone(),
-                chainwork: chainwork_of(height),
-            });
-        }
-
-        drop(held);
-        self.publish_watermark();
-        Ok(())
-    }
-}
-
-impl StoredBlockRead for FakeStore {
-    async fn blocks_chunk(
-        &self,
-        start: Height,
-        end: Height,
-    ) -> Result<Vec<StoredBlock>, ChainStoreError> {
-        self.require(StoreCapability::StoredBlocks)?;
-        self.range(start, end)
-    }
-
-    async fn blocks_stream(
-        &self,
-        start: Height,
-        end: Height,
-    ) -> Result<
-        impl Stream<Item = Result<Vec<StoredBlock>, ChainStoreError>> + Send + use<>,
-        ChainStoreError,
-    > {
-        let blocks = self.blocks_chunk(start, end).await?;
-        Ok(futures::stream::once(async move { Ok(blocks) }))
-    }
-}
-
 impl CompactBlockRead for FakeStore {
     async fn compact_chunk(
         &self,
@@ -628,19 +620,15 @@ impl CompactBlockRead for FakeStore {
     }
 }
 
-/// The compact projection of a stored block.
-fn compact_of(block: &StoredBlock) -> zaino_primitives::types::CompactBlock {
+/// The compact projection of a held block.
+fn compact_of(block: &FakeBlock) -> zaino_primitives::types::CompactBlock {
     zaino_primitives::types::CompactBlock {
         hash: block.header.hash,
         prev_hash: block.header.prev_hash,
         height: u32::from(block.header.height),
         time: block.header.time,
         bits: block.header.bits,
-        transactions: block
-            .transactions
-            .iter()
-            .map(|tx| tx.compact.clone())
-            .collect(),
+        transactions: block.transactions.clone(),
         chain_metadata: ChainMetadata {
             sapling_tree_size: TreeSize::ZERO,
             orchard_tree_size: TreeSize::ZERO,
@@ -661,9 +649,11 @@ impl FakeStore {
             .iter()
             .flat_map(|block| {
                 let height = block.header.height;
-                block.transactions.iter().zip(0..).map(move |(tx, index)| {
-                    (BlockTxPosition::new(height, index), tx.compact.clone())
-                })
+                block
+                    .transactions
+                    .iter()
+                    .zip(0..)
+                    .map(move |(tx, index)| (BlockTxPosition::new(height, index), tx.clone()))
             })
             .collect()
     }
@@ -835,12 +825,6 @@ impl TxOutSetIndex for FakeStore {
 pub struct FakeHead {
     snapshot: Arc<Mutex<Arc<FakeHeadSnapshot>>>,
     epoch: watch::Sender<ChainStateEpoch>,
-    /// Blocks passing below the seam.
-    ///
-    /// A real `broadcast`, not a queue the test drains: lagging is part of this
-    /// port's contract, and a fake that could not lag would let a sync loop
-    /// that mishandles `Lagged` pass.
-    frozen: broadcast::Sender<ChainHeadBlock>,
 }
 
 impl FakeHead {
@@ -861,20 +845,7 @@ impl FakeHead {
         Self {
             snapshot: Arc::new(Mutex::new(Arc::new(snapshot))),
             epoch: sender,
-            frozen: broadcast::channel(FROZEN_CAPACITY).0,
         }
-    }
-
-    /// Emits `block` as having fallen below the seam.
-    ///
-    /// Takes the chain rather than a hand-built block for the same reason
-    /// [`FakeStore::covering`] does: a freeze the store then reads back must be
-    /// the same block the reads would have served.
-    pub fn freeze(&self, chain: &Chain, height: u32) {
-        let Some(block) = chain.block(height) else {
-            return;
-        };
-        let _ = self.frozen.send(head_from_block(block));
     }
 
     /// Publishes a new view, as an advance or a reorg would.
@@ -885,17 +856,6 @@ impl FakeHead {
         let epoch = snapshot.epoch();
         *self.snapshot.lock().expect("fake head mutex poisoned") = Arc::new(snapshot);
         let _ = self.epoch.send(epoch);
-    }
-}
-
-/// How many frozen blocks a slow consumer may fall behind before it is told it
-/// lagged. Small on purpose: a test that wants to provoke `Lagged` should not
-/// have to send thousands of blocks to do it.
-const FROZEN_CAPACITY: usize = 16;
-
-impl ChainHeadFreezeEvents for FakeHead {
-    fn subscribe_frozen(&self) -> broadcast::Receiver<ChainHeadBlock> {
-        self.frozen.subscribe()
     }
 }
 
@@ -1623,7 +1583,7 @@ impl ChainStoreReader for MinimalStore {
         // What it genuinely has: no spend index, no accumulator.
         StoreCapabilities::new([
             StoreCapability::Core,
-            StoreCapability::StoredBlocks,
+            StoreCapability::TreeRoots,
             StoreCapability::CompactBlocks,
             StoreCapability::Transactions,
         ])
@@ -1640,6 +1600,21 @@ impl ChainStoreReader for MinimalStore {
     async fn block_height(&self, hash: BlockHash) -> Result<Option<Height>, ChainStoreError> {
         self.0.block_height(hash).await
     }
+
+    async fn headers_chunk(
+        &self,
+        start: Height,
+        end: Height,
+    ) -> Result<Vec<StoredHeader>, ChainStoreError> {
+        self.0.headers_chunk(start, end).await
+    }
+
+    async fn chainwork(
+        &self,
+        height: Height,
+    ) -> Result<Option<AbsoluteChainWork>, ChainStoreError> {
+        self.0.chainwork(height).await
+    }
 }
 
 /// The store it wraps, reporting for itself.
@@ -1649,25 +1624,13 @@ impl StatusSource for MinimalStore {
     }
 }
 
-impl StoredBlockRead for MinimalStore {
-    async fn blocks_chunk(
+impl TreeRootsIndex for MinimalStore {
+    async fn tree_roots_chunk(
         &self,
         start: Height,
         end: Height,
-    ) -> Result<Vec<StoredBlock>, ChainStoreError> {
-        self.0.blocks_chunk(start, end).await
-    }
-
-    async fn blocks_stream(
-        &self,
-        start: Height,
-        end: Height,
-    ) -> Result<
-        impl Stream<Item = Result<Vec<StoredBlock>, ChainStoreError>> + Send + use<>,
-        ChainStoreError,
-    > {
-        let blocks = self.blocks_chunk(start, end).await?;
-        Ok(futures::stream::once(async move { Ok(blocks) }))
+    ) -> Result<Vec<TreeRoots>, ChainStoreError> {
+        self.0.tree_roots_chunk(start, end).await
     }
 }
 

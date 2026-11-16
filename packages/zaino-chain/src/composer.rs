@@ -34,8 +34,9 @@ use zaino_chain_head::{
 };
 use zaino_chain_store::{
     is_legacy_unspendable, ChainStoreError, ChainStoreReader, ChainStoreService,
-    CompactBlockRead as StoreCompactBlockRead, SpentOutputIndex, StoredBlockRead, StoredTxOut,
-    TransactionIndex, TxOutSetAccumulator, TxOutSetError, TxOutSetIndex, TXOUT_SET_ENTRY_LEN,
+    CompactBlockRead as StoreCompactBlockRead, PoolFilter, SpentOutputIndex, StoredTxOut,
+    TransactionIndex, TreeRootsIndex, TxOutSetAccumulator, TxOutSetError, TxOutSetIndex,
+    TXOUT_SET_ENTRY_LEN,
 };
 use zaino_primitives::types::{
     rpc::ChainTip, AbsoluteChainWork, AddressBalance, AddressDelta, BlockConfirmations, BlockHash,
@@ -245,14 +246,14 @@ fn serviceability(
 
     match capability {
         // Answered from whichever provider covers the height, and the validator
-        // can stand in for either — so a hole does not cap these.
+        // can stand in for either — so a hole does not cap these. An indexed
+        // block joins the compact transactions with the tree roots, so the
+        // store answers it only with both indexes.
         ChainCapability::Blocks | ChainCapability::CompactBlocks => {
-            let index = if capability == ChainCapability::Blocks {
-                StoreCapability::StoredBlocks
-            } else {
-                StoreCapability::CompactBlocks
-            };
-            if !has(index) && !passthrough {
+            let local = has(StoreCapability::CompactBlocks)
+                && (capability == ChainCapability::CompactBlocks
+                    || has(StoreCapability::TreeRoots));
+            if !local && !passthrough {
                 return Answerable::Absent;
             }
             if passthrough {
@@ -316,7 +317,7 @@ fn serviceability(
 
 impl<Store, Head, Source> ChainView for ChainViewComposer<Store, Head, Source>
 where
-    Store: ChainStoreService<Reader: StoredBlockRead + StoreCompactBlockRead + TransactionIndex>,
+    Store: ChainStoreService<Reader: TreeRootsIndex + StoreCompactBlockRead + TransactionIndex>,
     Head: ChainHeadBlockService<Snapshot: ChainHeadTransactionService>,
     Source: ChainViewSource,
 {
@@ -572,7 +573,7 @@ where
 
 impl<Reader, HeadSnapshot, Source> ComposerSnapshot<Reader, HeadSnapshot, Source>
 where
-    Reader: ChainStoreReader + StoredBlockRead,
+    Reader: ChainStoreReader,
     HeadSnapshot: ChainHeadSnapshot,
 {
     /// A chain-head block's work, made absolute.
@@ -605,9 +606,8 @@ where
     /// quantity. `None` while it has not built that far: there is no correct
     /// value to serve until then.
     ///
-    /// Resolved at most once per snapshot. The whole block is read for one
-    /// number, which no store port offers alone — acceptable exactly because it
-    /// happens once and is then shared by every read and every clone.
+    /// Resolved at most once per snapshot and shared by every read and every
+    /// clone.
     ///
     /// Looking the anchor up by height is sound: the store is append-only, so
     /// it never holds a different block at a height it has already built.
@@ -627,14 +627,10 @@ where
 
                 Ok(self
                     .reader
-                    .blocks_chunk(anchor.height, anchor.height)
+                    .chainwork(anchor.height)
                     .await
                     .map_err(store_err)?
-                    .into_iter()
-                    .next()
-                    .map_or(AnchorChainWork::Unknown, |block| {
-                        AnchorChainWork::Known(block.chainwork)
-                    }))
+                    .map_or(AnchorChainWork::Unknown, AnchorChainWork::Known))
             })
             .await
             .copied()
@@ -658,7 +654,7 @@ impl<Reader, HeadSnapshot, Source> stream::Coverable
 impl<Reader, HeadSnapshot, Source> ChainViewSnapshot
     for ComposerSnapshot<Reader, HeadSnapshot, Source>
 where
-    Reader: ChainStoreReader + StoredBlockRead + StoreCompactBlockRead + TransactionIndex,
+    Reader: ChainStoreReader + TreeRootsIndex + StoreCompactBlockRead + TransactionIndex,
     HeadSnapshot: ChainHeadSnapshot + ChainHeadTransactionService,
     Source: ChainViewSource,
 {
@@ -681,7 +677,7 @@ where
 
 impl<Reader, HeadSnapshot, Source> ForkReconcile for ComposerSnapshot<Reader, HeadSnapshot, Source>
 where
-    Reader: ChainStoreReader + StoredBlockRead,
+    Reader: ChainStoreReader + TreeRootsIndex + StoreCompactBlockRead,
     HeadSnapshot: ChainHeadSnapshot,
     Source: ChainViewSource,
 {
@@ -727,7 +723,7 @@ where
 
 impl<Reader, HeadSnapshot, Source> BlockRead for ComposerSnapshot<Reader, HeadSnapshot, Source>
 where
-    Reader: ChainStoreReader + StoredBlockRead,
+    Reader: ChainStoreReader + TreeRootsIndex + StoreCompactBlockRead,
     HeadSnapshot: ChainHeadSnapshot,
     Source: ChainViewSource,
 {
@@ -817,13 +813,10 @@ where
         {
             None => Ok(None),
             Some(Provider::Store) => Ok(self
-                .reader
-                .blocks_chunk(height, height)
-                .await
-                .map_err(store_err)?
+                .blocks_from(Provider::Store, vec![height])
+                .await?
                 .into_iter()
-                .next()
-                .map(ChainBlock::from_stored)),
+                .next()),
             Some(Provider::Head) => match self.head_block(height) {
                 None => Ok(None),
                 Some(block) => {
@@ -846,6 +839,19 @@ where
     }
 
     async fn block_header(&self, at: BlockId) -> Result<Option<BlockHeader>> {
+        // A store-covered height needs only the headers index.
+        if let BlockId::Height(height) = at {
+            if let Ok(Some(Provider::Store)) = self.coverage.provider_at(height) {
+                return Ok(self
+                    .reader
+                    .headers_chunk(height, height)
+                    .await
+                    .map_err(store_err)?
+                    .into_iter()
+                    .next()
+                    .map(|stored| stored.header));
+            }
+        }
         Ok(self.block(at).await?.map(|block| block.header))
     }
 
@@ -958,6 +964,13 @@ where
     }
 }
 
+/// The store's indexes answered a run with different blocks or lengths.
+fn disagreeing_indexes(first: Height, last: Height) -> ChainViewError {
+    ChainViewError::Fatal(format!(
+        "the store's headers, compact transactions and tree roots disagree over {first}..={last}"
+    ))
+}
+
 /// Coverage named a local provider for a height it holds no block at.
 fn unpinned(height: Height) -> ChainViewError {
     ChainViewError::Fatal(format!(
@@ -967,7 +980,7 @@ fn unpinned(height: Height) -> ChainViewError {
 
 impl<Reader, HeadSnapshot, Source> ComposerSnapshot<Reader, HeadSnapshot, Source>
 where
-    Reader: ChainStoreReader + StoredBlockRead,
+    Reader: ChainStoreReader + TreeRootsIndex + StoreCompactBlockRead,
     HeadSnapshot: ChainHeadSnapshot,
     Source: ChainViewSource,
 {
@@ -981,14 +994,49 @@ where
             return Ok(Vec::new());
         };
         match provider {
-            Provider::Store => Ok(self
-                .reader
-                .blocks_chunk(first, last)
-                .await
-                .map_err(store_err)?
-                .into_iter()
-                .map(ChainBlock::from_stored)
-                .collect()),
+            // Three index reads joined by height: the headers with their work,
+            // every transaction in compact form, the roots after each block.
+            // Coverage routes only heights the store held when the snapshot
+            // was taken, so none of the three is truncated, and a run that
+            // disagrees with itself is a damaged store, not a race.
+            Provider::Store => {
+                let headers = self
+                    .reader
+                    .headers_chunk(first, last)
+                    .await
+                    .map_err(store_err)?;
+                let compact = self
+                    .reader
+                    .compact_chunk(first, last, PoolFilter::all())
+                    .await
+                    .map_err(store_err)?;
+                let roots = self
+                    .reader
+                    .tree_roots_chunk(first, last)
+                    .await
+                    .map_err(store_err)?;
+                if headers.len() != compact.len() || headers.len() != roots.len() {
+                    return Err(disagreeing_indexes(first, last));
+                }
+                headers
+                    .into_iter()
+                    .zip(compact)
+                    .zip(roots)
+                    .map(|((stored, compact), tree_roots)| {
+                        if compact.hash != stored.header.hash
+                            || compact.height != u32::from(stored.header.height)
+                        {
+                            return Err(disagreeing_indexes(first, last));
+                        }
+                        Ok(ChainBlock {
+                            header: stored.header,
+                            transactions: compact.transactions,
+                            tree_roots,
+                            chainwork: Some(stored.chainwork),
+                        })
+                    })
+                    .collect()
+            }
             Provider::Head => {
                 // Resolved once for the run rather than per block: it is the
                 // same anchor for every block in the window.

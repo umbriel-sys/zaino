@@ -14,8 +14,8 @@ use zaino_chain_store::{
     ChainStoreError, ChainStoreReader, CompactBlockRead, HistoryEpoch, HistoryTreeIndex,
     LocatedOutput, LocatedSpend, MigrationState, PoolFilter, SchemaVersion, SpenderRef,
     SpentOutputIndex, StoreAddressEffects, StoreCapabilities, StoreCapability, StoreSchema,
-    StoreWatermark, StoredTxOut, TransactionIndex, TransparentHistoryIndex,
-    TransparentHistoryQuery, TreeStateIndex, TxOutSetAccumulator, TxOutSetIndex,
+    StoreWatermark, StoredHeader, StoredTxOut, TransactionIndex, TransparentHistoryIndex,
+    TransparentHistoryQuery, TreeRootsIndex, TreeStateIndex, TxOutSetAccumulator, TxOutSetIndex,
 };
 use zaino_component::{ComponentStatus, StatusSource};
 use zaino_indexes::{
@@ -24,9 +24,9 @@ use zaino_indexes::{
 };
 use zaino_persistence::BackendReader;
 use zaino_primitives::types::{
-    BlockHash, BlockRef, BlockTxPosition, ChainMetadata, CompactBlock, ConsensusBranchId, Height,
-    Outpoint, PoolFrontier, PreIndexCompactTx, ShieldedPool, SubtreeRoot, TransactionId,
-    TransparentData, TreeRoot, TreeRoots, TreeSize,
+    AbsoluteChainWork, BlockHash, BlockRef, BlockTxPosition, ChainMetadata, CompactBlock,
+    ConsensusBranchId, Height, Outpoint, PoolFrontier, PreIndexCompactTx, ShieldedPool,
+    SubtreeRoot, TransactionId, TransparentData, TreeRoot, TreeRoots, TreeSize,
 };
 
 /// Blocks per compact chunk read on the blocking pool.
@@ -187,6 +187,32 @@ impl<R: BackendReader> Snapshot<R> {
             .map_err(|error| index_error(id, error))
     }
 
+    /// `read` at each height of `start..=end`, truncated to the watermark, for
+    /// a read `capability` offers.
+    fn range<T>(
+        &self,
+        start: Height,
+        end: Height,
+        capability: StoreCapability,
+        mut read: impl FnMut(Height) -> Result<T, ChainStoreError>,
+    ) -> Result<Vec<T>, ChainStoreError> {
+        if start > end {
+            return Err(ChainStoreError::InvalidRange { start, end });
+        }
+        self.require(capability)?;
+        let end = end.min(self.tip()?.height);
+        let mut items = Vec::new();
+        let mut height = start;
+        while height <= end {
+            items.push(read(height)?);
+            height = match height.checked_add(1) {
+                Some(next) => next,
+                None => break,
+            };
+        }
+        Ok(items)
+    }
+
     /// Compact blocks `start..=end`, truncated to the watermark.
     fn compact_range(
         &self,
@@ -194,21 +220,53 @@ impl<R: BackendReader> Snapshot<R> {
         end: Height,
         pools: PoolFilter,
     ) -> Result<Vec<CompactBlock>, ChainStoreError> {
-        if start > end {
-            return Err(ChainStoreError::InvalidRange { start, end });
-        }
-        self.require(StoreCapability::CompactBlocks)?;
-        let end = end.min(self.tip()?.height);
-        let mut blocks = Vec::new();
-        let mut height = start;
-        while height <= end {
-            blocks.push(self.compact_at(height, pools)?);
-            height = match height.checked_add(1) {
-                Some(next) => next,
-                None => break,
-            };
-        }
-        Ok(blocks)
+        self.range(start, end, StoreCapability::CompactBlocks, |height| {
+            self.compact_at(height, pools)
+        })
+    }
+
+    /// Headers with their chainwork for `start..=end` (I-01).
+    fn headers_range(
+        &self,
+        start: Height,
+        end: Height,
+    ) -> Result<Vec<StoredHeader>, ChainStoreError> {
+        let id = IndexId::Headers;
+        self.range(start, end, StoreCapability::Core, |height| {
+            let headers = headers::Reader::new(self.index(id, StoreCapability::Core)?);
+            let header = headers
+                .header(height)
+                .map_err(|error| index_error(id, error))?
+                .ok_or_else(|| missing(id, height))?;
+            let chainwork = headers
+                .chainwork(height)
+                .map_err(|error| index_error(id, error))?
+                .ok_or_else(|| missing(id, format!("chainwork at {height}")))?;
+            Ok(StoredHeader { header, chainwork })
+        })
+    }
+
+    fn chainwork(&self, height: Height) -> Result<Option<AbsoluteChainWork>, ChainStoreError> {
+        self.bounded(height)?;
+        let id = IndexId::Headers;
+        headers::Reader::new(self.index(id, StoreCapability::Core)?)
+            .chainwork(height)
+            .map_err(|error| index_error(id, error))
+    }
+
+    /// Tree roots and sizes after each block of `start..=end` (I-08).
+    fn tree_roots_range(
+        &self,
+        start: Height,
+        end: Height,
+    ) -> Result<Vec<TreeRoots>, ChainStoreError> {
+        let id = IndexId::ChainMetadata;
+        self.range(start, end, StoreCapability::TreeRoots, |height| {
+            chain_metadata::Reader::new(self.index(id, StoreCapability::TreeRoots)?)
+                .roots(height)
+                .map_err(|error| index_error(id, error))?
+                .ok_or_else(|| missing(id, height))
+        })
     }
 
     /// The compact block at `height`: the header (I-01), txids (I-02), the
@@ -652,6 +710,37 @@ impl<R: BackendReader + Sync + 'static> ChainStoreReader for StoreReader<R> {
 
     async fn block_height(&self, hash: BlockHash) -> Result<Option<Height>, ChainStoreError> {
         self.snapshot.block_height(hash)
+    }
+
+    async fn headers_chunk(
+        &self,
+        start: Height,
+        end: Height,
+    ) -> Result<Vec<StoredHeader>, ChainStoreError> {
+        blocking(Arc::clone(&self.snapshot), move |snapshot| {
+            snapshot.headers_range(start, end)
+        })
+        .await
+    }
+
+    async fn chainwork(
+        &self,
+        height: Height,
+    ) -> Result<Option<AbsoluteChainWork>, ChainStoreError> {
+        self.snapshot.chainwork(height)
+    }
+}
+
+impl<R: BackendReader + Sync + 'static> TreeRootsIndex for StoreReader<R> {
+    async fn tree_roots_chunk(
+        &self,
+        start: Height,
+        end: Height,
+    ) -> Result<Vec<TreeRoots>, ChainStoreError> {
+        blocking(Arc::clone(&self.snapshot), move |snapshot| {
+            snapshot.tree_roots_range(start, end)
+        })
+        .await
     }
 }
 

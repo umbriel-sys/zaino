@@ -12,9 +12,7 @@
 
 use std::sync::Arc;
 
-use zaino_chain_head::{
-    ChainHeadBlockService as _, ChainHeadFreezeEvents as _, ChainHeadSnapshot as _,
-};
+use zaino_chain_head::{ChainHeadBlockService as _, ChainHeadSnapshot as _};
 
 use super::{hash, stepped, MockValidator};
 use crate::service::ChainHeadService;
@@ -160,35 +158,31 @@ async fn a_rollback_below_the_window_floor_terminates() {
     );
 }
 
-/// Nothing below a handed-off block is ever published as canonical.
+/// Nothing below a published tip's seam is ever published as canonical.
 ///
-/// A block leaves on the freeze stream as settled. A later publication whose
-/// tip sits below one already handed off would contradict that, and the stream
-/// has no way to say so — it carries blocks, not retractions.
+/// A block at or below `tip - max_depth` is settled: a store builds to it on
+/// the strength of that publication. A later publication whose tip sat below
+/// one would contradict it, and nothing can retract a settled block.
 #[tokio::test]
-async fn a_published_tip_never_falls_below_a_frozen_block() {
+async fn a_published_tip_never_falls_below_an_earlier_seam() {
     let validator = MockValidator::linear(50);
     let service = stepped(&validator, 20).await;
-    let mut frozen = service.subscriber().subscribe_frozen();
     service
         .advance_once()
         .await
         .expect("the initial sync reaches the tip");
 
-    let mut highest_frozen = 0;
-    while let Ok(block) = frozen.try_recv() {
-        highest_frozen = highest_frozen.max(u32::from(block.height()));
-    }
-    assert!(highest_frozen > 0, "nothing was handed off to freeze");
+    let seam = u32::from(service.subscriber().current().best_tip().height).saturating_sub(20);
+    assert!(seam > 0, "nothing settled");
 
-    // The validator's tip drops below everything handed off above.
+    // The validator's tip drops below the settled blocks.
     validator.reorg(10, &[]);
     let _ = service.advance_once().await;
 
     let published = u32::from(service.subscriber().current().best_tip().height);
     assert!(
-        published >= highest_frozen,
-        "published tip {published} is below frozen block {highest_frozen}",
+        published >= seam,
+        "published tip {published} is below the earlier seam {seam}",
     );
 }
 
@@ -216,7 +210,7 @@ async fn a_rollback_at_the_configured_depth_terminates() {
 
 /// A depth wide enough that a catch-up larger than `RETENTION_MARGIN` still
 /// leaves the graph inside its window rather than re-anchoring.
-const HANDOFF_DEPTH: u32 = 30;
+const STEADY_DEPTH: u32 = 30;
 
 /// A chain head in steady state: its graph filled past the trim floor, so the
 /// floor rather than the anchor is what its oldest retained block sits on.
@@ -225,7 +219,7 @@ async fn in_steady_state() -> (
     Arc<ChainHeadService<zaino_source_mock::MockChain>>,
 ) {
     let validator = MockValidator::linear(200);
-    let service = synced(&validator, HANDOFF_DEPTH).await;
+    let service = synced(&validator, STEADY_DEPTH).await;
     for id in 200..260u16 {
         validator.extend(id);
         service.advance_once().await.expect("catch-up advances");
@@ -233,37 +227,29 @@ async fn in_steady_state() -> (
     (validator, service)
 }
 
-/// Advances the chain by `blocks` in a single tick and returns what the freeze
-/// stream carried, ascending.
-async fn hand_off_over(blocks: u16) -> Vec<u32> {
+/// The floor after advancing the chain by `blocks` in one tick.
+async fn floor_after(blocks: u16) -> u32 {
     let (validator, service) = in_steady_state().await;
-    let mut frozen = service.subscriber().subscribe_frozen();
-
     for id in 260..260 + blocks {
         validator.extend(id);
     }
     service.advance_once().await.expect("advance succeeds");
-
-    let mut heights = Vec::new();
-    while let Ok(block) = frozen.try_recv() {
-        heights.push(u32::from(block.height()));
-    }
-    heights
+    floor_of(&service)
 }
 
-/// A small tick hands off every block that crossed the seam.
-#[tokio::test]
-async fn a_tick_hands_off_every_block_it_settles() {
-    assert_eq!(hand_off_over(11).await, (230..=240).collect::<Vec<_>>());
+/// The lowest canonical block the service retains.
+fn floor_of(service: &ChainHeadService<zaino_source_mock::MockChain>) -> u32 {
+    let snapshot = service.subscriber().current();
+    let floor = snapshot.best_chain().next().expect("a window").height();
+    u32::from(floor)
 }
 
-/// So does a tick that moves further than the retention margin.
-///
-/// The handoff reads the blocks it emits out of the graph, so a block has to
-/// still be retained to be handed off. That makes the handoff's reach a
-/// question of *when* trimming runs, not of how far below the seam it cuts: a
-/// tick settles as many blocks as the tip moved, and hands off all of them.
+/// The window floor a store builds to rises with the tip, by the same amount,
+/// whether a tick moved a little or more than the retention margin.
 #[tokio::test]
-async fn a_tick_larger_than_the_margin_hands_off_every_block_too() {
-    assert_eq!(hand_off_over(20).await, (230..=249).collect::<Vec<_>>());
+async fn the_floor_follows_the_tip_by_the_retained_depth() {
+    let (_, service) = in_steady_state().await;
+    let before = floor_of(&service);
+    assert_eq!(floor_after(11).await, before + 11);
+    assert_eq!(floor_after(20).await, before + 20);
 }

@@ -753,45 +753,48 @@ pub(crate) fn capabilities_of(
         Some(Serviceability::Building(None)) | Some(Serviceability::Absent) | None => false,
     };
     StoreCapabilities::new(
-        CAPABILITIES
+        ROOTS
             .iter()
-            .filter(|(_, ids)| ids.iter().all(holds))
+            .filter(|(capability, _)| indexes_of(*capability).all(|id| holds(&id)))
             .map(|(capability, _)| *capability),
     )
 }
 
-/// Each capability and the indexes it needs (D-81; no `StoredBlocks`).
-const CAPABILITIES: &[(StoreCapability, &[IndexId])] = &[
+/// The indexes a capability's port reads directly (D-81). Each pulls in the
+/// indexes it declares it reads (`READS`, D-83), so the set a capability needs
+/// is derived from the indexes themselves and cannot drift from them.
+const ROOTS: &[(StoreCapability, &[IndexId])] = &[
     (StoreCapability::Core, &[IndexId::Headers]),
-    (
-        StoreCapability::Transactions,
-        &[IndexId::Txids, IndexId::TxidLocation],
-    ),
+    (StoreCapability::Transactions, &[IndexId::TxidLocation]),
     (
         StoreCapability::SpentOutputs,
-        &[IndexId::TxidLocation, IndexId::Transparent, IndexId::Spent],
+        &[IndexId::Spent, IndexId::TxidLocation, IndexId::Transparent],
     ),
-    (
-        StoreCapability::CompactBlocks,
-        &[
-            IndexId::Headers,
-            IndexId::Txids,
-            IndexId::CompactBlock,
-            IndexId::ChainMetadata,
-        ],
-    ),
+    (StoreCapability::CompactBlocks, &[IndexId::CompactBlock]),
+    (StoreCapability::TreeRoots, &[IndexId::ChainMetadata]),
     (StoreCapability::TxOutSet, &[IndexId::TxOutSet]),
     (
         StoreCapability::TransparentHistory,
-        &[
-            IndexId::AddressHistory,
-            IndexId::Txids,
-            IndexId::Transparent,
-        ],
+        &[IndexId::AddressHistory],
     ),
     (StoreCapability::TreeState, &[IndexId::TreeState]),
     (StoreCapability::HistoryTree, &[IndexId::HistoryTree]),
 ];
+
+/// Every index `capability` needs: its roots and what they read.
+pub(crate) fn indexes_of(capability: StoreCapability) -> impl Iterator<Item = IndexId> {
+    let roots = ROOTS
+        .iter()
+        .find(|(root, _)| *root == capability)
+        .map_or(&[][..], |(_, ids)| *ids);
+    let mut all: Vec<IndexId> = roots
+        .iter()
+        .flat_map(|id| std::iter::once(*id).chain(id.reads()))
+        .collect();
+    all.sort_unstable();
+    all.dedup();
+    all.into_iter()
+}
 
 /// An index's tip as served: none while unverified.
 fn served_tip<B: Backend>(index: &Open<B>) -> Option<BlockRef> {

@@ -69,7 +69,7 @@ pub mod txout;
 pub use block::ChainHeadBlock;
 pub use config::ChainHeadConfig;
 pub use error::ChainHeadError;
-pub use ports::{ChainHeadBlockService, ChainHeadBlockSource, ChainHeadFreezeEvents};
+pub use ports::{ChainHeadBlockService, ChainHeadBlockSource};
 pub use snapshot::{
     ChainHeadBlockIter, ChainHeadSnapshot, ChainHeadTransactionLocations,
     ChainHeadTransactionService, ChainHeadTxOutSetService, ChainHeadTxPosition, SpenderLocation,

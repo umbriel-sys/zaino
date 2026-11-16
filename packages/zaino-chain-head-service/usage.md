@@ -92,15 +92,14 @@ inside the reorg walk to "make the intermediate state visible".
 
 There is one writer, which is why publication is a plain store rather than a
 compare-and-swap. Adding a second writer breaks more than the store: the epoch
-bump and the freeze emission both assume exclusive access to what changed.
+bump assumes exclusive access to what changed.
 
 ## Testing: two styles, and which to use
 
 **Stepped** — `spawn_without_writer` + `advance_once`, both compiled out of
 production builds. No writer task runs, so the test is the only thing advancing
-the graph and observes exactly what it caused. Use this for reorg shapes,
-trimming, and freeze emission, where precise sequencing matters and timing does
-not.
+the graph and observes exactly what it caused. Use this for reorg shapes and
+trimming, where precise sequencing matters and timing does not.
 
 **Running** — `spawn` the real service against a mock source and observe through
 the subscriber with a bounded `wait_for(predicate)`. Use this when the writer

@@ -151,6 +151,7 @@ async fn a_set_builds_to_the_tip_and_reports_what_it_serves() {
         StoreCapability::Core,
         StoreCapability::Transactions,
         StoreCapability::SpentOutputs,
+        StoreCapability::TreeRoots,
     ] {
         assert!(capabilities.contains(served), "{served}");
     }
@@ -158,10 +159,46 @@ async fn a_set_builds_to_the_tip_and_reports_what_it_serves() {
         StoreCapability::CompactBlocks,
         StoreCapability::TxOutSet,
         StoreCapability::TransparentHistory,
-        StoreCapability::StoredBlocks,
     ] {
         assert!(!capabilities.contains(absent), "{absent}");
     }
+}
+
+/// Each capability's index set is its ports' indexes plus what those declare
+/// they read (D-81, D-83); pinned so a changed declaration shows up here.
+#[test]
+fn capabilities_follow_the_indexes_declared_reads() {
+    use IndexId::*;
+    let expected: [(StoreCapability, &[IndexId]); 9] = [
+        (StoreCapability::Core, &[Headers]),
+        (StoreCapability::TreeRoots, &[ChainMetadata]),
+        (
+            StoreCapability::CompactBlocks,
+            &[Headers, Txids, Transparent, CompactBlock, ChainMetadata],
+        ),
+        (StoreCapability::Transactions, &[Txids, TxidLocation]),
+        (
+            StoreCapability::SpentOutputs,
+            &[Txids, TxidLocation, Transparent, Spent],
+        ),
+        (StoreCapability::TxOutSet, &[TxOutSet]),
+        (
+            StoreCapability::TransparentHistory,
+            &[Txids, Transparent, AddressHistory],
+        ),
+        (StoreCapability::TreeState, &[TreeState]),
+        (StoreCapability::HistoryTree, &[HistoryTree]),
+    ];
+    for (capability, ids) in expected {
+        let mut ids = ids.to_vec();
+        ids.sort_unstable();
+        assert_eq!(
+            crate::store::indexes_of(capability).collect::<Vec<_>>(),
+            ids,
+            "{capability}"
+        );
+    }
+    assert_eq!(StoreCapability::ALL.len(), expected.len());
 }
 
 #[tokio::test]

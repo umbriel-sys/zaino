@@ -106,12 +106,18 @@ pub(crate) fn chain_locations(
 ///
 /// The store's conversion takes a chainwork, so a placeholder stands in for it
 /// and is replaced by the view's own: the real value, or `None` where the view
-/// cannot know it.
+/// cannot know it. The legacy shape carries per-pool value balances the new
+/// indexes no longer hold (D-97), so they are `None`.
 pub(crate) fn indexed_block(block: ChainBlock) -> Result<IndexedBlock, ChainIndexError> {
+    use zaino_chain_store_zainodb::adapter::{StoredBlock, StoredTx};
     let chainwork = block.chainwork;
-    let stored = zaino_chain_store::StoredBlock {
+    let stored = StoredBlock {
         header: block.header,
-        transactions: block.transactions,
+        transactions: block
+            .transactions
+            .into_iter()
+            .map(StoredTx::transparent_only)
+            .collect(),
         tree_roots: block.tree_roots,
         chainwork: chainwork.unwrap_or(domain::AbsoluteChainWork::new(NonZeroU128::MIN)),
     };

@@ -58,16 +58,58 @@ use to_domain::{
 use core::future::Future;
 
 use zaino_chain_store::{
-    ChainStoreError, ChainStoreFreezeSink, ChainStoreIngest, ChainStoreReader, ChainStoreService,
-    ChainStoreSource, ChainStoreSourceError, CompactBlockRead, FrozenBlock, PoolFilter, SpenderRef,
-    SpentOutputIndex, StoreCapabilities, StoreSchema, StoreWatermark, StoredBlock, StoredBlockRead,
-    StoredTxOut, TransactionIndex, TxOutSetAccumulator, TxOutSetIndex,
+    ChainStoreError, ChainStoreIngest, ChainStoreReader, ChainStoreService, ChainStoreSource,
+    ChainStoreSourceError, CompactBlockRead, PoolFilter, SpenderRef, SpentOutputIndex,
+    StoreCapabilities, StoreSchema, StoreWatermark, StoredHeader, StoredTxOut, TransactionIndex,
+    TreeRootsIndex, TxOutSetAccumulator, TxOutSetIndex,
 };
 use zaino_component::{ComponentName, ComponentStatus, Health, Lifecycle, StatusSource};
 use zaino_primitives::types::{
-    AbsoluteChainWork, BlockHash as DomainBlockHash, BlockTxPosition, CompactBlock,
-    Height as DomainHeight, Outpoint as DomainOutpoint, TransactionId,
+    AbsoluteChainWork, BlockHash as DomainBlockHash, BlockHeader, BlockTxPosition, CompactBlock,
+    Height as DomainHeight, Outpoint as DomainOutpoint, PreIndexCompactTx, SignedZatoshis,
+    TransactionId, TreeRoots,
 };
+
+/// A finalised block as this backend's rows express it: the legacy shape the
+/// `zaino-chain-store` ports once served, kept here for the legacy
+/// `IndexedBlock` conversion until the crate is deleted.
+#[derive(Debug, Clone)]
+pub struct StoredBlock {
+    /// The block's header.
+    pub header: BlockHeader,
+    /// Per-transaction indexed data, in block order.
+    pub transactions: Vec<StoredTx>,
+    /// Commitment tree roots and sizes after this block is applied.
+    pub tree_roots: TreeRoots,
+    /// Cumulative work from genesis to this block.
+    pub chainwork: AbsoluteChainWork,
+}
+
+/// A transaction in a stored block: the compact transaction plus the per-pool
+/// value balances this backend's rows persist beside it.
+#[derive(Debug, Clone)]
+pub struct StoredTx {
+    /// The compact transaction.
+    pub compact: PreIndexCompactTx,
+    /// Net Sapling value balance, `None` without a Sapling component.
+    pub sapling_value: Option<SignedZatoshis>,
+    /// Net Orchard value balance, `None` without an Orchard component.
+    pub orchard_value: Option<SignedZatoshis>,
+    /// Net Ironwood value balance, `None` without an Ironwood component.
+    pub ironwood_value: Option<SignedZatoshis>,
+}
+
+impl StoredTx {
+    /// A transaction with no shielded value movement recorded.
+    pub fn transparent_only(compact: PreIndexCompactTx) -> Self {
+        Self {
+            compact,
+            sapling_value: None,
+            orchard_value: None,
+            ironwood_value: None,
+        }
+    }
+}
 use zaino_status::StatusType;
 
 use crate::error::StoreError;
@@ -119,6 +161,70 @@ impl<T: ChainStoreSource> ChainStoreReader for DbReader<T> {
             Some(height) => Ok(Some(domain_height(height)?)),
             None => Ok(None),
         }
+    }
+
+    /// Projected from this backend's whole-block rows: it holds no header
+    /// table of its own.
+    async fn headers_chunk(
+        &self,
+        start: DomainHeight,
+        end: DomainHeight,
+    ) -> Result<Vec<StoredHeader>, ChainStoreError> {
+        Ok(self
+            .stored_range(start, end)
+            .await?
+            .into_iter()
+            .map(|block| StoredHeader {
+                header: block.header,
+                chainwork: block.chainwork,
+            })
+            .collect())
+    }
+
+    async fn chainwork(
+        &self,
+        height: DomainHeight,
+    ) -> Result<Option<AbsoluteChainWork>, ChainStoreError> {
+        self.bounded(height)?;
+        Ok(self
+            .stored_range(height, height)
+            .await?
+            .first()
+            .map(|block| block.chainwork))
+    }
+}
+
+impl<T: ChainStoreSource> DbReader<T> {
+    /// The stored blocks in `start..=end`, clamped to the watermark.
+    async fn stored_range(
+        &self,
+        start: DomainHeight,
+        end: DomainHeight,
+    ) -> Result<Vec<StoredBlock>, ChainStoreError> {
+        let Some((start, end)) = self.clamped_range(start, end)? else {
+            return Ok(Vec::new());
+        };
+        self.get_stored_block_range(start, end)
+            .await
+            .map_err(chain_store_error)?
+            .into_iter()
+            .map(stored_block)
+            .collect()
+    }
+}
+
+impl<T: ChainStoreSource> TreeRootsIndex for DbReader<T> {
+    async fn tree_roots_chunk(
+        &self,
+        start: DomainHeight,
+        end: DomainHeight,
+    ) -> Result<Vec<TreeRoots>, ChainStoreError> {
+        Ok(self
+            .stored_range(start, end)
+            .await?
+            .into_iter()
+            .map(|block| block.tree_roots)
+            .collect())
     }
 }
 
@@ -425,56 +531,6 @@ impl<T: ChainStoreSource> TxOutSetIndex for DbReader<T> {
     }
 }
 
-impl<T: ChainStoreSource> StoredBlockRead for DbReader<T> {
-    #[tracing::instrument(skip(self), fields(start = %start, end = %end))]
-    async fn blocks_chunk(
-        &self,
-        start: DomainHeight,
-        end: DomainHeight,
-    ) -> Result<Vec<StoredBlock>, ChainStoreError> {
-        let Some((start, end)) = self.clamped_range(start, end)? else {
-            return Ok(Vec::new());
-        };
-
-        // Timed around the chunk rather than the block: one read transaction
-        // covers the range, so a per-block figure would divide one duration by
-        // a count rather than measure anything.
-        let _timer = crate::timer::Timer::start(
-            metrics::histogram!(crate::metric_names::DB_READ_SECONDS, "op" => "blocks_chunk"),
-        );
-
-        self.get_stored_block_range(start, end)
-            .await
-            .map_err(chain_store_error)?
-            .into_iter()
-            .map(stored_block)
-            .collect()
-    }
-
-    async fn blocks_stream(
-        &self,
-        start: DomainHeight,
-        end: DomainHeight,
-    ) -> Result<
-        impl futures::Stream<Item = Result<Vec<StoredBlock>, ChainStoreError>> + Send + use<T>,
-        ChainStoreError,
-    > {
-        let reader = self.clone();
-        Ok(chunked(self.clamped_range(start, end)?, move |from, to| {
-            let reader = reader.clone();
-            async move {
-                reader
-                    .get_stored_block_range(from, to)
-                    .await
-                    .map_err(chain_store_error)?
-                    .into_iter()
-                    .map(stored_block)
-                    .collect()
-            }
-        }))
-    }
-}
-
 impl<T: ChainStoreSource> CompactBlockRead for DbReader<T> {
     #[tracing::instrument(skip(self, pools), fields(start = %start, end = %end))]
     async fn compact_chunk(
@@ -555,32 +611,6 @@ impl<T: ChainStoreSource> ChainStoreIngest for FinalisedState<T> {
     }
 }
 
-impl<T: ChainStoreSource> FinalisedState<T> {
-    /// The absolute chainwork of the block this store holds at its tip.
-    ///
-    /// `None` on an empty store, which is genesis's parent: nothing below it,
-    /// so the first block written accumulates onto nothing.
-    ///
-    /// Read through this store's own reader. That costs a whole block for one
-    /// number, which no port offers alone — paid once per freeze batch, where
-    /// the batch then folds forward in memory.
-    async fn tip_chainwork(&self) -> Result<Option<AbsoluteChainWork>, ChainStoreError> {
-        let Some(tip) = self.db_height().await.map_err(chain_store_error)? else {
-            return Ok(None);
-        };
-        let tip = domain_height(tip)?;
-
-        let chunk = ChainStoreService::reader(self)
-            .blocks_chunk(tip, tip)
-            .await?;
-        let tip_block = chunk
-            .first()
-            .ok_or_else(|| ChainStoreError::MissingRow(format!("the tip block at height {tip}")))?;
-
-        Ok(Some(tip_block.chainwork))
-    }
-}
-
 impl<T: ChainStoreSource> StatusSource for FinalisedState<T> {
     fn status(&self) -> ComponentStatus {
         component_status(self.name(), FinalisedState::status(self))
@@ -622,74 +652,6 @@ fn component_status(name: ComponentName, status: StatusType) -> ComponentStatus 
     ComponentStatus::new(name, lifecycle, health)
 }
 
-impl<T: ChainStoreSource> ChainStoreFreezeSink for FinalisedState<T> {
-    /// Writes blocks the composer has already seen fall beyond reorg.
-    ///
-    /// Idempotent at `tip + 1` by delegation: the writer's put is a
-    /// byte-compare on conflict, so re-seeing the block already there is a
-    /// no-op and re-seeing a *different* block there is an error rather than a
-    /// silent overwrite. That is the property the freeze stream needs, because
-    /// it can deliver the same heights twice across a reorg.
-    async fn freeze(&self, blocks: &[FrozenBlock]) -> Result<(), ChainStoreError> {
-        // Where this store is, and what the next block accumulates onto. Both
-        // read once and advanced in step, because a block is only ever written
-        // at `tip + 1`: after a write the tip is the block just written and its
-        // chainwork is that block's. Re-reading either per block would be a
-        // store round trip for a number this loop already holds, paid once for
-        // every block in the batch.
-        let mut store_tip = self.db_height().await.map_err(chain_store_error)?;
-        let mut parent_chainwork = self.tip_chainwork().await?;
-
-        for block in blocks {
-            let expected = match store_tip {
-                Some(tip) => tip.0.saturating_add(1),
-                None => crate::types::GENESIS_HEIGHT.0,
-            };
-
-            let height = u32::from(block.header.height);
-            if height < expected {
-                continue;
-            }
-            if height > expected {
-                // The tracked tip, not a fresh read: nothing has written to
-                // this store since the loop started but the loop itself, which
-                // is what `store_tip` has been following.
-                return Err(ChainStoreError::FreezeGap {
-                    store_tip: store_tip.map(domain_height).transpose()?,
-                    first_frozen: block.header.height,
-                });
-            }
-
-            let chainwork = crate::conversion::chainwork_from_parent(
-                block.header.bits.to_work(),
-                stored_hash(block.header.hash),
-                crate::types::Height(height),
-                parent_chainwork,
-            )
-            .map_err(|error| {
-                ChainStoreError::backend_because(
-                    format!("block {} chainwork could not be derived", block.header.hash),
-                    error,
-                )
-            })?;
-            let stored = StoredBlock {
-                header: block.header.clone(),
-                transactions: block.transactions.clone(),
-                tree_roots: block.tree_roots.clone(),
-                chainwork,
-            };
-
-            self.write_block(indexed_block_from_stored(&stored)?)
-                .await
-                .map_err(chain_store_error)?;
-            parent_chainwork = Some(chainwork);
-            store_tip = Some(crate::types::Height(height));
-        }
-
-        Ok(())
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -703,9 +665,9 @@ mod tests {
     /// another crate, a long way from the cause.
     #[test]
     fn the_backend_satisfies_every_port_it_advertises() {
-        fn reader<R: ChainStoreReader + StoredBlockRead + CompactBlockRead>() {}
+        fn reader<R: ChainStoreReader + TreeRootsIndex + CompactBlockRead>() {}
         fn indexes<R: TransactionIndex + SpentOutputIndex + TxOutSetIndex>() {}
-        fn service<S: ChainStoreService + ChainStoreIngest + ChainStoreFreezeSink>() {}
+        fn service<S: ChainStoreService + ChainStoreIngest>() {}
         #[cfg(feature = "transparent_address_history_experimental")]
         fn history<R: zaino_chain_store::TransparentHistoryIndex>() {}
 

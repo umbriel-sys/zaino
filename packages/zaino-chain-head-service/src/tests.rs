@@ -17,9 +17,7 @@ mod reorg_depth;
 use std::{sync::Arc, time::Duration};
 
 use tokio_util::sync::CancellationToken;
-use zaino_chain_head::{
-    ChainHeadBlockService as _, ChainHeadConfig, ChainHeadFreezeEvents as _, ChainHeadSnapshot,
-};
+use zaino_chain_head::{ChainHeadBlockService as _, ChainHeadConfig, ChainHeadSnapshot};
 use zaino_primitives::types::{
     rpc::{ChainTip, ChainTipStatus},
     Block, BlockCommitments, BlockHash, BlockHeader, BlockRef, ChainMetadata, EquihashSolution,
@@ -894,64 +892,6 @@ async fn a_block_labelled_with_the_wrong_height_fails_the_advance() {
         "unexpected outcome: {outcome:?}"
     );
     assert_eq!(service.subscriber().current().best_tip(), before);
-}
-
-// ------------------------------------------------------------ freeze handoff
-
-/// Blocks are handed off once they pass below the consensus seam, ascending and
-/// contiguous.
-#[tokio::test]
-async fn frozen_blocks_are_emitted_in_order_below_the_seam() {
-    let validator = MockValidator::linear(20);
-    let service = stepped(&validator, 5).await;
-    let mut frozen = service.subscriber().subscribe_frozen();
-
-    step_to_tip(&service, &validator).await;
-
-    // Tip 19, depth 5, so everything at or below 14 is frozen. The anchor sits
-    // at 14, and the graph only holds 14 upwards, so 14 is where it starts.
-    let mut heights = Vec::new();
-    while let Ok(block) = frozen.try_recv() {
-        heights.push(u32::from(block.height()));
-    }
-    assert!(!heights.is_empty(), "nothing was handed off");
-    assert!(
-        heights.windows(2).all(|w| w[1] == w[0] + 1),
-        "handoff was not contiguous and ascending: {heights:?}",
-    );
-    assert!(
-        heights.iter().all(|h| *h <= 14),
-        "a block still inside the reorg-possible range was handed off: {heights:?}",
-    );
-}
-
-/// A block is handed off once, not on every publish that follows.
-#[tokio::test]
-async fn a_frozen_block_is_emitted_only_once() {
-    let validator = MockValidator::linear(20);
-    let service = stepped(&validator, 5).await;
-    let mut frozen = service.subscriber().subscribe_frozen();
-
-    step_to_tip(&service, &validator).await;
-    let mut seen = Vec::new();
-    while let Ok(block) = frozen.try_recv() {
-        seen.push(u32::from(block.height()));
-    }
-
-    // An advance that moves nothing must hand off nothing.
-    service.advance_once().await.expect("advance succeeds");
-    assert!(
-        frozen.try_recv().is_err(),
-        "an advance with no tip change handed off a block again",
-    );
-
-    validator.extend(20);
-    service.advance_once().await.expect("advance succeeds");
-    let next = frozen.try_recv().expect("one more block crossed the seam");
-    assert_eq!(
-        u32::from(next.height()),
-        seen.last().expect("some were handed off") + 1,
-    );
 }
 
 // ----------------------------------------------------------- the writer task

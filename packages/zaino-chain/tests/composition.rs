@@ -903,7 +903,7 @@ async fn a_missing_index_makes_a_local_only_capability_absent() {
     let chain = chain();
     let composer = ChainViewComposer::new(
         FakeStore::covering(&chain, 1000)
-            .with_capabilities([StoreCapability::Core, StoreCapability::StoredBlocks]),
+            .with_capabilities([StoreCapability::Core, StoreCapability::TreeRoots]),
         FakeHead::covering(&chain, 1000, 1200),
         Arc::new(FakeSource::over(&chain)),
         ChainViewConfig::default(),

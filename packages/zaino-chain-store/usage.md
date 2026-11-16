@@ -9,13 +9,12 @@ Depend on this crate to *name* what a store answers. Depend on an
 implementation only if you are the one starting it.
 
 ```rust
-use zaino_chain_store::{ChainStoreReader, StoredBlockRead};
+use zaino_chain_store::{ChainStoreReader, StoredHeader};
 
-/// Works against any store that can serve stored blocks, and knows nothing
-/// about how one is stored.
-async fn tip_block<R: StoredBlockRead>(reader: &R) -> Option<StoredBlock> {
+/// Works against any store, and knows nothing about how one is stored.
+async fn tip_header<R: ChainStoreReader>(reader: &R) -> Option<StoredHeader> {
     let tip = reader.watermark().tip?;
-    reader.blocks_chunk(tip.height, tip.height).await.ok()?.pop()
+    reader.headers_chunk(tip.height, tip.height).await.ok()?.pop()
 }
 ```
 
@@ -74,7 +73,7 @@ The block very likely exists — in the chain head. Treating it as absence is th
 single most likely way to serve a wrong answer through this crate.
 
 ```rust
-match reader.blocks_chunk(start, end).await {
+match reader.compact_chunk(start, end, pools).await {
     Err(ChainStoreError::AboveWatermark { watermark, .. }) => {
         // Ask the chain head for `(watermark, end]`, then concatenate.
     }
@@ -194,52 +193,41 @@ Note what is *not* two fields: a store that holds nothing is one with no path,
 not a path beside a flag. That pair used to exist, and nothing said which won
 when they disagreed.
 
-## A stored block is not a compact block
+## There is no whole-block read, and only one write path
 
-`StoredBlock.transactions` holds `StoredTx`, not `PreIndexCompactTx`: the
-compact transaction *plus* the per-pool value balances an index persists beside
-it. The compact protocol has no value balance, correctly — a wallet does not
-need one — but a store does, and `StoredBlock` is the shape that crosses the
-write boundary as well as the read one.
+The store holds indexes, not blocks, and its ports say so. An indexed block —
+header, compact transactions, tree roots, chainwork — is composed from three
+reads, each over the one index that holds the data:
 
-That is the rule to keep when adding a field here: whatever
-`ChainStoreFreezeSink::freeze` needs in order to write a block must be
-expressible in what `StoredBlockRead` yields, or a block read out of one store
-and frozen into another loses it silently. Both directions decode, both hash,
-and only the rows differ. The backend's port suite checks exactly this by
-reading a chain out of one store and freezing it into an empty one.
+| Part | Read | Capability |
+| --- | --- | --- |
+| header and absolute chainwork | `ChainStoreReader::headers_chunk` (one number: `chainwork`) | `Core` |
+| compact transactions | `CompactBlockRead::compact_chunk` with `PoolFilter::all()` | `CompactBlocks` |
+| tree roots and sizes | `TreeRootsIndex::tree_roots_chunk` | `TreeRoots` |
 
-## A frozen block carries no chainwork
-
-`freeze` takes `FrozenBlock`, which is `StoredBlock` without its `chainwork`,
-and the absence is the point.
+`zaino-chain`'s composer does this join for a store-covered height, checking
+that the three answer the same blocks. A consumer that wants only the header
+pays for only the headers index, which is why the roots are their own port
+rather than part of the compact-block one.
 
 Chainwork is cumulative: it needs an unbroken chain *below* a block. The store
-is the party holding that chain, so it is the only one that can know the value —
-and it can always derive it, because freezing appends at `tip + 1` and a batch
-that would leave a gap is refused with `ChainStoreError::FreezeGap`. Each
-block's difficulty says what it contributes; the store's tip says what came
-before.
+is the party holding that chain, so it is the only one that can know the value,
+and `chainwork(height)` reads it without the header beside it — what a
+consumer rebasing the recent window's work onto the finalised chain needs.
 
-A caller has, at best, work measured from somewhere else. The chain head's is
-measured from its own anchor, because it never reads the finalised state. Handing
-that over would put a wrong absolute chainwork on disk — undetectably, since
-nothing downstream can tell a plausible number from a right one, and permanently,
-since every later block accumulates onto it.
-
-So there is no field to fill wrongly. A caller converting a chain-head block for
-freezing drops the work rather than rebasing it; rebasing is for *serving* a
-value, which `zaino-chain` does, and is a different job from writing one down.
+Writing goes through `ChainStoreIngest::build_to` and nothing else: the store
+fetches every block from its own validator. No consumer hands it blocks, so no
+consumer can hand it a wrong one.
 
 ## Chunks, not blocks
 
-There is no `get_block(height)`, and that is deliberate. A single block is
-`blocks_chunk(h, h)`. Naming a point read invites the pattern this port
-replaced: one `begin_ro_txn` per height across a range, plus one channel send
-per block.
+There is no `get_header(height)`, and that is deliberate. A single header is
+`headers_chunk(h, h)`, a single compact block `compact_chunk(h, h, pools)`.
+Naming a point read invites the pattern this port replaced: one read
+transaction per height across a range, plus one channel send per block.
 
-Use `blocks_chunk` when you know the range is small and you want it in hand.
-Use `blocks_stream` for anything client-facing: it walks one cursor and yields
+Use `compact_chunk` when you know the range is small and you want it in hand.
+Use `compact_stream` for anything client-facing: it walks one cursor and yields
 a `Vec` per read transaction, so peak memory is chunk-sized rather than
 range-sized.
 
@@ -255,20 +243,21 @@ Chunk boundaries are the implementation's to choose and carry no meaning. Sizing
 them by bytes rather than by count, or ramping the first few so
 latency-to-first-byte stays low, needs no port change.
 
-### Consuming `blocks_stream`
+### Consuming `compact_stream`
 
 ```rust
 use futures::StreamExt as _;
-use zaino_chain_store::{ChainStoreError, StoredBlock, StoredBlockRead};
-use zaino_primitives::types::Height;
+use zaino_chain_store::{ChainStoreError, CompactBlockRead, PoolFilter};
+use zaino_primitives::types::{CompactBlock, Height};
 
-async fn send_range<R: StoredBlockRead>(
+async fn send_range<R: CompactBlockRead>(
     reader: &R,
     start: Height,
     end: Height,
-    out: &tokio::sync::mpsc::Sender<StoredBlock>,
+    pools: PoolFilter,
+    out: &tokio::sync::mpsc::Sender<CompactBlock>,
 ) -> Result<(), ChainStoreError> {
-    let chunks = reader.blocks_stream(start, end).await?;
+    let chunks = reader.compact_stream(start, end, pools).await?;
 
     // `pin!` because the stream is `!Unpin` — it is a state machine built from
     // an async block. This pins it to the stack; nothing is allocated.
@@ -307,7 +296,7 @@ Because the port forbids the stream borrowing the reader, it is `'static` and
 can be moved into a task that outlives the frame that made it:
 
 ```rust
-let chunks = reader.blocks_stream(start, end).await?;
+let chunks = reader.compact_stream(start, end, pools).await?;
 tokio::spawn(async move {
     let mut chunks = std::pin::pin!(chunks);
     while let Some(chunk) = chunks.next().await {
@@ -337,7 +326,7 @@ and reversing the result:
 let mut top = end;
 loop {
     let bottom = top.saturating_sub(CHUNK - 1).max(start);
-    let mut blocks = reader.blocks_chunk(bottom, top).await?;
+    let mut blocks = reader.compact_chunk(bottom, top, pools).await?;
     blocks.reverse();
     yield_all(blocks).await;
     if bottom <= start { break; }
@@ -345,7 +334,7 @@ loop {
 }
 
 // Wrong: buffers the whole range before emitting anything.
-let mut all: Vec<_> = collect(reader.blocks_stream(start, end).await?).await?;
+let mut all: Vec<_> = collect(reader.compact_stream(start, end, pools).await?).await?;
 all.reverse();
 ```
 
@@ -354,8 +343,8 @@ fails over a hundred thousand, on a machine that is also serving everyone else.
 
 ## `PoolFilter` goes into the read
 
-`CompactBlockRead` is separate from `StoredBlockRead` for one reason: the filter
-selects which cursors open and which row families decode. Passing it in lets a
+`CompactBlockRead` takes the filter for one reason: it selects which cursors
+open and which row families decode. Passing it in lets a
 sapling-only wallet skip orchard, ironwood and the commitment-tree rows
 entirely. Filtering the result afterwards costs the decode you were avoiding, on
 every block.
