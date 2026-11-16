@@ -19,12 +19,16 @@
 
 mod assemble;
 mod config;
+mod linked;
 mod metadata;
+mod record;
 mod set;
 mod store;
 #[cfg(test)]
 mod tests;
 
 pub use config::{ChainStoreServiceConfig, IndexesConfig, OnCorruption};
+pub use linked::{LinkedChainStore, LinkedError, Polling, PrimaryStatus};
+pub use record::{PrimaryState, RecordError};
 pub use set::{IndexSet, NamedSet, SetError};
 pub use store::{BootError, ChainStore, Serviceability};

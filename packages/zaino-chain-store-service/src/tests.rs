@@ -464,3 +464,5 @@ async fn a_validator_behind_on_another_chain_rebuilds_once_it_catches_up() {
         .expect("rebuilds on the validator's chain");
     assert_eq!(store.subscribe_watermark().borrow().tip, Some(tip));
 }
+
+mod linked;

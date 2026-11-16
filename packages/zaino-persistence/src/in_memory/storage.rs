@@ -4,9 +4,12 @@ use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, MutexGuard};
 
-use super::InMemoryBackend;
-use crate::backend::{NamespaceSpec, SchemaDigest};
-use crate::error::OpenError;
+use zaino_primitives::types::BlockRef;
+
+use super::{InMemoryBackend, InMemoryReader};
+use crate::backend::{NamespaceSpec, ReadOnlyBackend, SchemaDigest};
+use crate::error::{OpenError, RefreshError};
+use crate::rules::check_specs;
 use crate::storage::{Identity, Storage};
 
 /// What a directory was created as.
@@ -36,6 +39,7 @@ struct State {
     dirs: HashMap<PathBuf, (Stamp, InMemoryBackend)>,
     locks: HashSet<PathBuf>,
     files: HashMap<PathBuf, Vec<u8>>,
+    records: HashMap<PathBuf, Vec<u8>>,
 }
 
 type Shared = Arc<Mutex<State>>;
@@ -78,8 +82,62 @@ impl InMemoryStorage {
     }
 }
 
+/// A directory of this storage, linked read-only: every commit is durable at
+/// once, so a refresh takes the directory's state when its tip is the one
+/// announced.
+pub struct InMemoryReadOnly {
+    storage: Shared,
+    dir: PathBuf,
+    stamp: Stamp,
+    published: Mutex<Option<Arc<super::State>>>,
+}
+
+impl InMemoryReadOnly {
+    fn published(&self) -> Result<MutexGuard<'_, Option<Arc<super::State>>>, OpenError> {
+        self.published.lock().map_err(|_| OpenError::Unavailable {
+            operation: "read-only state",
+            source: "in-memory read-only lock poisoned".into(),
+        })
+    }
+}
+
+impl ReadOnlyBackend for InMemoryReadOnly {
+    type Reader = InMemoryReader;
+
+    fn reader(&self) -> Result<InMemoryReader, OpenError> {
+        let state = self.published()?.clone().ok_or(OpenError::Unavailable {
+            operation: "read-only reader",
+            source: "not yet refreshed".into(),
+        })?;
+        Ok(InMemoryReader { state })
+    }
+
+    fn refresh(&self, durable: Option<BlockRef>) -> Result<(), RefreshError> {
+        let state = {
+            let storage = locked(&self.storage, "refresh")?;
+            let (stamp, backend) = storage.dirs.get(&self.dir).ok_or(RefreshError::Absent)?;
+            if *stamp != self.stamp {
+                return Err(OpenError::Mismatch(
+                    format!("{} holds {stamp:?}", self.dir.display()).into(),
+                )
+                .into());
+            }
+            super::current(&backend.data).map_err(|source| OpenError::Unavailable {
+                operation: "refresh",
+                source: source.into(),
+            })?
+        };
+        if state.tip != durable {
+            return Err(RefreshError::Superseded);
+        }
+        *self.published()? = Some(state);
+        Ok(())
+    }
+}
+
 impl Storage for InMemoryStorage {
     type Backend = InMemoryBackend;
+    type ReadOnly = InMemoryReadOnly;
     type Lock = InMemoryLock;
 
     fn open(
@@ -135,6 +193,39 @@ impl Storage for InMemoryStorage {
                 source: format!("{} is held", root.display()).into(),
             }),
         }
+    }
+
+    fn open_read_only(
+        &self,
+        dir: &Path,
+        identity: Identity<'_>,
+        namespaces: &[NamespaceSpec],
+    ) -> Result<InMemoryReadOnly, OpenError> {
+        check_specs(namespaces)?;
+        Ok(InMemoryReadOnly {
+            storage: Arc::clone(&self.state),
+            dir: dir.to_path_buf(),
+            stamp: Stamp::new(identity, namespaces),
+            published: Mutex::new(None),
+        })
+    }
+
+    fn primary_running(&self, root: &Path) -> Result<bool, OpenError> {
+        Ok(locked(&self.state, "primary running")?.locks.contains(root))
+    }
+
+    fn write_record(&self, lock: &mut InMemoryLock, record: &[u8]) -> Result<(), OpenError> {
+        locked(&self.state, "write record")?
+            .records
+            .insert(lock.root.clone(), record.to_vec());
+        Ok(())
+    }
+
+    fn read_record(&self, root: &Path) -> Result<Option<Vec<u8>>, OpenError> {
+        Ok(locked(&self.state, "read record")?
+            .records
+            .get(root)
+            .cloned())
     }
 
     fn read_meta(&self, root: &Path, name: &str) -> Result<Option<Vec<u8>>, OpenError> {

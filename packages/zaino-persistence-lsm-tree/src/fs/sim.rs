@@ -968,6 +968,15 @@ impl Fs for SimFs {
             }),
         })
     }
+
+    /// [`lock`](Fs::lock): no other process waits here (a probe holds nothing)
+    fn lock_waiting(&self, path: &Path) -> io::Result<LockGuard> {
+        self.lock(path)
+    }
+
+    fn is_locked(&self, path: &Path) -> io::Result<bool> {
+        Ok(self.lock_inner().locks.contains(path))
+    }
 }
 
 struct SimLock {

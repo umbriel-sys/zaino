@@ -129,12 +129,37 @@ A store that keeps one directory per index touches disk only through
   other namespaces as `OpenError::Mismatch`;
 - `remove(dir)` deletes a directory, refused while a backend holds it where
   the storage can tell; `children(dir)` lists the directories under `dir`;
-- `lock(root)` holds the store exclusively until the guard drops;
+- `lock(root)` holds the store exclusively, as its primary, until the guard
+  drops;
 - `read_meta(root, name)` / `write_meta(root, name, bytes)` read and replace
   a store file atomically and durably (old bytes or new, whole). The bytes
-  are the caller's format.
+  are the caller's format;
+- `open_read_only(dir, identity, namespaces)`, `primary_running(root)`,
+  `write_record(lock, bytes)` / `read_record(root)`: the linked side, below.
 
 `in_memory::InMemoryStorage` (feature `testing`) keeps all of it in maps.
+
+## Linked: reading a store another process writes
+
+One process, the primary, holds the store and writes it. Others link to it
+read-only (D-95), and see only what the primary has made durable:
+
+- the primary keeps a record (`write_record`, its own bytes) naming each
+  index's durable tip, rewritten after each write and on each change of
+  state; a reader sees the old record or the new, whole. It is not synced: a
+  crash may keep an older one;
+- `primary_running(root)` tells whether a primary holds the store now; it
+  releases it however it ends, crash included;
+- `open_read_only` returns a [`ReadOnlyBackend`]: no writer, nothing created,
+  locked or removed. `refresh(durable)` moves it to the committed state whose
+  tip is the announced one; readers already taken keep their snapshot.
+  `Superseded` means the writer has moved past that state (refresh at its
+  newer announcement), `Absent` that no index is there.
+
+Nothing in the port polls: the caller decides when to read the record and
+refresh. The conformance suite (`linked_history`, `linked_beside_a_writer`)
+checks a read-only backend after every step of a history and beside a writer
+on another thread.
 
 ## Overlay
 

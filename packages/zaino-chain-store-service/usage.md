@@ -27,7 +27,8 @@ address_history = "/mnt/fast/zaino" # holds address_history_<format>/
 
 `ChainStore::boot(config, storage, source, schedule)`:
 
-1. locks `<root>/<network>/` (one store per directory);
+1. locks `<root>/<network>/` (one store per directory) as its primary, its
+   record saying `Booting` (`Halted` if boot fails);
 2. resolves the set; until the step-4 prevout resolver, a set with an index
    building from I-03 + I-04 (I-05, I-10, I-11) is refused
    (`BootError::PrevoutsUnsupported`);
@@ -62,3 +63,35 @@ and the block added notes to that pool.
 `Building(tip)`, `ToHeight(tip)` once at the last target) and `capabilities`
 (each `StoreCapability` once all its indexes hold a block; no
 `StoredBlocks`).
+
+## The primary's record
+
+The `ChainStore` is the store's primary. It keeps a record for linked
+readers (D-95):
+- its `PrimaryState`: `Booting`, `Rebuilding(index)`, `Building`, `Ready`,
+  `Stalled` (the validator did not answer), `Failed` (a fold or write
+  failed), `Halted` (boot refused), `Stopped`, each failure with its causes;
+- its last target;
+- each verified index's durable tip.
+
+It is rewritten whenever the state changes and whenever a durable tip moves.
+An index rebuilding or held back (unverified) is not announced.
+
+## Linked stores
+
+`LinkedChainStore::open(config, storage)` follows a store another process's
+primary builds: no lock, sweep, rebuild or write. `refresh()` reads the
+record and whether the primary is running, then moves each index to its
+announced durable tip. `poll(interval)` refreshes on the blocking pool until
+the returned `Polling` drops. It answers like the primary
+(`subscribe_watermark`, `serviceability`, `capabilities`). It adds
+`primary()` / `subscribe_primary()`, a `PrimaryStatus` of `running`, `state`
+and `target`, so a reader can tell a building primary from a stalled, failed
+or stopped one.
+
+An index not announced is `Absent`. A tip the primary has moved past keeps
+the last state until the next refresh. An index that cannot follow (another
+layout or chain, lost data) is not served and is returned as
+`LinkedError::Index` once the rest are refreshed. A stopped primary's durable
+state is still served. The linked store does not yet serve reads (5a step 5),
+and runs no chain head or mempool of its own (D-47).

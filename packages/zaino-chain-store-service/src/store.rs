@@ -19,6 +19,7 @@ use zaino_primitives::types::{BlockHash, BlockRef, Height, NetworkUpgradeInfo};
 use crate::assemble::assemble;
 use crate::config::{network_name, ChainStoreServiceConfig, OnCorruption};
 use crate::metadata::{self, Metadata};
+use crate::record::{PrimaryRecord, PrimaryState};
 use crate::set::{IndexSet, SetError};
 
 /// How far one index can answer.
@@ -79,12 +80,75 @@ struct Open<B: Backend> {
 }
 
 /// Everything `build_to` changes, behind one lock (single-flight).
-struct Built<B: Backend> {
-    indexes: Vec<Open<B>>,
+struct Built<St: Storage> {
+    indexes: Vec<Open<St::Backend>>,
     target: Option<Height>,
+    recorder: Recorder<St>,
 }
 
-/// A running store: a set of indexes over `St`, built from `Src`.
+/// The held store and the record linked readers follow (D-95).
+struct Recorder<St: Storage> {
+    lock: St::Lock,
+    record: PrimaryRecord,
+}
+
+impl<St: Storage> Recorder<St> {
+    fn new(lock: St::Lock) -> Self {
+        Self {
+            lock,
+            record: PrimaryRecord {
+                state: PrimaryState::Booting,
+                target: None,
+                durable: BTreeMap::new(),
+            },
+        }
+    }
+
+    fn set(&mut self, storage: &St, state: PrimaryState) {
+        self.record.state = state;
+        self.write(storage);
+    }
+
+    /// Each verified index's durable tip (an unverified one is not served,
+    /// so not announced), rewritten when one moved.
+    fn durable(&mut self, storage: &St, indexes: &[Open<St::Backend>]) {
+        let mut durable = BTreeMap::new();
+        for index in indexes.iter().filter(|index| !index.unverified) {
+            let tip = match index.backend.reader().map(|reader| reader.durable_tip()) {
+                Ok(Ok(tip)) => tip,
+                // unreadable now: the last announcement stands
+                _ => self.record.durable.get(&index.id).copied().flatten(),
+            };
+            durable.insert(index.id, tip);
+        }
+        if durable != self.record.durable {
+            self.record.durable = durable;
+            self.write(storage);
+        }
+    }
+
+    /// Advisory: a failed write leaves linked readers on the last record.
+    fn write(&mut self, storage: &St) {
+        if let Err(error) = storage.write_record(&mut self.lock, &self.record.encode()) {
+            tracing::warn!(%error, "primary record not written: linked readers keep the last one");
+        }
+    }
+}
+
+/// `error` and each cause under it, on one line.
+fn causes(error: &dyn std::error::Error) -> String {
+    let mut line = error.to_string();
+    let mut source = error.source();
+    while let Some(cause) = source {
+        line.push_str(": ");
+        line.push_str(&cause.to_string());
+        source = cause.source();
+    }
+    line
+}
+
+/// A running store: a set of indexes over `St`, built from `Src`. It holds
+/// the store as its primary and keeps the record linked readers follow.
 pub struct ChainStore<St: Storage, Src> {
     storage: St,
     network: &'static str,
@@ -92,10 +156,9 @@ pub struct ChainStore<St: Storage, Src> {
     schedule: Arc<[NetworkUpgradeInfo]>,
     set: IndexSet,
     trees: bool,
-    built: Mutex<Built<St::Backend>>,
+    built: Mutex<Built<St>>,
     watermark: watch::Sender<StoreWatermark>,
     serviceability: watch::Sender<BTreeMap<IndexId, Serviceability>>,
-    _lock: St::Lock,
 }
 
 impl<St: Storage, Src: ChainStoreSource> ChainStore<St, Src> {
@@ -104,6 +167,8 @@ impl<St: Storage, Src: ChainStoreSource> ChainStore<St, Src> {
     /// mismatch is rebuilt, corruption per `on_corruption`), checks each tip
     /// against the validator (D-32: a different block is rebuilt), records
     /// `METADATA`.
+    ///
+    /// The record says `Booting` while it runs and `Halted` if it fails.
     pub async fn boot(
         config: &ChainStoreServiceConfig,
         storage: St,
@@ -116,6 +181,49 @@ impl<St: Storage, Src: ChainStoreSource> ChainStore<St, Src> {
             index: "store",
             source,
         })?;
+        let mut recorder = Recorder::new(lock);
+        recorder.set(&storage, PrimaryState::Booting);
+        match Self::open_set(config, &storage, &source, &root, &mut recorder).await {
+            Ok((set, indexes)) => {
+                recorder.durable(&storage, &indexes);
+                recorder.set(&storage, PrimaryState::Ready);
+                let tips = || indexes.iter().map(|index| (index.id, served_tip(index)));
+                let (watermark, _) = watch::channel(watermark_of(tips()));
+                let (serviceability, _) = watch::channel(serviceability_of(tips(), None));
+                let built = Built {
+                    indexes,
+                    target: None,
+                    recorder,
+                };
+                Ok(Self {
+                    storage,
+                    network,
+                    source,
+                    schedule,
+                    trees: set.contains(IndexId::TreeState),
+                    set,
+                    built: Mutex::new(built),
+                    watermark,
+                    serviceability,
+                })
+            }
+            Err(error) => {
+                recorder.set(&storage, PrimaryState::Halted(causes(&error)));
+                Err(error)
+            }
+        }
+    }
+
+    /// The set resolved, its directories swept and opened, tips checked,
+    /// `METADATA` recorded.
+    async fn open_set(
+        config: &ChainStoreServiceConfig,
+        storage: &St,
+        source: &Arc<Src>,
+        root: &Path,
+        recorder: &mut Recorder<St>,
+    ) -> Result<(IndexSet, Vec<Open<St::Backend>>), BootError> {
+        let network = network_name(config.network);
         let set = IndexSet::resolve(
             config.indexes.set,
             &config.indexes.enable,
@@ -129,20 +237,27 @@ impl<St: Storage, Src: ChainStoreSource> ChainStore<St, Src> {
                 .collect();
             return Err(BootError::PrevoutsUnsupported(needing.join(", ")));
         }
-        let parents = parents(config, &root, &set);
-        sweep(&storage, &parents, &set, config.indexes.delete_stale)?;
-        report_change(&storage, &root, network, &set);
+        let parents = parents(config, root, &set);
+        sweep(storage, &parents, &set, config.indexes.delete_stale)?;
+        report_change(storage, root, network, &set);
 
         let mut indexes = Vec::new();
         for id in set.build_order() {
             let dir = parent_of(&parents, id).join(id.schema().dir_name());
-            indexes.push(open(&storage, &dir, id, network, config.on_corruption)?);
+            indexes.push(open(
+                storage,
+                &dir,
+                id,
+                network,
+                config.on_corruption,
+                recorder,
+            )?);
         }
         if indexes.iter().any(|index| index.tip.is_some()) {
             for index in &mut indexes {
                 index.unverified = index.tip.is_some();
             }
-            check_tips(&storage, source.as_ref(), network, &mut indexes)
+            check_tips(storage, source.as_ref(), network, &mut indexes, recorder)
                 .await
                 .map_err(|error| match error {
                     TipCheck::Source(error) => BootError::Source(error),
@@ -159,45 +274,54 @@ impl<St: Storage, Src: ChainStoreSource> ChainStore<St, Src> {
                 },
             })?;
         storage
-            .write_meta(&root, metadata::NAME, &record)
+            .write_meta(root, metadata::NAME, &record)
             .map_err(|source| BootError::Storage {
                 index: "store",
                 source,
             })?;
-
-        let built = Built {
-            indexes,
-            target: None,
-        };
-        let (watermark, _) = watch::channel(watermark_of(&built));
-        let (serviceability, _) = watch::channel(serviceability_of(&built));
-        Ok(Self {
-            storage,
-            network,
-            source,
-            schedule,
-            trees: set.contains(IndexId::TreeState),
-            set,
-            built: Mutex::new(built),
-            watermark,
-            serviceability,
-            _lock: lock,
-        })
+        Ok((set, indexes))
     }
 
     /// Builds every enabled index through `target`, one block at a time
     /// (single-flight: a concurrent call waits, then finds the work done).
     /// Each block is fetched once and folded into every index still below
     /// it; the indexes are flushed at the end.
+    ///
+    /// The record says `Building`, then `Ready`; a validator that does not
+    /// answer is `Stalled`, a failed fold or write `Failed`. Each index's
+    /// durable tip is announced as it moves.
     pub async fn build_to(&self, target: Height) -> Result<(), ChainStoreSourceError> {
         let mut built = self.built.lock().await;
+        let built = &mut *built;
         built.target = Some(built.target.map_or(target, |old| old.max(target)));
+        built.recorder.record.target = built.target;
+        built.recorder.set(&self.storage, PrimaryState::Building);
+        let result = self.build(built, target).await;
+        let state = match &result {
+            Ok(()) => PrimaryState::Ready,
+            Err(
+                error @ (ChainStoreSourceError::Unavailable { .. }
+                | ChainStoreSourceError::NotReady { .. }),
+            ) => PrimaryState::Stalled(causes(error)),
+            Err(error) => PrimaryState::Failed(causes(error)),
+        };
+        built.recorder.durable(&self.storage, &built.indexes);
+        built.recorder.set(&self.storage, state);
+        result
+    }
+
+    async fn build(
+        &self,
+        built: &mut Built<St>,
+        target: Height,
+    ) -> Result<(), ChainStoreSourceError> {
         if built.indexes.iter().any(|index| index.unverified) {
             check_tips(
                 &self.storage,
                 self.source.as_ref(),
                 self.network,
                 &mut built.indexes,
+                &mut built.recorder,
             )
             .await
             .map_err(|error| match error {
@@ -207,7 +331,7 @@ impl<St: Storage, Src: ChainStoreSource> ChainStore<St, Src> {
                     cause: Some(Box::new(error)),
                 },
             })?;
-            self.publish(&built);
+            self.publish(built);
         }
         let start = built
             .indexes
@@ -219,7 +343,7 @@ impl<St: Storage, Src: ChainStoreSource> ChainStore<St, Src> {
             Some(Some(start)) => start,
             // nothing enabled, or every index at the highest height there is
             _ => {
-                self.publish(&built);
+                self.publish(built);
                 return Ok(());
             }
         };
@@ -241,7 +365,9 @@ impl<St: Storage, Src: ChainStoreSource> ChainStore<St, Src> {
                 index.state = Some(fold.next);
                 index.tip = Some(reference);
             }
-            self.publish(&built);
+            // a backend writes its buffer on its own once full
+            built.recorder.durable(&self.storage, &built.indexes);
+            self.publish(built);
             height = match height.checked_add(1) {
                 Some(next) => next,
                 None => break,
@@ -253,7 +379,7 @@ impl<St: Storage, Src: ChainStoreSource> ChainStore<St, Src> {
                 .flush()
                 .map_err(|error| commit_error(index.id, error))?;
         }
-        self.publish(&built);
+        self.publish(built);
         Ok(())
     }
 
@@ -285,23 +411,45 @@ impl<St: Storage, Src: ChainStoreSource> ChainStore<St, Src> {
     /// What the store answers now (D-81): a capability once each of its
     /// indexes holds a block.
     pub fn capabilities(&self) -> StoreCapabilities {
-        let serviceability = self.serviceability.borrow();
-        let holds = |id: &IndexId| match serviceability.get(id) {
-            Some(Serviceability::ToHeight(_)) | Some(Serviceability::Building(Some(_))) => true,
-            Some(Serviceability::Building(None)) | Some(Serviceability::Absent) | None => false,
-        };
-        StoreCapabilities::new(
-            CAPABILITIES
-                .iter()
-                .filter(|(_, ids)| ids.iter().all(holds))
-                .map(|(capability, _)| *capability),
-        )
+        capabilities_of(&self.serviceability.borrow())
     }
 
-    fn publish(&self, built: &Built<St::Backend>) {
-        self.watermark.send_replace(watermark_of(built));
-        self.serviceability.send_replace(serviceability_of(built));
+    fn publish(&self, built: &Built<St>) {
+        let tips = || {
+            built
+                .indexes
+                .iter()
+                .map(|index| (index.id, served_tip(index)))
+        };
+        self.watermark.send_replace(watermark_of(tips()));
+        self.serviceability
+            .send_replace(serviceability_of(tips(), built.target));
     }
+}
+
+/// The record says `Stopped`, each index's durable tip announced last.
+impl<St: Storage, Src> Drop for ChainStore<St, Src> {
+    fn drop(&mut self) {
+        let built = self.built.get_mut();
+        built.recorder.durable(&self.storage, &built.indexes);
+        built.recorder.set(&self.storage, PrimaryState::Stopped);
+    }
+}
+
+/// Each capability whose indexes all hold a block (D-81).
+pub(crate) fn capabilities_of(
+    serviceability: &BTreeMap<IndexId, Serviceability>,
+) -> StoreCapabilities {
+    let holds = |id: &IndexId| match serviceability.get(id) {
+        Some(Serviceability::ToHeight(_)) | Some(Serviceability::Building(Some(_))) => true,
+        Some(Serviceability::Building(None)) | Some(Serviceability::Absent) | None => false,
+    };
+    StoreCapabilities::new(
+        CAPABILITIES
+            .iter()
+            .filter(|(_, ids)| ids.iter().all(holds))
+            .map(|(capability, _)| *capability),
+    )
 }
 
 /// Each capability and the indexes it needs (D-81; no `StoredBlocks`).
@@ -344,11 +492,12 @@ fn served_tip<B: Backend>(index: &Open<B>) -> Option<BlockRef> {
     index.tip.filter(|_| !index.unverified)
 }
 
-fn watermark_of<B: Backend>(built: &Built<B>) -> StoreWatermark {
-    let tip = built
-        .indexes
-        .iter()
-        .map(served_tip)
+/// The lowest of the indexes' served tips; empty when any is.
+pub(crate) fn watermark_of(
+    tips: impl Iterator<Item = (IndexId, Option<BlockRef>)>,
+) -> StoreWatermark {
+    let tip = tips
+        .map(|(_, tip)| tip)
         .collect::<Option<Vec<_>>>()
         .and_then(|tips| tips.into_iter().min_by_key(|tip| tip.height));
     StoreWatermark {
@@ -357,29 +506,28 @@ fn watermark_of<B: Backend>(built: &Built<B>) -> StoreWatermark {
     }
 }
 
-fn serviceability_of<B: Backend>(built: &Built<B>) -> BTreeMap<IndexId, Serviceability> {
-    built
-        .indexes
-        .iter()
-        .map(|index| {
-            let tip = served_tip(index);
-            let reached = built
-                .target
-                .zip(tip)
-                .filter(|(target, tip)| tip.height >= *target)
-                .map(|(_, tip)| tip.height);
-            let serviceability = match reached {
-                Some(height) => Serviceability::ToHeight(height),
-                None => Serviceability::Building(tip.map(|tip| tip.height)),
-            };
-            (index.id, serviceability)
-        })
-        .collect()
+/// Each index built to `target`, or still building.
+pub(crate) fn serviceability_of(
+    tips: impl Iterator<Item = (IndexId, Option<BlockRef>)>,
+    target: Option<Height>,
+) -> BTreeMap<IndexId, Serviceability> {
+    tips.map(|(id, tip)| {
+        let reached = target
+            .zip(tip)
+            .filter(|(target, tip)| tip.height >= *target)
+            .map(|(_, tip)| tip.height);
+        let serviceability = match reached {
+            Some(height) => Serviceability::ToHeight(height),
+            None => Serviceability::Building(tip.map(|tip| tip.height)),
+        };
+        (id, serviceability)
+    })
+    .collect()
 }
 
 /// The directories index directories live in: the default and any
 /// per-index paths.
-fn parents(
+pub(crate) fn parents(
     config: &ChainStoreServiceConfig,
     root: &Path,
     set: &IndexSet,
@@ -393,7 +541,7 @@ fn parents(
     parents
 }
 
-fn parent_of(parents: &BTreeMap<Option<IndexId>, PathBuf>, id: IndexId) -> &Path {
+pub(crate) fn parent_of(parents: &BTreeMap<Option<IndexId>, PathBuf>, id: IndexId) -> &Path {
     parents
         .get(&Some(id))
         .or_else(|| parents.get(&None))
@@ -480,17 +628,18 @@ fn open<St: Storage>(
     id: IndexId,
     network: &str,
     on_corruption: OnCorruption,
+    recorder: &mut Recorder<St>,
 ) -> Result<Open<St::Backend>, BootError> {
     match try_open(storage, dir, id, network) {
         Ok(open) => Ok(open),
         Err(Damage::Mismatch(error)) => {
             tracing::warn!(index = id.name(), %error, "stamped with another layout: rebuilding");
-            rebuild(storage, dir, id, network)
+            rebuild(storage, dir, id, network, recorder)
         }
         Err(Damage::Corrupted(error)) => match on_corruption {
             OnCorruption::Rebuild => {
                 tracing::warn!(index = id.name(), %error, "corrupted: rebuilding");
-                rebuild(storage, dir, id, network)
+                rebuild(storage, dir, id, network, recorder)
             }
             OnCorruption::Halt => Err(BootError::Halted {
                 index: id.name(),
@@ -504,13 +653,17 @@ fn open<St: Storage>(
     }
 }
 
-/// `dir` deleted and opened empty.
+/// `dir` deleted and opened empty, the record saying so first (its index no
+/// longer announced).
 fn rebuild<St: Storage>(
     storage: &St,
     dir: &Path,
     id: IndexId,
     network: &str,
+    recorder: &mut Recorder<St>,
 ) -> Result<Open<St::Backend>, BootError> {
+    recorder.record.durable.remove(&id);
+    recorder.set(storage, PrimaryState::Rebuilding(id));
     storage.remove(dir).map_err(|source| BootError::Storage {
         index: id.name(),
         source,
@@ -537,21 +690,25 @@ impl Damage {
     }
 }
 
+/// What `id`'s directory is stamped with on `network`.
+pub(crate) fn identity(id: IndexId, network: &str) -> Identity<'_> {
+    let schema = id.schema();
+    Identity {
+        name: schema.name,
+        chain: network,
+        format: schema.format,
+        schema: schema.digest(),
+    }
+}
+
 fn try_open<St: Storage>(
     storage: &St,
     dir: &Path,
     id: IndexId,
     network: &str,
 ) -> Result<Open<St::Backend>, Damage> {
-    let schema = id.schema();
-    let identity = Identity {
-        name: schema.name,
-        chain: network,
-        format: schema.format,
-        schema: schema.digest(),
-    };
     let backend = storage
-        .open(dir, identity, &schema.specs())
+        .open(dir, identity(id, network), &id.schema().specs())
         .map_err(|error| match error {
             OpenError::Mismatch(_) => Damage::Mismatch(error),
             OpenError::Corrupted(cause) => Damage::Corrupted(cause),
@@ -590,6 +747,7 @@ async fn check_tips<St: Storage, Src: ChainStoreSource>(
     source: &Src,
     network: &str,
     indexes: &mut [Open<St::Backend>],
+    recorder: &mut Recorder<St>,
 ) -> Result<(), TipCheck> {
     let validator_tip = source
         .get_best_block_height()
@@ -629,7 +787,7 @@ async fn check_tips<St: Storage, Src: ChainStoreSource>(
             "stored tip is not the validator's block: rebuilding"
         );
         let dir = index.dir.clone();
-        *index = rebuild(storage, &dir, index.id, network).map_err(TipCheck::Rebuild)?;
+        *index = rebuild(storage, &dir, index.id, network, recorder).map_err(TipCheck::Rebuild)?;
     }
     Ok(())
 }

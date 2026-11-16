@@ -90,6 +90,12 @@ pub trait Fs: Send + Sync + fmt::Debug + 'static {
 
     /// Exclusive for the guard's life; held elsewhere = `ErrorKind::WouldBlock`
     fn lock(&self, path: &Path) -> io::Result<LockGuard>;
+
+    /// [`lock`](Self::lock), waiting while another holder has it
+    fn lock_waiting(&self, path: &Path) -> io::Result<LockGuard>;
+
+    /// Whether a lock on `path` is held now (taking none: a shared lock tried and released)
+    fn is_locked(&self, path: &Path) -> io::Result<bool>;
 }
 
 /// Open file

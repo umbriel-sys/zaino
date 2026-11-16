@@ -128,6 +128,15 @@ impl Snapshot {
         Ok(Self { shape, segments })
     }
 
+    /// No segments: a read-only reader's start, where [`next`](Self::next) maps the listed ones
+    /// and removes nothing (another process owns the directory)
+    pub(crate) fn empty(shape: Shape) -> Self {
+        Self {
+            shape,
+            segments: Vec::new(),
+        }
+    }
+
     /// `listed` mapped, sharing the segments this snapshot already maps
     pub(crate) fn next(&self, fs: &dyn Fs, dir: &Path, listed: &[SegmentMeta]) -> Result<Self> {
         let mut segments = Vec::with_capacity(listed.len());

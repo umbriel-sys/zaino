@@ -467,6 +467,18 @@ impl Pages {
         sealed: Sealed,
         access: Access,
     ) -> Result<Self, PageError> {
+        Self::open_after(fs, path, sealed, access, None)
+    }
+
+    /// [`open`](Self::open), keeping `previous`'s checked pages where their checksums match
+    /// (another process's file, mapped again at its next seal)
+    pub(crate) fn open_after(
+        fs: &dyn Fs,
+        path: &Path,
+        sealed: Sealed,
+        access: Access,
+        previous: Option<&Pages>,
+    ) -> Result<Self, PageError> {
         let missing = |path: &Path| PageError::Lost {
             path: path.to_owned(),
             have: 0,
@@ -480,7 +492,7 @@ impl Pages {
             .ok_or_else(|| missing(&sums_at))?;
         holds(data.as_ref(), path, sealed.len)?;
         holds(sums.as_ref(), &sums_at, sealed.sums_len())?;
-        let pages = Self::map(path, data.as_ref(), sums.as_ref(), sealed, None, access)?;
+        let pages = Self::map(path, data.as_ref(), sums.as_ref(), sealed, previous, access)?;
         if crc32fast::hash(&pages.inner.sums) != sealed.sums {
             return Err(PageError::Sums {
                 path: path.to_owned(),
@@ -518,10 +530,13 @@ impl Pages {
         let checked: Box<[AtomicU64]> =
             (0..pages.div_ceil(64)).map(|_| AtomicU64::new(0)).collect();
         if let Some(previous) = previous {
-            // complete pages only (tail page may have grown since)
+            // complete pages only (tail page may have grown since), each under the same
+            // checksum (a rebuilt file at the same path holds other pages)
             let carried = previous.inner.data.len() / PAGE;
             for page in 0..carried.min(pages) {
-                if previous.is_checked(page) {
+                let same = sum_at(&previous.inner.sums, page as u64)
+                    .is_some_and(|sum| sum_at(&sums, page as u64) == Some(sum));
+                if same && previous.is_checked(page) {
                     mark(&checked, page);
                 }
             }

@@ -112,6 +112,80 @@ proptest! {
         let write_buffer = NonZeroUsize::new(write_buffer).expect("non-zero");
         conformance::history(SimDisk::writing_at(fanout, write_buffer), &steps);
     }
+
+    /// A read-only backend beside the writer reads each durable state, through merges,
+    /// reopens and power loss, the backend writing on its own or not
+    #[test]
+    fn random_histories_read_read_only_at_each_durable_tip(
+        fanout in prop_oneof![Just(2usize), Just(3)],
+        write_buffer in prop_oneof![Just(usize::MAX), 512usize..8192],
+        steps in conformance::steps(),
+    ) {
+        let write_buffer = NonZeroUsize::new(write_buffer).expect("non-zero");
+        conformance::linked_history(SimDisk::writing_at(fanout, write_buffer), &steps);
+    }
+}
+
+#[test]
+fn a_read_only_backend_reads_each_announced_state_beside_a_writer() {
+    conformance::linked_beside_a_writer(SimDisk::new(2), 200);
+    let writing = NonZeroUsize::new(2048).expect("non-zero");
+    conformance::linked_beside_a_writer(SimDisk::writing_at(2, writing), 200);
+}
+
+/// Nothing at the directory is `Absent`; another index's directory is refused; a directory the
+/// writer replaced (removed, rebuilt to another state) is read afresh
+#[test]
+fn a_read_only_backend_reports_absence_mismatch_and_follows_a_rebuild() {
+    use zaino_persistence::{conformance::LinkedSubject as _, ReadOnlyBackend as _, RefreshError};
+
+    let disk = SimDisk::new(2);
+    let linked = disk.open_read_only();
+    assert!(matches!(linked.refresh(None), Err(RefreshError::Absent)));
+
+    let backend = open(&disk.fs, 2);
+    let mut model = Model::default();
+    let first = model.advance(2, &[1], 2, &[]);
+    commit(&backend, first.clone()).expect("commit");
+    backend.flush().expect("flush");
+    linked.refresh(Some(first.0)).expect("refreshed");
+    let pinned = linked.reader().expect("reader");
+    model.assert_view(&pinned, "first");
+
+    let other = LsmTreeReadOnly::open(
+        disk.fs.clone(),
+        Path::new(ROOT),
+        "conformance",
+        "mainnet",
+        1,
+        crate::testing::SCHEMA,
+        &conformance::SPECS,
+    )
+    .expect("linked");
+    assert!(matches!(
+        other.refresh(Some(first.0)),
+        Err(RefreshError::Open(zaino_persistence::OpenError::Mismatch(
+            _
+        )))
+    ));
+
+    // rebuilt: removed, then another history committed at the same path
+    drop(backend);
+    crate::remove_dir_all(disk.fs.as_ref(), Path::new(ROOT)).expect("removed");
+    assert!(matches!(linked.refresh(None), Err(RefreshError::Absent)));
+    model.assert_view(&linked.reader().expect("reader"), "kept while absent");
+    let backend = open(&disk.fs, 2);
+    let mut rebuilt = Model::default();
+    let mut tip = None;
+    for _ in 0..3 {
+        let block = rebuilt.advance(3, &[2], 1, &[0]);
+        tip = Some(block.0);
+        commit(&backend, block).expect("commit");
+    }
+    backend.flush().expect("flush");
+    linked.refresh(tip).expect("refreshed after the rebuild");
+    rebuilt.assert_view(&linked.reader().expect("reader"), "rebuilt");
+    model.assert_view(&pinned, "pinned before the rebuild");
 }
 
 #[test]

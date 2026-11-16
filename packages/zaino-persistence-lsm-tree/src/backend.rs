@@ -1077,5 +1077,8 @@ fn ceil(key: &[u8]) -> (u128, bool) {
     }
 }
 
+mod read_only;
+pub use read_only::LsmTreeReadOnly;
+
 #[cfg(test)]
 mod tests;

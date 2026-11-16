@@ -144,6 +144,33 @@ impl Fs for RealFs {
             Err(std::fs::TryLockError::Error(error)) => Err(error),
         }
     }
+
+    fn lock_waiting(&self, path: &Path) -> io::Result<LockGuard> {
+        let file = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .open(path)?;
+        file.lock()?;
+        Ok(LockGuard {
+            _held: Box::new(file),
+        })
+    }
+
+    fn is_locked(&self, path: &Path) -> io::Result<bool> {
+        let file = match File::open(path) {
+            Ok(file) => file,
+            Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(false),
+            Err(error) => return Err(error),
+        };
+        // released when `file` drops
+        match file.try_lock_shared() {
+            Ok(()) => Ok(false),
+            Err(std::fs::TryLockError::WouldBlock) => Ok(true),
+            Err(std::fs::TryLockError::Error(error)) => Err(error),
+        }
+    }
 }
 
 /// Direct I/O's buffer, offset and length alignment

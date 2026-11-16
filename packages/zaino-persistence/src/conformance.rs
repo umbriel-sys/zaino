@@ -20,8 +20,8 @@ use zaino_primitives::types::{BlockHash, BlockRef, Height};
 
 use crate::{
     raw_entry, sequence_key, Backend, BackendReader, BackendWriter, CommitError, MaintenanceReader,
-    Namespace, NamespaceSpec, Part, RawKey, RawValue, ReadError, ScanDirection, ScanRange, Width,
-    WriteOp,
+    Namespace, NamespaceSpec, Part, RawKey, RawValue, ReadError, ReadOnlyBackend, RefreshError,
+    ScanDirection, ScanRange, Width, WriteOp,
 };
 
 /// Variable-width sequence (empty records included)
@@ -690,6 +690,13 @@ impl Oracle {
             .map_or(&self.durable, |at| &self.nodes[at].model)
     }
 
+    /// Contents at committed tip `tip`: durable, or an applied node's
+    fn at(&self, tip: Option<BlockRef>) -> Option<&Model> {
+        std::iter::once(&self.durable)
+            .chain(self.nodes[..self.applied].iter().map(|node| &node.model))
+            .find(|model| model.tip == tip)
+    }
+
     /// Contents through the newest node
     fn newest(&self) -> &Model {
         self.nodes.last().map_or(&self.durable, |node| &node.model)
@@ -855,7 +862,125 @@ pub fn steps() -> impl Strategy<Value = Vec<Step>> {
 /// - reopen or crash = exactly the durable nodes (plus the committed ones, for a subject that
 ///   keeps unflushed commits; a prefix of the committed ones, for one that writes on its own);
 ///   [`Subject::check`] holds
-pub fn history<S: Subject>(mut subject: S, steps: &[Step]) {
+pub fn history<S: Subject>(subject: S, steps: &[Step]) {
+    history_with(subject, steps, |_, _, _, _, _| {});
+}
+
+/// A [`Subject`] another process can link to read-only (§5.2a)
+pub trait LinkedSubject: Subject {
+    /// The read-only backend type.
+    type ReadOnly: ReadOnlyBackend<Reader: MaintenanceReader>;
+
+    /// The subject's storage linked read-only as it stands now
+    fn open_read_only(&self) -> Self::ReadOnly;
+}
+
+/// [`history`] with a read-only backend beside the writer, after every step:
+///
+/// - refreshed to the writer's durable tip, it reads exactly the state durable there
+/// - a reader taken from it at a [`Step::Pin`] keeps its snapshot
+/// - an announced tip the storage never held is `Superseded`, the last state kept
+pub fn linked_history<S: LinkedSubject>(subject: S, steps: &[Step]) {
+    let mut linked = subject.open_read_only();
+    assert!(linked.reader().is_err(), "a reader before any refresh");
+    let mut pinned: Option<(usize, Model, <S::ReadOnly as ReadOnlyBackend>::Reader)> = None;
+    history_with(subject, steps, |subject, backend, oracle, at, crashed| {
+        let label = format!("step {at} {:?} (linked)", steps[at]);
+        if crashed {
+            linked = subject.open_read_only();
+        }
+        let durable = backend
+            .reader()
+            .expect("reader")
+            .durable_tip()
+            .expect("durable tip");
+        linked.refresh(durable).expect("refresh at the durable tip");
+        let model = oracle
+            .at(durable)
+            .unwrap_or_else(|| panic!("{label}: durable {durable:?} ends no prefix"));
+        model.assert_view(&linked.reader().expect("reader"), &label);
+        assert!(
+            matches!(
+                linked.refresh(Some(block_ref(usize::from(u16::MAX)))),
+                Err(RefreshError::Superseded)
+            ),
+            "{label}: a tip never held"
+        );
+        model.assert_view(&linked.reader().expect("reader"), &label);
+        if matches!(steps[at], Step::Pin) {
+            pinned = Some((at, model.clone(), linked.reader().expect("reader")));
+        }
+        if let Some((pinned_at, model, reader)) = &pinned {
+            model.assert_view(reader, &format!("{label}: pinned at step {pinned_at}"));
+        }
+    });
+}
+
+/// A writer committing and flushing `advances` blocks on one thread while a read-only backend
+/// refreshes to each announced durable tip on another: every refresh that lands reads exactly
+/// the announced state; the last one, after the writer stops, lands
+pub fn linked_beside_a_writer<S: LinkedSubject>(subject: S, advances: usize)
+where
+    S::Backend: Send,
+    S::ReadOnly: Send,
+{
+    let mut model = Model::default();
+    let mut blocks = vec![(None, Model::default())];
+    let mut commits = Vec::with_capacity(advances);
+    for n in 0..advances {
+        let removals = [u16::try_from(n).unwrap_or(u16::MAX)];
+        let (tip, ops) = model.advance(3, &[1, 2], 2, &removals);
+        commits.push((tip, ops));
+        blocks.push((Some(tip), model.clone()));
+    }
+    let backend = subject.open();
+    let linked = subject.open_read_only();
+    let announced = std::sync::Mutex::new(None::<BlockRef>);
+    let done = std::sync::atomic::AtomicBool::new(false);
+    let model_at = |tip: Option<BlockRef>| {
+        blocks
+            .iter()
+            .find(|(held, _)| *held == tip)
+            .map(|(_, model)| model)
+            .expect("an announced tip is a committed one")
+    };
+    std::thread::scope(|scope| {
+        scope.spawn(|| {
+            for (tip, ops) in commits {
+                commit(&backend, tip, ops).expect("commit");
+                backend.flush().expect("flush");
+                let durable = backend
+                    .reader()
+                    .expect("reader")
+                    .durable_tip()
+                    .expect("tip");
+                *announced.lock().expect("announcement") = durable;
+            }
+            done.store(true, std::sync::atomic::Ordering::Release);
+        });
+        while !done.load(std::sync::atomic::Ordering::Acquire) {
+            let tip = *announced.lock().expect("announcement");
+            match linked.refresh(tip) {
+                Ok(()) => model_at(tip).assert_view(&linked.reader().expect("reader"), "beside"),
+                Err(RefreshError::Superseded) => {}
+                Err(error) => panic!("refresh at {tip:?}: {error}"),
+            }
+        }
+    });
+    let tip = *announced.lock().expect("announcement");
+    linked
+        .refresh(tip)
+        .expect("the writer stopped: its last state");
+    model_at(tip).assert_view(&linked.reader().expect("reader"), "after the writer");
+}
+
+/// [`history`], `after` run once each step is checked: `(subject, backend, oracle, step, the
+/// step crashed the storage)`
+fn history_with<S: Subject>(
+    mut subject: S,
+    steps: &[Step],
+    mut after: impl FnMut(&S, &S::Backend, &Oracle, usize, bool),
+) {
     let mut backend = subject.open();
     let mut oracle = Oracle::default();
     let mut pinned: Option<(usize, Model, <S::Backend as Backend>::Reader)> = None;
@@ -863,6 +988,7 @@ pub fn history<S: Subject>(mut subject: S, steps: &[Step]) {
     for (at, step) in steps.iter().enumerate() {
         let label = format!("step {at} {step:?}");
         let mut reopened = false;
+        let mut crashed = false;
         match step {
             Step::Grow {
                 records,
@@ -898,7 +1024,7 @@ pub fn history<S: Subject>(mut subject: S, steps: &[Step]) {
             Step::Settle => subject.settle(&backend),
             // crash image taken while background work may still be writing: flushed = durable
             Step::Reopen | Step::PowerLoss => {
-                let crashed = matches!(step, Step::PowerLoss) && subject.power_loss();
+                crashed = matches!(step, Step::PowerLoss) && subject.power_loss();
                 drop(backend);
                 backend = subject.open();
                 if !crashed && subject.keeps_unflushed() {
@@ -929,6 +1055,7 @@ pub fn history<S: Subject>(mut subject: S, steps: &[Step]) {
         if let Some((pinned_at, model, reader)) = &pinned {
             model.assert_view(reader, &format!("{label}: pinned at step {pinned_at}"));
         }
+        after(&subject, &backend, &oracle, at, crashed);
     }
 }
 

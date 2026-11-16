@@ -81,6 +81,19 @@ impl StoreError {
         }
     }
 
+    /// A file a manifest lists is missing or short: retired by its writer since, or lost
+    pub(crate) fn lost(&self) -> bool {
+        let lost = |error: &PageError| matches!(error, PageError::Lost { .. });
+        match self {
+            Self::Page(error) | Self::Segment(SegmentError::Page(error)) => lost(error),
+            _ => self.chain().any(|error| {
+                error
+                    .downcast_ref::<io::Error>()
+                    .is_some_and(|error| error.kind() == ErrorKind::NotFound)
+            }),
+        }
+    }
+
     fn chain(&self) -> impl Iterator<Item = &(dyn Error + 'static)> {
         let mut next: Option<&(dyn Error + 'static)> = Some(self);
         std::iter::from_fn(move || {
@@ -136,6 +149,8 @@ impl StoreError {
                 | Self::Manifest(
                     ManifestError::Name { .. }
                         | ManifestError::Format { .. }
+                        | ManifestError::Chain { .. }
+                        | ManifestError::Schema { .. }
                         | ManifestError::Magic
                         | ManifestError::Layout { .. }
                 )

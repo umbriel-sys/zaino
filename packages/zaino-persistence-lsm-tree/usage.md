@@ -88,6 +88,24 @@ then the marker and the directory. A crash before the marker leaves the director
 it, the next `remove_dir_all` or open finishes the removal, so a half-deleted directory is never
 opened as an index. Every crash point is checked in the simulated filesystem.
 
+## Opening read-only
+
+[`LsmTreeReadOnly`] (or `LsmTreeStorage::open_read_only`) reads a directory another process
+writes, taking no lock. Each refresh reads the manifest slots through the page cache, up to their
+end, and maps the files of the slot whose tip is the announced one. Files already mapped are
+shared, and checked pages are carried over where their checksums match. It never truncates or
+removes anything. A listed file missing once mapped was retired by a newer commit's merge
+(`Superseded`), unless that slot is still the newest (lost: an error).
+
+The store root holds the primary's record and running marker:
+
+```text
+<root>/
+  LOCK                the primary's exclusive lock
+  PRIMARY.lock        held by the primary alone; probed with a shared lock that is released at once
+  PRIMARY             two 64 KiB slots, rewritten in place, never synced: the primary's record
+```
+
 ## On disk
 
 ```text
@@ -223,6 +241,13 @@ The cost is one failure mode that cannot be turned into an error:
   read-only (`0o444`), and the directory's `LOCK` keeps other Zaino processes
   out. A process running as root, or one that changes the permissions back, can
   still truncate them.
+
+A read-only backend in another process maps only bytes a durable manifest
+seals, and the writer never truncates below those. The writer may unlink a
+retired segment, or a whole directory it rebuilds, while a reader maps it:
+Linux and macOS keep an unlinked file's pages mapped. Both processes must
+share one machine, because mappings of one file stay coherent only through
+one page cache. Network filesystems and VM file sharing are not supported.
 
 Operate accordingly: keep the data directory on a dedicated, healthy disk, and
 never modify, copy over or truncate its files while a backend has it open.

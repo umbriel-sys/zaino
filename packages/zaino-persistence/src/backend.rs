@@ -19,7 +19,9 @@ use core::ops::{Bound, Range};
 
 use zaino_primitives::types::BlockRef;
 
-use crate::error::{CommitError, FlushError, FootprintError, OpenError, ReadError, VerifyError};
+use crate::error::{
+    CommitError, FlushError, FootprintError, OpenError, ReadError, RefreshError, VerifyError,
+};
 use crate::verify::{NamespaceFootprint, Verification};
 
 /// A namespace identifier — names an independent keyspace within the backend.
@@ -253,6 +255,24 @@ pub trait Backend: Send + Sync {
     /// Bytes each declared namespace holds: one entry per namespace, in
     /// declaration order.
     fn footprint(&self) -> Result<Vec<NamespaceFootprint>, FootprintError>;
+}
+
+/// An index directory another process writes, read-only (§5.2a): no writer.
+///
+/// It serves only what the writer announced as durable: [`refresh`](Self::refresh)
+/// moves it to the committed state at that announcement.
+pub trait ReadOnlyBackend: Send + Sync {
+    /// Reader handle type.
+    type Reader: BackendReader;
+
+    /// A snapshot of the last refreshed state; refused before the first
+    /// refresh.
+    fn reader(&self) -> Result<Self::Reader, OpenError>;
+
+    /// Moves to the committed state whose tip is `durable`, the writer's
+    /// announced durable tip (`None` = nothing committed). Readers already
+    /// taken keep their snapshot.
+    fn refresh(&self, durable: Option<BlockRef>) -> Result<(), RefreshError>;
 }
 
 /// Write handle. The engine sends batches of [`WriteOp`]s through this.

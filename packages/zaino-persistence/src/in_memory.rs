@@ -19,7 +19,7 @@ use crate::rules::{check_commit, check_key, check_specs, CommitState, KeyState};
 use crate::verify::{NamespaceFootprint, Verification};
 
 mod storage;
-pub use storage::{InMemoryLock, InMemoryStorage};
+pub use storage::{InMemoryLock, InMemoryReadOnly, InMemoryStorage};
 
 /// The current state; a commit swaps in a new one, readers keep the one they took.
 type Store = Arc<Mutex<Arc<State>>>;

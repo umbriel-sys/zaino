@@ -1,0 +1,45 @@
+[[changes]]
+crate = "zaino-persistence"
+kind = "breaking"
+description = """
+Linked read-only stores (§5.2a, D-95): `Storage` gains `open_read_only` \
+(returning the new `ReadOnlyBackend`: a reader and `refresh(durable)`, no \
+writer), `primary_running`, and `write_record` / `read_record` for the \
+primary's record. `lock` now holds the store as its primary. \
+`RefreshError` names a state the writer moved past (`Superseded`) and a \
+missing index (`Absent`). The conformance suite adds `LinkedSubject`, \
+`linked_history` and `linked_beside_a_writer`.
+"""
+
+[[changes]]
+crate = "zaino-persistence-lsm-tree"
+kind = "feature"
+description = """
+`LsmTreeReadOnly`: a directory another process writes, mapped read-only at \
+the writer's announced durable tip. It takes no lock and never truncates or \
+removes anything; a segment a merge retired is `Superseded`. \
+`LsmTreeStorage::lock` returns `StoreLock`: the store `LOCK`, a \
+`PRIMARY.lock` marker readers probe, and the `PRIMARY` record (two slots, \
+rewritten in place).
+"""
+
+[[changes]]
+crate = "zaino-persistence-lsm-tree"
+kind = "fix"
+description = """
+A directory stamped with another chain or schema digest is \
+`OpenError::Mismatch`, as the port promises (it was `Unavailable`), so a \
+store rebuilds it instead of failing to boot.
+"""
+
+[[changes]]
+crate = "zaino-chain-store-service"
+kind = "feature"
+description = """
+The primary `ChainStore` keeps a record for linked readers: its \
+`PrimaryState` (booting, rebuilding, building, ready, stalled, failed, \
+halted, stopped, failures with their causes), its target and each verified \
+index's durable tip. `LinkedChainStore` follows it read-only: `refresh()`, \
+`poll(interval)`, the watermark, serviceability, capabilities and a \
+`PrimaryStatus`.
+"""

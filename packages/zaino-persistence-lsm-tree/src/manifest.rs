@@ -332,6 +332,49 @@ pub(crate) fn read_file(
     Ok(fs.read_uncached(path, FILE_LEN)?)
 }
 
+/// Committed slots as `(seq, body)`
+pub(crate) type Slots = Vec<(u64, Vec<u8>)>;
+
+/// `path`'s committed slots through the page cache, each read only as far as it reaches
+/// (another process's manifest, read on every refresh); `None` = absent
+///
+/// - torn and unwritten slots skipped (a slot being written fails its CRC); a whole slot of
+///   another index refused
+pub(crate) fn read_slots(
+    fs: &dyn crate::fs::Fs,
+    path: &std::path::Path,
+    identity: &Identity,
+) -> Result<Option<Slots>, ManifestError> {
+    let Some(file) = fs.open_read_only(path)? else {
+        return Ok(None);
+    };
+    let len = file.len()?;
+    if len != FILE_LEN {
+        return Err(ManifestError::Layout { len });
+    }
+    let header = identity.prefix_len().saturating_add(8 + 4).min(SLOT);
+    let mut committed = Vec::with_capacity(2);
+    for at in [0, SLOT as u64] {
+        let mut bytes = vec![0; header];
+        file.read_exact_at(&mut bytes, at)?;
+        let claimed = bytes
+            .get(header.saturating_sub(4)..)
+            .and_then(|tail| <[u8; 4]>::try_from(tail).ok())
+            .map_or(0, u32::from_le_bytes);
+        let whole = usize::try_from(claimed)
+            .unwrap_or(usize::MAX)
+            .saturating_add(header)
+            .saturating_add(CRC)
+            .min(SLOT);
+        bytes.resize(whole, 0);
+        file.read_exact_at(&mut bytes, at)?;
+        if let Slot::Committed { seq, body } = decode_slot(identity, &bytes)? {
+            committed.push((seq, body.to_vec()));
+        }
+    }
+    Ok(Some(committed))
+}
+
 /// Committed tip (`None` = nothing committed): every body's first 40 bytes
 ///
 /// - block count from genesis ‖ tip hash (zeros when empty)

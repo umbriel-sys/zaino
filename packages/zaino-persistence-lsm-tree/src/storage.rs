@@ -7,9 +7,20 @@ use zaino_persistence::{Identity, NamespaceSpec, OpenError, Storage};
 use crate::{
     dir::{create_dir_durable, LOCK},
     fs::{Fs, LockGuard},
+    record::{self, RecordFile, RECORD},
     remove::remove_dir_all,
-    LsmConfig, LsmTreeBackend, LsmTreeConfig,
+    LsmConfig, LsmTreeBackend, LsmTreeConfig, LsmTreeReadOnly,
 };
+
+/// Held by the running primary alone: a reader tells a live primary by it
+const RUNNING: &str = "PRIMARY.lock";
+
+/// The store held by its primary: the store's `LOCK`, the running marker, its record
+pub struct StoreLock {
+    record: RecordFile,
+    _running: LockGuard,
+    _store: LockGuard,
+}
 
 /// Index directories and store files on one filesystem, every directory
 /// opened with one engine configuration (default tuning).
@@ -36,7 +47,8 @@ fn unavailable(operation: &'static str) -> impl FnOnce(io::Error) -> OpenError {
 
 impl Storage for LsmTreeStorage {
     type Backend = LsmTreeBackend;
-    type Lock = LockGuard;
+    type ReadOnly = LsmTreeReadOnly;
+    type Lock = StoreLock;
 
     fn open(
         &self,
@@ -80,11 +92,58 @@ impl Storage for LsmTreeStorage {
         Ok(dirs)
     }
 
-    fn lock(&self, root: &Path) -> Result<LockGuard, OpenError> {
+    fn open_read_only(
+        &self,
+        dir: &Path,
+        identity: Identity<'_>,
+        namespaces: &[NamespaceSpec],
+    ) -> Result<LsmTreeReadOnly, OpenError> {
+        LsmTreeReadOnly::open(
+            Arc::clone(&self.fs),
+            dir,
+            identity.name,
+            identity.chain,
+            identity.format,
+            identity.schema,
+            namespaces,
+        )
+    }
+
+    /// `LOCK` refuses a second primary; the running marker behind it is only ever probed, so
+    /// the wait for it is a reader's instant
+    fn lock(&self, root: &Path) -> Result<StoreLock, OpenError> {
         create_dir_durable(self.fs.as_ref(), root).map_err(unavailable("create store"))?;
-        self.fs
+        let store = self
+            .fs
             .lock(&root.join(LOCK))
-            .map_err(unavailable("lock store"))
+            .map_err(unavailable("lock store"))?;
+        let running = self
+            .fs
+            .lock_waiting(&root.join(RUNNING))
+            .map_err(unavailable("mark running"))?;
+        let record = RecordFile::open(self.fs.as_ref(), &root.join(RECORD))
+            .map_err(unavailable("open record"))?;
+        Ok(StoreLock {
+            record,
+            _running: running,
+            _store: store,
+        })
+    }
+
+    fn primary_running(&self, root: &Path) -> Result<bool, OpenError> {
+        self.fs
+            .is_locked(&root.join(RUNNING))
+            .map_err(unavailable("probe primary"))
+    }
+
+    fn write_record(&self, lock: &mut StoreLock, bytes: &[u8]) -> Result<(), OpenError> {
+        lock.record
+            .write(bytes)
+            .map_err(unavailable("write record"))
+    }
+
+    fn read_record(&self, root: &Path) -> Result<Option<Vec<u8>>, OpenError> {
+        record::read(self.fs.as_ref(), &root.join(RECORD)).map_err(unavailable("read record"))
     }
 
     fn read_meta(&self, root: &Path, name: &str) -> Result<Option<Vec<u8>>, OpenError> {
@@ -164,10 +223,23 @@ mod tests {
         let reopened = storage.open(&dir, identity(1), &SPECS).expect("reopened");
         assert_eq!(reopened.reader().expect("reader").tip().expect("tip"), tip);
         drop(reopened);
-        assert!(matches!(
-            storage.open(&dir, identity(2), &SPECS),
-            Err(OpenError::Mismatch(_))
-        ));
+        let other_chain = Identity {
+            chain: "mainnet",
+            ..identity(1)
+        };
+        let other_schema = Identity {
+            schema: zaino_persistence::SchemaDigest::new([0; 32]),
+            ..identity(1)
+        };
+        for other in [identity(2), other_chain, other_schema] {
+            assert!(
+                matches!(
+                    storage.open(&dir, other, &SPECS),
+                    Err(OpenError::Mismatch(_))
+                ),
+                "{other:?}"
+            );
+        }
 
         assert_eq!(storage.children(root).expect("listed"), ["conformance_1"]);
         storage.remove(&dir).expect("removed");
@@ -187,6 +259,58 @@ mod tests {
         assert!(storage.lock(root).is_err(), "held");
         drop(held);
         drop(storage.lock(root).expect("released"));
+    }
+
+    /// The primary is seen running while it holds the store; its last record outlives it, and
+    /// the next primary writes on after it
+    fn primary_running_and_record(storage: &LsmTreeStorage, root: &Path) {
+        assert!(!storage.primary_running(root).expect("probed"));
+        assert_eq!(storage.read_record(root).expect("read"), None);
+        let mut held = storage.lock(root).expect("locked");
+        assert!(storage.primary_running(root).expect("probed"));
+        assert!(
+            !storage.primary_running(root).expect("probed again") || storage.lock(root).is_err(),
+            "a probe takes nothing"
+        );
+        storage
+            .write_record(&mut held, b"building")
+            .expect("written");
+        assert_eq!(
+            storage.read_record(root).expect("read").as_deref(),
+            Some(&b"building"[..])
+        );
+        drop(held);
+        assert!(!storage.primary_running(root).expect("probed"));
+        assert_eq!(
+            storage.read_record(root).expect("read").as_deref(),
+            Some(&b"building"[..]),
+            "outlives its primary"
+        );
+        let mut next = storage.lock(root).expect("locked again");
+        storage
+            .write_record(&mut next, b"booting")
+            .expect("written");
+        assert_eq!(
+            storage.read_record(root).expect("read").as_deref(),
+            Some(&b"booting"[..])
+        );
+    }
+
+    #[test]
+    fn the_primary_is_seen_running_while_it_holds_the_store() {
+        let fs = SimFs::new();
+        primary_running_and_record(&storage(&fs), Path::new("/store"));
+    }
+
+    /// Real locks: the probe's shared lock meets the primary's exclusive one
+    #[test]
+    fn the_primary_is_seen_running_while_it_holds_the_store_on_a_real_filesystem() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let storage = LsmTreeStorage {
+            fs: crate::fs::RealFs::shared(),
+            ..storage(&SimFs::new())
+        };
+        primary_running_and_record(&storage, &dir.path().join("store"));
     }
 
     /// A shorter rewrite never keeps the old tail, and at every crash point
