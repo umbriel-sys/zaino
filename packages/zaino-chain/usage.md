@@ -227,13 +227,10 @@ Implement those traits and the composer works unchanged. A different finalised
 store, a different chain head, Zebra's read state in an ephemeral mode: none of
 them requires writing a composition.
 
-The suite is the standing proof rather than a claim. `FakeStore`, `FakeHead` and
-`FakeSource` are an independent implementation of all three tiers — none of them
-is a Zaino production adapter — and every composition test runs the real
-composer over them. `MinimalStore` goes further: it implements `ChainStoreReader`
-and the block ports but deliberately *not* `SpentOutputIndex` or `TxOutSetIndex`,
-so a store that builds only some indexes is a case the compiler checks rather
-than a case someone remembered.
+The composer names only the ports, so a store, head or validator satisfying them
+composes unchanged; the suite runs it over Zaino's own services (below), and a
+store that builds only some indexes is covered there by configuring the real
+store without them.
 
 Writing your own `ChainView` is possible too — that is why the ports are
 separate from the composer — but it is for a consumer who wants different
@@ -314,34 +311,30 @@ than merely effective.
 
 ## Testing
 
-The `testing` feature provides one `Chain` and three views of it, so coverage
-shapes are explicit at the call site:
+The suite runs the real composer over the real services (D-90): the shared fake
+validator (`zaino-source-mock`, real consensus bytes), `zaino-chain-store-service`
+over in-memory storage, and `zaino-chain-head-service` stepped through its
+`testing` feature. There are no fakes of the ports; the one fake is the
+validator. `tests/common/mod.rs` assembles one coverage shape per test:
 
 ```rust,ignore
-let chain = Chain::of_length(1201);
-ChainViewComposer::new(
-    FakeStore::covering(&chain, 100),        // built to 100
-    FakeHead::covering(&chain, 1100, 1200),  // window near the tip
-    Arc::new(FakeSource::over(&chain)),      // knows everything
-    ChainViewConfig::default(),
-);                                           // -> a hole at 101..=1099
+let rig = rig(chain())        // 301 real blocks, served to the tip
+    .store_to(100)            // the store built through 100
+    .window(200, 300)         // the head's window: depth 100 below the tip
+    .build()
+    .await;                   // -> a hole at 101..=199
+let view = rig.view();
 ```
 
-`FakeSource` records every question, which is how the by-height/by-hash
-assertions work — the returned value is identical either way, and only the call
-log distinguishes them.
+The validator's call log is what the by-height/by-hash assertions read — the
+returned value is identical either way — and a second validator over the same
+blocks (`rig.view_over(chain(), ..)`) isolates the composer's own fetches from
+the store's and the head's. Reorgs and competing branches come from the mock
+(`reorg`, `know`, `forget`) followed by stepping the head.
 
-`tests/vectors.rs` additionally drives the composition with the checked-in
-regtest chain from `zaino-chain-store-zainodb/testing` (dev-dependency only, so
-`zebra-chain` never reaches the shipped `testing` feature). The programmatic
-`Chain` proves coverage *shapes*; the vectors prove the stitched output is
-*correct* — it caught fakes that were silently serving synthetic blocks.
-
-These fakes are also the *second implementation* of the ports;
-`zaino-chain-store-zainodb` and `zaino-chain-head-service` are the first. A port
-with only one implementation is that implementation's surface with extra steps.
-When a fake here becomes awkward to write, that is a signal about the port — the
-branch-retention split in `FakeHeadSnapshot` came from exactly that.
+Most tests use the fast seam depth (`FAST_TEST_MAX_NONFINALISED_DEPTH`, 100) on a
+300-block chain; `tests/real_seam.rs` runs a 1 200-block chain under the chain
+head's default depth, so the production seam is exercised end to end.
 
 ## What a chain view is not
 

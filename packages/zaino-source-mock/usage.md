@@ -70,7 +70,8 @@ another:
   `mine_ahead_of_mempool` holds the mempool ports behind.
 - `extend(block)`, `reorg(height, blocks)`: displaced blocks stay known by
   hash, as a side branch (`get_chain_tips`, `NonBestChain`). `know(block)`
-  adds a side block directly.
+  adds a side block directly; `forget(hash)` drops one, as a validator does
+  once a side chain leaves its non-finalized state.
 - `set_mempool(Mempool::Explicit(..))`; by default the mempool is the next
   block past the mempool height.
 - Faults: `fail_next(n, mode)`, `fail_ports(&["get_block"], count, mode)`,

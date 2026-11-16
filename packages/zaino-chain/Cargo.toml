@@ -14,14 +14,6 @@ version = "0.1.0"
 [features]
 default = []
 
-# The fake store / head / source triple the composer's own suite runs against.
-#
-# A feature rather than a `#[cfg(test)]` module because consumers need it too:
-# a crate testing its own use of ChainView wants a chain view it can steer,
-# and building a second set of fakes is how two test suites come to disagree
-# about what the ports mean.
-testing = []
-
 # Declares the transparent-address-history capability: the `AddressRead` port
 # and its merge. Forwards to the same feature on both halves, which is what
 # the capability is — a merge of the store's finalised effects with the chain
@@ -73,23 +65,17 @@ tracing = { workspace = true }
 # The compile-time check that a real validator satisfies `ChainViewSource`.
 zaino-source-zebra = { workspace = true }
 tokio = { workspace = true, features = ["macros", "rt"] }
-
-# This crate, with its fakes switched on, so the integration tests under
-# `tests/` can reach them. A self dev-dependency is the standard way to enable a
-# feature for a crate's own integration tests without shipping it by default:
-# `tests/` link the library as an external crate, so they see only the features
-# the build enabled, and the alternative is making `testing` a default feature
-# and shipping the fakes to every consumer.
-zaino-chain = { path = ".", features = ["testing"] }
-
-# The checked-in regtest chain, and the conversion that turns it into domain
-# types. Dev-only, deliberately: `zebra-chain` must not reach this crate's
-# shipped `testing` feature, which is part of its public dependency contract.
-# `zaino-state` takes the same feature the same way rather than keeping a
-# second copy of the vectors.
-zaino-chain-store-zainodb = { workspace = true, features = ["testing"] }
-zaino-primitives = { workspace = true, features = ["zebra"] }
 futures = { workspace = true }
+
+# The suites run the real composer over the real services (D-90): the shared
+# fake validator, the store over in-memory storage, and the chain head stepped
+# through its `testing` feature. No fakes of the ports exist here.
+zaino-source-mock = { workspace = true }
+zaino-chain-store-service = { workspace = true }
+zaino-chain-head-service = { workspace = true, features = ["testing"] }
+zaino-persistence = { path = "../zaino-persistence", features = ["testing"] }
+zaino-consensus = { workspace = true }
+tokio-util = { workspace = true }
 
 [lints.rust]
 unsafe_code = "forbid"

@@ -6039,13 +6039,16 @@ dependencies = [
  "tokio",
  "tokio-util",
  "tracing",
- "zaino-chain",
  "zaino-chain-head",
+ "zaino-chain-head-service",
  "zaino-chain-store",
- "zaino-chain-store-zainodb",
+ "zaino-chain-store-service",
  "zaino-component",
+ "zaino-consensus",
+ "zaino-persistence",
  "zaino-primitives",
  "zaino-source",
+ "zaino-source-mock",
  "zaino-source-zebra",
 ]
 

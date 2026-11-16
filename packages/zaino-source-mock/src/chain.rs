@@ -314,6 +314,16 @@ impl MockChain {
         self.lock().insert_known(block);
     }
 
+    /// Forgets a block off the best chain, as a validator does once a side
+    /// chain leaves its non-finalized state: by-hash reads of it miss. A
+    /// best-chain block is kept.
+    pub fn forget(&self, hash: BlockHash) {
+        let mut state = self.lock();
+        if !state.best.contains(&hash) {
+            state.known.remove(&hash);
+        }
+    }
+
     /// The current best block at `height`, served or not.
     pub fn block_at(&self, height: u32) -> Option<MockBlock> {
         let state = self.lock();
