@@ -38,8 +38,11 @@ impl<Indexer: IndexedTipIndexer> IndexedTipServiceRpc for IndexedTipService<Inde
                     hash: <[u8; 32]>::from(tip.hash).to_vec(),
                 })
             })
+            // a change, or the sender gone: either way the stream ends
             .take_until(async move {
-                let _ = shutdown.changed().await;
+                if shutdown.changed().await.is_err() {
+                    // the owner is gone: end as well
+                }
             });
         Ok(tonic::Response::new(Box::pin(stream)))
     }

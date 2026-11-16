@@ -74,7 +74,7 @@ pub struct JsonRpcServerConfig {
 impl Default for JsonRpcServerConfig {
     fn default() -> Self {
         Self {
-            json_rpc_listen_address: "127.0.0.1:0".parse().unwrap(),
+            json_rpc_listen_address: SocketAddr::from(([127, 0, 0, 1], 0)),
             cookie_dir: None,
         }
     }

@@ -1415,7 +1415,8 @@ where
             }
             set.apply_removed_output(outpoint, previous.value, &previous.address)
                 .map_err(accumulator_err)?;
-            *removed.entry(outpoint.txid).or_default() += 1;
+            let count = removed.entry(outpoint.txid).or_default();
+            *count = count.saturating_add(1);
         }
 
         for (txid, removed) in removed {

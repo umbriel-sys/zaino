@@ -115,7 +115,9 @@ impl<
             Ok(handle) if handle.runtime_flavor() == RuntimeFlavor::MultiThread => {
                 tokio::task::block_in_place(|| {
                     handle.block_on(async {
-                        let _ = self.indexer.shutdown().await;
+                        if let Err(error) = self.indexer.shutdown().await {
+                            warn!(%error, "chain index shutdown failed");
+                        }
                     });
                 });
             }
@@ -605,6 +607,8 @@ impl NodeBackedIndexerServiceSubscriber<ZebraValidatorSource> {
     /// Test-only escape hatch: live tests recompute expected chain data directly off the
     /// `ReadStateService`. Production code goes through the `ChainIndex` API.
     #[cfg(feature = "test_dependencies")]
+    // test support (feature `test_dependencies`, never in production builds)
+    #[allow(clippy::expect_used)]
     pub fn read_state_service(&self) -> zebra_state::ReadStateService {
         self.indexer
             .source()

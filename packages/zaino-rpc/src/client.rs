@@ -136,7 +136,7 @@ impl RpcClient {
         let mut attempt = 0u32;
 
         loop {
-            attempt += 1;
+            attempt = attempt.saturating_add(1);
             let id = self.id_counter.fetch_add(1, Ordering::Relaxed);
 
             let body = envelope::build_request(method, params.clone(), id);
@@ -247,7 +247,7 @@ async fn read_body_capped(
 
     let mut body = Vec::new();
     while let Some(chunk) = response.chunk().await? {
-        if body.len() + chunk.len() > max {
+        if body.len().saturating_add(chunk.len()) > max {
             return Err(RpcError::ResponseBodyTooLarge { max });
         }
         body.extend_from_slice(&chunk);

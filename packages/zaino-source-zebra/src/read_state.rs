@@ -729,7 +729,12 @@ impl zaino_source::OneShotGetAddressDeltas for ZebraReadStateAdapter {
                     &self.network,
                     &addresses,
                     output,
-                    if spend { -zatoshis } else { zatoshis },
+                    // a value within the supply: never `i64::MIN`
+                    if spend {
+                        zatoshis.saturating_neg()
+                    } else {
+                        zatoshis
+                    },
                     delta_txid,
                     index as u32,
                     height,
@@ -1281,8 +1286,9 @@ impl zaino_source::OneShotGetBlockchainInfo for ZebraReadStateAdapter {
             })
             .collect::<Result<Vec<_>, _>>()?;
 
-        let next_height = (height + 1)
-            .ok_or_else(|| ReadStateError::off_contract("chain tip is at the maximum height"))?;
+        let next_height = height
+            .next()
+            .map_err(|_| ReadStateError::off_contract("chain tip is at the maximum height"))?;
         let branch_at = |h| {
             NetworkUpgrade::current(&self.network, h)
                 .branch_id()
@@ -1334,7 +1340,8 @@ impl zaino_source::OneShotGetBlockchainInfo for ZebraReadStateAdapter {
             .iter()
             .try_fold(
                 zebra_chain::amount::Amount::<zebra_chain::amount::NonNegative>::zero(),
-                |acc, (_, amount)| acc + *amount,
+                // zebra's `Amount` addition is checked: it returns a `Result`
+                |acc, (_, amount)| std::ops::Add::add(acc, *amount),
             )
             .map_err(ReadStateError::invalid_data)?;
         let chain_supply = ValuePoolBalance {
@@ -1449,9 +1456,13 @@ fn block_difficulty(
         return 0.0;
     };
 
-    let limit: U256 = network.target_difficulty_limit().into();
-    let limit = (limit >> 128).as_u128() as f64;
-    let target = (U256::from(expanded) >> 128).as_u128() as f64;
+    // the high 128 bits (little-endian words), as zcashd's double does
+    let high_half = |value: U256| {
+        let [_, _, low, high] = value.0;
+        ((u128::from(high) << 64) | u128::from(low)) as f64
+    };
+    let limit = high_half(network.target_difficulty_limit().into());
+    let target = high_half(U256::from(expanded));
 
     limit / target
 }
@@ -1491,8 +1502,10 @@ impl ZebraReadStateAdapter {
         }
 
         times.sort_unstable();
-        let median = times[times.len() / 2];
-        u32::try_from(median).map_err(ReadStateError::invalid_data)
+        let median = times
+            .get(times.len() / 2)
+            .ok_or_else(|| ReadStateError::off_contract("no block times to take a median of"))?;
+        u32::try_from(*median).map_err(ReadStateError::invalid_data)
     }
 
     /// The transaction a spend refers to, for resolving the spent output's
@@ -1569,14 +1582,13 @@ impl zaino_source::OneShotGetBlockDeltas for ZebraReadStateAdapter {
         };
         let domain_tip = Height::try_from(tip.0).map_err(ReadStateError::invalid_data)?;
 
-        let next_block_hash = match read(
-            &self.state,
-            ReadRequest::BestChainBlockHash(zebra_chain::block::Height(height.0 + 1)),
-        )
-        .await?
-        {
-            ReadResponse::BlockHash(next) => next.map(|next| BlockHash::from(next.0)),
-            _ => return Err(unexpected_response("BlockHash").into()),
+        let next_block_hash = match height.next() {
+            // the highest height has no next block
+            Err(_) => None,
+            Ok(next) => match read(&self.state, ReadRequest::BestChainBlockHash(next)).await? {
+                ReadResponse::BlockHash(next) => next.map(|next| BlockHash::from(next.0)),
+                _ => return Err(unexpected_response("BlockHash").into()),
+            },
         };
 
         let mut deltas = Vec::with_capacity(block.transactions.len());
@@ -1617,7 +1629,7 @@ impl zaino_source::OneShotGetBlockDeltas for ZebraReadStateAdapter {
                     address: TransparentAddress::try_new(address.to_string())
                         .map_err(ReadStateError::invalid_data)?,
                     // A spend debits the address, so the value leaves it.
-                    satoshis: SignedZatoshis::try_new(-output.value.zatoshis())
+                    satoshis: SignedZatoshis::try_new(output.value.zatoshis().saturating_neg())
                         .map_err(ReadStateError::invalid_data)?,
                     index: index as u32,
                     prev_txid: TransactionId::from(outpoint.hash.0),

@@ -73,7 +73,10 @@ impl<M: Mempool, N: NfsEpochObserver> super::CoherenceService<M, N> {
         &self,
         validator_tip: zaino_primitives::types::BlockRef,
     ) -> ChainStateEpoch {
-        let mut state = self.synth_epoch.lock().expect("synth epoch lock poisoned");
+        let mut state = self
+            .synth_epoch
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         if state.last_validator_hash != Some(validator_tip.hash) {
             state.generation = state.generation.saturating_add(1);
             state.last_validator_hash = Some(validator_tip.hash);

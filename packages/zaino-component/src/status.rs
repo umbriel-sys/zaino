@@ -38,7 +38,9 @@ impl Progress {
     /// splits it into whole percent and a tenth for display.
     fn per_mille(&self) -> Option<u128> {
         let target = self.target.filter(|t| *t > 0)?;
-        Some(u128::from(self.current) * 1000 / u128::from(target))
+        u128::from(self.current)
+            .checked_mul(1000)?
+            .checked_div(u128::from(target))
     }
 }
 
@@ -59,9 +61,9 @@ impl fmt::Display for Progress {
 fn group_thousands(n: u64) -> String {
     let digits = n.to_string();
     let len = digits.len();
-    let mut out = String::with_capacity(len + len / 3);
+    let mut out = String::with_capacity(len.saturating_add(len / 3));
     for (i, c) in digits.chars().enumerate() {
-        if i > 0 && (len - i).is_multiple_of(3) {
+        if i > 0 && len.saturating_sub(i).is_multiple_of(3) {
             out.push(',');
         }
         out.push(c);

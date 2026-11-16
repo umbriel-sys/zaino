@@ -128,10 +128,14 @@ async fn serve(listener: std::net::TcpListener, handle: PrometheusHandle) {
                 async move { Ok::<_, Infallible>(route(&handle, &request).await) }
             });
             // `timer` load-bearing: without it hyper drops its header-read timeout (slowloris)
-            let _ = http1::Builder::new()
+            if let Err(error) = http1::Builder::new()
                 .timer(TokioTimer::new())
                 .serve_connection(TokioIo::new(stream), service)
-                .await;
+                .await
+            {
+                // one client's connection: it alone is dropped
+                tracing::debug!(%error, "admin connection ended with an error");
+            }
         });
     }
 }

@@ -9,6 +9,25 @@
 //! fn sync<V: GetBlock + GetChainTip>(validator: &V) { ... }
 //! ```
 
+// production code never panics: no indexing, unchecked arithmetic or panicking calls
+#![cfg_attr(
+    not(test),
+    deny(
+        clippy::unwrap_used,
+        clippy::expect_used,
+        clippy::panic,
+        clippy::unreachable,
+        clippy::todo,
+        clippy::unimplemented,
+        clippy::indexing_slicing,
+        clippy::arithmetic_side_effects,
+        clippy::string_slice,
+        clippy::get_unwrap,
+        clippy::let_underscore_must_use,
+        let_underscore_drop
+    )
+)]
+
 /// Most rows an address query answers before it is rejected as too broad.
 ///
 /// zebrad 7's cap on `getaddresstxids` / `getaddressutxos`; adapters that read

@@ -455,7 +455,9 @@ fn value_pool_array(
             "ironwood" => 5,
             other => return Err(invalid(format!("unknown value pool `{other}`"))),
         };
-        slots[slot] = built;
+        *slots
+            .get_mut(slot)
+            .ok_or_else(|| invalid(format!("no slot for value pool `{}`", pool.id)))? = built;
     }
     Ok(slots)
 }

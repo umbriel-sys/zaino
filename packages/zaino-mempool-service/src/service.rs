@@ -106,7 +106,10 @@ impl<S: MempoolSource> MempoolService<S> {
             task_service.run().await;
         });
 
-        *service.task.lock().expect("mempool task lock poisoned") = Some(handle);
+        *service
+            .task
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(handle);
 
         service
     }
@@ -151,7 +154,12 @@ impl<S: MempoolSource> MempoolService<S> {
     pub fn close(&self) {
         self.publish_closing();
         self.cancel.cancel();
-        if let Some(handle) = self.task.lock().expect("mempool task lock poisoned").take() {
+        if let Some(handle) = self
+            .task
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .take()
+        {
             handle.abort();
         }
     }

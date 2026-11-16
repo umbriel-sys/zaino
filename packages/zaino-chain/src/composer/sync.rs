@@ -36,7 +36,7 @@
 //! on the next freeze, and the gap repairs itself. Losing blocks costs a fetch,
 //! not correctness.
 
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, PoisonError};
 
 use tokio::sync::broadcast::error::{RecvError, TryRecvError};
 use tokio::sync::watch;
@@ -124,10 +124,11 @@ impl ChainViewSync {
         self.status
             .send_replace(report(Lifecycle::Closing, Health::Healthy));
         self.cancel.cancel();
+        // a poisoned lock still holds the handle: abort it all the same
         if let Some(handle) = self
             .task
             .lock()
-            .expect("chain view sync task mutex poisoned")
+            .unwrap_or_else(PoisonError::into_inner)
             .take()
         {
             handle.abort();

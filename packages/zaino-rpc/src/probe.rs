@@ -126,7 +126,7 @@ pub async fn probe_node(
             Ok(_) => return Ok(url),
             Err(error) => {
                 last_error = error.to_string();
-                if attempt + 1 < PROBE_ATTEMPTS {
+                if attempt.saturating_add(1) < PROBE_ATTEMPTS {
                     tokio::time::sleep(PROBE_INTERVAL).await;
                 }
             }

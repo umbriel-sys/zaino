@@ -35,6 +35,11 @@ pub(crate) fn local_height(height: domain::Height) -> Height {
     Height(u32::from(height))
 }
 
+/// The height after `height` (domain heights end far below `u32::MAX`).
+pub(crate) fn local_height_after(height: domain::Height) -> Height {
+    Height(u32::from(height).saturating_add(1))
+}
+
 pub(crate) fn domain_txid(txid: &TransactionHash) -> domain::TransactionId {
     domain::TransactionId::from(txid.0)
 }

@@ -79,7 +79,10 @@ pub(super) fn unique_suffix_match(
     if cmp_rev_prefix(first) != Ordering::Equal {
         return None; // zero matches
     }
-    match txids_reversed_sorted.get(start + 1) {
+    match start
+        .checked_add(1)
+        .and_then(|next| txids_reversed_sorted.get(next))
+    {
         Some(second) if cmp_rev_prefix(second) == Ordering::Equal => None, // ambiguous
         _ => Some(*first),
     }

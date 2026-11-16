@@ -94,6 +94,7 @@ impl<S: MempoolSource> super::MempoolService<S> {
         );
 
         loop {
+            let mut wake_closed = false;
             tokio::select! {
                 _ = self.cancel.cancelled() => {
                     tracing::debug!("mempool poll loop cancelled; publishing Closing");
@@ -101,14 +102,17 @@ impl<S: MempoolSource> super::MempoolService<S> {
                     return;
                 }
                 _ = interval.tick() => {}
-                _ = async {
+                closed = async {
                     match block_wake.as_mut() {
-                        Some(rx) => {
-                            let _ = rx.changed().await;
-                        }
-                        None => std::future::pending::<()>().await,
+                        Some(rx) => rx.changed().await.is_err(),
+                        None => std::future::pending::<bool>().await,
                     }
-                } => {}
+                } => wake_closed = closed,
+            }
+            // a wake whose sender is gone fires at once forever: poll on the interval alone
+            if wake_closed {
+                tracing::debug!("block wake closed; polling on the interval");
+                block_wake = None;
             }
 
             self.tick(&mut state).await;

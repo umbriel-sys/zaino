@@ -13,6 +13,7 @@ use zaino_mempool::update::MempoolUpdate;
 use zaino_primitives::types::{BlockRef, TransactionId};
 
 use super::state::{admission_key, PollState};
+use crate::notify;
 
 impl<S: MempoolSource> super::MempoolService<S> {
     /// Build and publish the next snapshot from `current` plus the poll's deltas.
@@ -76,7 +77,7 @@ impl<S: MempoolSource> super::MempoolService<S> {
                 state.refused.insert(entry.txid, cost);
                 continue;
             }
-            cost_bytes += cost;
+            cost_bytes = cost_bytes.saturating_add(cost);
             final_by_txid.insert(entry.txid, Arc::clone(&entry));
             applied_entries.push(entry);
         }
@@ -97,21 +98,30 @@ impl<S: MempoolSource> super::MempoolService<S> {
         self.current.store(snapshot);
 
         for txid in removed {
-            let _ = self.updates.send(MempoolUpdate::Removed {
-                sequence: next_sequence,
-                txid,
-            });
+            notify(
+                &self.updates,
+                MempoolUpdate::Removed {
+                    sequence: next_sequence,
+                    txid,
+                },
+            );
         }
         for entry in applied_entries {
-            let _ = self.updates.send(MempoolUpdate::Added {
-                sequence: next_sequence,
-                entry,
-            });
+            notify(
+                &self.updates,
+                MempoolUpdate::Added {
+                    sequence: next_sequence,
+                    entry,
+                },
+            );
         }
         // The batch boundary; consumers read `current()` for the coherent whole.
-        let _ = self.updates.send(MempoolUpdate::Reset {
-            sequence: next_sequence,
-        });
+        notify(
+            &self.updates,
+            MempoolUpdate::Reset {
+                sequence: next_sequence,
+            },
+        );
 
         self.status.store(StatusType::Ready);
     }
@@ -139,9 +149,12 @@ impl<S: MempoolSource> super::MempoolService<S> {
         let next_sequence = snapshot.event_sequence();
 
         self.current.store(snapshot);
-        let _ = self.updates.send(MempoolUpdate::Reset {
-            sequence: next_sequence,
-        });
+        notify(
+            &self.updates,
+            MempoolUpdate::Reset {
+                sequence: next_sequence,
+            },
+        );
         self.status.store(StatusType::Ready);
     }
 
@@ -229,18 +242,24 @@ impl<S: MempoolSource> super::MempoolService<S> {
         let next_sequence = snapshot.event_sequence();
 
         self.current.store(snapshot);
-        let _ = self.updates.send(MempoolUpdate::Reset {
-            sequence: next_sequence,
-        });
+        notify(
+            &self.updates,
+            MempoolUpdate::Reset {
+                sequence: next_sequence,
+            },
+        );
         self.status.store(StatusType::Syncing);
     }
 
     pub(super) fn publish_closing(&self) {
         let current = self.current.load_full();
         let next_sequence = current.event_sequence().saturating_add(1);
-        let _ = self.updates.send(MempoolUpdate::Closing {
-            sequence: next_sequence,
-        });
+        notify(
+            &self.updates,
+            MempoolUpdate::Closing {
+                sequence: next_sequence,
+            },
+        );
         self.status.store(StatusType::Closing);
     }
 }

@@ -66,20 +66,17 @@ fn validate_address_format(address: &str) -> Result<(), String> {
 
     // Handle IPv6 format: [::1]:port
     if address.starts_with('[') {
-        let Some(bracket_end) = address.find(']') else {
+        let Some((_, after_bracket)) = address.split_once(']') else {
             return Err("IPv6 address missing closing bracket".to_string());
         };
 
-        if bracket_end + 1 >= address.len() {
+        if after_bracket.is_empty() {
             return Err("Missing port after IPv6 address".to_string());
         }
 
-        let after_bracket = &address[bracket_end + 1..];
-        if !after_bracket.starts_with(':') {
+        let Some(port_str) = after_bracket.strip_prefix(':') else {
             return Err("Expected ':' after IPv6 address bracket".to_string());
-        }
-
-        let port_str = &after_bracket[1..];
+        };
         port_str
             .parse::<u16>()
             .map_err(|_| format!("Invalid port number: '{port_str}'"))?;
@@ -88,13 +85,9 @@ fn validate_address_format(address: &str) -> Result<(), String> {
     }
 
     // Handle IPv4/hostname format: host:port
-    let parts: Vec<&str> = address.rsplitn(2, ':').collect();
-    if parts.len() != 2 {
+    let Some((host, port_str)) = address.rsplit_once(':') else {
         return Err("Missing port (expected format: 'host:port')".to_string());
-    }
-
-    let port_str = parts[0];
-    let host = parts[1];
+    };
 
     if host.is_empty() {
         return Err("Host cannot be empty".to_string());

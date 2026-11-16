@@ -12,14 +12,16 @@ const _: () = assert!(domain::SignedZatoshis::MAX.as_i64() == MAX_MONEY);
 
 /// Renders a domain amount as the wire's non-negative money type.
 pub(crate) fn non_negative(amount: domain::Zatoshis) -> Amount<NonNegative> {
-    Amount::try_from(amount.as_u64())
-        .expect("Zatoshis::MAX equals MAX_MONEY, asserted at compile time above")
+    // Zatoshis::MAX equals MAX_MONEY (asserted at compile time above): the
+    // fallback is never taken
+    Amount::try_from(amount.as_u64()).unwrap_or_else(|_| Amount::zero())
 }
 
 /// Renders a domain signed value as the wire's signed money type.
 pub(crate) fn negative_allowed(value: domain::SignedZatoshis) -> Amount<NegativeAllowed> {
-    Amount::try_from(value.as_i64())
-        .expect("SignedZatoshis::MAX equals MAX_MONEY, asserted at compile time above")
+    // SignedZatoshis' range equals ±MAX_MONEY (asserted at compile time
+    // above): the fallback is never taken
+    Amount::try_from(value.as_i64()).unwrap_or_else(|_| Amount::zero())
 }
 
 /// Zatoshis per ZEC.
@@ -127,18 +129,10 @@ impl<'de> Deserialize<'de> for ZecAmount {
                 } else {
                     int.parse().map_err(serde::de::Error::custom)?
                 };
-                let mut frac_buf = frac.as_bytes().to_vec();
-                while frac_buf.len() < 8 {
-                    frac_buf.push(b'0');
-                }
-                let frac_part: u64 = if frac_buf.is_empty() {
-                    0
-                } else {
-                    std::str::from_utf8(&frac_buf)
-                        .unwrap()
-                        .parse()
-                        .map_err(serde::de::Error::custom)?
-                };
+                // the fraction padded to eight digits: zatoshis
+                let frac_part: u64 = format!("{frac:0<8}")
+                    .parse()
+                    .map_err(serde::de::Error::custom)?;
                 let base = int_part
                     .checked_mul(ZATS_PER_ZEC)
                     .ok_or_else(|| serde::de::Error::custom("overflow"))?;

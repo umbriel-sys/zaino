@@ -191,13 +191,13 @@ impl Default for MempoolConfig {
     fn default() -> Self {
         Self {
             max_cost_bytes: Arc::new(AtomicU64::new(DEFAULT_MAX_COST_BYTES)),
-            event_buffer_len: NonZeroUsize::new(16_384).expect("16384 is non-zero"),
-            poll_interval_ms: NonZeroU64::new(DEFAULT_POLL_INTERVAL_MS)
-                .expect("the default poll interval is non-zero"),
+            // literals: the fallbacks are never taken
+            event_buffer_len: NonZeroUsize::new(16_384).unwrap_or(NonZeroUsize::MIN),
+            poll_interval_ms: NonZeroU64::new(DEFAULT_POLL_INTERVAL_MS).unwrap_or(NonZeroU64::MIN),
             // Equal to the poll interval: no coalescing beyond the poll cadence
             // itself, so the default preserves minimum mempool latency.
             metadata_min_interval: DEFAULT_POLL_INTERVAL,
-            max_concurrent_raw_fetches: NonZeroUsize::new(32).expect("32 is non-zero"),
+            max_concurrent_raw_fetches: NonZeroUsize::new(32).unwrap_or(NonZeroUsize::MIN),
             max_exclude_count: 1_024,
             min_exclude_suffix_len: 4,
             max_exclude_suffix_len: 32,

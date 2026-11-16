@@ -51,6 +51,25 @@
 //! lifecycle are likewise above this layer, and reach the validator through
 //! `zaino-source` directly rather than through here.
 
+// production code never panics: no indexing, unchecked arithmetic or panicking calls
+#![cfg_attr(
+    not(test),
+    deny(
+        clippy::unwrap_used,
+        clippy::expect_used,
+        clippy::panic,
+        clippy::unreachable,
+        clippy::todo,
+        clippy::unimplemented,
+        clippy::indexing_slicing,
+        clippy::arithmetic_side_effects,
+        clippy::string_slice,
+        clippy::get_unwrap,
+        clippy::let_underscore_must_use,
+        let_underscore_drop
+    )
+)]
+
 pub mod block;
 pub mod capability;
 pub mod error;
@@ -79,5 +98,15 @@ pub use composer::{
     ChainViewComposer, ChainViewComposerBuilder, ChainViewConfig, ChainViewSync, ComposerSnapshot,
 };
 
+// test support (feature `testing`, never in production builds): asserting is its job
 #[cfg(feature = "testing")]
+#[allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    clippy::indexing_slicing,
+    clippy::arithmetic_side_effects,
+    clippy::let_underscore_must_use,
+    let_underscore_drop
+)]
 pub mod testing;

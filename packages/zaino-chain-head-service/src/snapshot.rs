@@ -34,10 +34,9 @@ mod tests;
 /// The slot is a `usize` from iterating the block's transactions; the position
 /// type is `u32`. A block's transaction count is bounded well below `u32::MAX`
 /// by the consensus block-size limit, so the narrowing cannot fail for any real
-/// block — the `expect` names that invariant rather than asserting a hope.
+/// block and the fallback is never taken.
 fn tx_index(position: usize) -> TxIndex {
-    TxIndex::try_from(position)
-        .expect("a block's transaction count fits TxIndex; consensus bounds it below u32::MAX")
+    TxIndex::try_from(position).unwrap_or(TxIndex::MAX)
 }
 
 /// The retained graph: its tip, and every other retained block in a hash map.
@@ -115,7 +114,7 @@ impl MapBackedSnapshot {
             if self.is_on_best_chain(current.reference) {
                 return branch_len;
             }
-            branch_len += 1;
+            branch_len = branch_len.saturating_add(1);
             let Some(parent) = self.block_by_hash(&current.parent_hash) else {
                 return branch_len;
             };

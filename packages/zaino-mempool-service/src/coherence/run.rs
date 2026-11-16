@@ -75,14 +75,17 @@ impl<M: Mempool, N: NfsEpochObserver> super::CoherenceService<M, N> {
                     self.reconcile();
                     self.report_frozen(&mut escalated);
                 }
-                _ = async {
+                closed = async {
                     match epoch_wake.as_mut() {
-                        Some(rx) => {
-                            let _ = rx.changed().await;
-                        }
-                        None => std::future::pending::<()>().await,
+                        Some(rx) => rx.changed().await.is_err(),
+                        None => std::future::pending::<bool>().await,
                     }
                 } => {
+                    // a wake whose sender is gone fires at once forever: drop it
+                    if closed {
+                        tracing::debug!("epoch wake closed; reconciling on the interval");
+                        epoch_wake = None;
+                    }
                     self.reconcile();
                 }
                 update = updates.recv() => {

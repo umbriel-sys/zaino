@@ -70,9 +70,13 @@ impl Chunker {
         if blocks == 0 {
             return;
         }
-        let average = (bytes / blocks).max(1);
-        let target = (self.budget_bytes / average).clamp(1, Self::MAX as usize);
-        self.count = target as u32;
+        let average = bytes.checked_div(blocks).unwrap_or(0).max(1);
+        let target = self
+            .budget_bytes
+            .checked_div(average)
+            .unwrap_or(1)
+            .clamp(1, Self::MAX as usize);
+        self.count = u32::try_from(target).unwrap_or(Self::MAX);
     }
 }
 
@@ -143,20 +147,22 @@ pub(crate) fn approx_size(block: &CompactBlock) -> usize {
     /// An outpoint or a script-bearing output.
     const PER_TRANSPARENT: usize = 40;
 
-    OVERHEAD
-        + block
-            .transactions
-            .iter()
-            .map(|tx| {
-                PER_TX
-                    + PER_NOTE
-                        * (tx.sapling_nullifiers.len()
-                            + tx.sapling_outputs.len()
-                            + tx.orchard_actions.len()
-                            + tx.ironwood_actions.len())
-                    + PER_TRANSPARENT * (tx.transparent_inputs.len() + tx.transparent_outputs.len())
-            })
-            .sum::<usize>()
+    let sum = |counts: &[usize]| counts.iter().fold(0usize, |sum, n| sum.saturating_add(*n));
+    block.transactions.iter().fold(OVERHEAD, |size, tx| {
+        let notes = sum(&[
+            tx.sapling_nullifiers.len(),
+            tx.sapling_outputs.len(),
+            tx.orchard_actions.len(),
+            tx.ironwood_actions.len(),
+        ]);
+        let transparent = sum(&[tx.transparent_inputs.len(), tx.transparent_outputs.len()]);
+        sum(&[
+            size,
+            PER_TX,
+            PER_NOTE.saturating_mul(notes),
+            PER_TRANSPARENT.saturating_mul(transparent),
+        ])
+    })
 }
 
 /// The compact block a caller asked for, from a pre-index projection.

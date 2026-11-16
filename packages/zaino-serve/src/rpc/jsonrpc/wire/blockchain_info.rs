@@ -77,7 +77,9 @@ fn value_pool_array(
             "ironwood" => 5,
             other => return Err(BlockchainInfoWireError::UnknownValuePool(other.to_string())),
         };
-        slots[slot] = built;
+        *slots
+            .get_mut(slot)
+            .ok_or_else(|| BlockchainInfoWireError::UnknownValuePool(pool.id.clone()))? = built;
     }
     Ok(slots)
 }

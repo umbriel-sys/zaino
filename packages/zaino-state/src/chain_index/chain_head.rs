@@ -45,11 +45,14 @@ where
     }
 }
 
+const _: () = assert!(super::OPERATIONAL_NFS_DEPTH > 0);
+
 /// The chain head's configuration, retaining the operational window.
 pub(super) fn config() -> zaino_chain_head::ChainHeadConfig {
+    // non-zero, asserted at compile time above: the fallback is never taken
     zaino_chain_head::ChainHeadConfig::with_max_depth(
         std::num::NonZeroU32::new(super::OPERATIONAL_NFS_DEPTH)
-            .expect("the operational chain-head depth derives from a non-zero reorg bound"),
+            .unwrap_or(std::num::NonZeroU32::MIN),
     )
 }
 

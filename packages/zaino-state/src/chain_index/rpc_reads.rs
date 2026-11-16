@@ -96,13 +96,16 @@ impl<
                     }
                 }
             }
-            if past_tip {
-                let _ = sender
+            if past_tip
+                && sender
                     .send(Err(tonic::Status::out_of_range(format!(
                         "Error: Height out of range [{}]. Height requested is greater than the best chain tip [{}].",
                         end_height.0, tip,
                     ))))
-                    .await;
+                    .await
+                    .is_err()
+            {
+                // the client went away: nobody to tell
             }
         });
         Ok(Some(CompactBlockStream::new(receiver)))

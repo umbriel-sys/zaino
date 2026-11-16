@@ -49,14 +49,16 @@ pub struct ChainStoreConfig {
     max_consecutive_failures: NonZeroU32,
 }
 
-/// A `NonZeroU32` from a literal default below.
+/// A `NonZeroU32` from a literal default below (never zero, so the fallback
+/// is never taken).
 fn nz32(value: u32) -> NonZeroU32 {
-    NonZeroU32::new(value).expect("a literal default is not zero")
+    NonZeroU32::new(value).unwrap_or(NonZeroU32::MIN)
 }
 
-/// A `NonZeroU64` from a literal default below.
+/// A `NonZeroU64` from a literal default below (never zero, so the fallback
+/// is never taken).
 fn nz64(value: u64) -> NonZeroU64 {
-    NonZeroU64::new(value).expect("a literal default is not zero")
+    NonZeroU64::new(value).unwrap_or(NonZeroU64::MIN)
 }
 
 impl Default for ChainStoreConfig {

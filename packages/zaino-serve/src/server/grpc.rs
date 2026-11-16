@@ -110,8 +110,11 @@ impl TonicServer {
             })?;
         }
 
+        // a change, or the sender gone: either way the server stops
         let shutdown_signal = async move {
-            let _ = shutdown_signal.changed().await;
+            if shutdown_signal.changed().await.is_err() {
+                // the owner is gone: stop as well
+            }
         };
         let server_future = server_builder
             .add_routes(routes)
@@ -138,7 +141,11 @@ impl TonicServer {
         self.shutdown.send_replace(());
 
         if let Some(handle) = self.server_handle.take() {
-            let _ = handle.await;
+            match handle.await {
+                Ok(Ok(())) => {}
+                Ok(Err(error)) => warn!(%error, "gRPC server ended with an error"),
+                Err(error) => warn!(%error, "gRPC server task did not finish"),
+            }
         }
     }
 

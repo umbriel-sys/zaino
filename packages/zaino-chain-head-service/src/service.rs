@@ -34,7 +34,7 @@
 
 use std::{
     fmt,
-    sync::{Arc, Mutex},
+    sync::{Arc, Mutex, PoisonError},
     time::Duration,
 };
 
@@ -169,7 +169,7 @@ impl<S: ChainHeadBlockSource> ChainHeadService<S> {
 
         let worker = Arc::clone(&service);
         let handle = tokio::spawn(async move { worker.run().await });
-        *service.task.lock().expect("chain head task mutex poisoned") = Some(handle);
+        *service.task.lock().unwrap_or_else(PoisonError::into_inner) = Some(handle);
 
         Ok(service)
     }
@@ -290,10 +290,11 @@ impl<S: ChainHeadBlockSource> ChainHeadService<S> {
     pub fn shutdown(&self) {
         self.status.store(StatusType::Closing);
         self.cancel.cancel();
+        // a poisoned lock still holds the handle: abort it all the same
         if let Some(handle) = self
             .task
             .lock()
-            .expect("chain head task mutex poisoned")
+            .unwrap_or_else(PoisonError::into_inner)
             .take()
         {
             handle.abort();
@@ -333,7 +334,7 @@ impl<S: ChainHeadBlockSource> ChainHeadService<S> {
                     }
                 }
                 Err(error) => {
-                    consecutive_failures += 1;
+                    consecutive_failures = consecutive_failures.saturating_add(1);
                     record_sync_failures(consecutive_failures, backoff);
                     if consecutive_failures >= self.config.max_consecutive_failures() {
                         warn!(
@@ -349,7 +350,7 @@ impl<S: ChainHeadBlockSource> ChainHeadService<S> {
                     if sleep_or_cancel(backoff, &self.cancel).await.is_break() {
                         break;
                     }
-                    backoff = (backoff * 2).min(self.config.max_backoff());
+                    backoff = backoff.saturating_mul(2).min(self.config.max_backoff());
                 }
             }
         }
@@ -629,7 +630,9 @@ impl<S: ChainHeadBlockSource> ChainHeadService<S> {
                 return Ok(());
             }
             target_height = height_below(target_height, 1);
-            if u32::from(target_height) + self.max_retained_depth() < u32::from(tip.height) {
+            if u32::from(target_height).saturating_add(self.max_retained_depth())
+                < u32::from(tip.height)
+            {
                 return Err(ChainHeadAdvanceError::ReorgFailure(
                     "reorg detection stepped below the retained window".to_string(),
                 ));
@@ -711,7 +714,9 @@ impl<S: ChainHeadBlockSource> ChainHeadService<S> {
         for block in frozen {
             // A full channel drops the oldest; the consumer sees `Lagged` and
             // rebuilds the gap from its own source, which it can always do.
-            let _ = self.frozen.send(block);
+            if self.frozen.send(block).is_err() {
+                // no subscriber: nothing to hand it to
+            }
         }
     }
 
@@ -820,7 +825,7 @@ impl<S: ChainHeadBlockSource> Drop for ChainHeadService<S> {
         if let Some(handle) = self
             .task
             .lock()
-            .expect("chain head task mutex poisoned")
+            .unwrap_or_else(PoisonError::into_inner)
             .take()
         {
             handle.abort();
@@ -972,7 +977,7 @@ async fn anchor_with_retry<S: ChainHeadBlockSource>(
         match anchor(source, config).await {
             Ok(snapshot) => return Ok(snapshot),
             Err(error) => {
-                failures += 1;
+                failures = failures.saturating_add(1);
                 if failures >= config.max_consecutive_failures() {
                     return Err(ChainHeadInitError::SourceUnavailable {
                         attempts: failures,
@@ -983,7 +988,7 @@ async fn anchor_with_retry<S: ChainHeadBlockSource>(
                 if sleep_or_cancel(backoff, cancel).await.is_break() {
                     return Err(ChainHeadInitError::Cancelled);
                 }
-                backoff = (backoff * 2).min(config.max_backoff());
+                backoff = backoff.saturating_mul(2).min(config.max_backoff());
             }
         }
     }
