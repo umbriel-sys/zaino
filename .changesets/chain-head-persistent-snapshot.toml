@@ -1,0 +1,11 @@
+[[changes]]
+crate = "zaino-chain-head-service"
+kind = "breaking"
+description = """
+`PersistentSnapshot` replaces `MapBackedSnapshot` (D-49): the canonical chain \
+as an `imbl` trunk, the retained side chains as a table of at most nine \
+branches (a tenth tip evicts the lowest by tip work, then height, then hash), \
+every retained block once in an `imbl` directory. Publishes share what did \
+not change instead of cloning every block per tick; a reorg splits and \
+pushes; chain tips and fork points are reads. The port and every consumer \
+are unchanged beyond the type's name."""

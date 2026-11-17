@@ -1,0 +1,6 @@
+[[changes]]
+crate = "zaino-state"
+kind = "breaking"
+description = """
+The re-exported chain head snapshot type is `PersistentSnapshot` (was \
+`MapBackedSnapshot`), following `zaino-chain-head-service`."""

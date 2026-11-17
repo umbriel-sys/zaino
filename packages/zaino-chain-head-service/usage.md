@@ -145,15 +145,19 @@ order, which differs between runs.
 
 If you touch that comparison, keep it strict.
 
-## `MapBackedSnapshot` is an implementation detail
+## `PersistentSnapshot` is an implementation detail
 
 It is this crate's `ChainHeadSnapshot` implementation and the only place the
-graph's representation is decided. Consumers name the trait.
+graph's representation is decided. Consumers name the trait; do not let one
+come to depend on the concrete type.
 
-Replacing it — persistent structures sharing unchanged subtrees between publishes
-rather than maps cloned on each one — is a change to this crate alone, and that
-is the arrangement to protect. Do not let a consumer come to depend on the
-concrete type.
+The representation (D-49): the canonical chain is a trunk (an `imbl::Vector`
+of `Arc` blocks, heights contiguous from the retained floor), the retained side
+chains a table of at most nine branches (each its blocks above a fork point,
+strongest first; a tenth tip evicts the lowest by tip work, then tip height,
+then hash), and every retained block sits once in an `imbl::HashMap`
+directory. Cloning is O(1) and snapshots share what did not change; a reorg
+splits the trunk and pushes, a trim drops exactly the blocks below the floor.
 
 ## Metrics
 

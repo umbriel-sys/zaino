@@ -55,7 +55,7 @@ use zaino_status::{NamedAtomicStatus, StatusType};
 use crate::{
     error::{ChainHeadAdvanceError, ChainHeadInitError},
     graph::{ChainGraph as _, NotChildOfTip, NotOnBestChain},
-    snapshot::MapBackedSnapshot,
+    snapshot::PersistentSnapshot,
     subscriber::ChainHeadSubscriber,
 };
 
@@ -106,7 +106,7 @@ pub struct ChainHeadService<S: ChainHeadBlockSource> {
     /// This lock should not be exposed to consumers. Rather, clone the Arc and
     /// offer that. This means we can overwrite the arc without interfering with
     /// readers, who will hold a stale copy.
-    current: Arc<ArcSwap<MapBackedSnapshot>>,
+    current: Arc<ArcSwap<PersistentSnapshot>>,
     updates: watch::Sender<ChainStateEpoch>,
     status: NamedAtomicStatus,
     cancel: CancellationToken,
@@ -414,9 +414,9 @@ impl<S: ChainHeadBlockSource> ChainHeadService<S> {
     /// intermediates.
     async fn next_graph(
         &self,
-        previous: &MapBackedSnapshot,
+        previous: &PersistentSnapshot,
         chain_height: Height,
-    ) -> Result<MapBackedSnapshot, ChainHeadAdvanceError> {
+    ) -> Result<PersistentSnapshot, ChainHeadAdvanceError> {
         // Anchor floor: the chain head must never start more than the
         // configured depth below the chain tip. Previously this took the
         // greater of the finalised database's height and this floor; with the
@@ -427,7 +427,7 @@ impl<S: ChainHeadBlockSource> ChainHeadService<S> {
         let mut graph = if previous.best_tip().height < anchor_height {
             // The chain moved further than the window covers. Re-anchor rather
             // than walking the gap one block at a time.
-            MapBackedSnapshot::from_initial_block(
+            PersistentSnapshot::from_initial_block(
                 anchor_block(self.source.as_ref(), anchor_height).await?,
             )
         } else {
@@ -533,7 +533,7 @@ impl<S: ChainHeadBlockSource> ChainHeadService<S> {
     /// rather than in call frames, so its depth costs heap and not stack.
     async fn handle_reorg(
         &self,
-        graph: &mut MapBackedSnapshot,
+        graph: &mut PersistentSnapshot,
         block: &impl Block,
     ) -> Result<ChainHeadBlock, ChainHeadAdvanceError> {
         let mut branch: Vec<BranchBlock> = Vec::new();
@@ -594,7 +594,7 @@ impl<S: ChainHeadBlockSource> ChainHeadService<S> {
     /// rollback, produces no such block — this is what sees those.
     async fn check_for_nonhigher_reorgs(
         &self,
-        graph: &mut MapBackedSnapshot,
+        graph: &mut PersistentSnapshot,
     ) -> Result<(), ChainHeadAdvanceError> {
         let tip = graph.best_tip();
         let mut target_height = tip.height;
@@ -629,7 +629,7 @@ impl<S: ChainHeadBlockSource> ChainHeadService<S> {
     /// A plain `store`: the writer task is the only writer, so there is nothing
     /// to lose a compare-and-swap race against. One store per iteration is what
     /// makes a published snapshot always whole.
-    fn publish_snapshot(&self, previous: &MapBackedSnapshot, mut next: MapBackedSnapshot) {
+    fn publish_snapshot(&self, previous: &PersistentSnapshot, mut next: PersistentSnapshot) {
         let (stale_tip, new_tip) = (previous.best_tip(), next.best_tip());
         let tip_changed = new_tip != stale_tip;
 
@@ -908,7 +908,7 @@ fn chain_head_block(
 ///
 /// [`ChainGraph::extend`]: crate::graph::ChainGraph::extend
 fn extend(
-    graph: &mut MapBackedSnapshot,
+    graph: &mut PersistentSnapshot,
     block: ChainHeadBlock,
 ) -> Result<(), ChainHeadAdvanceError> {
     graph.extend(block).map_err(|refused: NotChildOfTip| {
@@ -921,7 +921,7 @@ async fn anchor_with_retry<S: ChainHeadBlockSource>(
     source: &Arc<S>,
     config: &ChainHeadConfig,
     cancel: &CancellationToken,
-) -> Result<MapBackedSnapshot, ChainHeadInitError> {
+) -> Result<PersistentSnapshot, ChainHeadInitError> {
     let mut backoff = config.initial_backoff();
     let mut failures = 0u32;
 
@@ -956,7 +956,7 @@ async fn anchor_with_retry<S: ChainHeadBlockSource>(
 async fn anchor<S: ChainHeadBlockSource>(
     source: &Arc<S>,
     config: &ChainHeadConfig,
-) -> Result<MapBackedSnapshot, ChainHeadAdvanceError> {
+) -> Result<PersistentSnapshot, ChainHeadAdvanceError> {
     let (_, tip_height) = source
         .get_chain_tip()
         .await
@@ -964,7 +964,7 @@ async fn anchor<S: ChainHeadBlockSource>(
 
     let anchor_height = height_below(tip_height, config.max_depth());
 
-    Ok(MapBackedSnapshot::from_initial_block(
+    Ok(PersistentSnapshot::from_initial_block(
         anchor_block(source.as_ref(), anchor_height).await?,
     ))
 }

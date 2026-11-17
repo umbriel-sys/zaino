@@ -1,4 +1,4 @@
-//! The canonical window's txout delta, over a map-backed graph.
+//! The canonical window's txout delta, over the persistent graph.
 
 use zaino_chain_head::{ChainHeadBlock, ChainHeadError, ChainHeadTxOutSetService as _};
 use zaino_primitives::types::{
@@ -8,7 +8,7 @@ use zaino_primitives::types::{
 
 use crate::{
     graph::ChainGraph as _,
-    snapshot::MapBackedSnapshot,
+    snapshot::PersistentSnapshot,
     tests::{block, height},
 };
 
@@ -72,9 +72,9 @@ fn head_block(h: u32, transactions: Vec<Transaction>) -> ChainHeadBlock {
 
 /// Window 10..=12. Transaction 1 creates two outputs; 2 spends one of them and
 /// an output from below the window; 3 spends 2's only output.
-fn window() -> MapBackedSnapshot {
+fn window() -> PersistentSnapshot {
     let mut graph =
-        MapBackedSnapshot::from_initial_block(head_block(10, vec![transaction(1, &[], &[5, 7])]));
+        PersistentSnapshot::from_initial_block(head_block(10, vec![transaction(1, &[], &[5, 7])]));
     graph
         .extend(head_block(
             11,

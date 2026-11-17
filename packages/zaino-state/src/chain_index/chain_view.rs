@@ -9,7 +9,7 @@
 use std::sync::Arc;
 
 use zaino_chain::{ChainViewComposer, ChainViewConfig, ChainViewSource, ComposerSnapshot};
-use zaino_chain_head_service::{ChainHeadSubscriber, MapBackedSnapshot};
+use zaino_chain_head_service::{ChainHeadSubscriber, PersistentSnapshot};
 use zaino_chain_store_zainodb::store::{reader::DbReader, FinalisedState};
 
 use super::chain_store::WithChainStoreSource;
@@ -27,7 +27,7 @@ pub(crate) type Composer<S> = ChainViewComposer<
 /// The snapshot every `ChainIndex` read answers from.
 pub(crate) type ChainIndexSnapshot<S> = ComposerSnapshot<
     DbReader<<S as WithChainStoreSource>::Store>,
-    MapBackedSnapshot,
+    PersistentSnapshot,
     <S as WithChainViewSource>::View,
 >;
 

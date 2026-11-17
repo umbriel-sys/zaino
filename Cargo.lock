@@ -6071,6 +6071,7 @@ version = "0.2.0"
 dependencies = [
  "arc-swap",
  "futures",
+ "imbl",
  "metrics",
  "proptest",
  "thiserror 2.0.20",

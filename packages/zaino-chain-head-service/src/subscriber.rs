@@ -9,7 +9,7 @@ use zaino_component::{ComponentStatus, StatusSource};
 use zaino_primitives::types::ChainStateEpoch;
 use zaino_status::NamedAtomicStatus;
 
-use crate::snapshot::MapBackedSnapshot;
+use crate::snapshot::PersistentSnapshot;
 
 /// A cheap-to-clone reader for a running ChainHead.
 ///
@@ -28,7 +28,7 @@ pub struct ChainHeadSubscriber {
     /// Holding a snapshot here instead would freeze the handle at the view it
     /// was created with, and a consumer that keeps one subscriber for the
     /// process lifetime would never see the chain move again.
-    current: Arc<ArcSwap<MapBackedSnapshot>>,
+    current: Arc<ArcSwap<PersistentSnapshot>>,
     updates: watch::Receiver<ChainStateEpoch>,
     /// A clone of the runtime's own cell, not a copy of its value.
     ///
@@ -52,7 +52,7 @@ impl std::fmt::Debug for ChainHeadSubscriber {
 
 impl ChainHeadSubscriber {
     pub(crate) fn new(
-        current: Arc<ArcSwap<MapBackedSnapshot>>,
+        current: Arc<ArcSwap<PersistentSnapshot>>,
         updates: watch::Receiver<ChainStateEpoch>,
         status: NamedAtomicStatus,
     ) -> Self {
@@ -80,7 +80,7 @@ impl StatusSource for ChainHeadSubscriber {
 }
 
 impl ChainHeadBlockService for ChainHeadSubscriber {
-    type Snapshot = MapBackedSnapshot;
+    type Snapshot = PersistentSnapshot;
 
     fn current(&self) -> Arc<Self::Snapshot> {
         self.current.load_full()

@@ -5,6 +5,7 @@ use zaino_primitives::types::BlockRef;
 use super::{chain_head_block, InspectableGraph};
 use crate::{
     graph::{ChainGraph, NotChildOfTip, NotOnBestChain},
+    snapshot::{display_order, MAX_BRANCHES},
     tests::{best_chain_hashes, hash, height},
 };
 
@@ -93,6 +94,70 @@ pub(super) fn the_tip_wins_an_equal_work_tie<G: ChainGraph>() {
     assert_eq!(graph.extend(chain_head_block(1, 11, 0, 2)), Ok(()));
 
     assert_eq!(graph.heaviest_block().hash(), hash(11));
+}
+
+/// Rewinds to block 0 and extends with a fresh block `id` at height 1
+/// carrying `work`: the previous tip becomes a competing branch.
+fn fork_from_base<G: ChainGraph>(graph: &mut G, id: u16, work: u128) {
+    assert_eq!(graph.rewind_to(base(graph)), Ok(()));
+    assert_eq!(graph.extend(chain_head_block(1, id, 0, work)), Ok(()));
+}
+
+/// Past `MAX_BRANCHES` competing branches, the one with the least tip work
+/// goes; equal work, the lower tip; equal height, the lower hash in display
+/// order. The surviving branches are untouched.
+pub(super) fn a_tenth_branch_evicts_the_lightest_then_the_oldest_then_the_lowest_hash<
+    G: InspectableGraph,
+>() {
+    let mut graph = two_block_graph::<G>();
+    let heavy: Vec<u16> = (20..28).collect();
+    for (offset, id) in heavy.iter().enumerate() {
+        fork_from_base(&mut graph, *id, 20 + offset as u128);
+    }
+    // branches: block 1 (work 2) and the first seven heavy tips; the eighth is the tip
+    fork_from_base(&mut graph, 40, 7);
+    // nine branches: block 1 and the eight heavy tips; 40 is the tip
+    assert!(graph.block_by_hash(&hash(1)).is_some(), "nine branches fit");
+
+    // branch B: two blocks, its tip of work 7 at height 2. Its rewind makes
+    // 40 the tenth tip, and block 1, the lightest, goes
+    assert_eq!(graph.rewind_to(base(&graph)), Ok(()));
+    assert!(
+        graph.block_by_hash(&hash(1)).is_none(),
+        "the lightest is evicted"
+    );
+    assert!(heavy
+        .iter()
+        .all(|id| graph.block_by_hash(&hash(*id)).is_some()));
+    assert_eq!(graph.retained_block_count(), 1 + MAX_BRANCHES);
+    assert_eq!(graph.extend(chain_head_block(1, 50, 0, 3)), Ok(()));
+    assert_eq!(graph.extend(chain_head_block(2, 51, 50, 7)), Ok(()));
+    // a tenth tip again: 40 (work 7, height 1) loses to B (work 7, height 2)
+    fork_from_base(&mut graph, 60, 3);
+    assert!(
+        graph.block_by_hash(&hash(40)).is_none(),
+        "the lower tip is evicted"
+    );
+    assert!(graph.block_by_hash(&hash(51)).is_some());
+
+    // branch C: like B; the tie between B and C goes against the lower hash
+    assert_eq!(graph.extend(chain_head_block(2, 61, 60, 7)), Ok(()));
+    fork_from_base(&mut graph, 70, 30);
+    let (b, c) = (hash(51), hash(61));
+    let (evicted, kept) = if display_order(b) < display_order(c) {
+        (b, c)
+    } else {
+        (c, b)
+    };
+    assert!(
+        graph.block_by_hash(&evicted).is_none(),
+        "the lower hash is evicted"
+    );
+    assert!(graph.block_by_hash(&kept).is_some());
+    assert!(heavy
+        .iter()
+        .all(|id| graph.block_by_hash(&hash(*id)).is_some()));
+    assert_eq!(graph.chain_tips().len(), 1 + MAX_BRANCHES);
 }
 
 /// `0 -> 1 -> 2 -> 3 -> 4`, with block 4 the tip.

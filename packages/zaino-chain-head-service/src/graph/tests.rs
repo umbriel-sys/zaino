@@ -137,6 +137,13 @@ macro_rules! graph_contract {
                 checks::the_tip_wins_an_equal_work_tie::<$graph>();
             }
 
+            #[test]
+            fn a_tenth_branch_evicts_the_lightest_then_the_oldest_then_the_lowest_hash() {
+                checks::a_tenth_branch_evicts_the_lightest_then_the_oldest_then_the_lowest_hash::<
+                    $graph,
+                >();
+            }
+
             proptest::proptest! {
                 #[test]
                 fn random_moves_keep_the_graph_consistent(
@@ -149,4 +156,4 @@ macro_rules! graph_contract {
     };
 }
 
-graph_contract!(map_backed_snapshot, crate::snapshot::MapBackedSnapshot);
+graph_contract!(persistent_snapshot, crate::snapshot::PersistentSnapshot);

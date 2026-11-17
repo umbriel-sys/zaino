@@ -93,7 +93,7 @@ pub use zaino_encoding::*;
 pub use error::{InitError, SyncError};
 pub use zaino_chain::{ChainViewSnapshot, ComposerSnapshot};
 pub use zaino_chain_head::{ChainHeadBlock, ChainHeadSnapshot};
-pub use zaino_chain_head_service::MapBackedSnapshot;
+pub use zaino_chain_head_service::PersistentSnapshot;
 pub use zaino_primitives::types::MempoolInfo;
 
 /// The finalised store's on-disk types, for this crate's own use only.
