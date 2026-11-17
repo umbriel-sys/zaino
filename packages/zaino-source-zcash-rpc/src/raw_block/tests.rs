@@ -5,7 +5,7 @@
 //! block here.
 
 use proptest::prelude::*;
-use zaino_primitives::types::{Block, ChainMetadata, ShieldedPool};
+use zaino_primitives::types::{Block, ShieldedPool};
 use zaino_primitives::zebra::block_from_zebra;
 use zebra_chain::block::{arbitrary::LedgerState, Block as ZebraBlock};
 use zebra_chain::parameters::NetworkUpgrade;
@@ -20,7 +20,7 @@ const HEADER_LEN: usize = 4 + 32 * 3 + 4 + 4 + 32 + 3 + 1344;
 
 /// The oracle's block, or `None` where it refuses the bytes.
 fn oracle(bytes: &[u8]) -> Option<Block> {
-    block_from_zebra(&whole(bytes)?, ChainMetadata::ZERO).ok()
+    block_from_zebra(&whole(bytes)?).ok()
 }
 
 /// zebra's reading of `bytes`, which must consume them all: its deserializer
@@ -36,7 +36,7 @@ fn parse(bytes: &[u8]) -> Result<Block, RawBlockError> {
 }
 
 fn parse_at(bytes: &[u8], verification: BlockVerification) -> Result<Block, RawBlockError> {
-    parse_block(bytes, ChainMetadata::ZERO, verification)
+    parse_block(bytes, verification)
 }
 
 /// What a block compares by: every field, as `Block` and `Transaction` have
@@ -316,6 +316,48 @@ fn bundle(tx: &mut Vec<u8>, flags: Option<u8>) {
 
 /// A v4 transaction: one input (coinbase with `script`, or spending `prev`),
 /// `spends` zeroed Sapling spends and `value_balance`.
+/// A v2 transaction with no inputs, one output of `paid` and one JoinSplit
+/// moving `vpub_new` out of Sprout: an unshielding, the shape of mainnet
+/// block 407's second transaction.
+fn sprout_unshielding(paid: u64, vpub_new: u64) -> Vec<u8> {
+    let mut tx = Vec::new();
+    tx.extend(2u32.to_le_bytes());
+    compact(&mut tx, 0); // inputs
+    compact(&mut tx, 1);
+    tx.extend(paid.to_le_bytes());
+    compact(&mut tx, 0); // an empty script
+    tx.extend([0; 4]); // lock time
+    compact(&mut tx, 1); // JoinSplits
+    tx.extend(0u64.to_le_bytes()); // vpub_old
+    tx.extend(vpub_new.to_le_bytes());
+    tx.extend(vec![0; JOINSPLIT_REST_LEN + BCTV14_PROOF_LEN]);
+    tx.extend([0; JOINSPLIT_AUTH_LEN]);
+    tx
+}
+
+/// The JoinSplits' value reaches the domain transaction, with zebra's sign.
+#[test]
+fn a_joinsplit_carries_its_value_balance() {
+    let parsed = read_tx(&sprout_unshielding(27_450_000, 27_460_000))
+        .expect("parses")
+        .transaction;
+    assert_eq!(parsed.sprout.joinsplits, 1);
+    assert_eq!(parsed.sprout.value_balance.as_i64(), 27_460_000);
+    assert_eq!(parsed.transparent.outputs.len(), 1);
+    assert_eq!(
+        parsed.pool_balances().sprout.map(|b| b.as_i64()),
+        Some(27_460_000)
+    );
+    let shielding = read_tx(&sprout_unshielding(0, 0))
+        .expect("parses")
+        .transaction;
+    assert_eq!(shielding.sprout.joinsplits, 1);
+    assert_eq!(shielding.sprout.value_balance.as_i64(), 0);
+    let none = read_tx(&v4_tx(None, 0, 0)).expect("parses").transaction;
+    assert_eq!(none.sprout.joinsplits, 0);
+    assert_eq!(none.pool_balances().sprout, None);
+}
+
 fn v4_tx(coinbase: Option<&[u8]>, spends: usize, value_balance: i64) -> Vec<u8> {
     let mut tx = Vec::new();
     tx.extend((0x8000_0004u32).to_le_bytes());

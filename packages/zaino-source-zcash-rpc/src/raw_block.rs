@@ -25,12 +25,12 @@ mod txid;
 
 use sha2::{Digest as _, Sha256};
 use zaino_primitives::types::{
-    Block, BlockCommitments, BlockError, BlockHash, BlockHeader, ChainMetadata, CompactCiphertext,
+    Block, BlockCommitments, BlockError, BlockHash, BlockHeader, CompactCiphertext,
     CompactDifficulty, CompactDifficultyError, EphemeralKey, EquihashSolution, Height,
     HeightOverflow, MerkleRoot, NoteCommitment, Nullifier, OrchardAction, OrchardData, SaplingData,
     SaplingOutput, SaplingSpend, Script, ShieldedPool, SignedZatoshis, SignedZatoshisOverflow,
-    Transaction, TransactionId, TransparentData, TransparentInput, TransparentOutput, Zatoshis,
-    ZatoshisOverflow,
+    SproutData, Transaction, TransactionId, TransparentData, TransparentInput, TransparentOutput,
+    Zatoshis, ZatoshisOverflow,
 };
 
 use reader::Reader;
@@ -215,22 +215,16 @@ pub enum BlockVerification {
 }
 
 /// Parse a zcash-serialized block.
-///
-/// `chain_metadata` is indexed state, not block data, so the caller supplies it.
-pub fn parse_block(
-    bytes: &[u8],
-    chain_metadata: ChainMetadata,
-    verification: BlockVerification,
-) -> Result<Block, RawBlockError> {
-    let block = parse_checked(bytes, chain_metadata.clone(), verification)?;
-    if verification == BlockVerification::Full && upstream(bytes, chain_metadata)? != block {
+pub fn parse_block(bytes: &[u8], verification: BlockVerification) -> Result<Block, RawBlockError> {
+    let block = parse_checked(bytes, verification)?;
+    if verification == BlockVerification::Full && upstream(bytes)? != block {
         return Err(RawBlockError::UpstreamMismatch);
     }
     Ok(block)
 }
 
 /// zebra's block from `bytes`, which it must consume entirely.
-fn upstream(bytes: &[u8], chain_metadata: ChainMetadata) -> Result<Block, RawBlockError> {
+fn upstream(bytes: &[u8]) -> Result<Block, RawBlockError> {
     use zebra_chain::serialization::ZcashDeserialize as _;
     let mut cursor = std::io::Cursor::new(bytes);
     let block = zebra_chain::block::Block::zcash_deserialize(&mut cursor)
@@ -238,7 +232,7 @@ fn upstream(bytes: &[u8], chain_metadata: ChainMetadata) -> Result<Block, RawBlo
     if usize::try_from(cursor.position()).ok() != Some(bytes.len()) {
         return Err(RawBlockError::Upstream("trailing bytes".into()));
     }
-    zaino_primitives::zebra::block_from_zebra(&block, chain_metadata)
+    zaino_primitives::zebra::block_from_zebra(&block)
         .map_err(|e| RawBlockError::Upstream(e.to_string()))
 }
 
@@ -277,11 +271,7 @@ fn check_fields(raw: &RawTx<'_>) -> Result<(), RawBlockError> {
 }
 
 /// The block, structure checked, plus Light's checks from `Light`.
-fn parse_checked(
-    bytes: &[u8],
-    chain_metadata: ChainMetadata,
-    verification: BlockVerification,
-) -> Result<Block, RawBlockError> {
+fn parse_checked(bytes: &[u8], verification: BlockVerification) -> Result<Block, RawBlockError> {
     let light = verification != BlockVerification::Off;
     if u64::try_from(bytes.len()).map_or(true, |len| len > zaino_consensus::MAX_BLOCK_BYTES) {
         return Err(RawBlockError::BlockTooLarge(bytes.len()));
@@ -306,11 +296,7 @@ fn parse_checked(
             return Err(RawBlockError::MerkleRoot);
         }
     }
-    Ok(Block::try_new(
-        header.into_header(height),
-        transactions,
-        chain_metadata,
-    )?)
+    Ok(Block::try_new(header.into_header(height), transactions)?)
 }
 
 /// Header fields, before the coinbase supplies the height.
@@ -480,9 +466,17 @@ struct RawTx<'a> {
     zip244: Option<Zip244Header<'a>>,
     inputs: Vec<RawInput<'a>>,
     outputs: Vec<RawOutput<'a>>,
+    sprout: RawSprout,
     sapling: RawSapling<'a>,
     orchard: Option<RawOrchard<'a>>,
     ironwood: Option<RawOrchard<'a>>,
+}
+
+/// The JoinSplits' count and net value (`vpub_new - vpub_old`, summed).
+#[derive(Default)]
+struct RawSprout {
+    joinsplits: usize,
+    value_balance: i128,
 }
 
 struct ParsedTransaction {
@@ -563,12 +557,19 @@ fn read_pre_v5<'a>(r: &mut Reader<'a>, version: TxVersion) -> Result<RawTx<'a>, 
         TxVersion::V4 => Some(GROTH_PROOF_LEN),
         TxVersion::Sprout { joinsplits: false } | TxVersion::V5 | TxVersion::V6 => None,
     };
+    let mut sprout = RawSprout::default();
     if let Some(proof_len) = joinsplit_proof_len {
         let joinsplit_len = JOINSPLIT_FIXED_LEN.saturating_add(proof_len);
-        let joinsplits = r.list(joinsplit_len, |r| skip_joinsplit(r, proof_len))?;
+        let joinsplits = r.list(joinsplit_len, |r| read_joinsplit(r, proof_len))?;
         if !joinsplits.is_empty() {
             r.skip(JOINSPLIT_AUTH_LEN)?;
         }
+        sprout.joinsplits = joinsplits.len();
+        // each value is at most the money supply, so an i128 sum cannot overflow
+        sprout.value_balance = joinsplits
+            .iter()
+            .map(|(vpub_old, vpub_new)| i128::from(*vpub_new).saturating_sub(i128::from(*vpub_old)))
+            .fold(0i128, i128::saturating_add);
     }
     if !sapling.is_empty() {
         r.skip(SIGNATURE_LEN)?; // bindingSigSapling
@@ -578,6 +579,7 @@ fn read_pre_v5<'a>(r: &mut Reader<'a>, version: TxVersion) -> Result<RawTx<'a>, 
         zip244: None,
         inputs,
         outputs,
+        sprout,
         sapling,
         orchard: None,
         ironwood: None,
@@ -638,6 +640,7 @@ fn read_v5_family<'a>(
         zip244: Some(zip244),
         inputs,
         outputs,
+        sprout: RawSprout::default(),
         sapling,
         orchard,
         ironwood,
@@ -664,11 +667,13 @@ fn read_output<'a>(r: &mut Reader<'a>) -> Result<RawOutput<'a>, RawBlockError> {
     })
 }
 
-fn skip_joinsplit(r: &mut Reader<'_>, proof_len: usize) -> Result<(), RawBlockError> {
-    Zatoshis::new(r.u64()?)?; // vpub_old
-    Zatoshis::new(r.u64()?)?; // vpub_new
+/// A JoinSplit's `(vpub_old, vpub_new)`, the rest skipped.
+fn read_joinsplit(r: &mut Reader<'_>, proof_len: usize) -> Result<(u64, u64), RawBlockError> {
+    let vpub_old = u64::from(Zatoshis::new(r.u64()?)?);
+    let vpub_new = u64::from(Zatoshis::new(r.u64()?)?);
     r.skip(JOINSPLIT_REST_LEN)?;
-    r.skip(proof_len)
+    r.skip(proof_len)?;
+    Ok((vpub_old, vpub_new))
 }
 
 fn read_spend_v4<'a>(r: &mut Reader<'a>) -> Result<RawSpend<'a>, RawBlockError> {
@@ -863,6 +868,12 @@ fn to_domain(raw: &RawTx<'_>, txid: [u8; 32]) -> Result<Transaction, RawBlockErr
     Ok(Transaction {
         txid: TransactionId::from(txid),
         transparent: TransparentData { inputs, outputs },
+        sprout: SproutData {
+            joinsplits: u32::try_from(raw.sprout.joinsplits).unwrap_or(u32::MAX),
+            value_balance: SignedZatoshis::try_new(
+                i64::try_from(raw.sprout.value_balance).unwrap_or(i64::MAX),
+            )?,
+        },
         sapling: SaplingData {
             spends: raw
                 .sapling

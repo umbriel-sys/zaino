@@ -3,21 +3,32 @@
 use std::time::Duration;
 
 mod names {
-    pub(super) const COMMIT_SECONDS: &str = "zaino.store.commit_seconds";
-    pub(super) const COMMIT_BYTES_TOTAL: &str = "zaino.store.commit_bytes_total";
-    pub(super) const SNAPSHOTS_LIVE: &str = "zaino.store.snapshots_live";
-    pub(super) const SNAPSHOT_HEAP_BYTES: &str = "zaino.store.snapshot_heap_bytes";
-    pub(super) const MANIFEST_READ_CACHED: &str = "zaino.store.manifest_read_cached";
+    pub(super) const COMMIT_SECONDS: &str = "zaino.lsm.commit_seconds";
+    pub(super) const COMMIT_BYTES_TOTAL: &str = "zaino.lsm.commit_bytes_total";
+    pub(super) const COMMIT_CHECK_SECONDS: &str = "zaino.lsm.commit_check_seconds";
+    pub(super) const COMMIT_BUFFER_SECONDS: &str = "zaino.lsm.commit_buffer_seconds";
+    pub(super) const SNAPSHOTS_LIVE: &str = "zaino.lsm.snapshots_live";
+    pub(super) const SNAPSHOT_HEAP_BYTES: &str = "zaino.lsm.snapshot_heap_bytes";
+    pub(super) const MANIFEST_READ_CACHED: &str = "zaino.lsm.manifest_read_cached";
 }
+
+/// Per-call phases, microseconds to a second
+const PHASE_SECONDS: &[f64] = &[
+    1e-6, 1e-5, 5e-5, 1e-4, 5e-4, 1e-3, 5e-3, 1e-2, 5e-2, 0.1, 0.5, 1.0,
+];
 
 /// `(metric, bucket edges)` for the exporter (ms commits at the tip → minutes on a stalled disk);
 /// the LSM's are [`LSM_METRIC_BUCKETS`](crate::LSM_METRIC_BUCKETS)
-pub const METRIC_BUCKETS: &[(&str, &[f64])] = &[(
-    names::COMMIT_SECONDS,
-    &[
-        1e-3, 5e-3, 1e-2, 5e-2, 0.1, 0.5, 1.0, 5.0, 15.0, 60.0, 300.0,
-    ],
-)];
+pub const METRIC_BUCKETS: &[(&str, &[f64])] = &[
+    (
+        names::COMMIT_SECONDS,
+        &[
+            1e-3, 5e-3, 1e-2, 5e-2, 0.1, 0.5, 1.0, 5.0, 15.0, 60.0, 300.0,
+        ],
+    ),
+    (names::COMMIT_CHECK_SECONDS, PHASE_SECONDS),
+    (names::COMMIT_BUFFER_SECONDS, PHASE_SECONDS),
+];
 
 /// `# HELP` registrations for every metric this crate emits (store + LSM)
 pub fn describe_metrics() {
@@ -27,6 +38,16 @@ pub fn describe_metrics() {
         names::COMMIT_SECONDS,
         Unit::Seconds,
         "One durable commit: every namespace written + synced, then the manifest, by index"
+    );
+    describe_histogram!(
+        names::COMMIT_CHECK_SECONDS,
+        Unit::Seconds,
+        "One buffered commit's checks: shapes, then each new map key looked up (insert-once), by index"
+    );
+    describe_histogram!(
+        names::COMMIT_BUFFER_SECONDS,
+        Unit::Seconds,
+        "One buffered commit's rows entered into the write buffer, by index"
     );
     describe_counter!(
         names::COMMIT_BYTES_TOTAL,
@@ -60,6 +81,15 @@ pub(crate) fn manifest_read(index: &str, read: crate::dir::ManifestRead) {
     } else {
         0.0
     });
+}
+
+/// One buffered commit's phases: its checks and its buffer insertion.
+pub(crate) fn commit_phases(index: &str, checks: Duration, buffered: Duration) {
+    let index = index.to_owned();
+    metrics::histogram!(names::COMMIT_CHECK_SECONDS, "index" => index.clone())
+        .record(checks.as_secs_f64());
+    metrics::histogram!(names::COMMIT_BUFFER_SECONDS, "index" => index)
+        .record(buffered.as_secs_f64());
 }
 
 pub(crate) fn committed(index: &str, bytes: usize, took: Duration) {

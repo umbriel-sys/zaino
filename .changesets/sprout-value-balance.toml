@@ -1,0 +1,25 @@
+[[changes]]
+crate = "zaino-primitives"
+kind = "breaking"
+description = """
+`Transaction` gains `sprout: SproutData { joinsplits, value_balance }`: the \
+JoinSplits' count and net value (`vpub_new - vpub_old`, zebra's sign). \
+`PoolBalances` gains `sprout`. Without it a Sprout unshielding's fee went \
+negative (mainnet block 407).
+"""
+
+[[changes]]
+crate = "zaino-source-zcash-rpc"
+kind = "fix"
+description = """
+The raw-block parser reads each JoinSplit's `vpub_old` and `vpub_new` into \
+the transaction's Sprout value balance instead of skipping them.
+"""
+
+[[changes]]
+crate = "zaino-indexes"
+kind = "fix"
+description = """
+The compact-block fee counts the Sprout value balance beside Sapling, Orchard \
+and Ironwood, so a Sprout unshielding folds instead of being refused.
+"""

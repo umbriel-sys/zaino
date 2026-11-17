@@ -33,6 +33,11 @@ pub trait Storage: Send + Sync + 'static {
     /// Held while the primary runs; dropping it releases the store.
     type Lock: Send + Sync + 'static;
 
+    /// Told, before any `open`, how many backends the caller opens through
+    /// it in this process (a store: its index count), so a storage with
+    /// per-backend resources can share them out. Nothing by default.
+    fn shared_by(&mut self, _backends: std::num::NonZeroUsize) {}
+
     /// `dir` (created if absent) as `identity` holding `namespaces`; a
     /// directory stamped otherwise is [`OpenError::Mismatch`].
     fn open(

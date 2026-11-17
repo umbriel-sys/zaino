@@ -29,7 +29,9 @@ address_history = "/mnt/fast/zaino" # holds address_history_<format>/
 
 1. locks `<root>/<network>/` (one store per directory) as its primary, its
    record saying `Booting` (`Halted` if boot fails);
-2. resolves the set;
+2. resolves the set, and tells the storage how many indexes it opens
+   (`Storage::shared_by`: the LSM storage shares the machine's threads out
+   over them unless given `threads`);
 3. deletes every `<index>_<format>` directory the set does not open (old
    formats, disabled indexes) unless `delete_stale = false`; other
    directories are left and logged;
@@ -132,6 +134,28 @@ last is dropped. It implements the `zaino-chain-store` ports:
     store on another chain is rebuilt at boot (D-32).
 - `StatusSource`: the primary's state as a `ComponentStatus`, with the
   watermark's progress toward the last target.
+
+## Metrics
+
+The store emits through the `metrics` crate, names and `# HELP` text in
+`metric_names` (the chain head's convention; zainod registers them):
+
+- per block through the pipeline: `zaino.store.fetch_seconds` (fetched and
+  assembled from the validator), `zaino.store.resolve_seconds` (prevouts),
+  `zaino.store.queue_wait_seconds{index}` (the fetch waiting for a full queue:
+  backpressure), `zaino.store.writer_wait_seconds{index}` (a writer waiting
+  under the `writers` budget), `zaino.store.fold_seconds{index}`,
+  `zaino.store.commit_seconds{index}`;
+- reads: `zaino.store.read_seconds{op}` per reader operation;
+- progress: `zaino.store.watermark_height`, `zaino.store.index_tip_height{index}`,
+  `zaino.store.build_target_height`;
+- totals: `zaino.store.blocks_built_total{index}`,
+  `zaino.store.build_failures_total`, `zaino.store.panics_total{stage}`.
+
+A build's profile is these histograms: a fetch-bound build shows
+`fetch_seconds` high and `queue_wait_seconds` near zero; a writer-bound one
+shows the queue wait rising for the slowest index. `tools/zaino-bench` reads
+them through an in-process recorder.
 
 ## The primary's record
 

@@ -16,8 +16,8 @@
 
 use blake2::{digest::consts::U32, Blake2b, Digest as _};
 use zaino_primitives::types::{
-    Block, ChainMetadata, Height, MerkleRoot, PoolTreestate, ShieldedPool, SubtreeRoot, TreeRoot,
-    TreeRootInfo, TreeRoots, TreeSize,
+    Block, Height, MerkleRoot, PoolTreestate, ShieldedPool, SubtreeRoot, TreeRoot, TreeRootInfo,
+    TreeRoots, TreeSize,
 };
 use zaino_source_zcash_rpc::{parse_block, BlockVerification};
 
@@ -369,17 +369,6 @@ pub fn next_block(
             ));
         }
     }
-    let size = |pool| {
-        pool_size(&tree_roots, pool)
-            .and_then(|size| TreeSize::try_from(size).ok())
-            .unwrap_or(TreeSize::ZERO)
-    };
-    let metadata = ChainMetadata {
-        sapling_tree_size: size(ShieldedPool::Sapling),
-        orchard_tree_size: size(ShieldedPool::Orchard),
-        ironwood_tree_size: size(ShieldedPool::Ironwood),
-    };
-
     let encoded: Vec<Vec<u8>> = transactions
         .iter()
         .map(|tx| encode::transaction(tx, upgrade))
@@ -400,7 +389,7 @@ pub fn next_block(
             provisional.len()
         );
     }
-    let parsed = parse_block(&provisional, metadata.clone(), BlockVerification::Off)
+    let parsed = parse_block(&provisional, BlockVerification::Off)
         .unwrap_or_else(|error| panic!("the builder encoded an unparsable block: {error}"));
     let txids = parsed
         .transactions()
@@ -409,7 +398,7 @@ pub fn next_block(
     header.merkle_root = MerkleRoot::of(txids).into();
     let header = encode::header(&header);
     let bytes = encode::block(&header, &encoded);
-    let block = parse_block(&bytes, metadata, BlockVerification::Light)
+    let block = parse_block(&bytes, BlockVerification::Light)
         .unwrap_or_else(|error| panic!("the builder encoded an invalid block: {error}"));
     let spendable = spendable_after(parent, &block);
     MockBlock {
@@ -515,12 +504,7 @@ fn txid_of(tx: &Tx, upgrade: Option<crate::schedule::Upgrade>) -> [u8; 32] {
         nonce: [0; 32],
     };
     let bytes = encode::block(&encode::header(&header), &encoded);
-    let metadata = ChainMetadata {
-        sapling_tree_size: TreeSize::ZERO,
-        orchard_tree_size: TreeSize::ZERO,
-        ironwood_tree_size: TreeSize::ZERO,
-    };
-    let parsed = parse_block(&bytes, metadata, BlockVerification::Off)
+    let parsed = parse_block(&bytes, BlockVerification::Off)
         .unwrap_or_else(|error| panic!("the builder encoded an unparsable spend: {error}"));
     parsed
         .transactions()
@@ -632,10 +616,6 @@ pub fn legacy_tree(
         );
     }
     bytes
-}
-
-fn pool_size(roots: &TreeRoots, pool: ShieldedPool) -> Option<u64> {
-    pool_root(roots, pool).map(|info| u64::from(info.size.get()))
 }
 
 fn hash(parts: &[&[u8]]) -> [u8; 32] {

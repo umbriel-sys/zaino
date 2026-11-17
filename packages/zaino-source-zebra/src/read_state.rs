@@ -31,7 +31,7 @@ use zebra_chain::parameters::{Network, NetworkUpgrade};
 use zebra_state::{ReadRequest, ReadResponse, ReadStateService};
 
 use zaino_primitives::types::{
-    Block, BlockConfirmations, BlockHash, ChainMetadata, Height, TreeRoot, TreeRootInfo, TreeSize,
+    Block, BlockConfirmations, BlockHash, Height, TreeRoot, TreeRootInfo, TreeSize,
 };
 use zaino_source::{FailureMode, GetBlockError, GetChainTipError, NonDomainError, QueryError};
 
@@ -70,10 +70,9 @@ impl From<ReadStateError> for NonDomainError {
     fn from(e: ReadStateError) -> Self {
         let mode = match &e {
             ReadStateError::Unreachable(_) => FailureMode::Connection,
-            // Corrupt in-process data is not a wire parse; classified `Parse`
-            // (non-retryable) for now — a dedicated `FailureMode::InvalidSourceData`
-            // waits for a consumer that branches on it.
-            ReadStateError::InvalidData(_) | ReadStateError::OffContract(_) => FailureMode::Parse,
+            ReadStateError::InvalidData(_) | ReadStateError::OffContract(_) => {
+                FailureMode::InvalidSourceData
+            }
         };
         NonDomainError::from_cause(mode, e)
     }
@@ -276,12 +275,7 @@ impl zaino_source::OneShotGetBlock for ZebraReadStateAdapter {
         match response {
             ReadResponse::Block(Some(arc_block)) => {
                 // Convert from &Block — no clone of the Arc'd block.
-                //
-                // Cumulative tree sizes are indexed state rather than block
-                // data, so they are zero here and filled in by whatever tracks
-                // them. Zero is a placeholder, not a measurement.
-                let chain_metadata = ChainMetadata::ZERO;
-                zaino_primitives::zebra::block_from_zebra(&arc_block, chain_metadata)
+                zaino_primitives::zebra::block_from_zebra(&arc_block)
                     .map_err(|e| ReadStateError::invalid_data(e).into())
             }
             ReadResponse::Block(None) => {
@@ -324,9 +318,7 @@ impl zaino_source::OneShotGetBlockByHash for ZebraReadStateAdapter {
 
         match read(&self.state, ReadRequest::Block(zebra_hash.into())).await? {
             ReadResponse::Block(Some(arc_block)) => {
-                // Tree sizes are indexed state, not block data — see `GetBlock`.
-                let chain_metadata = ChainMetadata::ZERO;
-                zaino_primitives::zebra::block_from_zebra(&arc_block, chain_metadata)
+                zaino_primitives::zebra::block_from_zebra(&arc_block)
                     .map_err(|e| ReadStateError::invalid_data(e).into())
             }
             // Zebra's read-state does not serve side-chain blocks, so an absent
@@ -828,9 +820,27 @@ impl zaino_source::OneShotGetCommitmentTreeRoots for ZebraReadStateAdapter {
         zaino_primitives::types::TreeRoots,
         QueryError<zaino_source::GetCommitmentTreeRootsError, ReadStateError>,
     > {
-        use zaino_primitives::types::TreeRoots;
-
         let hash = zebra_chain::block::Hash(block.into());
+        // The block's height decides which pools have a tree (D-68): the state
+        // seeds every tree at genesis, so a tree's presence does not.
+        let Some((height, _)) = self.block_identity(hash).await? else {
+            return Err(QueryError::Domain(
+                zaino_source::GetCommitmentTreeRootsError::BlockNotFound(block),
+            ));
+        };
+        Ok(self.roots_at(hash, height).await?)
+    }
+}
+
+impl ZebraReadStateAdapter {
+    /// Each pool's root and size after the block `hash` at `height`; `None`
+    /// for a pool not yet active there.
+    async fn roots_at(
+        &self,
+        hash: zebra_chain::block::Hash,
+        height: zebra_chain::block::Height,
+    ) -> Result<zaino_primitives::types::TreeRoots, ReadStateError> {
+        use zebra_chain::parameters::NetworkUpgrade;
 
         // Read the three pools concurrently: they are independent reads and the
         // caller waits for all of them regardless. The any-chain reads find a
@@ -840,39 +850,35 @@ impl zaino_source::OneShotGetCommitmentTreeRoots for ZebraReadStateAdapter {
             read(&self.state, ReadRequest::AnyChainOrchardTree(hash)),
             read(&self.state, ReadRequest::AnyChainIronwoodTree(hash)),
         );
+        let active = |upgrade| pool_active(&self.network, upgrade, height);
 
         // Unlike the RPC path, the state service hands back a live tree, so the
         // root and count are read from it directly rather than deserialised.
         let sapling = match sapling? {
             ReadResponse::SaplingTree(tree) => tree
                 .as_deref()
+                .filter(|_| active(NetworkUpgrade::Sapling))
                 .map(|tree| tree_root_info(tree.root().into(), tree.count()))
                 .transpose()?,
-            _ => return Err(unexpected_response("SaplingTree").into()),
+            _ => return Err(unexpected_response("SaplingTree")),
         };
         let orchard = match orchard? {
             ReadResponse::OrchardTree(tree) => tree
                 .as_deref()
+                .filter(|_| active(NetworkUpgrade::Nu5))
                 .map(|tree| tree_root_info(tree.root().into(), tree.count()))
                 .transpose()?,
-            _ => return Err(unexpected_response("OrchardTree").into()),
+            _ => return Err(unexpected_response("OrchardTree")),
         };
         let ironwood = match ironwood? {
             ReadResponse::IronwoodTree(tree) => tree
                 .as_deref()
+                .filter(|_| active(NetworkUpgrade::Nu6_3))
                 .map(|tree| tree_root_info(tree.root().into(), tree.count()))
                 .transpose()?,
-            _ => return Err(unexpected_response("IronwoodTree").into()),
+            _ => return Err(unexpected_response("IronwoodTree")),
         };
-
-        // The state seeds every tree at genesis, so a block it holds has one:
-        // no tree at all is a block it does not hold.
-        if sapling.is_none() && orchard.is_none() && ironwood.is_none() {
-            return Err(QueryError::Domain(
-                zaino_source::GetCommitmentTreeRootsError::BlockNotFound(block),
-            ));
-        }
-        Ok(TreeRoots {
+        Ok(zaino_primitives::types::TreeRoots {
             sapling,
             orchard,
             ironwood,
@@ -898,19 +904,9 @@ impl zaino_source::OneShotGetCommitmentTreeRootsByHeight for ZebraReadStateAdapt
             }
             _ => return Err(unexpected_response("BlockHash").into()),
         };
-        // The hash-addressed read can no longer miss: the hash was just
-        // resolved from the same state, so its `BlockNotFound` is a fault.
-        let roots =
-            zaino_source::OneShotGetCommitmentTreeRoots::get_commitment_tree_roots(self, hash)
-                .await
-                .map_err(|error| match error {
-                    QueryError::Domain(
-                        zaino_source::GetCommitmentTreeRootsError::BlockNotFound(_),
-                    ) => QueryError::Domain(
-                        zaino_source::GetCommitmentTreeRootsByHeightError::HeightNotFound(height),
-                    ),
-                    QueryError::NonDomain(non_domain) => QueryError::NonDomain(non_domain),
-                })?;
+        let roots = self
+            .roots_at(zebra_chain::block::Hash(hash.into()), zebra_height)
+            .await?;
         Ok((hash, roots))
     }
 }
@@ -993,16 +989,24 @@ fn address_delta(
 /// omits the pool. The gate here is the same schedule the state was opened
 /// with, so both transports answer `None`, which the wire carries as the
 /// empty string.
+/// Whether the pool `upgrade` introduces is active at `height`.
+fn pool_active(
+    network: &Network,
+    upgrade: zebra_chain::parameters::NetworkUpgrade,
+    height: zebra_chain::block::Height,
+) -> bool {
+    upgrade
+        .activation_height(network)
+        .is_some_and(|activation| activation <= height)
+}
+
 fn pool_if_active(
     network: &Network,
     upgrade: zebra_chain::parameters::NetworkUpgrade,
     height: zebra_chain::block::Height,
     final_state: Option<Vec<u8>>,
 ) -> Option<zaino_primitives::types::PoolTreestate> {
-    let active = upgrade
-        .activation_height(network)
-        .is_some_and(|activation| activation <= height);
-    let final_state = final_state.filter(|_| active)?;
+    let final_state = final_state.filter(|_| pool_active(network, upgrade, height))?;
     Some(zaino_primitives::types::PoolTreestate {
         // Roots are answered by `get_commitment_tree_roots` on both adapters.
         final_root: None,
@@ -1877,8 +1881,11 @@ mod tree_root_info_tests {
         assert_eq!(max.size, TreeSize::from(u32::MAX));
 
         let full = tree_root_info([0; 32], 1_u64 << 32).expect_err("2^32 does not fit");
-        // The adapter's `InvalidData` maps to the non-retryable `Parse` mode at the seam.
-        assert_eq!(NonDomainError::from(full).mode, FailureMode::Parse);
+        // The adapter's `InvalidData` is the non-retryable `InvalidSourceData` at the seam.
+        assert_eq!(
+            NonDomainError::from(full).mode,
+            FailureMode::InvalidSourceData
+        );
     }
 }
 

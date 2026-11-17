@@ -81,6 +81,8 @@ live-tests/                        Live-test suite — standalone workspace over
 docs/                              Architecture diagrams, specs, and usage guides
 tools/                             Development tools
   workbench/                         Repo guards run by `makers lint`
+  zaino-bench/                       Chain-store benchmarks and checks over the store ports (standalone workspace)
+bench-results/                     zaino-bench's run records (working notes, not published figures)
   relman/                            Release manager
 .github/                           CI workflows and issue templates
 .githooks/                         Git hooks (pre-push)

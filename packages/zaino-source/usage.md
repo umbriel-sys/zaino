@@ -71,7 +71,7 @@ never reaches consumers. The seam `NonDomainError` carries a machine-readable ki
 
 ```rust
 pub enum FailureMode {
-    Connection, Timeout, HttpStatus(u16), RpcError(i64), Parse, Auth,
+    Connection, Timeout, HttpStatus(u16), RpcError(i64), Parse, InvalidSourceData, Auth,
 }
 ```
 

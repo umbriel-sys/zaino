@@ -44,8 +44,25 @@ fn blocks(chain: &MockChain) -> Vec<Block> {
         .collect()
 }
 
-/// `block` as a compact block holding what `pools` asks for.
-fn compact(block: &Block, pools: PoolFilter) -> CompactBlock {
+fn mock_blocks(chain: &MockChain) -> Vec<zaino_source_mock::MockBlock> {
+    (0..=u32::from(tip_of(chain).height))
+        .map(|at| chain.block_at(at).expect("loaded"))
+        .collect()
+}
+
+/// `mock`'s block as a compact block holding what `pools` asks for, its tree
+/// sizes from the chain's roots (a block carries none).
+fn compact(mock: &zaino_source_mock::MockBlock, pools: PoolFilter) -> CompactBlock {
+    let block = &mock.block;
+    let size = |info: &Option<zaino_primitives::types::TreeRootInfo>| {
+        info.as_ref()
+            .map_or(zaino_primitives::types::TreeSize::ZERO, |info| info.size)
+    };
+    let chain_metadata = zaino_primitives::types::ChainMetadata {
+        sapling_tree_size: size(&mock.tree_roots.sapling),
+        orchard_tree_size: size(&mock.tree_roots.orchard),
+        ironwood_tree_size: size(&mock.tree_roots.ironwood),
+    };
     let transactions = block
         .transactions()
         .iter()
@@ -75,7 +92,7 @@ fn compact(block: &Block, pools: PoolFilter) -> CompactBlock {
         time: block.header.time,
         bits: block.header.bits,
         transactions,
-        chain_metadata: block.chain_metadata.clone(),
+        chain_metadata,
     }
 }
 
@@ -311,7 +328,7 @@ async fn compact_blocks_match_the_chain_for_every_pool_filter() {
     let (store, _) = built(&chain).await;
     let reader = store.reader();
     let tip = tip_of(&chain).height;
-    let all = blocks(&chain);
+    let all = mock_blocks(&chain);
     for pools in [
         PoolFilter::all(),
         PoolFilter::none(),

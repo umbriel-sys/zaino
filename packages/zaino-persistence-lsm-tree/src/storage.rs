@@ -32,11 +32,17 @@ pub struct LsmTreeStorage {
     pub lsm: LsmConfig,
     /// Buffered heap at which a commit writes the buffer.
     pub write_buffer: NonZeroUsize,
-    /// Each backend's pool threads (`None` = available parallelism).
+    /// Each backend's pool threads (`None` = the machine's parallelism
+    /// shared out over the backends `shared_by` announces, at least
+    /// [`MIN_SHARED_THREADS`] each; all of it when nothing is announced).
     pub threads: Option<NonZeroUsize>,
     /// Refuse a manifest readable only through the page cache.
     pub strict_manifest_read: bool,
 }
+
+/// Pool threads a backend keeps however many share the machine (measured, 5a
+/// step 6: the pool size does not move the build rate; idle pools burn CPU).
+pub const MIN_SHARED_THREADS: NonZeroUsize = NonZeroUsize::MIN.saturating_add(1);
 
 fn unavailable(operation: &'static str) -> impl FnOnce(io::Error) -> OpenError {
     move |source| OpenError::Unavailable {
@@ -49,6 +55,15 @@ impl Storage for LsmTreeStorage {
     type Backend = LsmTreeBackend;
     type ReadOnly = LsmTreeReadOnly;
     type Lock = StoreLock;
+
+    fn shared_by(&mut self, backends: NonZeroUsize) {
+        if self.threads.is_none() {
+            let cores = std::thread::available_parallelism().unwrap_or(NonZeroUsize::MIN);
+            self.threads = Some((cores.get() / backends).max(MIN_SHARED_THREADS.get()))
+                .and_then(NonZeroUsize::new)
+                .or(Some(MIN_SHARED_THREADS));
+        }
+    }
 
     fn open(
         &self,

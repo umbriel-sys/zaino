@@ -302,9 +302,11 @@ fn serviceability(
             }
             Answerable::ToHeight(tip)
         }
-        // Zaino builds no transparent address index yet, so this is the
-        // validator's answer for now. When the index lands it joins the group
-        // above and a hole starts capping it.
+        // The store holds the address-history index (I-10) but the chain head
+        // carries no transparent history yet, so the composer cannot answer
+        // across the non-finalised range: the validator answers. Stage 5b
+        // (`ChainHeadTransparentHistoryService`) moves this into the group
+        // above, where a hole caps it.
         ChainCapability::AddressHistory => {
             if passthrough {
                 Answerable::ToHeight(tip)
@@ -1591,10 +1593,11 @@ where
     HeadSnapshot: ChainHeadSnapshot,
     Source: ChainViewSource,
 {
-    // Zaino builds no transparent address index today, so these are the
-    // validator's answers. When the index lands they become a merge across the
-    // providers and gain a store bound, at which point a hole stops being
-    // fillable — the validator runs no such index either.
+    // The store's address-history index covers the finalised range only; the
+    // head carries no transparent history until Stage 5b, so these are the
+    // validator's answers. Then they become a merge across the providers with
+    // a store bound, and a hole stops being fillable — the validator runs no
+    // such index either.
 
     async fn address_balance(&self, addresses: &[TransparentAddress]) -> Result<AddressBalance> {
         self.address_query(self.fetch.source().get_address_balance(encoded(addresses)))

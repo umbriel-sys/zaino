@@ -65,7 +65,7 @@ pub struct LsmTreeConfig<'a> {
     pub threads: Option<NonZeroUsize>,
     /// Refuse to open where the manifest can only be read through the page cache (the
     /// filesystem refuses direct I/O); off = open with a warning, reported by
-    /// [`LsmTreeBackend::manifest_read`] and `zaino.store.manifest_read_cached`
+    /// [`LsmTreeBackend::manifest_read`] and `zaino.lsm.manifest_read_cached`
     pub strict_manifest_read: bool,
 }
 
@@ -303,6 +303,7 @@ impl Shared {
         ops: &[WriteOp],
     ) -> Result<(), CommitError> {
         let next = {
+            let started = std::time::Instant::now();
             let mut state = Pending::new(&self.specs, writing.engine.view(), &writing.buffer);
             check_shape(&self.specs, &state, tip, ops)?;
             writing
@@ -311,10 +312,17 @@ impl Shared {
                 .install(|| state.prefetch(ops))
                 .map_err(|error| CommitError::from_check(error.into_read("commit check")))?;
             check_keys(&self.specs, &state, ops)?;
-            writing
+            let checked = std::time::Instant::now();
+            let next = writing
                 .buffer
                 .with(&self.specs, tip, ops)
-                .map_err(|error| error.into_commit("buffer"))?
+                .map_err(|error| error.into_commit("buffer"))?;
+            emit::commit_phases(
+                self.identity.name(),
+                checked.duration_since(started),
+                checked.elapsed(),
+            );
+            next
         };
         match next.heap() >= self.write_buffer.get() {
             true => self

@@ -43,4 +43,4 @@ pub use dir::{disk_bytes, ManifestRead};
 pub use emit::{describe_metrics, METRIC_BUCKETS};
 pub use lsm::{LsmConfig, Tuning, METRIC_BUCKETS as LSM_METRIC_BUCKETS};
 pub use remove::remove_dir_all;
-pub use storage::{LsmTreeStorage, StoreLock};
+pub use storage::{LsmTreeStorage, StoreLock, MIN_SHARED_THREADS};

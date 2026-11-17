@@ -78,6 +78,18 @@ fn mapped(fs: &dyn Fs, dir: &Path, shape: Shape, meta: &SegmentMeta) -> Result<A
 
 /// Ascending byte ranges widened to whole pages (readahead's unit), then merged where they
 /// overlap or touch: one readahead request per run of contiguous pages; empty ranges dropped
+/// One segment (list index) and the asked keys its filter admits, ascending
+type Admitted<'k> = (usize, Vec<&'k [u8]>);
+
+/// The page ranges `step` reads in `file` for `keys` (ascending), coalesced
+fn ranges_of(file: &Probed, step: Prefetch, keys: &[&[u8]]) -> Result<Vec<Range<usize>>> {
+    let ranges = keys
+        .iter()
+        .map(|key| file.prefetch_range(step, key))
+        .collect::<Result<Vec<_>>>()?;
+    Ok(coalesced(ranges.into_iter()))
+}
+
 fn coalesced(ranges: impl Iterator<Item = Range<usize>>) -> Vec<Range<usize>> {
     let pages = ranges.filter(|range| !range.is_empty()).map(|range| {
         let start = (range.start / PAGE).saturating_mul(PAGE);
@@ -222,7 +234,11 @@ impl Snapshot {
         };
         let found: Vec<(usize, Lookup)> = match sorted.len() < PARALLEL_FROM {
             true => sorted.iter().map(probe).collect::<Result<_>>()?,
-            false => sorted.par_iter().map(probe).collect::<Result<_>>()?,
+            false => sorted
+                .par_iter()
+                .with_min_len(PARALLEL_FROM)
+                .map(probe)
+                .collect::<Result<_>>()?,
         };
 
         let mut lookups = vec![Lookup::Absent; keys.len()];
@@ -243,49 +259,72 @@ impl Snapshot {
     ///   flight) every candidate's record block → device sees the whole batch at once
     /// - candidate = segment whose filter admits the key (≈ only the segment holding it)
     /// - sorted keys give ascending ranges per segment, merged where they share a page
-    /// - planned + advised on the rayon pool (one thread = queue depth 1 when the records round
-    ///   faults fences, or advice blocks on a congested device)
+    /// - one rayon task per candidate segment, its keys walked in order (a task per key × segment
+    ///   cost more in scheduling than the filter probes it ran: measured at 70 % of a commit)
     fn prefetch(&self, sorted: &[(&[u8], usize)]) -> Result<()> {
+        let admitted = self.admitted(sorted)?;
         for step in [Prefetch::Fences, Prefetch::Records] {
-            let plan = self.prefetch_plan(step, sorted)?;
-            plan.into_par_iter().for_each(|(segment, range)| {
-                if let Some(file) = self.segments.get(segment) {
-                    file.will_need(range);
-                }
-            });
+            admitted
+                .par_iter()
+                .try_for_each(|(segment, keys)| -> Result<()> {
+                    let Some(file) = self.segments.get(*segment) else {
+                        return Ok(());
+                    };
+                    for range in ranges_of(file, step, keys)? {
+                        file.will_need(range);
+                    }
+                    Ok(())
+                })?;
         }
         Ok(())
+    }
+
+    /// Per segment (list index), the keys of `sorted` its filter admits, in order; segments
+    /// admitting none left out
+    fn admitted<'k>(&self, sorted: &[(&'k [u8], usize)]) -> Result<Vec<Admitted<'k>>> {
+        let admitted = self
+            .segments
+            .par_iter()
+            .enumerate()
+            .map(|(segment, file)| -> Result<(usize, Vec<&'k [u8]>)> {
+                let mut keys = Vec::new();
+                for (key, _) in sorted {
+                    let prefix = key.get(..file.filtered()).unwrap_or(key);
+                    if file.may_contain(prefix)? {
+                        keys.push(*key);
+                    }
+                }
+                Ok((segment, keys))
+            })
+            .collect::<Result<Vec<_>>>()?;
+        Ok(admitted
+            .into_iter()
+            .filter(|(_, keys)| !keys.is_empty())
+            .collect())
     }
 
     /// Round of [`prefetch`](Self::prefetch): byte ranges `step` reads for `sorted`, as
     /// `(segment's list index, range)`, candidates only, coalesced per segment
     ///
     /// - [`Prefetch::Records`] round reads fences: plan it after the fences round's advice
+    #[cfg(test)]
     pub(super) fn prefetch_plan(
         &self,
         step: Prefetch,
         sorted: &[(&[u8], usize)],
     ) -> Result<Vec<(usize, Range<usize>)>> {
-        let per_segment = self
-            .segments
-            .par_iter()
-            .enumerate()
-            .map(|(segment, file)| -> Result<Vec<(usize, Range<usize>)>> {
-                let wanted = sorted
-                    .par_iter()
-                    .map(|(key, _)| -> Result<Option<Range<usize>>> {
-                        let prefix = key.get(..file.filtered()).unwrap_or(key);
-                        match file.may_contain(prefix)? {
-                            true => Ok(Some(file.prefetch_range(step, key)?)),
-                            false => Ok(None),
-                        }
-                    })
-                    .collect::<Result<Vec<_>>>()?;
-                let ranges = coalesced(wanted.into_iter().flatten());
-                Ok(ranges.into_iter().map(|range| (segment, range)).collect())
-            })
-            .collect::<Result<Vec<_>>>()?;
-        Ok(per_segment.into_iter().flatten().collect())
+        let mut plan = Vec::new();
+        for (segment, keys) in self.admitted(sorted)? {
+            let Some(file) = self.segments.get(segment) else {
+                continue;
+            };
+            plan.extend(
+                ranges_of(file, step, &keys)?
+                    .into_iter()
+                    .map(|range| (segment, range)),
+            );
+        }
+        Ok(plan)
     }
 
     /// Newest segment first: list ≈ data age (batches append, merge takes its oldest input's slot)

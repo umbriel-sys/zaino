@@ -18,6 +18,7 @@ mod writer;
 
 use std::panic::AssertUnwindSafe;
 use std::sync::{Arc, Mutex, PoisonError};
+use std::time::Instant;
 
 use futures::{FutureExt as _, StreamExt as _};
 use tokio::sync::{watch, Semaphore};
@@ -28,6 +29,10 @@ use zaino_primitives::types::{BlockRef, Height, NetworkUpgradeInfo};
 
 use crate::assemble::{assemble, inconsistent};
 use crate::config::IngestConfig;
+use crate::metric_names::{
+    INDEX_LABEL, STAGE_LABEL, STORE_FETCH_SECONDS, STORE_PANICS_TOTAL, STORE_QUEUE_WAIT_SECONDS,
+    STORE_RESOLVE_SECONDS,
+};
 use crate::store::Open;
 use resolve::{Resolver, Source};
 
@@ -107,7 +112,7 @@ where
             backend: Arc::clone(&open.backend),
             applied: watched,
         });
-        lanes.push((open.tip, sender));
+        lanes.push((open.id, open.tip, sender));
         let slot: writer::Slot<B> = Arc::new(Mutex::new(Some(open)));
         let (writers, runtime, held) = (Arc::clone(&writers), runtime.clone(), Arc::clone(&slot));
         slots.push(slot);
@@ -143,7 +148,10 @@ where
                 let trees = ingest.trees;
                 tokio::spawn(async move {
                     let height = Height::try_from(height).map_err(inconsistent)?;
-                    assemble(source.as_ref(), &schedule, height, trees).await
+                    let started = Instant::now();
+                    let parts = assemble(source.as_ref(), &schedule, height, trees).await;
+                    metrics::histogram!(STORE_FETCH_SECONDS).record(started.elapsed());
+                    parts
                 })
             })
             .buffered(ingest.config.fetch_concurrency.get());
@@ -154,7 +162,9 @@ where
                 Some(mut taken) => {
                     let wants = needed.is_some_and(|from| height >= from);
                     let (back, resolved) = tokio::task::spawn_blocking(move || {
+                        let started = Instant::now();
                         let resolved = taken.resolve(parts, wants);
+                        metrics::histogram!(STORE_RESOLVE_SECONDS).record(started.elapsed());
                         (taken, resolved)
                     })
                     .await
@@ -166,10 +176,17 @@ where
             };
             let block = Arc::new(block);
             let bytes = weight(&block);
-            for (tip, lane) in &lanes {
+            for (id, tip, lane) in &lanes {
                 let wanted = tip.is_none_or(|tip| tip.height < height);
+                if !wanted {
+                    continue;
+                }
+                let started = Instant::now();
+                let sent = lane.send(Arc::clone(&block), bytes).await;
+                metrics::histogram!(STORE_QUEUE_WAIT_SECONDS, INDEX_LABEL => id.name())
+                    .record(started.elapsed());
                 // a writer stopped: its failure is the one returned
-                if wanted && lane.send(Arc::clone(&block), bytes).await.is_err() {
+                if sent.is_err() {
                     return Ok(());
                 }
             }
@@ -182,6 +199,7 @@ where
     .unwrap_or_else(|payload| {
         let message = writer::panic_message(&*payload);
         tracing::error!(%message, "the build pipeline panicked");
+        metrics::counter!(STORE_PANICS_TOTAL, STAGE_LABEL => "pipeline").increment(1);
         Err(writer::panicked("the build pipeline", &message))
     });
 
@@ -219,6 +237,7 @@ fn joined(what: &str, error: tokio::task::JoinError) -> ChainStoreSourceError {
         Ok(payload) => {
             let message = writer::panic_message(&*payload);
             tracing::error!(%message, "{what} panicked");
+            metrics::counter!(STORE_PANICS_TOTAL, STAGE_LABEL => what.to_owned()).increment(1);
             writer::panicked(what, &message)
         }
         Err(error) => ChainStoreSourceError::Commit {

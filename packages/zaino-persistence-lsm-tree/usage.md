@@ -56,17 +56,20 @@ recovery, failure policy), [lsm-deletes.md](./docs/lsm-deletes.md) and
   next `flush` or the write that crosses it.
 
 - `threads`: the size of the thread pool each backend builds at open for its
-  writes and commit checks (`None` = the machine's available parallelism).
-  Merges run on their own threads. A process opening several indexes can cap
-  each one so their pools don't oversubscribe the cores. An open whose pool
-  cannot start is refused.
+  writes and commit checks. `None` = the machine's parallelism shared out over
+  the backends the opener announced through `Storage::shared_by` (a store:
+  its index count), at least [`MIN_SHARED_THREADS`] (2) each; the whole
+  machine when nothing was announced. Measured (5a step 6): the pool size does
+  not move the build rate, and idle pools burn CPU, so a process opening many
+  indexes should let the store share them. Merges run on their own threads.
+  An open whose pool cannot start is refused.
 - `strict_manifest_read`: the manifest is read past the page cache at open
   (`O_DIRECT`), so a page the device never received after an unreported
   writeback failure cannot pass as committed. A filesystem that refuses direct
   I/O (FUSE, virtiofs, some ZFS settings) is read through the cache instead,
   with a warning naming that one guard as lost (torn and partial manifests are
   still detected), reported by [`LsmTreeBackend::manifest_read`]
-  ([`ManifestRead::Cached`]) and `zaino.store.manifest_read_cached`; tmpfs,
+  ([`ManifestRead::Cached`]) and `zaino.lsm.manifest_read_cached`; tmpfs,
   whose cache is its storage, counts as direct. With `strict_manifest_read`
   the open is refused instead.
 
@@ -148,10 +151,15 @@ Every metric is labelled `index` (the index name); `zaino.lsm.*` metrics also
 carry `set` (the map namespace), and the per-tier ones (`segments`, `merging`,
 `merge_duration_seconds`) `tier`:
 
-- `zaino.store.commit_seconds`, `commit_bytes_total`: durable writes.
-- `zaino.store.snapshots_live`, `snapshot_heap_bytes`: memory held by
+- `zaino.lsm.commit_seconds`, `commit_bytes_total`: durable writes (a full
+  buffer written and synced).
+- `zaino.lsm.commit_check_seconds`, `commit_buffer_seconds`: each buffered
+  commit's two phases, the checks (shapes, then every new map key looked up
+  for insert-once) and the rows entered into the buffer; what a build's
+  per-row cost is made of.
+- `zaino.lsm.snapshots_live`, `snapshot_heap_bytes`: memory held by
   snapshots (below).
-- `zaino.store.manifest_read_cached`: 1 where the manifest could only be read
+- `zaino.lsm.manifest_read_cached`: 1 where the manifest could only be read
   through the page cache at open (above).
 - `zaino.lsm.segments`, `merging`, `stall_at`, `live_rows`: each map's size
   tiers, the segment count at which a write waits on a merge, and the keys it
@@ -177,9 +185,9 @@ long-lived readers and scans finish.
 
 Two gauges, labelled by index, show it:
 
-- `zaino.store.snapshots_live`: published states alive (the current one plus
+- `zaino.lsm.snapshots_live`: published states alive (the current one plus
   those still held)
-- `zaino.store.snapshot_heap_bytes`: their buffers' estimated heap, an upper
+- `zaino.lsm.snapshot_heap_bytes`: their buffers' estimated heap, an upper
   bound (states share most nodes)
 
 ## Disk space held by readers

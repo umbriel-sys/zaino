@@ -1,0 +1,10 @@
+[[changes]]
+crate = "zaino-chain-store-service"
+kind = "feature"
+description = """
+The store emits metrics (`metric_names`, `zaino.store.*`): per-block fetch, \
+resolve, queue-wait, writer-wait, fold and commit histograms (per index where \
+it applies), per-operation read histograms, watermark / index-tip / target \
+gauges, and blocks-built / build-failure / panic counters. zainod registers \
+them when it adopts the store (Stage 7).
+"""

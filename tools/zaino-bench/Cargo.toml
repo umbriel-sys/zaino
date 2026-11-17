@@ -1,0 +1,39 @@
+# Standalone dev-tooling crate: its own workspace (not a member of the root one),
+# so it is neither test code nor a production crate and builds into neither.
+# It benchmarks and checks chain stores through the `zaino-chain-store` ports:
+# any `ChainStoreSource` feeds any `ChainStoreService + ChainStoreIngest`.
+[package]
+name = "zaino-bench"
+version = "0.0.0"
+edition = "2021"
+publish = false
+
+# Own workspace root -> isolated resolution, independent of the production tree.
+[workspace]
+
+[lints.rust]
+unsafe_code = "forbid"
+
+# The store under measurement is optimised: the tool's time is spent inside it.
+[profile.release]
+debug = 1
+
+[dependencies]
+zaino-chain-store = { path = "../../packages/zaino-chain-store" }
+zaino-chain-store-service = { path = "../../packages/zaino-chain-store-service" }
+zaino-chain-store-zainodb = { path = "../../packages/zaino-chain-store-zainodb" }
+zaino-persistence-lsm-tree = { path = "../../packages/zaino-persistence-lsm-tree" }
+zaino-source = { path = "../../packages/zaino-source" }
+zaino-source-zebra = { path = "../../packages/zaino-source-zebra" }
+zaino-primitives = { path = "../../packages/zaino-primitives" }
+zaino-indexes = { path = "../../packages/zaino-indexes" }
+
+# Versions pinned to the root workspace's, so the two trees share one build
+# of every shared dependency.
+zebra-chain = "15.0"
+tokio = { version = "1.38", features = ["full"] }
+futures = "0.3"
+metrics = "0.24"
+clap = { version = "4.0", features = ["derive"] }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"

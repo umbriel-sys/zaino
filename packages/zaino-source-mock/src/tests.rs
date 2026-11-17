@@ -201,12 +201,8 @@ fn every_block_shape_passes_full_verification() {
         .into_blocks();
     for built in &blocks {
         let raw = built.raw.as_ref().expect("every built block has bytes");
-        let full = parse_block(
-            &raw.block,
-            built.block.chain_metadata.clone(),
-            BlockVerification::Full,
-        )
-        .unwrap_or_else(|error| panic!("height {}: {error}", built.height()));
+        let full = parse_block(&raw.block, BlockVerification::Full)
+            .unwrap_or_else(|error| panic!("height {}: {error}", built.height()));
         assert_eq!(full, built.block, "height {}", built.height());
         assert_eq!(built.size, raw.block.len() as u64);
     }

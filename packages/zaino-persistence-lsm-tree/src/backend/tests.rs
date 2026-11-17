@@ -1357,8 +1357,8 @@ struct Gauges<'a> {
 
 impl<'a> Gauges<'a> {
     const MOVED: [&'static str; 3] = [
-        "zaino.store.snapshots_live",
-        "zaino.store.snapshot_heap_bytes",
+        "zaino.lsm.snapshots_live",
+        "zaino.lsm.snapshot_heap_bytes",
         "zaino.lsm.unlinked_mapped_bytes",
     ];
 
@@ -1427,8 +1427,8 @@ fn cleanup_alerts_escalate_and_gauges_track_leftovers_and_snapshots() {
                 };
                 let backend =
                     LsmTreeBackend::open(fs.clone(), Path::new(ROOT), &tuned).expect("open");
-                const LIVE: &str = "zaino.store.snapshots_live";
-                const HEAP: &str = "zaino.store.snapshot_heap_bytes";
+                const LIVE: &str = "zaino.lsm.snapshots_live";
+                const HEAP: &str = "zaino.lsm.snapshot_heap_bytes";
                 const LEFTOVER: &str = "zaino.lsm.leftover_bytes";
                 let mut seen = Gauges::new(&snapshotter);
                 let set = seen.read();

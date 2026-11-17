@@ -18,6 +18,10 @@ use zaino_primitives::types::{BlockHash, BlockRef, Height, NetworkUpgradeInfo};
 use crate::config::{network_name, ChainStoreServiceConfig, IngestConfig, OnCorruption};
 use crate::ingest::{self, Ingest};
 use crate::metadata::{self, Metadata};
+use crate::metric_names::{
+    INDEX_LABEL, STORE_BUILD_FAILURES_TOTAL, STORE_BUILD_TARGET_HEIGHT, STORE_INDEX_TIP_HEIGHT,
+    STORE_WATERMARK_HEIGHT,
+};
 use crate::reader::StoreReader;
 use crate::record::{status_of, PrimaryRecord, PrimaryState};
 use crate::set::{IndexSet, SetError};
@@ -213,7 +217,8 @@ impl<St: Storage, Src: ChainStoreSource> Inner<St, Src> {
         let (state_tx, state) = watch::channel(PrimaryState::Booting);
         let mut recorder = Recorder::new(lock, state_tx);
         recorder.set(&storage, PrimaryState::Booting);
-        match Self::open_set(config, &storage, &source, &root, &mut recorder).await {
+        let mut storage = storage;
+        match Self::open_set(config, &mut storage, &source, &root, &mut recorder).await {
             Ok((set, indexes)) => {
                 recorder.durable(&storage, verified(&indexes));
                 recorder.set(&storage, PrimaryState::Ready);
@@ -255,7 +260,7 @@ impl<St: Storage, Src: ChainStoreSource> Inner<St, Src> {
     /// `METADATA` recorded.
     async fn open_set(
         config: &ChainStoreServiceConfig,
-        storage: &St,
+        storage: &mut St,
         source: &Arc<Src>,
         root: &Path,
         recorder: &mut Recorder<St>,
@@ -266,6 +271,10 @@ impl<St: Storage, Src: ChainStoreSource> Inner<St, Src> {
             &config.indexes.enable,
             &config.indexes.disable,
         )?;
+        if let Some(opened) = std::num::NonZeroUsize::new(set.iter().count()) {
+            storage.shared_by(opened);
+        }
+        let storage = &*storage;
         let parents = parents(config, root, &set);
         sweep(storage, &parents, &set, config.indexes.delete_stale)?;
         report_change(storage, root, network, &set);
@@ -336,6 +345,9 @@ impl<St: Storage, Src: ChainStoreSource> Inner<St, Src> {
         built.recorder.record.target = built.target;
         built.recorder.set(&self.storage, PrimaryState::Building);
         let result = self.build(built, target).await;
+        if result.is_err() {
+            metrics::counter!(STORE_BUILD_FAILURES_TOTAL).increment(1);
+        }
         let state = match &result {
             Ok(()) => PrimaryState::Ready,
             Err(
@@ -593,7 +605,21 @@ impl<St: Storage, Src: ChainStoreSource> Inner<St, Src> {
         tips: impl Iterator<Item = (IndexId, Option<BlockRef>)> + Clone,
         target: Option<Height>,
     ) {
-        self.watermark.send_replace(watermark_of(tips.clone()));
+        let watermark = watermark_of(tips.clone());
+        let gauge = |height: Height| f64::from(u32::from(height));
+        if let Some(tip) = watermark.tip {
+            metrics::gauge!(STORE_WATERMARK_HEIGHT).set(gauge(tip.height));
+        }
+        for (id, tip) in tips.clone() {
+            if let Some(tip) = tip {
+                metrics::gauge!(STORE_INDEX_TIP_HEIGHT, INDEX_LABEL => id.name())
+                    .set(gauge(tip.height));
+            }
+        }
+        if let Some(target) = target {
+            metrics::gauge!(STORE_BUILD_TARGET_HEIGHT).set(gauge(target));
+        }
+        self.watermark.send_replace(watermark);
         self.serviceability
             .send_replace(serviceability_of(tips, target));
     }

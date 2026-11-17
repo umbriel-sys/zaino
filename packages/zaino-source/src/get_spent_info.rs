@@ -46,27 +46,15 @@ pub enum GetSpentInfoError {
 /// would force every consumer to invent a code on the way out, which is exactly
 /// how this method came to report `-8` for a condition the legacy full node reports as `-5`.
 ///
-/// # TODO: Zaino could answer this itself, and does not
+/// # Served by the validator only
 ///
-/// This is a straight passthrough to the validator — it has been one since
-/// `getspentinfo` was added, and no version of Zaino has ever answered it from
-/// its own index. That is a problem now that zebrad is the supported backend,
-/// because zebrad will never implement it: as things stand the method dies with
-/// the legacy full node, even though Zaino is meant to take over from the legacy full node.
-///
-/// Zaino already indexes most of what the answer needs.
-/// `FinalisedStateReader::get_outpoint_spender` (zaino-state, DB v1.2 and up)
-/// maps an outpoint to the `TxLocation { block_height, tx_index }` that spent
-/// it. That covers the response's `height` directly and its `txid` with one
-/// further read. What is missing is the response's `index` — the position of
-/// the spend within the spending transaction's input list — which the index
-/// does not store and which would have to be recovered by scanning that
-/// transaction's inputs for the outpoint.
-///
-/// Not implemented here because this crate is the port layer and has no
-/// database, and not implemented in `zaino-state` in this change because it
-/// would be new indexer capability rather than the rewire this work is doing.
-/// Recorded so the gap is a decision rather than an oversight.
+/// `getspentinfo` is a passthrough to this port; zebrad does not implement the
+/// method, so today only the legacy full node answers it. Zaino holds the
+/// answer: I-09 (`spent`) stores the spending block, transaction index and
+/// input index, but the store port `SpenderRef` exposes position and txid
+/// only, and the chain view's `SpendStatus` only the txid. The method leaves
+/// this port when `SpenderRef` carries the input index and the chain view
+/// serves it (Stage 7, after 5b's head transparent history).
 #[zaino_source_macros::resilient_port]
 pub trait OneShotGetSpentInfo: ValidatorSource + Send + Sync {
     /// Locate an output's spender.

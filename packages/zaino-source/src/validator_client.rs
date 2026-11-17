@@ -131,6 +131,7 @@ fn is_retryable(kind: &FailureMode) -> bool {
         // reply, and asking again will produce the same one.
         FailureMode::RpcError(code) => *code == WORK_QUEUE_FULL || *code == IN_WARMUP,
         FailureMode::Parse => false,
+        FailureMode::InvalidSourceData => false,
         FailureMode::Auth => false,
     }
 }

@@ -5,11 +5,11 @@
 //! value. The `block_from_zebra` entry point composes them.
 
 use crate::types::{
-    Block, BlockCommitments, BlockHash, BlockHeader, ChainMetadata, CompactCiphertext,
-    CompactCiphertextLength, CompactDifficulty, CompactDifficultyError, EphemeralKey,
-    EquihashSolution, Height, MerkleRoot, NoteCommitment, Nullifier, OrchardAction, OrchardData,
-    SaplingData, SaplingOutput, SaplingSpend, Script, SignedZatoshis, Transaction, TransactionId,
-    TransparentData, TransparentInput, TransparentOutput, Zatoshis,
+    Block, BlockCommitments, BlockHash, BlockHeader, CompactCiphertext, CompactCiphertextLength,
+    CompactDifficulty, CompactDifficultyError, EphemeralKey, EquihashSolution, Height, MerkleRoot,
+    NoteCommitment, Nullifier, OrchardAction, OrchardData, SaplingData, SaplingOutput,
+    SaplingSpend, Script, SignedZatoshis, SproutData, Transaction, TransactionId, TransparentData,
+    TransparentInput, TransparentOutput, Zatoshis,
 };
 
 /// An Orchard-shaped action as zebra's transaction accessors yield it.
@@ -55,23 +55,14 @@ fn compact_prefix(enc: &[u8]) -> Result<CompactCiphertext, ConvertError> {
 }
 
 /// Convert a zebra block into a domain [`Block`].
-///
-/// `chain_metadata` is passed whole rather than as loose tree sizes: they are
-/// same-typed counts whose order carries no clue, so positional arguments could
-/// be transposed silently. The caller supplies it because cumulative tree sizes
-/// are indexed state, not present in the block itself.
-pub fn block_from_zebra(
-    zb: &zebra_chain::block::Block,
-    chain_metadata: ChainMetadata,
-) -> Result<Block, ConvertError> {
+pub fn block_from_zebra(zb: &zebra_chain::block::Block) -> Result<Block, ConvertError> {
     let header = header_from_zebra(zb)?;
     let transactions = zb
         .transactions
         .iter()
         .map(|tx| transaction_from_zebra(tx))
         .collect::<Result<Vec<_>, _>>()?;
-    Block::try_new(header, transactions, chain_metadata)
-        .map_err(|e| ConvertError::Block(e.to_string()))
+    Block::try_new(header, transactions).map_err(|e| ConvertError::Block(e.to_string()))
 }
 
 /// Convert just the header — skips all transaction parsing.
@@ -124,9 +115,25 @@ pub fn transaction_from_zebra(
     Ok(Transaction {
         txid: TransactionId::from(tx.hash().0),
         transparent: transparent_from_zebra(tx)?,
+        sprout: sprout_from_zebra(tx)?,
         sapling: sapling_from_zebra(tx)?,
         orchard: orchard_from_zebra(tx)?,
         ironwood: ironwood_from_zebra(tx)?,
+    })
+}
+
+fn sprout_from_zebra(
+    tx: &zebra_chain::transaction::Transaction,
+) -> Result<SproutData, ConvertError> {
+    let joinsplits = tx.sprout_joinsplit_descriptions().count();
+    let value_balance = tx
+        .sprout_value_balance()
+        .map_err(|e| ConvertError::Value(e.to_string()))?
+        .sprout_amount();
+    Ok(SproutData {
+        joinsplits: u32::try_from(joinsplits).unwrap_or(u32::MAX),
+        value_balance: SignedZatoshis::try_new(i64::from(value_balance))
+            .map_err(|e| ConvertError::Value(e.to_string()))?,
     })
 }
 

@@ -1,6 +1,6 @@
 //! Trait implementations: zaino-source query traits on [`ZcashRpcAdapter`].
 
-use zaino_primitives::types::{Block, BlockHash, ChainMetadata, Height, TransactionId, Treestate};
+use zaino_primitives::types::{Block, BlockHash, Height, TransactionId, Treestate};
 use zaino_rpc::RpcClient;
 use zaino_source::{
     FailureMode, GetBlockError, GetChainTipError, GetTreestateError, NonDomainError, QueryError,
@@ -292,15 +292,7 @@ impl zaino_source::OneShotGetBlock for ZcashRpcAdapter {
 
         // Hex decode.
         let raw_bytes = parse::parse_raw_block(&value).map_err(from_parse)?;
-
-        // Cumulative tree sizes are indexed state, not present in the block
-        // bytes, so they are zero here and populated by the caller that tracks
-        // them (via `GetTreestate` or its own index). Zero is a placeholder,
-        // not a measurement: a consumer that needs real sizes must not read
-        // them off this block.
-        let chain_metadata = ChainMetadata::ZERO;
-
-        raw_block::parse_block(&raw_bytes, chain_metadata, self.verification)
+        raw_block::parse_block(&raw_bytes, self.verification)
             .map_err(|e| NonDomainError::from_cause(FailureMode::Parse, e).into())
     }
 }
@@ -526,9 +518,7 @@ impl zaino_source::OneShotGetBlockByHash for ZcashRpcAdapter {
             })
             .await?;
 
-        // Tree sizes are indexed state, not block data — see `GetBlock`.
-        let chain_metadata = ChainMetadata::ZERO;
-        raw_block::parse_block(&raw_bytes, chain_metadata, self.verification)
+        raw_block::parse_block(&raw_bytes, self.verification)
             .map_err(|e| NonDomainError::from_cause(FailureMode::Parse, e).into())
     }
 }

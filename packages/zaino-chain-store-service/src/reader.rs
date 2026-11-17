@@ -8,6 +8,7 @@ use std::collections::{BTreeMap, HashMap};
 use std::fmt;
 use std::num::NonZeroUsize;
 use std::sync::Arc;
+use std::time::Instant;
 
 use futures::Stream;
 use zaino_chain_store::{
@@ -18,6 +19,8 @@ use zaino_chain_store::{
     TransparentHistoryQuery, TreeRootsIndex, TreeStateIndex, TxOutSetAccumulator, TxOutSetIndex,
 };
 use zaino_component::{ComponentStatus, StatusSource};
+
+use crate::metric_names::{OP_LABEL, STORE_READ_SECONDS};
 use zaino_indexes::{
     address_history, chain_metadata, compact_block, headers, history_tree, spent, transparent,
     tree_state, tx_out_set, txid_location, txids, FoldError, IndexId,
@@ -688,6 +691,30 @@ where
         })?
 }
 
+/// `read`, timed under `op` in [`STORE_READ_SECONDS`].
+fn timed<T>(op: &'static str, read: impl FnOnce() -> T) -> T {
+    let started = Instant::now();
+    let out = read();
+    metrics::histogram!(STORE_READ_SECONDS, OP_LABEL => op).record(started.elapsed());
+    out
+}
+
+/// A range read on the blocking pool, timed under `op`.
+async fn chunked<R, T>(
+    op: &'static str,
+    snapshot: &Arc<Snapshot<R>>,
+    read: impl FnOnce(&Snapshot<R>) -> Result<T, ChainStoreError> + Send + 'static,
+) -> Result<T, ChainStoreError>
+where
+    R: Send + Sync + 'static,
+    T: Send + 'static,
+{
+    let started = Instant::now();
+    let out = blocking(Arc::clone(snapshot), read).await;
+    metrics::histogram!(STORE_READ_SECONDS, OP_LABEL => op).record(started.elapsed());
+    out
+}
+
 impl<R: BackendReader + Sync + 'static> ChainStoreReader for StoreReader<R> {
     fn watermark(&self) -> StoreWatermark {
         self.snapshot.watermark
@@ -705,11 +732,11 @@ impl<R: BackendReader + Sync + 'static> ChainStoreReader for StoreReader<R> {
     }
 
     async fn block_hash(&self, height: Height) -> Result<Option<BlockHash>, ChainStoreError> {
-        self.snapshot.block_hash(height)
+        timed("block_hash", || self.snapshot.block_hash(height))
     }
 
     async fn block_height(&self, hash: BlockHash) -> Result<Option<Height>, ChainStoreError> {
-        self.snapshot.block_height(hash)
+        timed("block_height", || self.snapshot.block_height(hash))
     }
 
     async fn headers_chunk(
@@ -717,7 +744,7 @@ impl<R: BackendReader + Sync + 'static> ChainStoreReader for StoreReader<R> {
         start: Height,
         end: Height,
     ) -> Result<Vec<StoredHeader>, ChainStoreError> {
-        blocking(Arc::clone(&self.snapshot), move |snapshot| {
+        chunked("headers_chunk", &self.snapshot, move |snapshot| {
             snapshot.headers_range(start, end)
         })
         .await
@@ -727,7 +754,7 @@ impl<R: BackendReader + Sync + 'static> ChainStoreReader for StoreReader<R> {
         &self,
         height: Height,
     ) -> Result<Option<AbsoluteChainWork>, ChainStoreError> {
-        self.snapshot.chainwork(height)
+        timed("chainwork", || self.snapshot.chainwork(height))
     }
 }
 
@@ -737,7 +764,7 @@ impl<R: BackendReader + Sync + 'static> TreeRootsIndex for StoreReader<R> {
         start: Height,
         end: Height,
     ) -> Result<Vec<TreeRoots>, ChainStoreError> {
-        blocking(Arc::clone(&self.snapshot), move |snapshot| {
+        chunked("tree_roots_chunk", &self.snapshot, move |snapshot| {
             snapshot.tree_roots_range(start, end)
         })
         .await
@@ -751,7 +778,7 @@ impl<R: BackendReader + Sync + 'static> CompactBlockRead for StoreReader<R> {
         end: Height,
         pools: PoolFilter,
     ) -> Result<Vec<CompactBlock>, ChainStoreError> {
-        blocking(Arc::clone(&self.snapshot), move |snapshot| {
+        chunked("compact_chunk", &self.snapshot, move |snapshot| {
             snapshot.compact_range(start, end, pools)
         })
         .await
@@ -781,7 +808,7 @@ impl<R: BackendReader + Sync + 'static> CompactBlockRead for StoreReader<R> {
                 let last = first
                     .checked_add(COMPACT_CHUNK_BLOCKS.saturating_sub(1))
                     .map_or(end, |last| last.min(end));
-                let chunk = blocking(snapshot, move |snapshot| {
+                let chunk = chunked("compact_stream", &snapshot, move |snapshot| {
                     snapshot.compact_range(first, last, pools)
                 })
                 .await?;
@@ -796,16 +823,18 @@ impl<R: BackendReader + Sync + 'static> TransactionIndex for StoreReader<R> {
         &self,
         txid: &TransactionId,
     ) -> Result<Option<BlockTxPosition>, ChainStoreError> {
-        self.snapshot.tx_position(*txid)
+        timed("tx_position", || self.snapshot.tx_position(*txid))
     }
 
     async fn txid_at(
         &self,
         position: BlockTxPosition,
     ) -> Result<Option<TransactionId>, ChainStoreError> {
-        self.snapshot.bounded(position.height)?;
-        self.snapshot
-            .txid_at(position, StoreCapability::Transactions)
+        timed("txid_at", || {
+            self.snapshot.bounded(position.height)?;
+            self.snapshot
+                .txid_at(position, StoreCapability::Transactions)
+        })
     }
 }
 
@@ -814,48 +843,56 @@ impl<R: BackendReader + Sync + 'static> SpentOutputIndex for StoreReader<R> {
         &self,
         outpoints: &[Outpoint],
     ) -> Result<Vec<Option<SpenderRef>>, ChainStoreError> {
-        self.snapshot.outpoint_spenders(outpoints)
+        timed("outpoint_spenders", || {
+            self.snapshot.outpoint_spenders(outpoints)
+        })
     }
 
     async fn previous_outputs(
         &self,
         outpoints: &[Outpoint],
     ) -> Result<Vec<Option<StoredTxOut>>, ChainStoreError> {
-        self.snapshot.previous_outputs(outpoints)
+        timed("previous_outputs", || {
+            self.snapshot.previous_outputs(outpoints)
+        })
     }
 
     async fn unspent_output(
         &self,
         outpoint: Outpoint,
     ) -> Result<Option<StoredTxOut>, ChainStoreError> {
-        let outpoints = [outpoint];
-        let output = self
-            .snapshot
-            .previous_outputs(&outpoints)?
-            .into_iter()
-            .next()
-            .flatten();
-        let spent = self
-            .snapshot
-            .outpoint_spenders(&outpoints)?
-            .into_iter()
-            .next()
-            .flatten()
-            .is_some();
-        Ok(output.filter(|_| !spent))
+        timed("unspent_output", || {
+            let outpoints = [outpoint];
+            let output = self
+                .snapshot
+                .previous_outputs(&outpoints)?
+                .into_iter()
+                .next()
+                .flatten();
+            let spent = self
+                .snapshot
+                .outpoint_spenders(&outpoints)?
+                .into_iter()
+                .next()
+                .flatten()
+                .is_some();
+            Ok(output.filter(|_| !spent))
+        })
     }
 
     async fn transparent_outputs(
         &self,
         position: BlockTxPosition,
     ) -> Result<Option<Vec<StoredTxOut>>, ChainStoreError> {
-        self.snapshot.transparent_outputs(position)
+        timed("transparent_outputs", || {
+            self.snapshot.transparent_outputs(position)
+        })
     }
 }
 
 impl<R: BackendReader + Sync + 'static> TxOutSetIndex for StoreReader<R> {
     async fn txout_set(&self) -> Result<TxOutSetAccumulator, ChainStoreError> {
-        self.snapshot.txout_set()
+        timed("txout_set", || self.snapshot.txout_set())
     }
 }
 
@@ -864,7 +901,7 @@ impl<R: BackendReader + Sync + 'static> TransparentHistoryIndex for StoreReader<
         &self,
         query: &TransparentHistoryQuery,
     ) -> Result<StoreAddressEffects, ChainStoreError> {
-        self.snapshot.address_effects(query)
+        timed("address_effects", || self.snapshot.address_effects(query))
     }
 }
 
@@ -874,7 +911,9 @@ impl<R: BackendReader + Sync + 'static> TreeStateIndex for StoreReader<R> {
         pool: ShieldedPool,
         height: Height,
     ) -> Result<Option<PoolFrontier>, ChainStoreError> {
-        self.snapshot.pool_frontier(pool, height)
+        timed("pool_frontier", || {
+            self.snapshot.pool_frontier(pool, height)
+        })
     }
 
     async fn subtree_roots(
@@ -883,20 +922,24 @@ impl<R: BackendReader + Sync + 'static> TreeStateIndex for StoreReader<R> {
         start: u64,
         limit: u64,
     ) -> Result<Vec<SubtreeRoot>, ChainStoreError> {
-        self.snapshot.subtree_roots(pool, start, limit)
+        timed("subtree_roots", || {
+            self.snapshot.subtree_roots(pool, start, limit)
+        })
     }
 }
 
 impl<R: BackendReader + Sync + 'static> HistoryTreeIndex for StoreReader<R> {
     async fn history_root(&self, height: Height) -> Result<Option<[u8; 32]>, ChainStoreError> {
-        self.snapshot.history_root(height)
+        timed("history_root", || self.snapshot.history_root(height))
     }
 
     async fn history_epoch(&self, height: Height) -> Result<Option<HistoryEpoch>, ChainStoreError> {
-        Ok(self.snapshot.epoch_at(height)?.map(|epoch| HistoryEpoch {
-            branch: ConsensusBranchId::from(epoch.branch),
-            length: epoch.length,
-        }))
+        timed("history_epoch", || {
+            Ok(self.snapshot.epoch_at(height)?.map(|epoch| HistoryEpoch {
+                branch: ConsensusBranchId::from(epoch.branch),
+                length: epoch.length,
+            }))
+        })
     }
 
     async fn history_entries(
@@ -904,6 +947,8 @@ impl<R: BackendReader + Sync + 'static> HistoryTreeIndex for StoreReader<R> {
         height: Height,
         positions: &[u32],
     ) -> Result<Vec<Option<Vec<u8>>>, ChainStoreError> {
-        self.snapshot.history_entries(height, positions)
+        timed("history_entries", || {
+            self.snapshot.history_entries(height, positions)
+        })
     }
 }

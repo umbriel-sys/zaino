@@ -507,12 +507,17 @@ fn fee(tx: &FoldTx) -> Result<Zatoshis, FoldError> {
         })
     };
     let balances = tx.balances();
-    let shielded = [balances.sapling, balances.orchard, balances.ironwood]
-        .into_iter()
-        .flatten()
-        .try_fold(0i128, |total, balance: SignedZatoshis| {
-            total.checked_add(i128::from(balance.as_i64()))
-        });
+    let shielded = [
+        balances.sprout,
+        balances.sapling,
+        balances.orchard,
+        balances.ironwood,
+    ]
+    .into_iter()
+    .flatten()
+    .try_fold(0i128, |total, balance: SignedZatoshis| {
+        total.checked_add(i128::from(balance.as_i64()))
+    });
     let total = sum(tx.resolved_prevouts(NAME)?)
         .zip(sum(&tx.compact().transparent_outputs))
         .and_then(|(inputs, outputs)| inputs.checked_sub(outputs))
@@ -585,8 +590,7 @@ mod tests {
             .collect();
         let balances = PoolBalances {
             sapling: Some(SignedZatoshis::try_new(balance).expect("in range")),
-            orchard: None,
-            ironwood: None,
+            ..PoolBalances::default()
         };
         let prevouts = vec![TransparentOutput {
             value: zats(spent),
@@ -681,6 +685,33 @@ mod tests {
             reader.sapling_outputs(5, 2).is_err(),
             "past the column's end"
         );
+    }
+
+    /// A Sprout unshielding pays transparent outputs from the pool: the fee
+    /// counts the JoinSplits' value, so it is not refused as negative (the
+    /// shape mainnet block 407 has).
+    #[test]
+    fn a_sprout_unshielding_has_its_fee_from_the_joinsplits() {
+        let mut compact = tx(1).compact().clone();
+        compact.transparent_inputs = Vec::new();
+        compact.transparent_outputs = vec![TransparentOutput {
+            value: zats(27_450_000),
+            script: Script::from(vec![]),
+        }];
+        let balances = PoolBalances {
+            sprout: Some(SignedZatoshis::try_new(27_460_000).expect("in range")),
+            ..PoolBalances::default()
+        };
+        let unshielding = FoldTx::try_new(compact, balances, Some(Vec::new())).expect("paired");
+        let chain = [block_with(0, vec![tx(0), unshielding])];
+        let backend = backend(&SCHEMA);
+        fold_all::<CompactBlock>(&backend, &chain).expect("folds");
+        let reader = backend.reader().expect("reader");
+        let layout = Reader::new(&reader)
+            .layout(Height::try_from(0).expect("0"))
+            .expect("read")
+            .expect("held");
+        assert_eq!(layout.txs[1].fee, zats(10_000));
     }
 
     /// A transaction paying out more than it takes in is refused.

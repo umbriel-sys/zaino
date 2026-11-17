@@ -10,6 +10,7 @@
 
 use std::panic::{self, AssertUnwindSafe};
 use std::sync::{Arc, Mutex, PoisonError};
+use std::time::Instant;
 
 use tokio::runtime::Handle;
 use tokio::sync::{watch, Semaphore};
@@ -18,6 +19,10 @@ use zaino_persistence::{Backend, BackendWriter};
 use zaino_primitives::types::BlockRef;
 
 use super::queue::Receiver;
+use crate::metric_names::{
+    INDEX_LABEL, STAGE_LABEL, STORE_BLOCKS_BUILT_TOTAL, STORE_COMMIT_SECONDS, STORE_FOLD_SECONDS,
+    STORE_PANICS_TOTAL, STORE_WRITER_WAIT_SECONDS,
+};
 use crate::store::{commit_error, fold_error, Open};
 
 /// An index while its writer runs: the writer borrows it, so a panic never
@@ -56,16 +61,26 @@ pub(super) fn write<B: Backend>(
             let block = Arc::clone(&item.block);
             let height = block.header().height;
             if open.tip.is_none_or(|tip| tip.height < height) {
+                let waited = Instant::now();
                 let _turn = runtime
                     .block_on(writers.acquire())
                     .map_err(|error| commit_error(id, error))?;
+                let folded = Instant::now();
+                metrics::histogram!(STORE_WRITER_WAIT_SECONDS, INDEX_LABEL => id.name())
+                    .record(folded.duration_since(waited));
                 let fold = open
                     .id
                     .fold(open.state.as_ref(), &block)
                     .map_err(|error| fold_error(id, error))?;
+                let committed = Instant::now();
+                metrics::histogram!(STORE_FOLD_SECONDS, INDEX_LABEL => id.name())
+                    .record(committed.duration_since(folded));
                 open.writer
                     .commit(block.reference(), fold.ops)
                     .map_err(|error| commit_error(id, error))?;
+                metrics::histogram!(STORE_COMMIT_SECONDS, INDEX_LABEL => id.name())
+                    .record(committed.elapsed());
+                metrics::counter!(STORE_BLOCKS_BUILT_TOTAL, INDEX_LABEL => id.name()).increment(1);
                 open.state = Some(fold.next);
                 open.tip = Some(block.reference());
                 applied.send_replace(open.tip);
@@ -86,6 +101,7 @@ pub(super) fn write<B: Backend>(
         Err(payload) => {
             let message = panic_message(&*payload);
             tracing::error!(index = id.name(), %message, "index writer panicked: reopening the index");
+            metrics::counter!(STORE_PANICS_TOTAL, STAGE_LABEL => "writer").increment(1);
             Written {
                 result: Err(panicked(id.name(), &message)),
                 panicked: true,

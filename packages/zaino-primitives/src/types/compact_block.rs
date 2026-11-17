@@ -145,6 +145,7 @@ mod tests {
         let tx = Transaction {
             txid: [0; 32].into(),
             transparent: Default::default(),
+            sprout: Default::default(),
             sapling: Default::default(),
             orchard: OrchardData {
                 actions: vec![action(1)],

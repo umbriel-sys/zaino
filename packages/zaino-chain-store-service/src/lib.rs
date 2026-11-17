@@ -22,6 +22,7 @@ mod config;
 mod ingest;
 mod linked;
 mod metadata;
+pub mod metric_names;
 mod reader;
 mod record;
 mod set;

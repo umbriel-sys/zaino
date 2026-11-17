@@ -448,6 +448,7 @@ mod tests {
                 }],
                 outputs: Vec::new(),
             },
+            sprout: Default::default(),
             sapling: Default::default(),
             orchard: Default::default(),
             ironwood: Default::default(),
@@ -510,19 +511,12 @@ mod tests {
     #[test]
     fn domain_block_conversion_agrees_with_the_zebra_path() {
         use crate::tests::{fixtures::indexed_block_chain, vectors::load_vector_blocks};
-        use zaino_primitives::types::{ChainMetadata, TreeRootInfo};
+        use zaino_primitives::types::TreeRootInfo;
 
         let blocks = load_vector_blocks().expect("test vectors load");
         for (vector, expected) in blocks.iter().zip(indexed_block_chain(&blocks)) {
-            let block = zaino_primitives::zebra::block_from_zebra(
-                &vector.zebra_block,
-                ChainMetadata::new(
-                    vector_tree_size(vector.sapling_tree_size),
-                    vector_tree_size(vector.orchard_tree_size),
-                    zaino_primitives::types::TreeSize::ZERO,
-                ),
-            )
-            .expect("vector block converts to the domain shape");
+            let block = zaino_primitives::zebra::block_from_zebra(&vector.zebra_block)
+                .expect("vector block converts to the domain shape");
             let tree_roots = TreeRoots {
                 sapling: Some(TreeRootInfo {
                     root: <[u8; 32]>::from(vector.sapling_root).into(),

@@ -20,8 +20,8 @@ use tokio_util::sync::CancellationToken;
 use zaino_chain_head::{ChainHeadBlockService as _, ChainHeadConfig, ChainHeadSnapshot};
 use zaino_primitives::types::{
     rpc::{ChainTip, ChainTipStatus},
-    Block, BlockCommitments, BlockHash, BlockHeader, BlockRef, ChainMetadata, EquihashSolution,
-    Height, MerkleRoot, RelativeChainWork, Transaction, TransactionId, TreeRoots,
+    Block, BlockCommitments, BlockHash, BlockHeader, BlockRef, EquihashSolution, Height,
+    MerkleRoot, RelativeChainWork, Transaction, TransactionId, TreeRoots,
 };
 use zaino_source::FailureMode;
 use zaino_source_mock::{MockBlock, MockChain, NodeFacts, PoolTrees, Spendable};
@@ -67,8 +67,7 @@ pub(crate) fn block(h: u32, id: u16, parent: u16) -> Block {
         nonce: [0; 32],
         solution: EquihashSolution::Regtest([0; 36]),
     };
-    Block::try_new(header, vec![coinbase(id)], ChainMetadata::ZERO)
-        .expect("a test block carries its coinbase")
+    Block::try_new(header, vec![coinbase(id)]).expect("a test block carries its coinbase")
 }
 
 /// A placeholder coinbase whose txid is the block's own id bytes, so every test block carries the one transaction consensus guarantees.
@@ -76,6 +75,7 @@ fn coinbase(id: u16) -> Transaction {
     Transaction {
         txid: TransactionId::from(<[u8; 32]>::from(hash(id))),
         transparent: Default::default(),
+        sprout: Default::default(),
         sapling: Default::default(),
         orchard: Default::default(),
         ironwood: Default::default(),

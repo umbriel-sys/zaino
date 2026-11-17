@@ -8,9 +8,11 @@
 
 use std::collections::BTreeSet;
 
+use zaino_consensus::branch_id;
 use zaino_primitives::types::{
     rpc::{ChainTipStatus, SpentOutpoint},
-    Block, BlockHash, Height, ShieldedPool, TransactionId, TransactionLocation,
+    Block, BlockHash, Height, NetworkUpgradeStatus, ShieldedPool, TransactionId,
+    TransactionLocation,
 };
 use zaino_source::{
     GetAddressBalanceError, GetAddressDeltasError, GetAddressTxidsError, GetAddressUtxosError,
@@ -104,15 +106,25 @@ where
     )
 }
 
-/// Roots by hash and by height agree; an unknown hash is `BlockNotFound`, a
-/// height past the tip `HeightNotFound`.
+/// Roots by hash and by height agree; a pool has a root exactly from its
+/// activation (D-68: absent before, never an empty tree); an unknown hash is
+/// `BlockNotFound`, a height past the tip `HeightNotFound`.
 pub async fn tree_roots<S>(source: &S) -> Result<(), Broken>
 where
     S: zaino_source::OneShotGetBestBlockHeight
         + zaino_source::OneShotGetBlock
+        + zaino_source::OneShotGetBlockchainInfo
         + zaino_source::OneShotGetCommitmentTreeRoots
         + zaino_source::OneShotGetCommitmentTreeRootsByHeight,
 {
+    let upgrades = answered("blockchain info", source.get_blockchain_info().await)?.upgrades;
+    let active = |branch: u32, height: Height| {
+        upgrades.iter().any(|upgrade| {
+            u32::from(upgrade.branch_id) == branch
+                && upgrade.status != NetworkUpgradeStatus::Disabled
+                && upgrade.activation_height <= height
+        })
+    };
     let tip = tip(source).await?;
     for height in 0..=u32::from(tip) {
         let height = Height::try_from(height).map_err(|e| e.to_string())?;
@@ -133,6 +145,23 @@ where
         ensure(by_hash == by_height, || {
             format!("roots at {height} differ by hash and height")
         })?;
+        for (pool, branch, root) in [
+            (ShieldedPool::Sapling, branch_id::SAPLING, &by_hash.sapling),
+            (ShieldedPool::Orchard, branch_id::NU5, &by_hash.orchard),
+            (ShieldedPool::Ironwood, branch_id::NU6_3, &by_hash.ironwood),
+        ] {
+            ensure(root.is_some() == active(branch, height), || {
+                format!(
+                    "{pool} at {height}: root {} while the pool is {}",
+                    if root.is_some() { "present" } else { "absent" },
+                    if active(branch, height) {
+                        "active"
+                    } else {
+                        "inactive"
+                    },
+                )
+            })?;
+        }
     }
     ensure(
         matches!(

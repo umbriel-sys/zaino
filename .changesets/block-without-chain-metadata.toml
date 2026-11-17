@@ -1,0 +1,32 @@
+[[changes]]
+crate = "zaino-primitives"
+kind = "breaking"
+description = """
+`Block` no longer carries `chain_metadata`; `Block::try_new(header, \
+transactions)` and `block_from_zebra(&block)` lose the parameter. The field \
+documented the cumulative tree sizes but both adapters filled it with \
+`ChainMetadata::ZERO` ("a placeholder, not a measurement") because a block's \
+bytes hold no tree sizes; those are indexed state, answered by the tree-roots \
+ports and the chain-metadata index, which every consumer already used. \
+`ChainMetadata` stays as the compact block's indexed output."""
+
+[[changes]]
+crate = "zaino-source-zcash-rpc"
+kind = "breaking"
+description = """
+`parse_block(bytes, verification)`: the parsed block carries no chain \
+metadata (see `zaino-primitives`)."""
+
+[[changes]]
+crate = "zaino-source-zebra"
+kind = "fix"
+description = """
+`get_block` / `get_block_by_hash` no longer answer a zeroed `chain_metadata`; \
+the block type has none."""
+
+[[changes]]
+crate = "zaino-source-mock"
+kind = "fix"
+description = """
+Mock blocks no longer carry tree sizes the real adapters never supplied; the \
+sizes stay on the mock's tree roots, where both adapters answer them."""
