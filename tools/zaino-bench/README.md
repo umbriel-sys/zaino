@@ -7,9 +7,8 @@ code, not a production crate, and part of neither build.
 Everything is generic over the ports. The validator is any `ChainStoreSource`
 (today: zebra's finalized state opened read-only through
 `ZebraReadStateAdapter`); the store is any `ChainStoreService + ChainStoreIngest`
-whose reader answers the read ports (`--store lsm`: the new store over the LSM
-engine; `--store lmdb`: zainodb, until Stage 6 deletes it). Nothing here reads
-a store's internals.
+whose reader answers the read ports (today: the new store over the LSM engine,
+under `--store-dir/lsm/`). Nothing here reads a store's internals.
 
 ```sh
 cd tools/zaino-bench
@@ -26,13 +25,13 @@ record carries both.
 
 ## Commands
 
-- `build --store <lsm|lmdb> --set <full|lightclient|zcash_rpc> --to <height> [--sample <s>] [--fresh]`:
-  boots the store under `--store-dir/<store>/`, builds it through `--to` with
+- `build --set <full|lightclient|zcash_rpc> --to <height> [--sample <s>] [--fresh]`:
+  boots the store under `--store-dir/lsm/`, builds it through `--to` with
   `ChainStoreIngest::build_to`, prints the watermark every `--sample` seconds
   with the rate since the last sample, then the store's metrics
   (`zaino.store.*`: fetch, resolve, queue wait, writer wait, fold and commit
   per index). `--fresh` empties the store directory first.
-- `verify --store <..> [--every <n>] [--spend-scan <blocks>]`: reads one
+- `verify [--every <n>] [--spend-scan <blocks>]`: reads one
   height in every `n` (plus the first and last fifty) through the read ports
   and compares with the source: hash, height, header, compact block and its
   metadata, tree roots, transaction positions, spenders of the sampled blocks'
@@ -40,15 +39,12 @@ record carries both.
   default; every block in range is read, so it bounds the run; 0 skips
   spenders; a spend the store reports further up than the scan looked is
   counted unverified, not a mismatch), the compact blocks' metadata against
-  the roots' tree sizes; for the LSM store also the tree-state
-  frontiers against the validator's serialized trees. Prints the txout-set
-  accumulator at the watermark for comparison with a node's `gettxoutsetinfo`.
-  Exits non-zero on a mismatch.
-- `compare --from <h> --to <h>`: the LSM and LMDB stores' read ports over a
-  range, block by block: headers with chainwork, compact blocks, tree roots,
-  transaction positions, spenders, and the txout set where both are built to
-  the same height. The differential check of the master plan's Stage 5 exit.
-- `read --store <..> --from <h> --to <h>`: compact-stream throughput over the
+  the roots' tree sizes, and the tree-state frontiers against the validator's
+  serialized trees. Prints the txout-set accumulator at the watermark for
+  comparison with a node's `gettxoutsetinfo`. Exits non-zero on a mismatch.
+  This is the differential check of the master plan's Stage 5 exit: every
+  read port against the authoritative source.
+- `read --from <h> --to <h>`: compact-stream throughput over the
   range and point-read latency (`block_hash`, `tx_position`), with the reader's
   `zaino.store.read_seconds{op}` metrics.
 

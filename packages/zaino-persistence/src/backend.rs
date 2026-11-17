@@ -83,6 +83,11 @@ pub enum NamespaceKind {
         value: NonZeroU32,
         /// Keys removable, each at most once and never re-inserted.
         deletes: bool,
+        /// The writer guarantees distinct keys: a backend may skip its
+        /// durable `KeyExists` check for a `Put` (a repeat within its buffer
+        /// is still refused) and report a breach later as `Corrupted`.
+        /// Never with `deletes`.
+        unique: bool,
     },
 }
 
@@ -117,6 +122,21 @@ impl NamespaceSpec {
                 key,
                 value,
                 deletes,
+                unique: false,
+            },
+        }
+    }
+
+    /// A map whose keys the writer guarantees distinct (see
+    /// [`NamespaceKind::Map::unique`]); no deletes.
+    pub const fn unique_map(namespace: Namespace, key: NonZeroU32, value: NonZeroU32) -> Self {
+        Self {
+            namespace,
+            kind: NamespaceKind::Map {
+                key,
+                value,
+                deletes: false,
+                unique: true,
             },
         }
     }

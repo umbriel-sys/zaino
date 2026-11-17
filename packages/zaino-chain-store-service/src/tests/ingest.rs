@@ -10,7 +10,7 @@ use zaino_chain_store::ChainStoreSourceError;
 use zaino_indexes::{FoldBlock, IndexId};
 use zaino_persistence::{
     in_memory::{InMemoryBackend, InMemoryStorage},
-    Backend as _, BackendWriter as _, MaintenanceReader as _, RawKey, RawValue, Storage as _,
+    Backend, BackendWriter as _, MaintenanceReader, RawKey, RawValue, Storage,
 };
 use zaino_primitives::types::{Height, MerkleRoot, Outpoint, TransparentOutput};
 use zaino_source::FailureMode;
@@ -102,7 +102,11 @@ pub(super) async fn oracle(chain: &MockChain, ids: &[IndexId], tip: Height) -> C
         .collect()
 }
 
-fn contents(id: IndexId, backend: &InMemoryBackend) -> Contents {
+/// Every namespace of `id` as `backend` holds it.
+pub(super) fn contents<B: Backend>(id: IndexId, backend: &B) -> Contents
+where
+    B::Reader: MaintenanceReader,
+{
     let reader = backend.reader().expect("reader");
     id.schema()
         .specs()
@@ -114,8 +118,11 @@ fn contents(id: IndexId, backend: &InMemoryBackend) -> Contents {
         .collect()
 }
 
-/// What the store at `/data` holds for `ids`.
-pub(super) fn stored(storage: &InMemoryStorage, ids: &[IndexId]) -> Contents {
+/// What the store at `/data` holds for `ids` (no store running on `storage`).
+pub(super) fn stored<St: Storage>(storage: &St, ids: &[IndexId]) -> Contents
+where
+    <St::Backend as Backend>::Reader: MaintenanceReader,
+{
     ids.iter()
         .flat_map(|id| {
             let dir = indexes_dir().join(id.schema().dir_name());

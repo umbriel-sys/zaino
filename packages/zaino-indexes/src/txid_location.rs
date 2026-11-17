@@ -27,7 +27,8 @@ declared! {
     );
 }
 declared! {
-    const BY_TXID: NamespaceLayout = NamespaceLayout::map(LOCATIONS, &TXID, &POSITION, false);
+    /// Unique: txids are distinct (coinbases carry their height, BIP 34).
+    const BY_TXID: NamespaceLayout = NamespaceLayout::unique_map(LOCATIONS, &TXID, &POSITION);
 }
 
 /// The schema: one map, txid → position.

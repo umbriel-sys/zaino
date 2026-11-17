@@ -219,9 +219,10 @@ impl Body {
     fn decode(bytes: &[u8], specs: &[NamespaceSpec]) -> Result<Self, StoreError> {
         let mut body = BodyReader::new(bytes);
         let stored = decode_specs(&mut body)?;
+        // `unique` is a writer's promise, not stored: compared without it
         let declared: Vec<(&str, NamespaceKind)> = specs
             .iter()
-            .map(|spec| (spec.namespace.as_str(), spec.kind))
+            .map(|spec| (spec.namespace.as_str(), stored_kind(spec.kind)))
             .collect();
         let same = stored.len() == declared.len()
             && stored
@@ -271,6 +272,24 @@ impl Body {
     }
 }
 
+/// `kind` as the manifest holds it: `unique` cleared (not stored)
+fn stored_kind(kind: NamespaceKind) -> NamespaceKind {
+    match kind {
+        NamespaceKind::Map {
+            key,
+            value,
+            deletes,
+            unique: _,
+        } => NamespaceKind::Map {
+            key,
+            value,
+            deletes,
+            unique: false,
+        },
+        sequence @ NamespaceKind::Sequence { .. } => sequence,
+    }
+}
+
 /// `count u32 ‖ (name_len u8 ‖ name ‖ kind)*`: sequence `0 ‖ width u32` (0 = variable), map
 /// `1 ‖ key u32 ‖ value u32 ‖ deletes u8`
 fn encode_specs(specs: &[NamespaceSpec], out: &mut Vec<u8>) -> Result<(), StoreError> {
@@ -297,6 +316,7 @@ fn encode_specs(specs: &[NamespaceSpec], out: &mut Vec<u8>) -> Result<(), StoreE
                 key,
                 value,
                 deletes,
+                ..
             } => {
                 out.push(1);
                 out.extend_from_slice(&key.get().to_le_bytes());
@@ -333,6 +353,7 @@ fn decode_specs(body: &mut BodyReader<'_>) -> Result<Vec<(String, NamespaceKind)
                     [1] => true,
                     _ => return Err(malformed()),
                 },
+                unique: false,
             },
             _ => return Err(malformed()),
         };
@@ -438,6 +459,7 @@ impl Engine {
                         key,
                         value,
                         deletes,
+                        ..
                     },
                     Stored::Map(list),
                 ) => {
@@ -858,6 +880,7 @@ fn map_linked(
                     key,
                     value,
                     deletes,
+                    ..
                 },
                 Stored::Map(list),
             ) => {

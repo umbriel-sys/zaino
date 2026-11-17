@@ -21,7 +21,6 @@ debug = 1
 [dependencies]
 zaino-chain-store = { path = "../../packages/zaino-chain-store" }
 zaino-chain-store-service = { path = "../../packages/zaino-chain-store-service" }
-zaino-chain-store-zainodb = { path = "../../packages/zaino-chain-store-zainodb" }
 zaino-persistence-lsm-tree = { path = "../../packages/zaino-persistence-lsm-tree" }
 zaino-source = { path = "../../packages/zaino-source" }
 zaino-source-zebra = { path = "../../packages/zaino-source-zebra" }

@@ -1,0 +1,8 @@
+[[changes]]
+crate = "zaino-chain-store-service"
+kind = "fix"
+description = """
+An index whose writer failed (a commit or flush error) is reopened from disk \
+at the end of the build, as one whose writer panicked already was. Before, \
+the index was kept with its poisoned writer, so every later build failed \
+until the process restarted."""

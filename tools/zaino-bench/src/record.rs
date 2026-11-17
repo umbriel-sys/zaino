@@ -6,15 +6,14 @@ use std::io::Write as _;
 use std::path::{Path, PathBuf};
 
 use crate::recorder::Snapshot;
-use crate::StoreKind;
 
 #[derive(serde::Serialize)]
 pub struct Record {
     pub command: &'static str,
     pub recorded_at_unix: u64,
     pub host: Host,
-    pub store: Option<StoreKind>,
-    pub set: Option<String>,
+    pub store: &'static str,
+    pub set: String,
     /// `--lsm-threads` where given (a build's pool size per index).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub lsm_threads: Option<usize>,
@@ -25,8 +24,6 @@ pub struct Record {
     pub build: Option<crate::build::Outcome>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub verify: Option<crate::verify::Report>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub compare: Option<crate::compare::Report>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub read: Option<crate::read::Outcome>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -56,53 +53,38 @@ fn host() -> Host {
 }
 
 impl Record {
-    fn base(command: &'static str, store: Option<StoreKind>, set: Option<&str>) -> Self {
+    fn base(command: &'static str, set: &str) -> Self {
         Self {
             command,
             recorded_at_unix: now(),
             host: host(),
-            store,
-            set: set.map(str::to_owned),
+            store: crate::stores::NAME,
+            set: set.to_owned(),
             lsm_threads: None,
             lsm_write_buffer_mib: None,
             build: None,
             verify: None,
-            compare: None,
             read: None,
             metrics: None,
         }
     }
 
-    pub fn build(
-        store: StoreKind,
-        set: &str,
-        _to: u32,
-        outcome: &crate::build::Outcome,
-        metrics: &Snapshot,
-    ) -> Self {
+    pub fn build(set: &str, _to: u32, outcome: &crate::build::Outcome, metrics: &Snapshot) -> Self {
         Self {
             build: Some(outcome.clone()),
             metrics: Some(metrics.clone()),
-            ..Self::base("build", Some(store), Some(set))
+            ..Self::base("build", set)
         }
     }
 
-    pub fn verify(store: StoreKind, set: &str, report: &crate::verify::Report) -> Self {
+    pub fn verify(set: &str, report: &crate::verify::Report) -> Self {
         Self {
             verify: Some(report.clone()),
-            ..Self::base("verify", Some(store), Some(set))
-        }
-    }
-
-    pub fn compare(_from: u32, _to: u32, report: &crate::compare::Report) -> Self {
-        Self {
-            compare: Some(report.clone()),
-            ..Self::base("compare", None, None)
+            ..Self::base("verify", set)
         }
     }
 
     pub fn read(
-        store: StoreKind,
         set: &str,
         _from: u32,
         _to: u32,
@@ -112,7 +94,7 @@ impl Record {
         Self {
             read: Some(outcome.clone()),
             metrics: Some(metrics.clone()),
-            ..Self::base("read", Some(store), Some(set))
+            ..Self::base("read", set)
         }
     }
 }

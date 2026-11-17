@@ -42,7 +42,7 @@ pub fn describe_metrics() {
     describe_histogram!(
         names::COMMIT_CHECK_SECONDS,
         Unit::Seconds,
-        "One buffered commit's checks: shapes, then each new map key looked up (insert-once), by index"
+        "One buffered commit's checks: shapes, then each new key of a checked map looked up, by index"
     );
     describe_histogram!(
         names::COMMIT_BUFFER_SECONDS,

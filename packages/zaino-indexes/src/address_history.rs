@@ -53,7 +53,8 @@ declared! {
     pub const EVENT_VALUE: Layout = Layout::new("address_event_value", 1, &[Field::fixed("value", 8)]);
 }
 declared! {
-    const BY_ADDRESS: NamespaceLayout = NamespaceLayout::map(EVENTS, &EVENT_KEY, &EVENT_VALUE, false);
+    /// Unique: the key carries the event's height, transaction, io index and kind.
+    const BY_ADDRESS: NamespaceLayout = NamespaceLayout::unique_map(EVENTS, &EVENT_KEY, &EVENT_VALUE);
 }
 /// Bytes naming an address: hash then script type.
 const ADDRESS_BYTES: usize = 21;

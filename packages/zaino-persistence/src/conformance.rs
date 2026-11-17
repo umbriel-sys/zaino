@@ -32,7 +32,8 @@ pub const HEIGHTS: Namespace = Namespace::new("heights");
 const NODES: Namespace = Namespace::new("pool/nodes");
 /// `account ‖ seq` → 8 bytes, removable, read per account
 pub const SCANNED: Namespace = Namespace::new("scanned");
-/// Hash-like 16-byte ids → 4 bytes, insert-only point lookups
+/// Hash-like 16-byte ids → 4 bytes, insert-only point lookups; the ids are
+/// distinct by construction, so the map is declared `unique`
 pub const PROBED: Namespace = Namespace::new("probed");
 
 /// `n` > 0 as a width
@@ -46,7 +47,7 @@ pub const SPECS: [NamespaceSpec; 5] = [
     NamespaceSpec::sequence(HEIGHTS, Width::Fixed(width(8))),
     NamespaceSpec::sequence(NODES, Width::Fixed(width(4))),
     NamespaceSpec::map(SCANNED, width(12), width(8), true),
-    NamespaceSpec::map(PROBED, width(16), width(4), false),
+    NamespaceSpec::unique_map(PROBED, width(16), width(4)),
 ];
 
 /// Backend under test, over storage the suite can reopen (and, if it can, crash)
@@ -1444,9 +1445,9 @@ pub fn contract<S: Subject>(subject: S) {
         (
             "a key already present, after a valid append",
             next(),
-            vec![ok_append(), put(PROBED, probed_key(0), vec![0; 4])],
+            vec![ok_append(), put(SCANNED, held.clone(), vec![0; 8])],
             Box::new(
-                move |e| matches!(e, CommitError::KeyExists { namespace } if ns(namespace, PROBED)),
+                move |e| matches!(e, CommitError::KeyExists { namespace } if ns(namespace, SCANNED)),
             ),
         ),
         (
@@ -1516,4 +1517,42 @@ pub fn contract<S: Subject>(subject: S) {
     commit(&backend, jump, Vec::new()).expect("a tip several heights above");
     model.tip = Some(jump);
     model.assert_view(&reader(), "a tip several heights above");
+
+    // a unique map: a key repeated while buffered is refused; one repeated past a flush is
+    // refused, or committed and found by the next scan (the backend may trust the declaration
+    // past its buffer). Last: the backend may hold a breach afterwards.
+    let repeated = probed_key(model.ids);
+    let first = block_ref(model.advances + 6);
+    commit(
+        &backend,
+        first,
+        vec![put(PROBED, repeated.clone(), vec![0; 4])],
+    )
+    .expect("a fresh unique key");
+    let is_exists = |e: &CommitError| matches!(e, CommitError::KeyExists { .. });
+    let above = block_ref(model.advances + 7);
+    refused(
+        "a unique key repeated while buffered",
+        commit(
+            &backend,
+            above,
+            vec![put(PROBED, repeated.clone(), vec![0; 4])],
+        ),
+        is_exists,
+    );
+    backend.flush().expect("flush");
+    match commit(&backend, above, vec![put(PROBED, repeated, vec![0; 4])]) {
+        Err(error) => assert!(
+            is_exists(&error),
+            "a unique key repeated past a flush: {error:?}"
+        ),
+        Ok(()) => {
+            backend.flush().expect("flush");
+            let scan = reader().scan(PROBED);
+            assert!(
+                matches!(scan, Err(ReadError::Corrupted { .. })),
+                "a unique key repeated past a flush: committed, so the next scan reports it: {scan:?}"
+            );
+        }
+    }
 }

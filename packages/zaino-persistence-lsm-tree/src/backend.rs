@@ -465,7 +465,7 @@ impl<'a> Pending<'a> {
     }
 
     /// Durable states of `ops`' unbuffered map keys, one batch per map (after `check_shape`:
-    /// every key declared and of its width)
+    /// every key declared and of its width); a `Put` into a `unique` map asks nothing
     fn prefetch(&mut self, ops: &'a [WriteOp]) -> Result<(), StoreError> {
         let mut asked: HashMap<usize, Vec<&'a [u8]>> = HashMap::new();
         for op in ops {
@@ -477,6 +477,9 @@ impl<'a> Pending<'a> {
             let Some(index) = position(self.specs, namespace) else {
                 continue;
             };
+            if matches!(op, WriteOp::Put { .. }) && self.unique(index) {
+                continue;
+            }
             let unbuffered = self
                 .buffer
                 .entries(index)
@@ -499,6 +502,14 @@ impl<'a> Pending<'a> {
     fn index(&self, namespace: Namespace) -> Result<usize, ReadError> {
         position(self.specs, namespace)
             .ok_or_else(|| ReadError::NamespaceNotFound(namespace.to_string()))
+    }
+
+    /// Whether the map at `index` is declared `unique`: its puts are checked against the
+    /// buffer only, the durable state trusted to the writer's promise
+    fn unique(&self, index: usize) -> bool {
+        self.specs
+            .get(index)
+            .is_some_and(|spec| matches!(spec.kind, NamespaceKind::Map { unique: true, .. }))
     }
 }
 
@@ -530,6 +541,9 @@ impl CommitState for Pending<'_> {
             Some(Entry::Value(_)) => return Ok(KeyState::Present),
             Some(Entry::Removed | Entry::Cancelled(_)) => return Ok(KeyState::Removed),
             None => {}
+        }
+        if self.unique(index) {
+            return Ok(KeyState::Absent);
         }
         let prefetched = self.durable.get(&index).and_then(|keys| keys.get(key));
         let lookup = match prefetched {

@@ -510,6 +510,7 @@ async fn a_validator_behind_on_another_chain_rebuilds_once_it_catches_up() {
     assert_eq!(store.subscribe_watermark().borrow().tip, Some(tip));
 }
 
+mod crash;
 mod ingest;
 mod linked;
 mod panics;

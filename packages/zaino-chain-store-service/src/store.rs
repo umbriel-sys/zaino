@@ -442,7 +442,7 @@ impl<St: Storage, Src: ChainStoreSource> Inner<St, Src> {
         .await;
         let mut kept = waiting;
         for back in returned {
-            match back.panicked {
+            match back.closed {
                 // its in-memory state is unknown: dropped, reopened from disk
                 true => closed.push(Closed {
                     id: back.open.id,
@@ -475,7 +475,7 @@ impl<St: Storage, Src: ChainStoreSource> Inner<St, Src> {
                 Ok(mut reopened) => {
                     tracing::info!(
                         index = closed.id.name(),
-                        "reopened after its writer panicked"
+                        "reopened after its writer stopped"
                     );
                     reopened.unverified = reopened.tip.is_some();
                     built.indexes.push(reopened);

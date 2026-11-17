@@ -52,11 +52,11 @@ pub(crate) struct Running<B> {
     pub(crate) applied: watch::Receiver<Option<BlockRef>>,
 }
 
-/// An index back from a build: `panicked` = its writer panicked, so it must
-/// be reopened from disk.
+/// An index back from a build: `closed` = its writer stopped abnormally
+/// (panicked or failed), so it must be reopened from disk.
 pub(crate) struct Returned<B: Backend> {
     pub(crate) open: Open<B>,
-    pub(crate) panicked: bool,
+    pub(crate) closed: bool,
 }
 
 /// Builds `indexes` from the height after the lowest tip through `target`,
@@ -77,7 +77,7 @@ where
     let unchanged = |indexes: Vec<Open<B>>| {
         let returned = indexes.into_iter().map(|open| Returned {
             open,
-            panicked: false,
+            closed: false,
         });
         (returned.collect(), Ok(()))
     };
@@ -205,23 +205,24 @@ where
 
     drop(lanes);
     let mut failure = result.err();
-    let mut panicked = Vec::with_capacity(tasks.len());
+    let mut closed = Vec::with_capacity(tasks.len());
     for task in tasks {
         let written = task.await.unwrap_or_else(|error| writer::Written {
             result: Err(joined("an index writer", error)),
             panicked: true,
         });
+        // a writer that stopped abnormally leaves its index's state unknown
+        closed.push(written.panicked || written.result.is_err());
         if let Err(error) = written.result {
             failure.get_or_insert(error);
         }
-        panicked.push(written.panicked);
     }
     // every writer has ended; each index is taken back from its slot
     let mut returned = Vec::with_capacity(slots.len());
-    for (slot, panicked) in slots.into_iter().zip(panicked) {
+    for (slot, closed) in slots.into_iter().zip(closed) {
         let taken = slot.lock().unwrap_or_else(PoisonError::into_inner).take();
         if let Some(open) = taken {
-            returned.push(Returned { open, panicked });
+            returned.push(Returned { open, closed });
         }
     }
     if let Err(payload) = std::panic::catch_unwind(AssertUnwindSafe(|| progress(&running))) {

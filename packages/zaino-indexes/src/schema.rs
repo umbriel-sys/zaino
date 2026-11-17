@@ -50,6 +50,28 @@ impl NamespaceLayout {
             value,
         })
     }
+
+    /// A map whose keys the fold makes distinct by construction, so the
+    /// backend need not look each one up before inserting it (no deletes).
+    pub const fn unique_map(
+        namespace: Namespace,
+        key: &'static Layout,
+        value: &'static Layout,
+    ) -> Result<Self, LayoutError> {
+        let Some(key_width) = key.fixed_width() else {
+            return Err(LayoutError::NotFixedWidth { layout: key.name() });
+        };
+        let Some(value_width) = value.fixed_width() else {
+            return Err(LayoutError::NotFixedWidth {
+                layout: value.name(),
+            });
+        };
+        Ok(Self {
+            spec: NamespaceSpec::unique_map(namespace, key_width, value_width),
+            key: Some(key),
+            value,
+        })
+    }
 }
 
 /// An index's disk schema.
@@ -106,10 +128,12 @@ impl Schema {
                     Update::update(&mut hasher, &[0]);
                     update_width(&mut hasher, record);
                 }
+                // `unique` is a writer's promise, not a byte on disk: not digested
                 NamespaceKind::Map {
                     key,
                     value,
                     deletes,
+                    ..
                 } => {
                     Update::update(&mut hasher, &[1, u8::from(deletes)]);
                     Update::update(&mut hasher, &key.get().to_le_bytes());
@@ -226,7 +250,8 @@ mod tests {
             NamespaceKind::Map {
                 key: core::num::NonZeroU32::new(4).expect("4"),
                 value: core::num::NonZeroU32::new(9).expect("9"),
-                deletes: true
+                deletes: true,
+                unique: false,
             }
         );
         assert_eq!(SCHEMA.dir_name(), "sample_3");

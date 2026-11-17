@@ -61,8 +61,9 @@ declared! {
     pub const HEIGHT: Layout = Layout::new("height", 1, &[Field::fixed("height", 4)]);
 }
 declared! {
+    /// Unique: a block hash names one block.
     const HEIGHTS_BY_HASH: NamespaceLayout =
-        NamespaceLayout::map(HEIGHTS, &BLOCK_HASH, &HEIGHT, false);
+        NamespaceLayout::unique_map(HEIGHTS, &BLOCK_HASH, &HEIGHT);
 }
 
 /// The schema: `headers` by height, `heights` by hash.

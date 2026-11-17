@@ -83,9 +83,9 @@ A panic anywhere in the pipeline, ours or a dependency's, is caught and
 reported. It is logged at error level, returned as an error naming the stage
 or index and the panic, and recorded as `Failed`. A writer only borrows its
 index, so a panic never takes the index with it. An index whose writer
-panicked has unknown in-memory state, so it is dropped and reopened from disk
-as boot opens it: from its durable tip, its tip checked against the validator
-at the next build. One that can't be reopened yet stays enabled but closed
+panicked or failed has unknown in-memory state, so it is dropped and reopened
+from disk as boot opens it: from its durable tip, its tip checked against the
+validator at the next build. One that can't be reopened yet stays enabled but closed
 (not served, not announced) and is retried at every build.
 
 ```toml
@@ -95,7 +95,11 @@ queue_bytes = 67108864  # bytes queued ahead of each index's writer
 writers = 4             # default: the store's CpuBudget share
 ```
 
-The defaults are to be tuned against step 6's mainnet benchmarks.
+The defaults were kept after the initial mainnet checks (master plan, 5a
+step 6): fetch concurrency and the queues never bound a build; the binding
+stage is the slowest index writer, which `zaino.store.queue_wait_seconds`
+shows per index. Those figures are working notes; the published ones come
+from the final validation against a live zebrad (Stage 8).
 
 ## What it answers
 

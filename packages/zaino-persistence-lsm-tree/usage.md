@@ -154,9 +154,10 @@ carry `set` (the map namespace), and the per-tier ones (`segments`, `merging`,
 - `zaino.lsm.commit_seconds`, `commit_bytes_total`: durable writes (a full
   buffer written and synced).
 - `zaino.lsm.commit_check_seconds`, `commit_buffer_seconds`: each buffered
-  commit's two phases, the checks (shapes, then every new map key looked up
-  for insert-once) and the rows entered into the buffer; what a build's
-  per-row cost is made of.
+  commit's two phases, the checks (shapes, then every new key of a checked map
+  looked up on disk; a `unique` map's puts are checked against the buffer
+  only) and the rows entered into the buffer; what a build's per-row cost is
+  made of.
 - `zaino.lsm.snapshots_live`, `snapshot_heap_bytes`: memory held by
   snapshots (below).
 - `zaino.lsm.manifest_read_cached`: 1 where the manifest could only be read

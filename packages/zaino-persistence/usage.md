@@ -35,7 +35,11 @@ shapes ([`NamespaceKind`]):
   variable). A record's key is [`sequence_key`]`(position)`, big-endian, so key
   order is position order. Append-only.
 - **Map** — fixed-width keys to fixed-width values. Each key is inserted at most
-  once; with `deletes`, removed at most once and never re-inserted.
+  once; with `deletes`, removed at most once and never re-inserted. A map
+  declared `unique` (`NamespaceSpec::unique_map`) carries the writer's promise
+  that its keys are distinct by construction: the backend refuses a repeat it
+  can see in its buffer, may skip the durable lookup, and reports a repeat it
+  finds later (merge, scan) as `Corrupted`.
 
 ```rust,ignore
 use std::num::NonZeroU32;
@@ -67,9 +71,10 @@ nothing.
 - Sequence: `Put` at the next position only (`NotNextPosition`), records of the
   declared width (`WidthMismatch`), no `Delete` (`DeleteNotAllowed`).
 - Map: keys and values of the declared widths (`WidthMismatch`); each key once
-  per batch (`DuplicateInBatch`); `Put` of an absent key (`KeyExists`); `Delete`
-  of a present key (`KeyAbsent`) in a namespace declared with `deletes`
-  (`DeleteNotAllowed`).
+  per batch (`DuplicateInBatch`); `Put` of an absent key (`KeyExists`; for a
+  `unique` map checked against the buffer, the durable state at the backend's
+  discretion); `Delete` of a present key (`KeyAbsent`) in a namespace declared
+  with `deletes` (`DeleteNotAllowed`).
 - Re-inserting or re-deleting a removed key is a caller error, refused with
   `KeyRemoved` while the backend still records the removal. A backend may forget
   a removal once nothing of the key is stored (the LSM tree does, after a merge).

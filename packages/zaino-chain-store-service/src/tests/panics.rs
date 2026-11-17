@@ -27,16 +27,36 @@ use crate::store::{ChainStore, Serviceability};
 struct Faults {
     /// The index whose writer panics, and the commits it makes first.
     panic: Option<(IndexId, u32)>,
+    /// The index whose commit fails (poisoning its writer, as the engine's
+    /// does), and the commits it makes first.
+    fail_commit: Option<(IndexId, u32)>,
     /// The index whose opens fail, and how many more do.
     failing_opens: Option<(IndexId, u32)>,
     /// Opens per index, failed ones included.
     opens: std::collections::HashMap<IndexId, u32>,
 }
 
+/// In-memory storage with injected faults; `inner` holds what was committed.
 #[derive(Clone, Default)]
-struct Faulty {
-    inner: InMemoryStorage,
+pub(super) struct Faulty {
+    pub(super) inner: InMemoryStorage,
     faults: Arc<Mutex<Faults>>,
+}
+
+/// Whether `fault` (an index and the commits it makes first) fires for `id`
+/// at this commit.
+fn fires(fault: &mut Option<(IndexId, u32)>, id: Option<IndexId>) -> bool {
+    match fault {
+        Some((index, 0)) if Some(*index) == id => {
+            *fault = None;
+            true
+        }
+        Some((index, left)) if Some(*index) == id => {
+            *left -= 1;
+            false
+        }
+        _ => false,
+    }
 }
 
 fn index_of(dir: &Path) -> Option<IndexId> {
@@ -52,6 +72,10 @@ impl Faulty {
         self.faults.lock().expect("faults").panic = Some((id, commits));
     }
 
+    pub(super) fn fail_commit_after(&self, id: IndexId, commits: u32) {
+        self.faults.lock().expect("faults").fail_commit = Some((id, commits));
+    }
+
     fn fail_opens(&self, id: IndexId, times: u32) {
         self.faults.lock().expect("faults").failing_opens = Some((id, times));
     }
@@ -62,36 +86,41 @@ impl Faulty {
     }
 }
 
-struct FaultyBackend {
+pub(super) struct FaultyBackend {
     inner: InMemoryBackend,
     id: Option<IndexId>,
     faults: Arc<Mutex<Faults>>,
 }
 
-struct FaultyWriter {
+pub(super) struct FaultyWriter {
     inner: InMemoryWriter,
     id: Option<IndexId>,
     faults: Arc<Mutex<Faults>>,
+    /// A commit failed: every later one is refused until the backend is reopened.
+    poisoned: bool,
 }
 
 impl BackendWriter for FaultyWriter {
     fn commit(&mut self, tip: BlockRef, ops: Vec<WriteOp>) -> Result<(), CommitError> {
-        let fire = {
+        if self.poisoned {
+            return Err(CommitError::Poisoned);
+        }
+        let (panics, fails) = {
             let mut faults = self.faults.lock().expect("faults");
-            match &mut faults.panic {
-                Some((id, 0)) if Some(*id) == self.id => {
-                    faults.panic = None;
-                    true
-                }
-                Some((id, left)) if Some(*id) == self.id => {
-                    *left -= 1;
-                    false
-                }
-                _ => false,
-            }
+            (
+                fires(&mut faults.panic, self.id),
+                fires(&mut faults.fail_commit, self.id),
+            )
         };
-        if fire {
+        if panics {
             panic!("injected writer panic");
+        }
+        if fails {
+            self.poisoned = true;
+            return Err(CommitError::WriteFailed {
+                operation: "commit",
+                source: "injected write failure".into(),
+            });
         }
         self.inner.commit(tip, ops)
     }
@@ -110,6 +139,7 @@ impl Backend for FaultyBackend {
             inner: self.inner.writer()?,
             id: self.id,
             faults: Arc::clone(&self.faults),
+            poisoned: false,
         })
     }
 
@@ -202,7 +232,7 @@ impl Storage for Faulty {
     }
 }
 
-async fn boot(storage: &Faulty, chain: &MockChain) -> ChainStore<Faulty, MockChain> {
+pub(super) async fn boot(storage: &Faulty, chain: &MockChain) -> ChainStore<Faulty, MockChain> {
     ChainStore::boot(
         &config(&every_index()),
         storage.clone(),

@@ -36,7 +36,8 @@ declared! {
     );
 }
 declared! {
-    const BY_OUTPOINT: NamespaceLayout = NamespaceLayout::map(SPENT, &OUTPOINT, &SPENDER, false);
+    /// Unique: consensus spends an outpoint once.
+    const BY_OUTPOINT: NamespaceLayout = NamespaceLayout::unique_map(SPENT, &OUTPOINT, &SPENDER);
 }
 const _: () = assert!(OUTPOINT.fixed_len() == OUTPOINT_BYTES);
 const _: () = assert!(SPENDER.fixed_len() == POSITION_BYTES + 2);

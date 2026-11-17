@@ -55,10 +55,13 @@ transaction, a history-tree node) are one opaque variable field.
 
 A `Schema` is an index's name, its hand-set `format` (D-21b: bumped on any
 layout change, named in the directory as `<name>_<format>`), and every
-namespace as a `NamespaceLayout`: `sequence(namespace, &RECORD)` or
-`map(namespace, &KEY, &VALUE, deletes)`. The persistence `NamespaceSpec`s are
-derived from the layouts, so the two cannot disagree, and a map's key and
-value layouts must be fixed-width.
+namespace as a `NamespaceLayout`: `sequence(namespace, &RECORD)`,
+`map(namespace, &KEY, &VALUE, deletes)` or `unique_map(namespace, &KEY,
+&VALUE)` for a map whose keys the fold makes distinct by construction (the
+backend then skips the durable lookup before each insert; a declaration
+states why in a doc line). The persistence `NamespaceSpec`s are derived from
+the layouts, so the two cannot disagree, and a map's key and value layouts
+must be fixed-width. `unique` is not part of the digest: it changes no bytes.
 
 `Schema::digest` is BLAKE2b-256 over the name, the format and every
 namespace's name, kind, widths and layouts. The chain-store service opens
