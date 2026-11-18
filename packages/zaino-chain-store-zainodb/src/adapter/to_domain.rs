@@ -19,10 +19,10 @@ use zaino_chain_store::{
 
 use super::{StoredBlock, StoredTx};
 use zaino_primitives::types::{
-    BlockHash as DomainBlockHash, BlockHeader, BlockRef, BlockTxPosition, CompactCiphertext,
-    Height as DomainHeight, Nullifier, OrchardAction, Outpoint as DomainOutpoint,
-    PreIndexCompactTx, SaplingOutput, Script, SignedZatoshis, TransactionId, TransparentInput,
-    TransparentOutput, TreeRootInfo, TreeRoots, TxIndex, Zatoshis,
+    BlockHash as DomainBlockHash, BlockHeader, BlockRef, BlockTxPosition, CompactAction,
+    CompactCiphertext, Height as DomainHeight, Nullifier, OrchardAction,
+    Outpoint as DomainOutpoint, PreIndexCompactTx, SaplingOutput, Script, SignedZatoshis,
+    TransactionId, TransparentInput, TransparentOutput, TreeRootInfo, TreeRoots, TxIndex, Zatoshis,
 };
 
 use crate::store::capability::{Capability, DbMetadata, MigrationStatus};
@@ -204,13 +204,13 @@ fn stored_compact_tx_body(tx: &CompactTxData) -> Result<PreIndexCompactTx, Chain
     })
 }
 
-fn orchard_action(action: &crate::types::CompactOrchardAction) -> OrchardAction {
-    OrchardAction {
+fn orchard_action(action: &crate::types::CompactOrchardAction) -> CompactAction {
+    CompactAction::from(&OrchardAction {
         nullifier: (*action.nullifier()).into(),
         cmx: (*action.cmx()).into(),
         ephemeral_key: (*action.ephemeral_key()).into(),
         enc_ciphertext: CompactCiphertext::from(*action.ciphertext()),
-    }
+    })
 }
 
 /// A stored output, as a domain transparent output.

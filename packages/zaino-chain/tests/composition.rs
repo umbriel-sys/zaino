@@ -152,6 +152,54 @@ async fn a_stream_spanning_all_three_providers_is_contiguous() {
     assert_eq!(heights, (98..=210).collect::<Vec<_>>());
 }
 
+/// A nullifiers-only read is the full read stripped to nullifiers, from every
+/// provider: the store, the validator (the hole) and the window.
+#[tokio::test]
+async fn a_nullifiers_only_stream_is_the_full_stream_without_outputs() {
+    let snapshot = syncing().await.view().snapshot();
+    let read = |pools: PoolFilter| {
+        snapshot
+            .stream_compact(height(98), height(210), pools)
+            .try_collect::<Vec<_>>()
+    };
+    let full: Vec<_> = read(PoolFilter::default())
+        .await
+        .expect("serviceable")
+        .into_iter()
+        .flatten()
+        .collect();
+    let nullifiers: Vec<_> = read(PoolFilter::default().nullifiers_only())
+        .await
+        .expect("serviceable")
+        .into_iter()
+        .flatten()
+        .collect();
+
+    let stripped: Vec<_> = full
+        .iter()
+        .cloned()
+        .map(|mut block| {
+            for tx in &mut block.transactions {
+                tx.sapling_outputs.clear();
+                for action in tx
+                    .orchard_actions
+                    .iter_mut()
+                    .chain(tx.ironwood_actions.iter_mut())
+                {
+                    action.output = None;
+                }
+            }
+            block
+        })
+        .collect();
+    assert_eq!(nullifiers, stripped);
+    // the chain has shielded spends and outputs, so the test strips something
+    assert!(full.iter().any(|block| block
+        .transactions
+        .iter()
+        .any(|tx| !tx.sapling_outputs.is_empty() || !tx.orchard_actions.is_empty())));
+}
+
 /// The store's writer a few blocks behind the window's floor, streamed from a
 /// wallet birthday. Splitting at the floor rather than the watermark once
 /// skipped the blocks between them, failing wallet sync with a rewind to 0

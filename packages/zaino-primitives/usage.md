@@ -70,6 +70,11 @@ use zaino_primitives::types::rpc::{BlockDeltas, MiningInfo, NodeInfo, PeerInfo};
   (SHA-256d pairs, an odd level's last node paired with itself), and
   `Block::merkle_root_matches` checks a block's header against its
   transactions: the one check a fetched block gets whatever its source.
+- `types` — compact blocks: `CompactBlock` / `PreIndexCompactTx`, whose
+  actions are `CompactAction { nullifier, output: Option<ActionOutput> }`
+  (`None` where a nullifiers-only read left the output unread; a parsed
+  action converts with `Some`), and `PoolFilter`, which pools a compact read
+  includes and whether it reads outputs or only nullifiers.
 - `types::rpc` — the response shapes for passthrough RPCs, in domain
   vocabulary rather than any interface's: `BlockDeltas`, `BlockchainInfo`,
   `ChainTip`, `MiningInfo`, `NodeInfo`, `PeerInfo`, `SpentInfo`, `TxOut`,

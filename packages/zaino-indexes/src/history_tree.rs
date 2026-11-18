@@ -548,8 +548,8 @@ impl<'a, R: BackendReader> Reader<'a, R> {
 mod tests {
     use zaino_persistence::{Backend as _, SchemaDigest};
     use zaino_primitives::types::{
-        BlockCommitments, ConsensusBranchId, OrchardAction, PreIndexCompactTx, TreeRoot,
-        TreeRootInfo, TreeRoots, TreeSize,
+        BlockCommitments, CompactAction, ConsensusBranchId, OrchardAction, PreIndexCompactTx,
+        TreeRoot, TreeRootInfo, TreeRoots, TreeSize,
     };
 
     use super::*;
@@ -567,12 +567,12 @@ mod tests {
     fn shielded(n: u32, orchard: usize) -> FoldTx {
         let mut compact: PreIndexCompactTx = tx(n).compact().clone();
         compact.sapling_nullifiers = vec![[n as u8; 32].into()];
-        let action = OrchardAction {
+        let action = CompactAction::from(&OrchardAction {
             nullifier: [1; 32].into(),
             cmx: [2; 32].into(),
             ephemeral_key: [3; 32].into(),
             enc_ciphertext: [4; 52].into(),
-        };
+        });
         compact.orchard_actions = vec![action; orchard];
         FoldTx::try_new(compact, Default::default(), Some(Vec::new())).expect("no inputs")
     }

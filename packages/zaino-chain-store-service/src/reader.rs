@@ -341,7 +341,7 @@ impl<R: BackendReader> Snapshot<R> {
                 .map_err(fail(IndexId::CompactBlock))?,
             false => Vec::new(),
         };
-        let sapling_outputs = match wanted(ShieldedPool::Sapling) {
+        let sapling_outputs = match wanted(ShieldedPool::Sapling) && pools.includes_outputs() {
             true => columns
                 .sapling_outputs(
                     layout.starts.sapling_outputs,
@@ -356,6 +356,7 @@ impl<R: BackendReader> Snapshot<R> {
                     ShieldedPool::Orchard,
                     layout.starts.orchard_actions,
                     total(|tx| tx.orchard_actions),
+                    pools.includes_outputs(),
                 )
                 .map_err(fail(IndexId::CompactBlock))?,
             false => Vec::new(),
@@ -366,6 +367,7 @@ impl<R: BackendReader> Snapshot<R> {
                     ShieldedPool::Ironwood,
                     layout.starts.ironwood_actions,
                     total(|tx| tx.ironwood_actions),
+                    pools.includes_outputs(),
                 )
                 .map_err(fail(IndexId::CompactBlock))?,
             false => Vec::new(),

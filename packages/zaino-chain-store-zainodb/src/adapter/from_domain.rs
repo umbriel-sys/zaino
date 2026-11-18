@@ -11,7 +11,7 @@ use zaino_chain_store::ChainStoreError;
 
 use super::{StoredBlock, StoredTx};
 use zaino_primitives::types::{
-    BlockHash as DomainBlockHash, BlockTxPosition, Height as DomainHeight, OrchardAction,
+    BlockHash as DomainBlockHash, BlockTxPosition, CompactAction, Height as DomainHeight,
     Outpoint as DomainOutpoint, ScriptType, SignedZatoshis,
 };
 
@@ -162,8 +162,8 @@ fn stored_compact_tx_data(
                 })
                 .collect(),
         ),
-        stored_orchard(stored.orchard_value, &tx.orchard_actions),
-        stored_orchard(stored.ironwood_value, &tx.ironwood_actions),
+        stored_orchard(stored.orchard_value, &tx.orchard_actions)?,
+        stored_orchard(stored.ironwood_value, &tx.ironwood_actions)?,
     ))
 }
 
@@ -174,22 +174,26 @@ fn stored_compact_tx_data(
 /// rewrote while only meaning to read it.
 fn stored_orchard(
     value: Option<SignedZatoshis>,
-    actions: &[OrchardAction],
-) -> crate::types::OrchardCompactTx {
-    crate::types::OrchardCompactTx::new(
+    actions: &[CompactAction],
+) -> Result<crate::types::OrchardCompactTx, ChainStoreError> {
+    let actions = actions
+        .iter()
+        .map(|action| {
+            let output = action.output.as_ref().ok_or_else(|| {
+                ChainStoreError::backend("an action without its output cannot be stored")
+            })?;
+            Ok(crate::types::CompactOrchardAction::new(
+                action.nullifier.into(),
+                output.cmx.into(),
+                output.ephemeral_key.into(),
+                output.enc_ciphertext.into(),
+            ))
+        })
+        .collect::<Result<Vec<_>, ChainStoreError>>()?;
+    Ok(crate::types::OrchardCompactTx::new(
         value.map(i64::from),
-        actions
-            .iter()
-            .map(|action| {
-                crate::types::CompactOrchardAction::new(
-                    action.nullifier.into(),
-                    action.cmx.into(),
-                    action.ephemeral_key.into(),
-                    action.enc_ciphertext.into(),
-                )
-            })
-            .collect(),
-    )
+        actions,
+    ))
 }
 
 pub(super) fn stored_script_tag(script_type: ScriptType) -> u8 {

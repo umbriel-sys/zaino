@@ -19,8 +19,8 @@ use zaino_persistence::{
     sequence_key, BackendReader, Namespace, ScanDirection, ScanRange, WriteOp,
 };
 use zaino_primitives::types::{
-    BlockRef, CompactCiphertext, EphemeralKey, Height, NoteCommitment, Nullifier, OrchardAction,
-    SaplingOutput, ShieldedPool, SignedZatoshis, Zatoshis,
+    ActionOutput, BlockRef, CompactAction, CompactCiphertext, EphemeralKey, Height, NoteCommitment,
+    Nullifier, SaplingOutput, ShieldedPool, SignedZatoshis, Zatoshis,
 };
 
 use crate::block::{FoldBlock, FoldTx};
@@ -223,11 +223,15 @@ impl Index for CompactBlock {
             ] {
                 let (nf, out) = pool_columns(pool);
                 for action in actions {
+                    // `FoldTx` admits no action without its output.
+                    let output = action.output.as_ref().ok_or_else(|| {
+                        FoldError::continuity(NAME, format!("a {pool} action without its output"))
+                    })?;
                     let mut out_at = *position;
                     ops.push(element(
                         out,
                         &mut out_at,
-                        output_bytes(action.cmx, action.ephemeral_key, action.enc_ciphertext),
+                        output_bytes(output.cmx, output.ephemeral_key, output.enc_ciphertext),
                     )?);
                     ops.push(element(
                         nf,
@@ -301,13 +305,15 @@ impl<'a, R: BackendReader> Reader<'a, R> {
         })
     }
 
-    /// `count` actions of `pool` (Orchard or Ironwood) from position `start`.
+    /// `count` actions of `pool` (Orchard or Ironwood) from position `start`;
+    /// the output column is read only when `outputs`.
     pub fn actions(
         &self,
         pool: ShieldedPool,
         start: u32,
         count: u32,
-    ) -> Result<Vec<OrchardAction>, FoldError> {
+        outputs: bool,
+    ) -> Result<Vec<CompactAction>, FoldError> {
         if pool == ShieldedPool::Sapling {
             return Err(FoldError::continuity(
                 NAME,
@@ -318,16 +324,27 @@ impl<'a, R: BackendReader> Reader<'a, R> {
         let nullifiers = self.column(nf, start, count, |bytes| {
             Ok(Nullifier::from(array::<32>(bytes, "nullifier")?))
         })?;
+        if !outputs {
+            return Ok(nullifiers
+                .into_iter()
+                .map(|nullifier| CompactAction {
+                    nullifier,
+                    output: None,
+                })
+                .collect());
+        }
         let outputs = self.column(out, start, count, output_parts)?;
         Ok(nullifiers
             .into_iter()
             .zip(outputs)
             .map(
-                |(nullifier, (cmx, ephemeral_key, enc_ciphertext))| OrchardAction {
+                |(nullifier, (cmx, ephemeral_key, enc_ciphertext))| CompactAction {
                     nullifier,
-                    cmx,
-                    ephemeral_key,
-                    enc_ciphertext,
+                    output: Some(ActionOutput {
+                        cmx,
+                        ephemeral_key,
+                        enc_ciphertext,
+                    }),
                 },
             )
             .collect())
@@ -548,12 +565,14 @@ mod tests {
         }
     }
 
-    fn action(byte: u8) -> OrchardAction {
-        OrchardAction {
+    fn action(byte: u8) -> CompactAction {
+        CompactAction {
             nullifier: Nullifier::from([byte; 32]),
-            cmx: NoteCommitment::from([byte ^ 3; 32]),
-            ephemeral_key: EphemeralKey::from([byte ^ 4; 32]),
-            enc_ciphertext: CompactCiphertext::from([byte ^ 5; CompactCiphertext::LENGTH]),
+            output: Some(ActionOutput {
+                cmx: NoteCommitment::from([byte ^ 3; 32]),
+                ephemeral_key: EphemeralKey::from([byte ^ 4; 32]),
+                enc_ciphertext: CompactCiphertext::from([byte ^ 5; CompactCiphertext::LENGTH]),
+            }),
         }
     }
 
@@ -670,12 +689,38 @@ mod tests {
             expected_outputs
         );
         assert_eq!(
-            reader.actions(ShieldedPool::Orchard, 0, 3).expect("read"),
+            reader
+                .actions(ShieldedPool::Orchard, 0, 3, true)
+                .expect("read"),
             expected_orchard
         );
         assert_eq!(
-            reader.actions(ShieldedPool::Ironwood, 0, 3).expect("read"),
+            reader
+                .actions(ShieldedPool::Ironwood, 0, 3, true)
+                .expect("read"),
             expected_ironwood
+        );
+        // Nullifiers only: the same nullifiers, no output read.
+        let nullifiers_of = |actions: &[CompactAction]| {
+            actions
+                .iter()
+                .map(|action| CompactAction {
+                    nullifier: action.nullifier,
+                    output: None,
+                })
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(
+            reader
+                .actions(ShieldedPool::Orchard, 0, 3, false)
+                .expect("read"),
+            nullifiers_of(&expected_orchard)
+        );
+        assert_eq!(
+            reader
+                .actions(ShieldedPool::Ironwood, 0, 3, false)
+                .expect("read"),
+            nullifiers_of(&expected_ironwood)
         );
         assert_eq!(
             reader.sapling_nullifiers(1, 2).expect("read"),

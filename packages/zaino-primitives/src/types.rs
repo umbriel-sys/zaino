@@ -28,6 +28,7 @@ mod network_upgrade;
 mod note_commitment;
 mod nullifier;
 mod outpoint;
+mod pool_filter;
 pub mod rpc;
 mod script;
 mod shielded_pool;
@@ -56,7 +57,9 @@ pub use block_tx_position::BlockTxPosition;
 pub use block_verbose::{BlockTreeSizes, BlockVerbose};
 pub use blockchain_info::{BlockchainInfo, ValuePoolBalance};
 pub use chain_state_epoch::ChainStateEpoch;
-pub use compact_block::{CompactBlock, PreIndexCompactBlock, PreIndexCompactTx};
+pub use compact_block::{
+    ActionOutput, CompactAction, CompactBlock, PreIndexCompactBlock, PreIndexCompactTx,
+};
 pub use compact_ciphertext::{CompactCiphertext, CompactCiphertextLength};
 pub use compact_difficulty::{CompactDifficulty, CompactDifficultyError};
 pub use confirmations::{BlockConfirmations, ConfirmationsCodecError, TxConfirmations};
@@ -75,6 +78,7 @@ pub use network_upgrade::{
 pub use note_commitment::NoteCommitment;
 pub use nullifier::Nullifier;
 pub use outpoint::Outpoint;
+pub use pool_filter::PoolFilter;
 pub use script::{classify_script, Script, ScriptType, TransparentAddressKey};
 pub use shielded_pool::ShieldedPool;
 pub use subtree_root::SubtreeRoot;

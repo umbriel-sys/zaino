@@ -14,7 +14,7 @@
 
 use zaino_persistence::{sequence_key, BackendReader, Namespace, WriteOp};
 pub use zaino_primitives::types::PoolFrontier;
-use zaino_primitives::types::{BlockRef, Height, ShieldedPool};
+use zaino_primitives::types::{BlockRef, CompactAction, Height, ShieldedPool};
 
 use crate::block::{pool_root, FoldBlock, NoteFrontier};
 use crate::codec::{self, array, le_u32};
@@ -194,7 +194,7 @@ fn fold_pool(
     height: Height,
     ops: &mut Vec<WriteOp>,
 ) -> Result<Option<PoolTree>, FoldError> {
-    let notes = notes_of(block, pool);
+    let notes = notes_of(block, pool)?;
     let refuse = |what: String| Err(FoldError::continuity(NAME, format!("{pool}: {what}")));
     let Some(info) = pool_root(block.tree_roots(), pool) else {
         return match (previous, notes.is_empty()) {
@@ -342,32 +342,40 @@ fn narrow_size(size: u64) -> Result<u32, LayoutError> {
     })
 }
 
-fn notes_of(block: &FoldBlock, pool: ShieldedPool) -> Vec<[u8; 32]> {
-    block
-        .transactions()
-        .iter()
-        .flat_map(|tx| {
-            let compact = tx.compact();
-            let notes: Vec<[u8; 32]> = match pool {
-                ShieldedPool::Sapling => compact
+fn notes_of(block: &FoldBlock, pool: ShieldedPool) -> Result<Vec<[u8; 32]>, FoldError> {
+    // `FoldTx` admits no action without its output.
+    let cmx = |action: &CompactAction| {
+        action
+            .output
+            .as_ref()
+            .map(|output| <[u8; 32]>::from(output.cmx))
+            .ok_or_else(|| {
+                FoldError::continuity(NAME, format!("a {pool} action without its output"))
+            })
+    };
+    let mut notes = Vec::new();
+    for tx in block.transactions() {
+        let compact = tx.compact();
+        match pool {
+            ShieldedPool::Sapling => notes.extend(
+                compact
                     .sapling_outputs
                     .iter()
-                    .map(|output| output.cmu.into())
-                    .collect(),
-                ShieldedPool::Orchard => compact
-                    .orchard_actions
-                    .iter()
-                    .map(|action| action.cmx.into())
-                    .collect(),
-                ShieldedPool::Ironwood => compact
-                    .ironwood_actions
-                    .iter()
-                    .map(|action| action.cmx.into())
-                    .collect(),
-            };
-            notes
-        })
-        .collect()
+                    .map(|output| <[u8; 32]>::from(output.cmu)),
+            ),
+            ShieldedPool::Orchard => {
+                for action in &compact.orchard_actions {
+                    notes.push(cmx(action)?);
+                }
+            }
+            ShieldedPool::Ironwood => {
+                for action in &compact.ironwood_actions {
+                    notes.push(cmx(action)?);
+                }
+            }
+        }
+    }
+    Ok(notes)
 }
 
 fn nodes_namespace(pool: ShieldedPool) -> Namespace {

@@ -1484,14 +1484,18 @@ fn compact_tx(
     })
 }
 
-fn domain_actions(pool: &OrchardCompactTx) -> Vec<zaino_primitives::types::OrchardAction> {
+fn domain_actions(pool: &OrchardCompactTx) -> Vec<zaino_primitives::types::CompactAction> {
     pool.actions()
         .iter()
-        .map(|action| zaino_primitives::types::OrchardAction {
-            nullifier: (*action.nullifier()).into(),
-            cmx: (*action.cmx()).into(),
-            ephemeral_key: (*action.ephemeral_key()).into(),
-            enc_ciphertext: zaino_primitives::types::CompactCiphertext::from(*action.ciphertext()),
+        .map(|action| {
+            zaino_primitives::types::CompactAction::from(&zaino_primitives::types::OrchardAction {
+                nullifier: (*action.nullifier()).into(),
+                cmx: (*action.cmx()).into(),
+                ephemeral_key: (*action.ephemeral_key()).into(),
+                enc_ciphertext: zaino_primitives::types::CompactCiphertext::from(
+                    *action.ciphertext(),
+                ),
+            })
         })
         .collect()
 }
@@ -1628,13 +1632,14 @@ pub fn compact_tx_to_wire(
 }
 
 fn action_to_proto(
-    action: &zaino_primitives::types::OrchardAction,
+    action: &zaino_primitives::types::CompactAction,
 ) -> zaino_proto::proto::compact_formats::CompactOrchardAction {
+    let output = action.output.as_ref();
     zaino_proto::proto::compact_formats::CompactOrchardAction {
         nullifier: <[u8; 32]>::from(action.nullifier).to_vec(),
-        cmx: <[u8; 32]>::from(action.cmx).to_vec(),
-        ephemeral_key: <[u8; 32]>::from(action.ephemeral_key).to_vec(),
-        ciphertext: <[u8; 52]>::from(action.enc_ciphertext).to_vec(),
+        cmx: output.map_or_else(Vec::new, |o| <[u8; 32]>::from(o.cmx).to_vec()),
+        ephemeral_key: output.map_or_else(Vec::new, |o| <[u8; 32]>::from(o.ephemeral_key).to_vec()),
+        ciphertext: output.map_or_else(Vec::new, |o| <[u8; 52]>::from(o.enc_ciphertext).to_vec()),
     }
 }
 
@@ -1752,8 +1757,8 @@ mod compact_tx_to_wire_tests {
             }],
             sapling_nullifiers: vec![[0xcc; 32].into()],
             sapling_outputs: Vec::new(),
-            orchard_actions: vec![action(1)],
-            ironwood_actions: vec![action(2)],
+            orchard_actions: vec![(&action(1)).into()],
+            ironwood_actions: vec![(&action(2)).into()],
         }
     }
 

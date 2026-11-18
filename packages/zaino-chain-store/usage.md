@@ -360,7 +360,13 @@ transparent data, which is what a light wallet asks for — then narrow or widen
 with `with_pool` and `with_transparent`. It is `Copy`, so passing it into a
 chunked walk costs nothing.
 
-Inspect it with `includes(pool)` and `includes_transparent()`. There is no
+`nullifiers_only()` keeps the pools and reads only their nullifier columns
+(`sapling_nf`, `orchard_nf`, `ironwood_nf`): Sapling outputs are empty and
+each action's `output` is `None`. It is what `GetBlockNullifiers` asks for.
+`PoolFilter` is a `zaino-primitives` type, re-exported here.
+
+Inspect it with `includes(pool)`, `includes_transparent()` and
+`includes_outputs()`. There is no
 per-pool accessor on purpose: the shielded pools are a set, and a new pool is
 one entry in `ShieldedPool::ALL` rather than a field, a constructor arm and a
 reader added everywhere.

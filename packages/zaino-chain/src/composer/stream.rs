@@ -229,6 +229,16 @@ fn filter_tx(mut tx: PreIndexCompactTx, pools: PoolFilter) -> PreIndexCompactTx 
     if !pools.includes(ShieldedPool::Ironwood) {
         tx.ironwood_actions.clear();
     }
+    if !pools.includes_outputs() {
+        tx.sapling_outputs.clear();
+        for action in tx
+            .orchard_actions
+            .iter_mut()
+            .chain(tx.ironwood_actions.iter_mut())
+        {
+            action.output = None;
+        }
+    }
     tx
 }
 

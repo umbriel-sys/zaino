@@ -127,6 +127,12 @@ pub enum FoldBlockError {
         /// The subtree's index.
         index: u64,
     },
+    /// An action without its output: a nullifiers-only read, not a block.
+    #[error("{pool} action without its output")]
+    ActionWithoutOutput {
+        /// The pool.
+        pool: ShieldedPool,
+    },
 }
 
 impl FoldBlock {
@@ -254,6 +260,14 @@ impl FoldTx {
         balances: PoolBalances,
         prevouts: Option<Vec<TransparentOutput>>,
     ) -> Result<Self, FoldBlockError> {
+        for (pool, actions) in [
+            (ShieldedPool::Orchard, &compact.orchard_actions),
+            (ShieldedPool::Ironwood, &compact.ironwood_actions),
+        ] {
+            if actions.iter().any(|action| action.output.is_none()) {
+                return Err(FoldBlockError::ActionWithoutOutput { pool });
+            }
+        }
         let inputs = compact.transparent_inputs.len();
         if let Some(prevouts) = &prevouts {
             if prevouts.len() != inputs {
@@ -367,6 +381,26 @@ mod tests {
     /// A frontier must match its pool's tree size and carry one ommer per 1
     /// bit of its position; a subtree must be complete at the tree size; a
     /// pool without a tree has neither.
+    /// A nullifiers-only action is not fold input, in either action pool.
+    #[test]
+    fn an_action_without_its_output_is_refused() {
+        let bare = zaino_primitives::types::CompactAction {
+            nullifier: [7; 32].into(),
+            output: None,
+        };
+        for pool in [ShieldedPool::Orchard, ShieldedPool::Ironwood] {
+            let mut compact = tx(1).compact;
+            match pool {
+                ShieldedPool::Orchard => compact.orchard_actions.push(bare.clone()),
+                _ => compact.ironwood_actions.push(bare.clone()),
+            }
+            assert_eq!(
+                FoldTx::try_new(compact, PoolBalances::default(), None).err(),
+                Some(FoldBlockError::ActionWithoutOutput { pool })
+            );
+        }
+    }
+
     #[test]
     fn frontiers_and_subtrees_must_match_the_tree() {
         let sized = |size: u32| TreeRoots {
