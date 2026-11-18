@@ -1,14 +1,17 @@
 //! zcashd's legacy `CommitmentTree` encoding (`z_gettreestate`'s
-//! `finalState`, zebra's `to_rpc_bytes`) read into a [`NoteFrontier`],
-//! without hashing.
+//! `finalState`, zebra's `to_rpc_bytes`), read into a [`NoteFrontier`] and
+//! written back from one, without hashing.
 //!
 //! The encoding is an optional left leaf, an optional right leaf, then a
 //! CompactSize count of optional parents (parent `i` sits at level `i + 1`);
 //! each optional is a `0`/`1` byte followed, when `1`, by 32 bytes.
 
-use crate::block::NoteFrontier;
+use super::frontier::NoteFrontier;
 
-/// Why bytes are not a legacy commitment tree.
+/// Parent levels of a depth-32 tree.
+const PARENT_SLOTS: u8 = 31;
+
+/// Why bytes are not a legacy commitment tree, or a frontier not a tree.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum LegacyTreeError {
     /// The bytes end inside a field.
@@ -23,7 +26,8 @@ pub enum LegacyTreeError {
     /// Bytes after the tree.
     #[error("{0} bytes after the commitment tree")]
     Trailing(usize),
-    /// Nodes present without a left leaf, or more parents than a tree holds.
+    /// Nodes present without a left leaf, more parents than a tree holds, or
+    /// a frontier whose ommers do not match its position.
     #[error("malformed commitment tree")]
     Shape,
 }
@@ -35,7 +39,7 @@ pub fn frontier_from_legacy_tree(bytes: &[u8]) -> Result<Option<NoteFrontier>, L
     let right = optional(&mut rest)?;
     let count = compact_size(&mut rest)?;
     // A tree of depth 32 has at most 31 parent levels.
-    if count > 31 {
+    if count > u64::from(PARENT_SLOTS) {
         return Err(LegacyTreeError::Shape);
     }
     let mut parents = Vec::new();
@@ -73,6 +77,57 @@ pub fn frontier_from_legacy_tree(bytes: &[u8]) -> Result<Option<NoteFrontier>, L
         leaf,
         ommers,
     }))
+}
+
+/// The legacy encoding of the tree `frontier` describes (`None`: the empty
+/// tree); the inverse of [`frontier_from_legacy_tree`]. Written as zebrad
+/// writes it: a non-empty tree carries all 31 parent slots.
+pub fn legacy_tree_from_frontier(
+    frontier: Option<&NoteFrontier>,
+) -> Result<Vec<u8>, LegacyTreeError> {
+    let Some(frontier) = frontier else {
+        return Ok(vec![0, 0, 0]);
+    };
+    let size = frontier
+        .position
+        .checked_add(1)
+        .ok_or(LegacyTreeError::Shape)?;
+    let mut ommers = frontier.ommers.iter();
+    let mut out = Vec::new();
+    // an even size fills the right leaf, its left sibling the first ommer
+    let leaves = match size % 2 {
+        0 => {
+            some(&mut out, ommers.next().ok_or(LegacyTreeError::Shape)?);
+            some(&mut out, &frontier.leaf);
+            2
+        }
+        _ => {
+            some(&mut out, &frontier.leaf);
+            out.push(0);
+            1
+        }
+    };
+    let parents = size.checked_sub(leaves).ok_or(LegacyTreeError::Shape)?;
+    // parent `level` holds a node exactly where that bit of the rest is set
+    if parents >> (u32::from(PARENT_SLOTS) + 1) != 0 {
+        return Err(LegacyTreeError::Shape);
+    }
+    out.push(PARENT_SLOTS);
+    for level in 1..=u32::from(PARENT_SLOTS) {
+        match (parents >> level) & 1 {
+            1 => some(&mut out, ommers.next().ok_or(LegacyTreeError::Shape)?),
+            _ => out.push(0),
+        }
+    }
+    match ommers.next() {
+        Some(_) => Err(LegacyTreeError::Shape),
+        None => Ok(out),
+    }
+}
+
+fn some(out: &mut Vec<u8>, node: &[u8; 32]) {
+    out.push(1);
+    out.extend_from_slice(node);
 }
 
 fn take<'a>(rest: &mut &'a [u8], count: usize) -> Result<&'a [u8], LegacyTreeError> {
@@ -127,11 +182,12 @@ mod tests {
 
     /// Zebra's Sapling tree, grown note by note: every serialisation decodes
     /// to a frontier whose leaf is the last note and whose root, rebuilt, is
-    /// zebra's.
+    /// zebra's; encoding that frontier gives zebra's bytes back.
     #[test]
-    fn sapling_trees_decode_to_zebra_roots() {
+    fn sapling_trees_round_trip_through_zebra_bytes() {
         let mut tree = zebra_chain::sapling::tree::NoteCommitmentTree::default();
         assert_eq!(frontier_from_legacy_tree(&tree.to_rpc_bytes()), Ok(None));
+        assert_eq!(legacy_tree_from_frontier(None), Ok(tree.to_rpc_bytes()));
         for n in 1..=300u64 {
             let mut bytes = [0u8; 32];
             bytes[..8].copy_from_slice(&n.to_le_bytes());
@@ -139,7 +195,8 @@ mod tests {
                 .into_option()
                 .expect("field element");
             tree.append(cmu).expect("room");
-            let frontier = frontier_from_legacy_tree(&tree.to_rpc_bytes())
+            let encoded = tree.to_rpc_bytes();
+            let frontier = frontier_from_legacy_tree(&encoded)
                 .expect("decodes")
                 .expect("non-empty");
             assert_eq!(frontier.position, n - 1);
@@ -151,17 +208,24 @@ mod tests {
                     .expect("node")
             });
             assert_eq!(root.to_bytes(), <[u8; 32]>::from(tree.root()), "{n} notes");
+            assert_eq!(
+                legacy_tree_from_frontier(Some(&frontier)),
+                Ok(encoded),
+                "{n} notes"
+            );
         }
     }
 
     /// The same for Orchard (and so Ironwood, which shares its tree).
     #[test]
-    fn orchard_trees_decode_to_zebra_roots() {
+    fn orchard_trees_round_trip_through_zebra_bytes() {
         let mut tree = zebra_chain::orchard::tree::NoteCommitmentTree::default();
+        assert_eq!(legacy_tree_from_frontier(None), Ok(tree.to_rpc_bytes()));
         for n in 1..=70u64 {
-            let cmx = pasta_base(n);
+            let cmx = zebra_chain::orchard::tree::NoteCommitmentUpdate::from(n);
             tree.append(cmx).expect("room");
-            let frontier = frontier_from_legacy_tree(&tree.to_rpc_bytes())
+            let encoded = tree.to_rpc_bytes();
+            let frontier = frontier_from_legacy_tree(&encoded)
                 .expect("decodes")
                 .expect("non-empty");
             assert_eq!(frontier.position, n - 1);
@@ -171,11 +235,12 @@ mod tests {
                     .expect("node")
             });
             assert_eq!(root.to_bytes(), <[u8; 32]>::from(tree.root()), "{n} notes");
+            assert_eq!(
+                legacy_tree_from_frontier(Some(&frontier)),
+                Ok(encoded),
+                "{n} notes"
+            );
         }
-    }
-
-    fn pasta_base(n: u64) -> zebra_chain::orchard::tree::NoteCommitmentUpdate {
-        zebra_chain::orchard::tree::NoteCommitmentUpdate::from(n)
     }
 
     /// Malformed encodings are refused, never misread.
@@ -212,6 +277,30 @@ mod tests {
         assert_eq!(
             frontier_from_legacy_tree(&[0, 0, 0xfd, 1, 0]),
             Err(LegacyTreeError::Count)
+        );
+    }
+
+    /// A frontier whose ommers do not match its position is refused.
+    #[test]
+    fn mismatched_frontiers_are_refused() {
+        let leaf = [7; 32];
+        let missing = NoteFrontier {
+            position: 1,
+            leaf,
+            ommers: Vec::new(),
+        };
+        assert_eq!(
+            legacy_tree_from_frontier(Some(&missing)),
+            Err(LegacyTreeError::Shape)
+        );
+        let extra = NoteFrontier {
+            position: 0,
+            leaf,
+            ommers: vec![leaf],
+        };
+        assert_eq!(
+            legacy_tree_from_frontier(Some(&extra)),
+            Err(LegacyTreeError::Shape)
         );
     }
 }

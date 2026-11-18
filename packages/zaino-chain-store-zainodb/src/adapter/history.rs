@@ -1,8 +1,9 @@
 //! Transparent address history.
 //!
-//! Feature-gated and experimental. zainodb stores script hashes, never
-//! scripts, so it cannot report the outputs an address received; it answers
-//! `Unsupported`, as it does `outputs_by_outpoint` (deleted in Stage 6).
+//! zainodb stores script hashes, never scripts, so it cannot report the
+//! outputs an address received; it answers `Unsupported`, as it does
+//! `outputs_by_outpoint` (deleted in Stage 6). Implemented always, because
+//! ChainView's address reads require the port.
 
 use zaino_chain_store::{ChainStoreError, ChainStoreSource};
 

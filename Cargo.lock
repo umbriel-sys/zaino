@@ -6201,16 +6201,12 @@ version = "0.1.0"
 dependencies = [
  "blake2",
  "imbl",
- "incrementalmerkletree",
- "orchard",
  "primitive-types 0.12.2",
- "sapling-crypto",
  "thiserror 2.0.20",
  "zaino-consensus",
  "zaino-persistence",
  "zaino-primitives",
  "zcash_history",
- "zebra-chain",
 ]
 
 [[package]]
@@ -6294,8 +6290,10 @@ name = "zaino-primitives"
 version = "0.3.0"
 dependencies = [
  "blake2",
+ "incrementalmerkletree",
  "orchard",
  "proptest",
+ "sapling-crypto",
  "serde",
  "sha2 0.10.9",
  "thiserror 2.0.20",
@@ -6395,7 +6393,6 @@ dependencies = [
  "sapling-crypto",
  "tokio",
  "zaino-consensus",
- "zaino-indexes",
  "zaino-primitives",
  "zaino-source",
  "zaino-source-zcash-rpc",

@@ -26,20 +26,25 @@ pub(crate) mod sync;
 use std::sync::Arc;
 
 use futures::Stream;
+use std::collections::HashMap;
 use tokio::sync::{watch, Semaphore};
 use zaino_chain_head::{
-    ChainHeadBlock, ChainHeadBlockService, ChainHeadError, ChainHeadSnapshot,
-    ChainHeadTransactionService, ChainHeadTxOutSetService,
+    ChainHeadBlock, ChainHeadBlockService, ChainHeadError, ChainHeadHistoryTreeService,
+    ChainHeadSnapshot, ChainHeadTransactionService, ChainHeadTransparentHistoryService,
+    ChainHeadTreeStateService, ChainHeadTxOutSetService, HeadCapabilities, HeadCapability,
 };
 use zaino_chain_store::{
     ChainStoreError, ChainStoreReader, ChainStoreService,
-    CompactBlockRead as StoreCompactBlockRead, PoolFilter, SpentOutputIndex, TransactionIndex,
-    TreeRootsIndex, TxOutSetAccumulator, TxOutSetIndex,
+    CompactBlockRead as StoreCompactBlockRead, HistoryEpoch, HistoryTreeIndex, PoolFilter,
+    SpentOutputIndex, StoreCapability, TransactionIndex, TransparentHistoryIndex, TreeRootsIndex,
+    TreeStateIndex, TxOutSetAccumulator, TxOutSetIndex,
 };
 use zaino_primitives::types::{
-    rpc::ChainTip, AbsoluteChainWork, AddressBalance, AddressDelta, BlockConfirmations, BlockHash,
-    BlockHeader, BlockRef, ChainStateEpoch, CompactBlock, Height, Outpoint, ShieldedPool,
-    SubtreeIndex, SubtreeRoot, TransactionId, TransparentAddress, Treestate, Utxo,
+    legacy_tree_from_frontier, rpc::ChainTip, AbsoluteChainWork, AddressBalance, AddressDelta,
+    BlockConfirmations, BlockHash, BlockHeader, BlockRef, ChainStateEpoch, CompactBlock, Height,
+    Outpoint, PoolFrontier, PoolTreestate, ShieldedPool, SignedZatoshis, SubtreeIndex, SubtreeRoot,
+    TransactionId, TransparentAddress, TransparentAddressKey, Treestate, Utxo, Zatoshis,
+    ZatoshisFlowSum,
 };
 
 use crate::block::ChainBlock;
@@ -49,7 +54,7 @@ use crate::capability::{
 use crate::error::{ChainViewError, Result};
 use crate::ports::{
     AddressRead, BlockRead, ChainView, ChainViewSnapshot, CompactBlockRead, ForkReconcile,
-    SpendRead, TransactionRead, TreestateRead, TxOutSetRead,
+    HistoryTreeRead, SpendRead, TransactionRead, TreestateRead, TxOutSetRead,
 };
 use crate::source::ChainViewSource;
 use crate::types::{
@@ -79,6 +84,22 @@ pub struct ChainViewComposer<Store, Head, Source> {
     /// On the composer, not the snapshot: one per snapshot would be one per
     /// client, which is exactly the unbounded case this prevents.
     permits: Arc<Semaphore>,
+    /// Runs between the head and store reads of `snapshot`.
+    #[cfg(test)]
+    between_reads: BetweenReads,
+}
+
+/// A test's hook between the head and store reads of a snapshot, where it
+/// moves the store.
+#[cfg(test)]
+#[derive(Clone, Default)]
+struct BetweenReads(Option<Arc<dyn Fn() + Send + Sync>>);
+
+#[cfg(test)]
+impl core::fmt::Debug for BetweenReads {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.write_str("BetweenReads")
+    }
 }
 
 impl<Store, Head, Source> ChainViewComposer<Store, Head, Source>
@@ -137,7 +158,16 @@ where
             config: Arc::new(config),
             served,
             permits,
+            #[cfg(test)]
+            between_reads: BetweenReads::default(),
         }
+    }
+
+    /// This view with `hook` run between the head and store reads.
+    #[cfg(test)]
+    fn between_reads(mut self, hook: impl Fn() + Send + Sync + 'static) -> Self {
+        self.between_reads = BetweenReads(Some(Arc::new(hook)));
+        self
     }
 
     /// Captures the view every read is answered from.
@@ -155,8 +185,14 @@ where
     /// walks a boxed iterator, so doing it per read would allocate once per
     /// decision per client.
     pub fn snapshot(&self) -> ComposerSnapshot<Store::Reader, Head::Snapshot, Source> {
-        let reader = self.store.reader();
+        // The head first: the store only advances, so the reader's tip is then
+        // at or above the head's starting block and no range falls between.
         let head = self.head.current();
+        #[cfg(test)]
+        if let Some(hook) = &self.between_reads.0 {
+            hook();
+        }
+        let reader = self.store.reader();
 
         let store_top = self
             .config
@@ -199,6 +235,7 @@ where
     ) -> ServiceabilityManifest {
         let snapshot = self.snapshot();
         let coverage = snapshot.coverage;
+        let head_capabilities = snapshot.head.capabilities();
         let config = &self.config;
         let served = self.served;
 
@@ -209,7 +246,13 @@ where
             if !served.contains(capability) {
                 return Answerable::Absent;
             }
-            serviceability(capability, coverage, store_capabilities, config)
+            serviceability(
+                capability,
+                coverage,
+                store_capabilities,
+                head_capabilities,
+                config,
+            )
         })
     }
 }
@@ -222,17 +265,31 @@ fn serviceability(
     capability: ChainCapability,
     coverage: Coverage,
     store_capabilities: zaino_chain_store::StoreCapabilities,
+    head_capabilities: HeadCapabilities,
     config: &ChainViewConfig,
 ) -> Answerable {
-    use zaino_chain_store::StoreCapability;
-
     let Some(tip) = coverage.chain_tip() else {
         return Answerable::NotAnswerable;
     };
     let has = |capability: StoreCapability| {
         config.store_enabled && store_capabilities.contains(capability)
     };
+    let local = |store: StoreCapability, head: HeadCapability| {
+        both_build(config, store_capabilities, store, head_capabilities, head)
+    };
     let passthrough = config.passthrough_enabled;
+    // Answered locally across the whole chain when nothing lies between the
+    // halves, else not yet; the validator answers where `passthrough`.
+    let merged = |store: StoreCapability, head: HeadCapability| match (
+        passthrough,
+        local(store, head),
+        coverage.contiguous(),
+    ) {
+        (true, _, _) => Answerable::ToHeight(tip),
+        (false, true, true) => Answerable::ToHeight(tip),
+        (false, true, false) => Answerable::NotAnswerable,
+        (false, false, _) => Answerable::Absent,
+    };
 
     // The contiguous ceiling: everything up to here is answerable from the
     // local providers alone. Below a hole that is the store's top; with no hole
@@ -261,16 +318,19 @@ fn serviceability(
             }
         }
 
-        // No provider but the validator holds consensus bytes or serialized
-        // commitment trees.
-        ChainCapability::Transactions
-        | ChainCapability::Treestate
-        | ChainCapability::SubtreeRoots => {
+        // No provider but the validator holds consensus bytes.
+        ChainCapability::Transactions => {
             if passthrough {
                 Answerable::ToHeight(tip)
             } else {
                 Answerable::Absent
             }
+        }
+
+        // The store's trees to its tip, the head's above it; the validator
+        // where either half is missing.
+        ChainCapability::Treestate | ChainCapability::SubtreeRoots => {
+            merged(StoreCapability::TreeState, HeadCapability::TreeState)
         }
 
         // The recent window's own graph; independent of what lies below it.
@@ -280,36 +340,37 @@ fn serviceability(
         // them at the contiguous ceiling rather than being filled — and without
         // the index they are absent outright.
         ChainCapability::SpendStatus => {
-            if !has(StoreCapability::SpentOutputs) {
+            if !local(StoreCapability::SpentOutputs, HeadCapability::Transactions) {
                 return Answerable::Absent;
             }
             local_ceiling.map_or(Answerable::NotAnswerable, Answerable::ToHeight)
         }
-        // The store's accumulator extended by the window, so it needs the
-        // store's spend indexes to resolve the window's spends, and no hole
-        // between the two.
+        // The head's `txout_set` extension: the store's set at its tip folded
+        // up to the head's tip. Not answerable until the head has built it.
         ChainCapability::TxOutSet => {
-            if !has(StoreCapability::TxOutSet)
-                || !has(StoreCapability::SpentOutputs)
-                || !has(StoreCapability::Transactions)
-            {
+            if !has(StoreCapability::TxOutSet) {
                 return Answerable::Absent;
             }
-            if coverage.store_top.is_none() || !coverage.contiguous() {
-                return Answerable::NotAnswerable;
+            match head_capabilities.contains(HeadCapability::TxOutSet) {
+                true => Answerable::ToHeight(tip),
+                false => Answerable::NotAnswerable,
             }
-            Answerable::ToHeight(tip)
         }
-        // The store holds the address-history index (I-10) but the chain head
-        // carries no transparent history yet, so the composer cannot answer
-        // across the non-finalised range: the validator answers. Stage 5b
-        // (`ChainHeadTransparentHistoryService`) moves this into the group
-        // above, where a hole caps it.
-        ChainCapability::AddressHistory => {
-            if passthrough {
-                Answerable::ToHeight(tip)
-            } else {
-                Answerable::Absent
+        // The store's effects to its tip, the head's above it; the validator
+        // where either half is missing.
+        ChainCapability::AddressHistory => merged(
+            StoreCapability::TransparentHistory,
+            HeadCapability::TransparentHistory,
+        ),
+        // The store's tree to its tip, the head's above it. No validator
+        // answers it.
+        ChainCapability::HistoryTree => {
+            if !local(StoreCapability::HistoryTree, HeadCapability::HistoryTree) {
+                return Answerable::Absent;
+            }
+            match coverage.contiguous() {
+                true => Answerable::ToHeight(tip),
+                false => Answerable::NotAnswerable,
             }
         }
     }
@@ -317,8 +378,10 @@ fn serviceability(
 
 impl<Store, Head, Source> ChainView for ChainViewComposer<Store, Head, Source>
 where
-    Store: ChainStoreService<Reader: TreeRootsIndex + StoreCompactBlockRead + TransactionIndex>,
-    Head: ChainHeadBlockService<Snapshot: ChainHeadTransactionService>,
+    Store: ChainStoreService<
+        Reader: TreeRootsIndex + StoreCompactBlockRead + TransactionIndex + TreeStateIndex,
+    >,
+    Head: ChainHeadBlockService<Snapshot: ChainHeadTransactionService + ChainHeadTreeStateService>,
     Source: ChainViewSource,
 {
     type Snapshot = ComposerSnapshot<Store::Reader, Head::Snapshot, Source>;
@@ -415,6 +478,16 @@ where
         Head::Snapshot: zaino_chain_head::ChainHeadTransparentHistoryService,
     {
         self.served = self.served.with(ChainCapability::AddressHistory);
+        self
+    }
+
+    /// Offers the chain history tree: the store's to its tip, the head's above.
+    pub fn serving_history_tree(mut self) -> Self
+    where
+        Store::Reader: HistoryTreeIndex,
+        Head::Snapshot: ChainHeadHistoryTreeService,
+    {
+        self.served = self.served.with(ChainCapability::HistoryTree);
         self
     }
 
@@ -564,6 +637,7 @@ fn withheld(capability: ChainCapability) -> ChainViewError {
         }
         ChainCapability::SpendStatus => "this deployment does not serve spend status",
         ChainCapability::TxOutSet => "this deployment does not serve the txout set",
+        ChainCapability::HistoryTree => "this deployment does not serve the history tree",
     })
 }
 
@@ -665,8 +739,12 @@ impl<Reader, HeadSnapshot, Source> stream::Coverable
 impl<Reader, HeadSnapshot, Source> ChainViewSnapshot
     for ComposerSnapshot<Reader, HeadSnapshot, Source>
 where
-    Reader: ChainStoreReader + TreeRootsIndex + StoreCompactBlockRead + TransactionIndex,
-    HeadSnapshot: ChainHeadSnapshot + ChainHeadTransactionService,
+    Reader: ChainStoreReader
+        + TreeRootsIndex
+        + StoreCompactBlockRead
+        + TransactionIndex
+        + TreeStateIndex,
+    HeadSnapshot: ChainHeadTransactionService + ChainHeadTreeStateService,
     Source: ChainViewSource,
 {
     fn tip(&self) -> BlockRef {
@@ -1245,15 +1323,16 @@ where
 
 impl<Reader, HeadSnapshot, Source> TreestateRead for ComposerSnapshot<Reader, HeadSnapshot, Source>
 where
-    Reader: ChainStoreReader,
-    HeadSnapshot: ChainHeadSnapshot,
+    Reader: ChainStoreReader + TreeStateIndex + TreeRootsIndex + StoreCompactBlockRead,
+    HeadSnapshot: ChainHeadTreeStateService,
     Source: ChainViewSource,
 {
     async fn treestate(&self, at: BlockId) -> Result<Option<Treestate>> {
-        // A treestate carries the *serialized* commitment tree; both providers
-        // keep only a root and a size per pool, and a root is not a tree. So
-        // this is the validator's answer: by the hash this snapshot pins where
-        // a provider covers the height, by height only in a hole. The tree port
+        if let Some(local) = self.local_treestate(at).await? {
+            return Ok(Some(local));
+        }
+        // The validator's answer: by the hash this snapshot pins where a
+        // provider covers the height, by height only in a hole. The tree port
         // leaves each pool's root unset, so the roots are read by the
         // treestate's own hash and joined in.
         self.fetch
@@ -1296,9 +1375,9 @@ where
         start_index: SubtreeIndex,
         limit: Option<u16>,
     ) -> Result<Vec<SubtreeRoot>> {
-        // Indexed by subtree completion rather than by height, and no provider
-        // keeps that index — deriving the boundaries from per-block roots means
-        // walking the chain from genesis.
+        if let Some(local) = self.local_subtree_roots(pool, start_index, limit).await? {
+            return Ok(local);
+        }
         // The port's only domain error is an inactive pool, an invalid request.
         self.fetch
             .require("subtree roots need the validator, which is disabled")?;
@@ -1309,6 +1388,178 @@ where
                 .await,
         )
     }
+}
+
+impl<Reader, HeadSnapshot, Source> ComposerSnapshot<Reader, HeadSnapshot, Source>
+where
+    Reader: ChainStoreReader + TreeStateIndex + TreeRootsIndex + StoreCompactBlockRead,
+    HeadSnapshot: ChainHeadTreeStateService,
+    Source: ChainViewSource,
+{
+    /// Whether the store's trees to its tip and the head's above it cover the
+    /// chain with nothing between them.
+    fn local_trees(&self) -> bool {
+        both_build(
+            &self.config,
+            self.reader.capabilities(),
+            StoreCapability::TreeState,
+            self.head.capabilities(),
+            HeadCapability::TreeState,
+        ) && self.coverage.contiguous()
+    }
+
+    /// The treestate from the store (at or below its tip) or the head (above
+    /// it); `None` sends the read to the validator: the trees not built
+    /// locally, or `at` names a block off this snapshot's best chain.
+    async fn local_treestate(&self, at: BlockId) -> Result<Option<Treestate>> {
+        if !self.local_trees() {
+            return Ok(None);
+        }
+        let height = match at {
+            BlockId::Height(height) => height,
+            BlockId::Hash(hash) => match self.block_height(hash).await? {
+                Some(height) => height,
+                None => return Ok(None),
+            },
+        };
+        let provider = match self.coverage.provider_at(height) {
+            Ok(Some(provider @ (Provider::Store | Provider::Head))) => provider,
+            _ => return Ok(None),
+        };
+        let Some(hash) = self.pinned_hash(provider, height).await? else {
+            return Ok(None);
+        };
+        if matches!(at, BlockId::Hash(asked) if asked != hash) {
+            return Ok(None);
+        }
+        let (time, roots) = match provider {
+            Provider::Head => {
+                let block = self.head_block(height).ok_or_else(|| unpinned(height))?;
+                (block.block.header.time, block.tree_roots.clone())
+            }
+            _ => {
+                let header = self
+                    .reader
+                    .headers_chunk(height, height)
+                    .await
+                    .map_err(store_err)?
+                    .into_iter()
+                    .next()
+                    .ok_or_else(|| unpinned(height))?;
+                let roots = self
+                    .reader
+                    .tree_roots_chunk(height, height)
+                    .await
+                    .map_err(store_err)?
+                    .into_iter()
+                    .next()
+                    .ok_or_else(|| unpinned(height))?;
+                (header.header.time, roots)
+            }
+        };
+        let mut pools = Vec::with_capacity(ShieldedPool::ALL.len());
+        for (pool, root) in
+            ShieldedPool::ALL
+                .into_iter()
+                .zip([roots.sapling, roots.orchard, roots.ironwood])
+        {
+            let frontier = match provider {
+                Provider::Head => self.head.pool_frontier(pool, height).map_err(head_err)?,
+                _ => self
+                    .reader
+                    .pool_frontier(pool, height)
+                    .await
+                    .map_err(store_err)?,
+            };
+            let Some(frontier) = frontier else {
+                return Ok(None);
+            };
+            pools.push(pool_treestate(frontier, root)?);
+        }
+        let [sapling, orchard, ironwood]: [Option<PoolTreestate>; 3] = pools
+            .try_into()
+            .map_err(|_| ChainViewError::Fatal("three pools expected".to_owned()))?;
+        Ok(Some(Treestate {
+            block_hash: hash,
+            height,
+            time,
+            sapling,
+            orchard,
+            ironwood,
+        }))
+    }
+
+    /// `pool`'s subtree roots from `start_index`: the store's, completed at
+    /// or below its tip, then the head's above it. `None` sends the read to
+    /// the validator: the trees not built locally, or the pool not active at
+    /// the tip (the validator's refusal stays its own).
+    async fn local_subtree_roots(
+        &self,
+        pool: ShieldedPool,
+        start_index: SubtreeIndex,
+        limit: Option<u16>,
+    ) -> Result<Option<Vec<SubtreeRoot>>> {
+        if !self.local_trees() {
+            return Ok(None);
+        }
+        let tip = self.head.best_tip().height;
+        match self.head.pool_frontier(pool, tip).map_err(head_err)? {
+            None | Some(PoolFrontier::Absent) => return Ok(None),
+            Some(_) => {}
+        }
+        let limit = limit.map_or(u64::MAX, u64::from);
+        let mut roots = match self.coverage.store_top {
+            Some(_) => self
+                .reader
+                .subtree_roots(pool, u64::from(start_index), limit)
+                .await
+                .map_err(store_err)?,
+            None => Vec::new(),
+        };
+        let taken = u64::try_from(roots.len())
+            .map_err(|_| ChainViewError::Fatal("subtree count overflowed".to_owned()))?;
+        if let Some(remaining) = limit.checked_sub(taken).filter(|left| *left > 0) {
+            let next = u64::from(start_index).saturating_add(taken);
+            roots.extend(
+                self.head
+                    .subtree_roots(pool, next, remaining)
+                    .map_err(head_err)?,
+            );
+        }
+        Ok(Some(roots))
+    }
+}
+
+/// Whether both halves build a capability: the store (enabled, with the
+/// index) to its tip and the head above it. Shared by the manifest and the
+/// reads, so what is advertised is what is answered.
+fn both_build(
+    config: &ChainViewConfig,
+    store_capabilities: zaino_chain_store::StoreCapabilities,
+    store: StoreCapability,
+    head_capabilities: HeadCapabilities,
+    head: HeadCapability,
+) -> bool {
+    config.store_enabled && store_capabilities.contains(store) && head_capabilities.contains(head)
+}
+
+/// One pool's treestate from its frontier and root; `None` for a pool not
+/// active at the block.
+fn pool_treestate(
+    frontier: PoolFrontier,
+    root: Option<zaino_primitives::types::TreeRootInfo>,
+) -> Result<Option<PoolTreestate>> {
+    let tree = match &frontier {
+        PoolFrontier::Absent => return Ok(None),
+        PoolFrontier::Empty => None,
+        PoolFrontier::Frontier(frontier) => Some(frontier),
+    };
+    let final_state = legacy_tree_from_frontier(tree)
+        .map_err(|error| ChainViewError::Fatal(format!("a stored frontier: {error}")))?;
+    Ok(Some(PoolTreestate {
+        final_root: root.map(|info| info.root),
+        final_state,
+    }))
 }
 
 /// A pool's treestate with its root filled in.
@@ -1404,6 +1655,11 @@ where
         if !self.served.contains(ChainCapability::TxOutSet) {
             return Err(withheld(ChainCapability::TxOutSet));
         }
+        if !self.config.store_enabled {
+            return Err(ChainViewError::NotServiceable(
+                "the txout set starts from the finalised store, which is disabled",
+            ));
+        }
         self.head.txout_set().map_err(head_err)
     }
 }
@@ -1446,24 +1702,57 @@ where
 
 impl<Reader, HeadSnapshot, Source> AddressRead for ComposerSnapshot<Reader, HeadSnapshot, Source>
 where
-    Reader: ChainStoreReader,
-    HeadSnapshot: ChainHeadSnapshot,
+    Reader: ChainStoreReader + TransparentHistoryIndex,
+    HeadSnapshot: ChainHeadTransparentHistoryService,
     Source: ChainViewSource,
 {
-    // The store's address-history index covers the finalised range only; the
-    // head carries no transparent history until Stage 5b, so these are the
-    // validator's answers. Then they become a merge across the providers with
-    // a store bound, and a hole stops being fillable — the validator runs no
-    // such index either.
+    // The store's effects to its tip and the head's above it where both build
+    // address history with nothing between them, shaped as the validator
+    // shapes them; else the validator's answers.
 
     async fn address_balance(&self, addresses: &[TransparentAddress]) -> Result<AddressBalance> {
-        self.address_query(self.fetch.source().get_address_balance(encoded(addresses)))
-            .await
+        let Some(effects) = self.local_effects(addresses, None).await? else {
+            return self
+                .address_query(self.fetch.source().get_address_balance(encoded(addresses)))
+                .await;
+        };
+        let unspent = effects.unspent();
+        Ok(AddressBalance {
+            balance: Zatoshis::sum_balances(unspent.iter().map(|effect| effect.value))
+                .ok_or_else(|| amount_err("unspent outputs past the supply"))?,
+            received: ZatoshisFlowSum::try_accumulate(
+                effects
+                    .all
+                    .iter()
+                    .filter(|effect| effect.credit.is_some())
+                    .map(|effect| effect.value),
+            )
+            .ok_or_else(|| amount_err("received flow overflowed"))?,
+        })
     }
 
     async fn address_utxos(&self, addresses: &[TransparentAddress]) -> Result<Vec<Utxo>> {
-        self.address_query(self.fetch.source().get_address_utxos(encoded(addresses)))
-            .await
+        let Some(effects) = self.local_effects(addresses, None).await? else {
+            return self
+                .address_query(self.fetch.source().get_address_utxos(encoded(addresses)))
+                .await;
+        };
+        let unspent = effects.unspent();
+        capped(unspent.len())?;
+        Ok(unspent
+            .into_iter()
+            .filter_map(|effect| {
+                let script = effect.credit.clone()?;
+                Some(Utxo {
+                    address: effect.address.clone(),
+                    txid: effect.txid,
+                    output_index: effect.index,
+                    script,
+                    satoshis: effect.value,
+                    height: effect.height,
+                })
+            })
+            .collect())
     }
 
     async fn address_txids(
@@ -1472,12 +1761,19 @@ where
         start: Height,
         end: Height,
     ) -> Result<Vec<TransactionId>> {
-        self.address_query(
-            self.fetch
-                .source()
-                .get_address_txids(encoded(addresses), start, end),
-        )
-        .await
+        let range = Some((start, end, RangeRule::WithinTip));
+        let Some(effects) = self.local_effects(addresses, range).await? else {
+            return self
+                .address_query(self.fetch.source().get_address_txids(
+                    encoded(addresses),
+                    start,
+                    end,
+                ))
+                .await;
+        };
+        let txids = effects.transactions();
+        capped(txids.len())?;
+        Ok(txids)
     }
 
     async fn address_deltas(
@@ -1486,13 +1782,402 @@ where
         start: Height,
         end: Height,
     ) -> Result<Vec<AddressDelta>> {
-        self.address_query(
-            self.fetch
-                .source()
-                .get_address_deltas(encoded(addresses), start, end),
-        )
-        .await
+        let range = Some((start, end, RangeRule::Ordered));
+        let Some(effects) = self.local_effects(addresses, range).await? else {
+            return self
+                .address_query(self.fetch.source().get_address_deltas(
+                    encoded(addresses),
+                    start,
+                    end,
+                ))
+                .await;
+        };
+        capped(effects.transactions().len())?;
+        effects
+            .all
+            .iter()
+            .map(|effect| {
+                let value = i64::try_from(u64::from(effect.value))
+                    .map_err(|_| amount_err("a value past i64"))?;
+                let signed = match effect.credit {
+                    Some(_) => Some(value),
+                    None => value.checked_neg(),
+                }
+                .ok_or_else(|| amount_err("a debit past i64"))?;
+                Ok(AddressDelta {
+                    satoshis: SignedZatoshis::try_new(signed)
+                        .map_err(|error| amount_err(&error.to_string()))?,
+                    txid: effect.txid,
+                    index: effect.index,
+                    height: effect.height,
+                    address: effect.address.clone(),
+                    block_index: Some(effect.position),
+                })
+            })
+            .collect()
     }
+}
+
+/// One effect on a queried address: an output paying it (`credit`, with the
+/// output's script) or an input spending such an output.
+struct AddressEffect {
+    address: TransparentAddress,
+    height: Height,
+    position: u32,
+    txid: TransactionId,
+    /// The output index for a credit, the input index for a debit.
+    index: u32,
+    value: Zatoshis,
+    /// The output's script for a credit; `None` for a debit.
+    credit: Option<zaino_primitives::types::Script>,
+    /// The outpoint created (credit) or spent (debit).
+    outpoint: Outpoint,
+}
+
+/// The effects of one query, in the validator's order: by height, position
+/// and index, a credit before a debit at the same index.
+struct AddressEffects {
+    all: Vec<AddressEffect>,
+}
+
+impl AddressEffects {
+    /// The credits no debit spends, in order.
+    fn unspent(&self) -> Vec<&AddressEffect> {
+        let spent: std::collections::HashSet<Outpoint> = self
+            .all
+            .iter()
+            .filter(|effect| effect.credit.is_none())
+            .map(|effect| effect.outpoint)
+            .collect();
+        self.all
+            .iter()
+            .filter(|effect| effect.credit.is_some() && !spent.contains(&effect.outpoint))
+            .collect()
+    }
+
+    /// Each transaction touching the addresses once, in order.
+    fn transactions(&self) -> Vec<TransactionId> {
+        let mut seen = std::collections::HashSet::new();
+        self.all
+            .iter()
+            .map(|effect| effect.txid)
+            .filter(|txid| seen.insert(*txid))
+            .collect()
+    }
+}
+
+impl<Reader, HeadSnapshot, Source> ComposerSnapshot<Reader, HeadSnapshot, Source>
+where
+    Reader: ChainStoreReader + TransparentHistoryIndex,
+    HeadSnapshot: ChainHeadTransparentHistoryService,
+    Source: ChainViewSource,
+{
+    /// Every effect on `addresses` over `range` (`None`: the whole chain):
+    /// the store's to its tip, the head's above it. `None` sends the read to
+    /// the validator: address history not built locally. A withheld
+    /// capability and an address for another network are refused here, as
+    /// the validator refuses them.
+    async fn local_effects(
+        &self,
+        addresses: &[TransparentAddress],
+        range: Option<(Height, Height, RangeRule)>,
+    ) -> Result<Option<AddressEffects>> {
+        if !self.served.contains(ChainCapability::AddressHistory) {
+            return Err(withheld(ChainCapability::AddressHistory));
+        }
+        let local = both_build(
+            &self.config,
+            self.reader.capabilities(),
+            StoreCapability::TransparentHistory,
+            self.head.capabilities(),
+            HeadCapability::TransparentHistory,
+        ) && self.coverage.contiguous();
+        if !local {
+            return Ok(None);
+        }
+        let tip = self.head.best_tip().height;
+        if let Some((start, end, rule)) = range {
+            let past_tip = matches!(rule, RangeRule::WithinTip) && (start > tip || end > tip);
+            if start > end || past_tip {
+                return Err(invalid_range(start, end));
+            }
+        }
+        let network = self.reader.network();
+        if let Some(foreign) = addresses.iter().find(|address| !address.is_for(network)) {
+            return Err(ChainViewError::Rejected(format!(
+                "an address for another network: {foreign}"
+            )));
+        }
+        let by_key: HashMap<TransparentAddressKey, TransparentAddress> = addresses
+            .iter()
+            .map(|address| (address.key(), address.clone()))
+            .collect();
+        let keys: Vec<TransparentAddressKey> = by_key.keys().copied().collect();
+        let (start, end) = range.map_or((Height::GENESIS, tip), |(start, end, _)| (start, end));
+        let end = end.min(tip);
+        let mut all = Vec::new();
+        if start > end {
+            return Ok(Some(AddressEffects { all }));
+        }
+        let named = |key: &TransparentAddressKey| {
+            by_key
+                .get(key)
+                .cloned()
+                .ok_or_else(|| ChainViewError::Fatal("an effect for an unasked address".to_owned()))
+        };
+
+        // the store to its tip
+        if let Some(store_top) = self.coverage.store_top.filter(|top| *top >= start) {
+            let stored = self
+                .reader
+                .address_effects(&zaino_chain_store::TransparentHistoryQuery {
+                    addresses: keys.clone(),
+                    start,
+                    end: end.min(store_top),
+                })
+                .await
+                .map_err(store_err)?;
+            for output in stored.outputs {
+                all.push(AddressEffect {
+                    address: named(&output.address)?,
+                    height: output.position.height,
+                    position: output.position.tx_index,
+                    txid: output.txid,
+                    index: output.outpoint.index,
+                    value: output.output.value,
+                    credit: Some(output.output.script),
+                    outpoint: output.outpoint,
+                });
+            }
+            for spend in stored.spends {
+                all.push(AddressEffect {
+                    address: named(&spend.address)?,
+                    height: spend.position.height,
+                    position: spend.position.tx_index,
+                    txid: spend.txid,
+                    index: spend.input_index,
+                    value: spend.value,
+                    credit: None,
+                    outpoint: spend.outpoint,
+                });
+            }
+        }
+
+        // the head above it
+        let above = self
+            .coverage
+            .store_top
+            .and_then(|top| top.checked_add(1))
+            .unwrap_or(Height::GENESIS)
+            .max(start);
+        if above <= end {
+            let recent = self
+                .head
+                .address_effects(&zaino_chain_head::transparent::TransparentHistoryQuery {
+                    addresses: keys,
+                    start: above,
+                    end,
+                })
+                .map_err(head_err)?;
+            for output in recent
+                .outputs
+                .into_iter()
+                .filter(|o| o.block.height >= above)
+            {
+                all.push(AddressEffect {
+                    address: named(&output.address)?,
+                    height: output.block.height,
+                    position: output.tx_index,
+                    txid: output.outpoint.txid,
+                    index: output.outpoint.index,
+                    value: output.value,
+                    credit: Some(output.script),
+                    outpoint: output.outpoint,
+                });
+            }
+            for spend in recent
+                .spends
+                .into_iter()
+                .filter(|s| s.block.height >= above)
+            {
+                all.push(AddressEffect {
+                    address: named(&spend.address)?,
+                    height: spend.block.height,
+                    position: spend.tx_index,
+                    txid: spend.txid,
+                    index: spend.input_index,
+                    value: spend.value,
+                    credit: None,
+                    outpoint: spend.outpoint,
+                });
+            }
+        }
+        all.sort_by_key(|effect| {
+            (
+                effect.height,
+                effect.position,
+                effect.index,
+                effect.credit.is_none(),
+            )
+        });
+        Ok(Some(AddressEffects { all }))
+    }
+}
+
+// ***** The chain history tree *****
+
+impl<Reader, HeadSnapshot, Source> HistoryTreeRead
+    for ComposerSnapshot<Reader, HeadSnapshot, Source>
+where
+    Reader: ChainStoreReader + HistoryTreeIndex,
+    HeadSnapshot: ChainHeadHistoryTreeService,
+    Source: ChainViewSource,
+{
+    async fn history_root(&self, height: Height) -> Result<Option<[u8; 32]>> {
+        match self.history_provider(height)? {
+            None => Ok(None),
+            Some(Provider::Store) => self.reader.history_root(height).await.map_err(store_err),
+            Some(_) => self.head.history_root(height).map_err(head_err),
+        }
+    }
+
+    async fn history_epoch(&self, height: Height) -> Result<Option<HistoryEpoch>> {
+        match self.history_provider(height)? {
+            None => Ok(None),
+            Some(Provider::Store) => self.reader.history_epoch(height).await.map_err(store_err),
+            Some(_) => Ok(self
+                .head
+                .history_epoch(height)
+                .map_err(head_err)?
+                .map(|epoch| HistoryEpoch {
+                    branch: epoch.branch,
+                    length: epoch.length,
+                })),
+        }
+    }
+
+    async fn history_entries(
+        &self,
+        height: Height,
+        positions: &[u32],
+    ) -> Result<Vec<Option<Vec<u8>>>> {
+        let provider = match self.history_provider(height)? {
+            None => return Ok(vec![None; positions.len()]),
+            Some(provider) => provider,
+        };
+        if provider == Provider::Store {
+            return self
+                .reader
+                .history_entries(height, positions)
+                .await
+                .map_err(store_err);
+        }
+        // the head holds what its window appended; positions below its seed
+        // are the store's, in the same epoch (an MMR entry never changes)
+        let mut entries = self
+            .head
+            .history_entries(height, positions)
+            .map_err(head_err)?;
+        let (Some(store_top), Some(epoch)) = (
+            self.coverage.store_top,
+            self.head.history_epoch(height).map_err(head_err)?,
+        ) else {
+            return Ok(entries);
+        };
+        let same_epoch = self
+            .reader
+            .history_epoch(store_top)
+            .await
+            .map_err(store_err)?
+            .is_some_and(|stored| stored.branch == epoch.branch);
+        if !same_epoch {
+            return Ok(entries);
+        }
+        let missing: Vec<u32> = positions
+            .iter()
+            .zip(&entries)
+            .filter(|(position, entry)| entry.is_none() && **position < epoch.length)
+            .map(|(position, _)| *position)
+            .collect();
+        let stored = self
+            .reader
+            .history_entries(store_top, &missing)
+            .await
+            .map_err(store_err)?;
+        let mut stored = missing.into_iter().zip(stored);
+        for (position, entry) in positions.iter().zip(entries.iter_mut()) {
+            if entry.is_none() && *position < epoch.length {
+                if let Some((_, filled)) = stored.next() {
+                    *entry = filled;
+                }
+            }
+        }
+        Ok(entries)
+    }
+}
+
+impl<Reader, HeadSnapshot, Source> ComposerSnapshot<Reader, HeadSnapshot, Source>
+where
+    Reader: ChainStoreReader,
+    HeadSnapshot: ChainHeadSnapshot,
+{
+    /// Who answers the history tree at `height`: the store at or below its
+    /// tip, the head above it; `None` above the tip. Refused where the two
+    /// do not both build it or something lies between them.
+    fn history_provider(&self, height: Height) -> Result<Option<Provider>> {
+        if !self.served.contains(ChainCapability::HistoryTree) {
+            return Err(withheld(ChainCapability::HistoryTree));
+        }
+        let local = both_build(
+            &self.config,
+            self.reader.capabilities(),
+            StoreCapability::HistoryTree,
+            self.head.capabilities(),
+            HeadCapability::HistoryTree,
+        ) && self.coverage.contiguous();
+        if !local {
+            return Err(ChainViewError::NotServiceable(
+                "the history tree needs the store's and the chain head's, with nothing between",
+            ));
+        }
+        if height > self.head.best_tip().height {
+            return Ok(None);
+        }
+        Ok(Some(match self.coverage.store_top {
+            Some(top) if height <= top => Provider::Store,
+            _ => Provider::Head,
+        }))
+    }
+}
+
+/// How the validator checks a queried range before answering.
+#[derive(Clone, Copy)]
+enum RangeRule {
+    /// Refused when inverted.
+    Ordered,
+    /// Refused when inverted or past the tip.
+    WithinTip,
+}
+
+/// An answer over the validator's result limit is refused, as it refuses it.
+fn capped(rows: usize) -> Result<()> {
+    match rows > zaino_source::MAX_ADDRESS_QUERY_RESULTS {
+        true => Err(ChainViewError::Rejected(format!(
+            "more than {} results",
+            zaino_source::MAX_ADDRESS_QUERY_RESULTS
+        ))),
+        false => Ok(()),
+    }
+}
+
+/// A range the validator refuses: inverted, or (for txids) past the tip.
+fn invalid_range(start: Height, end: Height) -> ChainViewError {
+    ChainViewError::Rejected(format!("invalid range {start}..={end}"))
+}
+
+/// Amounts that left their range: the store and head disagree with the chain.
+fn amount_err(what: &str) -> ChainViewError {
+    ChainViewError::Fatal(what.to_owned())
 }
 
 /// Addresses as the source ports name them.
@@ -1528,5 +2213,58 @@ mod tests {
             }),
             ChainViewError::Fatal(_)
         ));
+    }
+
+    /// The store moves 40 blocks and the head rebases onto it between the
+    /// two reads of one snapshot: read head first, the reader's tip is still
+    /// at or above the head's starting block, so the address answers lose
+    /// nothing and equal the validator's.
+    // multi_thread required: the hook blocks in place on the store's build
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_store_moving_between_the_reads_leaves_no_gap() {
+        use crate::common::{chain, height, rig, TIP};
+        use zaino_primitives::types::Network;
+
+        let store_top = TIP - 50;
+        let local = rig(chain())
+            .store_to(store_top)
+            .extended_head()
+            .build()
+            .await;
+        let (store, head) = (local.store.clone(), Arc::clone(&local.head));
+        let view = local.view().between_reads(move || {
+            tokio::task::block_in_place(|| {
+                tokio::runtime::Handle::current().block_on(async {
+                    store
+                        .build_to(height(store_top + 40))
+                        .await
+                        .expect("builds");
+                    head.advance_once().await.expect("rebases");
+                })
+            })
+        });
+        let snapshot = view.snapshot();
+        let reference = rig(chain()).store_to(store_top).build().await;
+        let expected = reference.view().snapshot();
+        let miner = vec![TransparentAddress::try_new(
+            zaino_source_mock::address_of(&zaino_source_mock::MINER_SCRIPT, Network::Regtest)
+                .expect("standard"),
+        )
+        .expect("valid")];
+        let (start, end) = (height(0), height(TIP));
+        assert_eq!(
+            snapshot
+                .address_deltas(&miner, start, end)
+                .await
+                .expect("answered"),
+            expected
+                .address_deltas(&miner, start, end)
+                .await
+                .expect("answered")
+        );
+        assert_eq!(
+            snapshot.address_balance(&miner).await.expect("answered"),
+            expected.address_balance(&miner).await.expect("answered")
+        );
     }
 }

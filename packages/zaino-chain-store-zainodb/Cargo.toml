@@ -28,7 +28,7 @@ transparent_address_history_experimental = []
 [dependencies]
 # The ports this backend implements, and the business vocabulary they speak.
 zaino-chain-store = { workspace = true }
-zaino-primitives = { workspace = true }
+zaino-primitives = { workspace = true, features = ["zebra"] }
 
 # The validator questions this backend asks. Named directly rather than only
 # through `ChainStoreSource`'s supertraits, because the per-question error type

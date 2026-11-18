@@ -324,16 +324,30 @@ where
         + zaino_source::OneShotGetAddressTxids
         + zaino_source::OneShotGetAddressUtxos
         + zaino_source::OneShotGetSpentInfo
-        + zaino_source::OneShotGetTxOut,
+        + zaino_source::OneShotGetTxOut
+        + zaino_source::OneShotGetBlock,
 {
     let tip = tip(source).await?;
     let wanted = vec![address.to_owned()];
+    // genesis outputs are never spendable: in no UTXO set, no address index
+    let genesis = answered("genesis", source.get_block(Height::GENESIS).await)?;
+    for tx in genesis.transactions() {
+        for index in (0u32..).take(tx.transparent.outputs.len()) {
+            let out = answered("txout", source.get_tx_out(tx.txid, index, false).await)?;
+            ensure(out.is_none(), || {
+                format!("genesis output {}:{index} in gettxout", tx.txid)
+            })?;
+        }
+    }
     let deltas = answered(
         "deltas",
         source
             .get_address_deltas(wanted.clone(), Height::GENESIS, tip)
             .await,
     )?;
+    ensure(deltas.iter().all(|d| d.height != Height::GENESIS), || {
+        format!("{address}: a delta at genesis")
+    })?;
     let debits: Vec<_> = deltas.iter().filter(|d| d.satoshis.as_i64() < 0).collect();
     ensure(!debits.is_empty() && deltas.len() > debits.len(), || {
         format!("{address}: deltas lack credits or debits")

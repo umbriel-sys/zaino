@@ -14,7 +14,7 @@ use zaino_chain_store::{ChainStoreService, StoreCapabilities, StoreWatermark};
 use zaino_component::{ComponentStatus, StatusSource};
 use zaino_indexes::IndexId;
 use zaino_persistence::{OpenError, ReadOnlyBackend, RefreshError, Storage};
-use zaino_primitives::types::{BlockRef, Height};
+use zaino_primitives::types::{BlockRef, Height, Network};
 
 use crate::config::{network_name, ChainStoreServiceConfig};
 use crate::reader::StoreReader;
@@ -68,6 +68,7 @@ pub enum LinkedError {
 struct Linked<St: Storage> {
     storage: St,
     root: PathBuf,
+    network: Network,
     set: IndexSet,
     indexes: Vec<(IndexId, St::ReadOnly)>,
     /// Each served index's tip; absent = not served.
@@ -113,6 +114,7 @@ impl<St: Storage> LinkedChainStore<St> {
             inner: Arc::new(Linked {
                 storage,
                 root,
+                network: config.network,
                 set,
                 indexes,
                 served: Mutex::new(BTreeMap::new()),
@@ -214,7 +216,7 @@ impl<St: Storage> LinkedChainStore<St> {
             .filter_map(|(id, backend)| backend.reader().ok().map(|reader| (*id, reader)))
             .collect();
         let status = self.status();
-        StoreReader::new(readers, watermark, capabilities, status)
+        StoreReader::new(readers, watermark, capabilities, status, inner.network)
     }
 }
 

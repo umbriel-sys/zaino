@@ -28,7 +28,7 @@ use zaino_indexes::{
 use zaino_persistence::BackendReader;
 use zaino_primitives::types::{
     AbsoluteChainWork, BlockHash, BlockRef, BlockTxPosition, ChainMetadata, CompactBlock,
-    ConsensusBranchId, Height, Outpoint, PoolFrontier, PreIndexCompactTx, ShieldedPool,
+    ConsensusBranchId, Height, Network, Outpoint, PoolFrontier, PreIndexCompactTx, ShieldedPool,
     SubtreeRoot, TransactionId, TransparentData, TransparentOutput, TreeRoot, TreeRoots, TreeSize,
 };
 
@@ -58,6 +58,7 @@ struct Snapshot<R> {
     watermark: StoreWatermark,
     capabilities: StoreCapabilities,
     status: ComponentStatus,
+    network: Network,
 }
 
 impl<R> Clone for StoreReader<R> {
@@ -85,6 +86,7 @@ impl<R> StoreReader<R> {
         watermark: StoreWatermark,
         capabilities: StoreCapabilities,
         status: ComponentStatus,
+        network: Network,
     ) -> Self {
         Self {
             snapshot: Arc::new(Snapshot {
@@ -92,6 +94,7 @@ impl<R> StoreReader<R> {
                 watermark,
                 capabilities,
                 status,
+                network,
             }),
         }
     }
@@ -737,6 +740,10 @@ impl<R: BackendReader + Sync + 'static> ChainStoreReader for StoreReader<R> {
 
     fn capabilities(&self) -> StoreCapabilities {
         self.snapshot.capabilities
+    }
+
+    fn network(&self) -> Network {
+        self.snapshot.network
     }
 
     async fn schema(&self) -> Result<StoreSchema, ChainStoreError> {

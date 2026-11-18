@@ -33,8 +33,8 @@ use futures::Stream;
 use tokio::sync::watch;
 use zaino_component::StatusSource;
 use zaino_primitives::types::{
-    AbsoluteChainWork, BlockHash, BlockTxPosition, CompactBlock, Height, Outpoint, PoolFrontier,
-    ShieldedPool, SubtreeRoot, TransactionId, TransparentOutput, TreeRoots,
+    AbsoluteChainWork, BlockHash, BlockTxPosition, CompactBlock, Height, Network, Outpoint,
+    PoolFrontier, ShieldedPool, SubtreeRoot, TransactionId, TransparentOutput, TreeRoots,
 };
 
 use crate::block::{PoolFilter, StoredHeader};
@@ -144,6 +144,9 @@ pub trait ChainStoreReader:
     /// Runtime state, not a type-level fact: a store on an older schema lacks
     /// indexes a newer one has, and gains them during a migration.
     fn capabilities(&self) -> StoreCapabilities;
+
+    /// The network this store indexes.
+    fn network(&self) -> Network;
 
     /// The schema on disk, and whether it is migrating.
     fn schema(&self) -> impl Future<Output = Result<StoreSchema, ChainStoreError>> + Send;

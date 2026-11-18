@@ -39,7 +39,6 @@
 
 mod error_map;
 mod from_domain;
-#[cfg(feature = "transparent_address_history_experimental")]
 mod history;
 mod to_domain;
 
@@ -124,6 +123,10 @@ impl<T: ChainStoreSource> ChainStoreReader for DbReader<T> {
 
     fn capabilities(&self) -> StoreCapabilities {
         store_capabilities::<Self>(self.inner.capability())
+    }
+
+    fn network(&self) -> zaino_primitives::types::Network {
+        zaino_primitives::types::Network::from_zebra(self.inner.network())
     }
 
     async fn schema(&self) -> Result<StoreSchema, ChainStoreError> {
@@ -444,6 +447,29 @@ impl<T: ChainStoreSource> SpentOutputIndex for DbReader<T> {
     ) -> Result<Vec<Option<zaino_primitives::types::TransparentOutput>>, ChainStoreError> {
         Err(ChainStoreError::Unsupported(
             "zainodb stores script hashes, not scripts",
+        ))
+    }
+}
+
+/// zainodb keeps tree roots, not frontiers (deleted in Stage 6): ChainView's
+/// treestate read needs the port and answers from the validator instead.
+impl<T: ChainStoreSource> zaino_chain_store::TreeStateIndex for DbReader<T> {
+    async fn pool_frontier(
+        &self,
+        _pool: zaino_primitives::types::ShieldedPool,
+        _height: DomainHeight,
+    ) -> Result<Option<zaino_primitives::types::PoolFrontier>, ChainStoreError> {
+        Err(ChainStoreError::Unsupported("zainodb keeps no frontiers"))
+    }
+
+    async fn subtree_roots(
+        &self,
+        _pool: zaino_primitives::types::ShieldedPool,
+        _start: u64,
+        _limit: u64,
+    ) -> Result<Vec<zaino_primitives::types::SubtreeRoot>, ChainStoreError> {
+        Err(ChainStoreError::Unsupported(
+            "zainodb keeps no subtree roots",
         ))
     }
 }

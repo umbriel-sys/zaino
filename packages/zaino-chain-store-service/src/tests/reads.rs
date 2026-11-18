@@ -12,9 +12,10 @@ use zaino_chain_store::{
     TxOutSetIndex as _,
 };
 use zaino_component::{Lifecycle, StatusSource as _};
-use zaino_indexes::{frontier_from_legacy_tree, IndexId};
+use zaino_indexes::IndexId;
 use zaino_persistence::in_memory::InMemoryStorage;
 use zaino_primitives::txout_commitment::{commitment_address, is_unspendable};
+use zaino_primitives::types::frontier_from_legacy_tree;
 use zaino_primitives::types::{
     Block, BlockTxPosition, CompactBlock, Height, Outpoint, PoolFrontier, PreIndexCompactTx,
     ShieldedPool, TransactionId, TransparentAddressKey, TransparentOutput,

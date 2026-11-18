@@ -46,8 +46,9 @@ every chain:
 - `n` is a maximum: fewer are made where fewer are spendable.
 
 Spends follow the parent's state, so they are valid on every branch.
-Commitment trees are real: roots, treestates (zcashd's legacy
-encoding) and completed subtree roots are hashed from the notes, and each
+Commitment trees are real: roots, treestates (the legacy encoding as zebrad
+writes it, all 31 parent slots) and completed subtree roots are hashed from the
+notes, and each
 Orchard-shaped bundle anchors to its tree's root after the parent.
 `block_commitments` is a tag.
 
@@ -92,7 +93,8 @@ every built block does; a hand-made `MockBlock` may not.
 address_index, mempool, chain_info}` check, through the ports alone, what
 every source must answer: heights and hashes agree and link, refusals are the
 ports' domain errors (an unknown hash, a height past the tip, a malformed
-address or one for another network), treestates carry no root, address
+address or one for another network), treestates carry no root, genesis
+outputs are in no UTXO set and no address's history, address
 deltas carry credits and debits that sum to the balance, every credit is spent (per `getspentinfo`, absent
 from `gettxout`) or a UTXO, and more. They discover the chain through the
 source checked, so the live suite runs the same checks against zebrad and

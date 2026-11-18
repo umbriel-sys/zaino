@@ -10,7 +10,7 @@ use zaino_primitives::types::{
 };
 
 use crate::block::{CompletedSubtree, SUBTREE_LEAVES};
-use crate::legacy_tree::{frontier_from_legacy_tree, LegacyTreeError};
+use zaino_primitives::types::{frontier_from_legacy_tree, LegacyTreeError};
 
 /// Why a validator's answer does not make fold input.
 #[derive(Debug, thiserror::Error)]

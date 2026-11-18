@@ -536,23 +536,22 @@ impl ChainGraph for PersistentSnapshot {
 }
 
 impl ChainHeadSnapshot for PersistentSnapshot {
+    /// What the built extensions answer, and transactions always: without
+    /// the extension they are answered by a scan of the window.
     fn capabilities(&self) -> HeadCapabilities {
         #[cfg(any(
             feature = "transactions",
             feature = "tree_state",
             feature = "history_tree"
         ))]
-        {
-            self.extensions.capabilities()
-        }
+        let built = self.extensions.capabilities();
         #[cfg(not(any(
             feature = "transactions",
             feature = "tree_state",
             feature = "history_tree"
         )))]
-        {
-            HeadCapabilities::NONE
-        }
+        let built = HeadCapabilities::NONE;
+        built.with(zaino_chain_head::HeadCapability::Transactions)
     }
 
     fn best_tip(&self) -> BlockRef {

@@ -574,10 +574,11 @@ fn pool_tree(trees: &PoolTrees, pool: ShieldedPool) -> Option<&PoolTreestate> {
     }
 }
 
-/// zcashd's legacy `CommitmentTree` encoding of a tree of `size` leaves (the
-/// empty tree for 0): `leaf` is the last note, `previous` the one before it
-/// (the left leaf at an even size), and `node(level, index)` each complete
-/// left subtree the frontier holds above the leaves.
+/// The legacy `CommitmentTree` encoding of a tree of `size` leaves (the
+/// empty tree for 0), as zebrad writes it (all 31 parent slots): `leaf` is
+/// the last note, `previous` the one before it (the left leaf at an even
+/// size), and `node(level, index)` each complete left subtree the frontier
+/// holds above the leaves.
 pub fn legacy_tree(
     size: u64,
     leaf: [u8; 32],
@@ -606,9 +607,9 @@ pub fn legacy_tree(
         }
     }
     // parent at level L iff bit L of the position: the left sibling subtree
-    let levels = (64 - position.leading_zeros()).saturating_sub(1);
-    bytes.push(u8::try_from(levels).unwrap_or(0));
-    for level in 1..=levels {
+    const PARENT_SLOTS: u8 = 31;
+    bytes.push(PARENT_SLOTS);
+    for level in 1..=u32::from(PARENT_SLOTS) {
         let present = position & (1 << level) != 0;
         optional(
             present.then(|| node(level, (position >> level) ^ 1)),

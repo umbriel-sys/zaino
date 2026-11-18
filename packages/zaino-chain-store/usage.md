@@ -32,6 +32,8 @@ implementation to stub what it cannot do, and stubs are where
 Where absence *cannot* be a compile-time fact it is a runtime one:
 `capabilities()` exists because a store on an older schema genuinely lacks an
 index until it has migrated. That is a fact about a database, not a type.
+`network()` is the network the store indexes: what a consumer answering from
+the store checks a queried address against.
 
 The two are tied together by a per-port capability *carrier* trait. Each read
 port `X` has a sibling `XCapability: X` — `TxOutSetIndexCapability`,
