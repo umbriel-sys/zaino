@@ -11,9 +11,11 @@ use std::time::Duration;
 
 use anyhow::{Context, Result};
 use serde_json::{json, Value};
-use zaino_proto::proto::service::{compact_tx_streamer_client::CompactTxStreamerClient, Empty};
-use zaino_testutils::{assert_rpc_parity, ZEBRAD_VERSION};
-use ztest::prelude::*;
+use zaino_proto::proto::service::Empty;
+use zaino_testutils::{
+    assert_rpc_parity, ActivationHeights, Backend, ChainCache, Fixture, Validator as _, Zainod,
+    Zebrad, REGTEST_ACTIVATION_HEIGHTS,
+};
 
 const READY: Duration = Duration::from_secs(180);
 /// NU6.3 (Ironwood) from height 2, NU7 from [`NU7_BOUNDARY`].
@@ -21,20 +23,15 @@ const NU7_BOUNDARY: u32 = 6;
 const NU6_3_BRANCH: &str = "37a5165b";
 const NU7_BRANCH: &str = "77190ad9";
 
-fn nu7_schedule() -> ActivationHeights {
-    ActivationHeights::builder()
-        .set_overwinter(Some(1))
-        .set_sapling(Some(1))
-        .set_blossom(Some(1))
-        .set_heartwood(Some(1))
-        .set_canopy(Some(1))
-        .set_nu5(Some(2))
-        .set_nu6(Some(2))
-        .set_nu6_1(Some(2))
-        .set_nu6_2(Some(2))
-        .set_nu6_3(Some(2))
-        .set_nu7(Some(NU7_BOUNDARY))
-        .build()
+fn nu7_boundary() -> Fixture {
+    Fixture::boundary(
+        "nu7",
+        ActivationHeights {
+            nu7: Some(NU7_BOUNDARY),
+            ..REGTEST_ACTIVATION_HEIGHTS
+        },
+        NU7_BOUNDARY,
+    )
 }
 
 /// `(chaintip, nextblock)` from a `getblockchaininfo` reply.
@@ -75,43 +72,23 @@ fn upgrade_entry(info: &Value, branch: &str) -> Result<(String, u64, String)> {
 /// zainod adopts the NU7 schedule from the validator and both backends report
 /// the consensus branch flipping from NU6.3 to NU7 exactly at the boundary,
 /// over JSON-RPC (`getblockchaininfo.consensus`) and gRPC (`GetLightdInfo`).
-#[ztest::qos::integration(footprint = "3c/6Gi")]
 #[tokio::test(flavor = "multi_thread")]
 async fn consensus_branch_flips_at_the_nu7_boundary_on_both_backends() -> Result<()> {
-    let mut env = TestEnv::builder()
-        .ready_timeout(READY)
-        .activation_heights(nu7_schedule());
-    let vol = env.shared_volume("zebra-db");
-    let validator = env.add_validator(
-        Validator::zebrad(ZEBRAD_VERSION)
-            .regtest()
-            .mine_to(Pool::Orchard)
-            .mount(&vol),
-    );
-    let fetch = env.add_indexer(
-        dev!(Indexer::Zainod, "../../Dockerfile")
-            .regtest()
-            .tuning(ZainoTuning::Fetch)
-            .named("zaino-fetch"),
-    );
-    let state = env.add_indexer(
-        dev!(Indexer::Zainod, "../../Dockerfile")
-            .regtest()
-            .tuning(ZainoTuning::State)
-            .mount(&vol)
-            .named("zaino-state"),
-    );
-    env.build().await?;
+    let cache = ChainCache::ensure_fixture(nu7_boundary()).await?;
+    let zebrad = Zebrad::launch(cache.zebrad_config()).await?;
+    let fetch = Zainod::launch(cache.indexer_config(&zebrad, Backend::Fetch)).await?;
+    let state = Zainod::launch(cache.indexer_config(&zebrad, Backend::State)).await?;
     let indexers = [&fetch, &state];
 
     // One block below the boundary: NU7 is scheduled and the next block activates it.
-    let tip = validator.generate_blocks(NU7_BOUNDARY - 2).await?;
-    assert_eq!(u32::from(tip), NU7_BOUNDARY - 1);
+    let tip = zebrad
+        .generate_blocks(NU7_BOUNDARY - 1 - cache.manifest.fixture.height)
+        .await?;
+    assert_eq!(tip, NU7_BOUNDARY - 1);
     for indexer in indexers {
-        indexer.wait_for_block_num(tip, READY).await?;
+        indexer.wait_for_block(tip, READY).await?;
         let info = indexer
             .json_rpc()
-            .await?
             .call_value("getblockchaininfo", json!([]))
             .await?;
         assert_eq!(
@@ -134,12 +111,11 @@ async fn consensus_branch_flips_at_the_nu7_boundary_on_both_backends() -> Result
 
     // The activation block, then two more: NU7 in force at the tip and beyond.
     for _ in 0..3 {
-        let tip = validator.generate_blocks(1).await?;
+        let tip = zebrad.generate_blocks(1).await?;
         for indexer in indexers {
-            indexer.wait_for_block_num(tip, READY).await?;
+            indexer.wait_for_block(tip, READY).await?;
             let info = indexer
                 .json_rpc()
-                .await?
                 .call_value("getblockchaininfo", json!([]))
                 .await?;
             assert_eq!(
@@ -171,44 +147,27 @@ async fn consensus_branch_flips_at_the_nu7_boundary_on_both_backends() -> Result
 /// validator's; the boundary treestate agrees between both backends and the
 /// validator; and the standard fee passes the validator's answer through, over
 /// JSON-RPC and gRPC (lightwallet-protocol v0.6.0).
-#[ztest::qos::integration(footprint = "3c/6Gi")]
 #[tokio::test(flavor = "multi_thread")]
 async fn served_chain_is_continuous_across_the_nu7_boundary() -> Result<()> {
-    let mut env = TestEnv::builder()
-        .ready_timeout(READY)
-        .activation_heights(nu7_schedule());
-    let vol = env.shared_volume("zebra-db");
-    let validator = env.add_validator(
-        Validator::zebrad(ZEBRAD_VERSION)
-            .regtest()
-            .mine_to(Pool::Orchard)
-            .mount(&vol),
-    );
-    let fetch = env.add_indexer(
-        dev!(Indexer::Zainod, "../../Dockerfile")
-            .regtest()
-            .tuning(ZainoTuning::Fetch)
-            .named("zaino-fetch"),
-    );
-    let state = env.add_indexer(
-        dev!(Indexer::Zainod, "../../Dockerfile")
-            .regtest()
-            .tuning(ZainoTuning::State)
-            .mount(&vol)
-            .named("zaino-state"),
-    );
-    env.build().await?;
+    let cache = ChainCache::ensure_fixture(nu7_boundary()).await?;
+    let zebrad = Zebrad::launch(cache.zebrad_config()).await?;
+    let fetch = Zainod::launch(cache.indexer_config(&zebrad, Backend::Fetch)).await?;
+    let state = Zainod::launch(cache.indexer_config(&zebrad, Backend::State)).await?;
     let indexers = [&fetch, &state];
 
-    let tip = validator.generate_blocks(NU7_BOUNDARY + 1).await?;
+    // Two blocks past the boundary, so both eras carry more than one block.
+    let tip = zebrad
+        .generate_blocks(NU7_BOUNDARY + 2 - cache.manifest.fixture.height)
+        .await?;
+    assert_eq!(tip, NU7_BOUNDARY + 2);
     for indexer in indexers {
-        indexer.wait_for_block_num(tip, READY).await?;
+        indexer.wait_for_block(tip, READY).await?;
     }
 
     // The validator's own tree sizes at the tip, the oracle the walk must land on.
-    let vrpc = validator.json_rpc().await?;
+    let vrpc = zebrad.rpc();
     let tip_block = vrpc
-        .call_value("getblock", json!([u64::from(tip).to_string(), 1]))
+        .call_value("getblock", json!([tip.to_string(), 1]))
         .await?;
     let trees = tip_block
         .get("trees")
@@ -228,9 +187,7 @@ async fn served_chain_is_continuous_across_the_nu7_boundary() -> Result<()> {
     );
 
     for indexer in indexers {
-        let blocks = indexer
-            .get_block_range(BlockHeight::from(1u32), tip)
-            .await?;
+        let blocks = indexer.get_block_range(1, tip).await?;
         assert_eq!(blocks.len() as u64, u64::from(tip));
         let (mut sapling, mut orchard, mut ironwood) = (0u64, 0u64, 0u64);
         for (index, block) in blocks.iter().enumerate() {
@@ -290,9 +247,7 @@ async fn served_chain_is_continuous_across_the_nu7_boundary() -> Result<()> {
             .with_context(|| format!("z_gettreestate.{pool}.commitments.finalState"))
     };
     for indexer in indexers {
-        let treestate = indexer
-            .get_tree_state(BlockHeight::from(NU7_BOUNDARY))
-            .await?;
+        let treestate = indexer.get_tree_state(NU7_BOUNDARY).await?;
         assert_eq!(treestate.height, u64::from(NU7_BOUNDARY));
         assert_eq!(treestate.sapling_tree, final_state("sapling")?);
         assert_eq!(treestate.orchard_tree, final_state("orchard")?);
@@ -300,12 +255,12 @@ async fn served_chain_is_continuous_across_the_nu7_boundary() -> Result<()> {
 
     // A test network reports ZIP 317's marginal fee at every height.
     for indexer in indexers {
-        let irpc = indexer.json_rpc().await?;
-        assert_rpc_parity("getstandardfee", "", &vrpc, &irpc, &[]).await?;
+        let irpc = indexer.json_rpc();
+        assert_rpc_parity("getstandardfee", "", vrpc, &irpc, &[]).await?;
         let fee = irpc.call_value("getstandardfee", json!([])).await?;
         assert_eq!(fee, json!({ "standard_fee": 1000, "version": 0 }));
 
-        let mut grpc = CompactTxStreamerClient::new(indexer.grpc_channel().await?);
+        let mut grpc = indexer.grpc();
         let fee = grpc.get_standard_fee(Empty {}).await?.into_inner();
         assert_eq!((fee.fee_zat, fee.estimator_version), (1000, 0));
         let lightd_info = grpc.get_lightd_info(Empty {}).await?.into_inner();

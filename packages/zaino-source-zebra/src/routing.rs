@@ -340,10 +340,8 @@ impl OneShotGetAddressDeltas for ZebraValidator {
         // implement. Against Zebra the state service is not an accelerator
         // here; it is the only thing that can answer at all.
         //
-        // Both paths report mined transactions only, so the routing does not
-        // change which transactions are covered. Against the legacy full node the RPC path
-        // additionally reports spends, which the state service cannot resolve
-        // (see the readstate implementation).
+        // Both paths report mined transactions only, receives and spends
+        // alike, so the routing does not change which deltas are covered.
         match self.fast() {
             Some(fast) => fast
                 .get_address_deltas(addresses, start, end)

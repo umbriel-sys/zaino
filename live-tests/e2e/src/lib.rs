@@ -2,46 +2,15 @@
 
 #![forbid(unsafe_code)]
 
-use ztest::prelude::{CompactBlock, TxId};
+pub use zaino_testutils::Pool;
+use zaino_testutils::{CompactBlock, TxId};
 
-/// A shielded/transparent pool, paired with the address kind that routes funds
-/// into it. Lets a send-and-check test take a single `Pool` instead of an
-/// address string plus a balance-field closure.
-#[derive(Clone, Copy, Debug)]
-pub enum Pool {
-    /// Orchard (funds routed via a unified address through NU6.2; from NU6.3
-    /// a unified-address output is routed to Ironwood — use [`Pool::Ironwood`]
-    /// for the receipt pool on NU6.3-active chains).
-    Orchard,
-    /// Ironwood (funds routed via a unified address from NU6.3).
-    Ironwood,
-    /// Sapling.
-    Sapling,
-    /// Transparent.
-    Transparent,
-}
-
-impl Pool {
-    /// The pool name that routes funds into this pool.
-    pub fn address_kind(self) -> &'static str {
-        match self {
-            Pool::Orchard | Pool::Ironwood => "unified",
-            Pool::Sapling => "sapling",
-            Pool::Transparent => "transparent",
-        }
-    }
-
-    pub fn ztest(self) -> ztest::Pool {
-        match self {
-            Pool::Orchard => ztest::Pool::Orchard,
-            Pool::Ironwood => ztest::Pool::Ironwood,
-            Pool::Sapling => ztest::Pool::Sapling,
-            Pool::Transparent => ztest::Pool::Transparent,
-        }
-    }
-
-    pub fn spendable_balance(self, balances: &ztest::PoolBalances) -> u64 {
-        balances.get(self.ztest())
+/// The pool name that routes funds into `pool`.
+pub fn address_kind(pool: Pool) -> &'static str {
+    match pool {
+        Pool::Orchard | Pool::Ironwood => "unified",
+        Pool::Sapling => "sapling",
+        Pool::Transparent => "transparent",
     }
 }
 

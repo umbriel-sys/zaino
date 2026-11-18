@@ -777,6 +777,13 @@ impl<T: ChainStoreSource> Router<T> {
                         "finalised state switched back to the persistent database"
                     );
                     self.note_persistent_online();
+                    // The sync that held the passthrough published its tip
+                    // under passthrough provenance; that tip is durable now.
+                    let tip = self.watermark.borrow().tip;
+                    self.publish_watermark(StoreWatermark {
+                        tip,
+                        provenance: self.watermark_provenance(),
+                    });
                     removed
                 }
             }

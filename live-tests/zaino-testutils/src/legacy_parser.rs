@@ -19,11 +19,9 @@
 //!
 //! # Scope
 //!
-//! Only the parse side survives the ztest migration. The `indexed_block`
-//! bridge — which rendered a parsed block as `zaino-state`'s indexed types —
-//! served the in-process vector generator that the migration replaced, and it
-//! was the sole reason this crate linked `zaino-state`. Dropping it keeps the
-//! live-test workspace off the production dependency graph. Restore it from
+//! Only the parse side remains. The `indexed_block` bridge — which rendered a
+//! parsed block as `zaino-state`'s indexed types — served an in-process vector
+//! generator that no longer exists. Restore it from
 //! history if vector generation is ever re-homed to a `zaino-state` unit test.
 //!
 //! # Not a maintained implementation

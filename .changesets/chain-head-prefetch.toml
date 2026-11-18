@@ -1,0 +1,32 @@
+[[changes]]
+crate = "zaino-component"
+kind = "feature"
+description = """
+`CpuBudget` splits the process's cores between components by `Share` \
+(chain store 8/16, chain head 4/16, mempool 2/16, chain view 2/16, each with \
+a floor and a cap), so no two components both size themselves from the core \
+count."""
+
+[[changes]]
+crate = "zaino-chain-head"
+kind = "feature"
+description = """
+`ChainHeadConfig::fetch_concurrency` (and `set_fetch_concurrency`): how many \
+heights the window build fetches ahead of the link. Defaults to the chain \
+head's `CpuBudget` share."""
+
+[[changes]]
+crate = "zaino-chain-head-service"
+kind = "feature"
+description = """
+The window build prefetches `fetch_concurrency` heights at a time instead of \
+one height per round trip; a 1,001-block window at startup takes about a \
+second instead of fifteen. Linking stays sequential and a reorg mid-build \
+drops the reads in flight."""
+
+[[changes]]
+crate = "zaino-chain-store-zainodb"
+kind = "internal"
+description = """
+The build's fetch concurrency is the store's `CpuBudget` share rather than \
+every core but one."""

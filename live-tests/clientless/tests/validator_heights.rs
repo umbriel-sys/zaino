@@ -26,60 +26,59 @@ use std::time::Duration;
 
 use anyhow::{Context, Result};
 use serde_json::{json, Value};
-use zaino_testutils::ZEBRAD_VERSION;
-use ztest::prelude::*;
+use zaino_testutils::{
+    ActivationHeights, Backend, ChainCache, Fixture, Validator as _, Zainod, Zebrad,
+    REGTEST_ACTIVATION_HEIGHTS,
+};
 
 const READY: Duration = Duration::from_secs(120);
 
 const NU6_3_TRANSITION_BOUNDARY: u32 = 6;
 
+fn transition_schedule() -> ActivationHeights {
+    ActivationHeights {
+        nu6_3: Some(NU6_3_TRANSITION_BOUNDARY),
+        nu7: None,
+        ..REGTEST_ACTIVATION_HEIGHTS
+    }
+}
+
 /// Boundary sync + no-recompile proof: a kind-only-configured zainod adopts
 /// the NU6.3-at-6 schedule from the validator, syncs across the boundary,
 /// and serves era-correct compact blocks for both eras.
-///
-/// multi_thread required: the test manager spawns the validator and indexer
-/// services.
-#[ztest::qos::integration]
 #[tokio::test(flavor = "multi_thread")]
 async fn zainod_syncs_a_schedule_its_config_never_saw() -> Result<()> {
-    let heights = ActivationHeights::builder()
-        .set_overwinter(Some(1))
-        .set_sapling(Some(1))
-        .set_blossom(Some(1))
-        .set_heartwood(Some(1))
-        .set_canopy(Some(1))
-        .set_nu5(Some(2))
-        .set_nu6(Some(2))
-        .set_nu6_1(Some(2))
-        .set_nu6_2(Some(2))
-        .set_nu6_3(Some(NU6_3_TRANSITION_BOUNDARY))
-        .build();
+    let heights = transition_schedule();
     assert_ne!(
         heights,
-        ActivationHeights::regtest_default(),
+        ActivationHeights::default(),
         "premise: zainod's config placeholder must differ from the fixture schedule, \
          or this proves nothing"
     );
-
-    let mut env = TestEnv::builder()
-        .ready_timeout(READY)
-        .activation_heights(heights);
-    let validator = env.add_validator(
-        Validator::zebrad(ZEBRAD_VERSION)
-            .regtest()
-            .mine_to(Pool::Orchard),
+    assert_ne!(
+        heights, REGTEST_ACTIVATION_HEIGHTS,
+        "premise: the canonical schedule must differ from the fixture schedule, \
+         or this proves nothing"
     );
-    let indexer = env.add_indexer(dev!(Indexer::Zainod, "../../Dockerfile").regtest());
-    env.build().await?;
+
+    let cache = ChainCache::ensure_fixture(Fixture::boundary(
+        "nu6_3",
+        heights,
+        NU6_3_TRANSITION_BOUNDARY,
+    ))
+    .await?;
+    let zebrad = Zebrad::launch(cache.zebrad_config()).await?;
+    let indexer = Zainod::launch(cache.indexer_config(&zebrad, Backend::Fetch)).await?;
 
     // Two blocks past the boundary, so both eras carry more than one block.
     // Reaching the tip at all is the core regression: pre-adoption, the
     // chain-index sync died on the first block whose commitment scheme the
     // misconfigured heights got wrong.
-    let tip = validator
-        .generate_blocks(NU6_3_TRANSITION_BOUNDARY + 1)
+    let tip = zebrad
+        .generate_blocks(NU6_3_TRANSITION_BOUNDARY + 2 - cache.manifest.fixture.height)
         .await?;
-    indexer.wait_for_block_num(tip, READY).await?;
+    assert_eq!(tip, NU6_3_TRANSITION_BOUNDARY + 2);
+    indexer.wait_for_block(tip, READY).await?;
     let indexed_tip = u64::from(indexer.latest_block_height().await?);
     assert!(
         indexed_tip > u64::from(NU6_3_TRANSITION_BOUNDARY),
@@ -89,9 +88,7 @@ async fn zainod_syncs_a_schedule_its_config_never_saw() -> Result<()> {
     // Era composition of the served chain proves the adopted schedule is the
     // validator's, not the placeholder: under the placeholder (NU6.3 at 2)
     // the pre-boundary orchard coinbases would be misread as ironwood-era.
-    let blocks = indexer
-        .get_block_range(BlockHeight::from(2u32), tip)
-        .await?;
+    let blocks = indexer.get_block_range(2, tip).await?;
     assert!(!blocks.is_empty(), "no compact blocks served");
     for block in &blocks {
         let height = block.height;
@@ -118,44 +115,31 @@ async fn zainod_syncs_a_schedule_its_config_never_saw() -> Result<()> {
 /// heights. Establishes (from real output, not reasoning) that nothing
 /// pre-Overwinter appears: the map is keyed by consensus branch ID, which
 /// pre-Overwinter eras don't have.
-///
-/// multi_thread required: the test manager spawns the validator and indexer
-/// services.
-#[ztest::qos::integration]
 #[tokio::test(flavor = "multi_thread")]
 async fn getblockchaininfo_reports_the_configured_schedule() -> Result<()> {
-    let heights = ActivationHeights::builder()
-        .set_overwinter(Some(1))
-        .set_sapling(Some(1))
-        .set_blossom(Some(1))
-        .set_heartwood(Some(1))
-        .set_canopy(Some(1))
-        .set_nu5(Some(2))
-        .set_nu6(Some(2))
-        .set_nu6_1(Some(2))
-        .set_nu6_2(Some(2))
-        .set_nu6_3(Some(NU6_3_TRANSITION_BOUNDARY))
-        .build();
+    let heights = transition_schedule();
     assert_ne!(
         heights,
-        ActivationHeights::regtest_default(),
+        ActivationHeights::default(),
         "premise: zainod's config placeholder must differ from the fixture schedule, \
          or this proves nothing"
     );
-
-    let mut env = TestEnv::builder()
-        .ready_timeout(READY)
-        .activation_heights(heights);
-    let validator = env.add_validator(
-        Validator::zebrad(ZEBRAD_VERSION)
-            .regtest()
-            .mine_to(Pool::Orchard),
+    assert_ne!(
+        heights, REGTEST_ACTIVATION_HEIGHTS,
+        "premise: the canonical schedule must differ from the fixture schedule, \
+         or this proves nothing"
     );
-    env.build().await?;
 
-    let blockchain_info = validator
-        .json_rpc()
-        .await?
+    let cache = ChainCache::ensure_fixture(Fixture::boundary(
+        "nu6_3",
+        heights,
+        NU6_3_TRANSITION_BOUNDARY,
+    ))
+    .await?;
+    let zebrad = Zebrad::launch(cache.zebrad_config()).await?;
+
+    let blockchain_info = zebrad
+        .rpc()
         .call_value("getblockchaininfo", json!([]))
         .await?;
     let upgrades = blockchain_info

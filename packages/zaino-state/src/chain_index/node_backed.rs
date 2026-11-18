@@ -341,6 +341,17 @@ impl<
         self.coherence.frozen_for()
     }
 
+    /// Height of the finalised store's committed tip; `None` while the store
+    /// is empty or answering by passthrough (ephemeral mode, a build in
+    /// progress).
+    pub fn finalised_tip_height(&self) -> Option<u32> {
+        let watermark = zaino_chain_store::ChainStoreReader::watermark(&self.finalized_state);
+        match watermark.provenance {
+            zaino_chain_store::Provenance::Durable => watermark.tip.map(|tip| tip.height.into()),
+            zaino_chain_store::Provenance::Passthrough => None,
+        }
+    }
+
     /// Returns the combined status of all chain index components.
     pub fn combined_status(&self) -> StatusType {
         combine_component_statuses(

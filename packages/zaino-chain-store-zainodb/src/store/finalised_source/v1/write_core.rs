@@ -32,14 +32,15 @@ const SYNC_PROGRESS_LOG_INTERVAL: std::time::Duration = std::time::Duration::fro
 #[cfg(not(feature = "transparent_address_history_experimental"))]
 const SYNC_BUILD_CONCURRENCY_LIMIT: usize = 16;
 
-/// Blocks to fetch concurrently: one per core, less one left for the committing thread and the
-/// rest of the node, and never more than [`SYNC_BUILD_CONCURRENCY_LIMIT`].
+/// Blocks to fetch concurrently: the store's share of the process's cores
+/// ([`zaino_component::Share::ChainStore`]), never more than
+/// [`SYNC_BUILD_CONCURRENCY_LIMIT`].
 #[cfg(not(feature = "transparent_address_history_experimental"))]
 fn sync_build_concurrency() -> usize {
-    std::thread::available_parallelism()
-        .map(|cores| cores.get().saturating_sub(1))
-        .unwrap_or(4)
-        .clamp(1, SYNC_BUILD_CONCURRENCY_LIMIT)
+    zaino_component::CpuBudget::detect()
+        .concurrency(zaino_component::Share::ChainStore)
+        .get()
+        .min(SYNC_BUILD_CONCURRENCY_LIMIT)
 }
 
 /// Immutable inputs shared by every batch of one bulk-sync run.

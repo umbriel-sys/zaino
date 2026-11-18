@@ -88,6 +88,13 @@ are **not** reversed — `parse.rs` has a test for each direction, and they are
 there because getting this wrong produces valid-looking hex naming something
 that does not exist.
 
+The one exception is deliberate: the commitment-tree root ports read Sapling
+and Orchard roots from the verbose `getblock` reply, where Zebra writes
+`finalsaplingroot` reversed and `finalorchardroot` natural, and undo that so
+both match the root a hashed `z_gettreestate` frontier yields. Only pools the
+block reply lacks (Ironwood always) are hashed from the frontier, which is
+what made every height cost three root computations before.
+
 ## Related
 
 - ADR-0008 — the port model and the domain/fetch distinction.

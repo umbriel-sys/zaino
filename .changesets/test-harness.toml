@@ -1,0 +1,7 @@
+[[changes]]
+crate = "zaino-state"
+kind = "feature"
+description = """
+`NodeBackedChainIndexSubscriber::finalised_tip_height` reports the finalised \
+store's committed tip (`None` while empty or passed through), so an \
+in-process consumer can gate on finalisation without a metrics scrape."""

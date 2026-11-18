@@ -175,6 +175,38 @@ async fn build_to_returns_once_the_database_holds_the_target() {
     assert_eq!(zaino_db.status(), zaino_status::StatusType::Ready);
 }
 
+/// A background build publishes its tip while it still holds the passthrough,
+/// so the release edge must republish it as durable: the store holds every
+/// block it synced, and a reader must not see an empty store after startup.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_finished_background_build_publishes_a_durable_watermark() {
+    init_tracing();
+
+    let blocks = load_test_vectors().unwrap().blocks;
+    let source = fake_validator_from_vectors(&blocks);
+    let (_db_dir, zaino_db) = spawn_v1_zaino_db(source.clone()).await.unwrap();
+
+    zaino_db.sync_to_height(Height(200), &source).await.unwrap();
+    zaino_db.wait_until_synced().await;
+
+    assert_eq!(
+        zaino_db.finalised_state_mode(),
+        crate::store::FinalisedStateMode::Persistent,
+        "the passthrough must be released once the build is done"
+    );
+    let watermark = zaino_db.watermark();
+    assert_eq!(
+        watermark.provenance,
+        zaino_chain_store::Provenance::Durable,
+        "a released build must publish a durable watermark"
+    );
+    assert_eq!(
+        watermark.tip.map(|tip| u32::from(tip.height)),
+        Some(200),
+        "the durable watermark must carry the synced tip"
+    );
+}
+
 /// Bulk sync must stay correct when the run spans many write batches.
 ///
 /// The batches are pipelined — batch N commits on its own thread while batch N+1 is built — so a

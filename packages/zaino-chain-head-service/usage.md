@@ -37,6 +37,12 @@ disagree.
 
 `spawn` anchors a complete window before it returns, or fails.
 
+The window is read `fetch_concurrency` heights at a time (the chain head's
+`CpuBudget` share, settable on `ChainHeadConfig`), each height's block and
+tree roots together, and linked in order as they arrive. A reorg seen while
+linking drops the reads in flight and restarts from the new tip; a 1,001-block
+window costs about a second of round trips, not a thousand of them.
+
 A chain head has no persistent state and no second data source, so one that
 cannot reach its validator has nothing whatsoever to offer. Failing here rather
 than existing in a degraded state is what makes `current()` total for the rest of

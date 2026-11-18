@@ -12,8 +12,10 @@ use std::time::Duration;
 
 use anyhow::{Context, Result};
 use serde_json::{json, Value};
-use zaino_testutils::{legacy_parser::block::FullBlock, ZEBRAD_VERSION};
-use ztest::prelude::*;
+use zaino_testutils::{
+    legacy_parser::block::FullBlock, ActivationHeights, Backend, ChainCache, Fixture,
+    Validator as _, Zainod, Zebrad, REGTEST_ACTIVATION_HEIGHTS,
+};
 
 const READY: Duration = Duration::from_secs(120);
 
@@ -21,38 +23,42 @@ const READY: Duration = Duration::from_secs(120);
 /// an Orchard era `[2, 6)` that flips to Ironwood at height 6.
 const NU6_3_TRANSITION_BOUNDARY: u32 = 6;
 
+fn nu6_3_boundary() -> Fixture {
+    Fixture::boundary(
+        "nu6_3",
+        ActivationHeights {
+            nu6_3: Some(NU6_3_TRANSITION_BOUNDARY),
+            nu7: None,
+            ..REGTEST_ACTIVATION_HEIGHTS
+        },
+        NU6_3_TRANSITION_BOUNDARY,
+    )
+}
+
 /// The pool a coinbase reward lands in. One per network-upgrade era, and the
-/// transaction version that carries it.
+/// transaction version that carries it; `Transparent` is a filler block's
+/// coinbase, which no shielded pool routes.
 #[derive(Debug, PartialEq, Eq, Clone, Copy)]
 enum CoinbaseEra {
     Sapling,
     Orchard,
     Ironwood,
+    Transparent,
 }
 
-#[ztest::qos::integration]
 #[tokio::test(flavor = "multi_thread")]
 async fn unfiltered_compact_blocks_match_chain_metadata_zebrad() -> Result<()> {
-    // Shielded mining: from NU6.3 an orchard-receiver coinbase is built as Ironwood
-    // actions (the coinbase's Orchard component must be empty from NU6.3), so every
-    // generated block carries ironwood data for the walk to check. A transparent
-    // miner would leave the ironwood assertions vacuous.
-    let mut env = TestEnv::builder().ready_timeout(READY);
-    let validator = env.add_validator(
-        Validator::zebrad(ZEBRAD_VERSION)
-            .regtest()
-            .mine_to(Pool::Orchard),
-    );
-    let indexer = env.add_indexer(dev!(Indexer::Zainod, "../../Dockerfile").regtest());
-    env.build().await?;
+    let cache = ChainCache::ensure().await?;
+    let zebrad = Zebrad::launch(cache.zebrad_config()).await?;
+    let indexer = Zainod::launch(cache.indexer_config(&zebrad, Backend::Fetch)).await?;
 
-    let tip = validator.generate_blocks(8).await?;
-    indexer.wait_for_block_num(tip, READY).await?;
+    let tip = cache.manifest.fixture.height;
+    indexer.wait_for_block(tip, READY).await?;
 
     // The independent oracle: zebrad's own per-block `(sapling, orchard, ironwood)` tree
     // sizes, computed without reference to what zaino serves. A pool's key is omitted
     // when its tree is empty, so a missing key reads as size 0.
-    let vrpc = validator.json_rpc().await?;
+    let vrpc = zebrad.rpc();
     let mut oracle: Vec<(u64, u64, u64)> = Vec::new();
     for height in 0..=u64::from(tip) {
         let block = vrpc
@@ -73,8 +79,7 @@ async fn unfiltered_compact_blocks_match_chain_metadata_zebrad() -> Result<()> {
 
     // The empty pool filter is what unfiltered (pre-Ironwood) clients send; the served
     // stream must include every shielded pool's actions.
-    let start = BlockHeight::from(1u32);
-    let blocks = indexer.get_block_range(start, tip).await?;
+    let blocks = indexer.get_block_range(1, tip).await?;
     assert_eq!(
         blocks.len() as u64,
         u64::from(tip),
@@ -160,53 +165,36 @@ async fn unfiltered_compact_blocks_match_chain_metadata_zebrad() -> Result<()> {
         total_ironwood_actions > 0,
         "the fixture produced no ironwood actions; the walk asserted nothing about ironwood"
     );
-    // The counterpart of the guard above: the miner *asked* for Orchard, and from NU6.3
-    // consensus requires an empty Orchard coinbase component, routing the reward into
-    // Ironwood actions instead. With coinbase-only blocks, served orchard actions must
-    // therefore be exactly zero. Together the two totals distinguish failure modes:
-    // pool-swap (orchard > 0, ironwood == 0: ironwood served under the orchard field)
-    // vs pool-drop (both zero) vs a broken routing premise.
+    // The counterpart of the guard above: NU6.3 is active from height 2, so consensus
+    // requires an empty Orchard coinbase component and every shielded spend lands in
+    // Ironwood; the chain carries no Orchard actions at all. Together the two totals
+    // distinguish failure modes: pool-swap (orchard > 0, ironwood == 0: ironwood served
+    // under the orchard field) vs pool-drop (both zero) vs a broken routing premise.
     assert_eq!(
         total_orchard_actions, 0,
-        "an Orchard-receiver coinbase must carry no Orchard actions from NU6.3"
+        "an NU6.3-from-2 chain must carry no Orchard actions"
     );
 
     Ok(())
 }
 
-/// Orchard-only era: NU6.3 never activates, so every post-NU5 coinbase stays an
-/// Orchard coinbase and no ironwood ever appears.
-#[ztest::qos::integration]
+/// Orchard-only era: below the NU6.3 boundary every post-NU5 coinbase is an Orchard
+/// coinbase and no ironwood ever appears. The boundary fixture's tip sits two blocks
+/// under the activation, so the whole chain is the Orchard era.
 #[tokio::test(flavor = "multi_thread")]
 async fn orchard_only_coinbase_routing_zebrad() -> Result<()> {
-    // The zebrad defaults are now the canonical NU6.3-at-2 set, so this fixture is explicit.
-    let mut env = TestEnv::builder().ready_timeout(READY).activation_heights(
-        ActivationHeights::builder()
-            .set_overwinter(Some(1))
-            .set_sapling(Some(1))
-            .set_blossom(Some(1))
-            .set_heartwood(Some(1))
-            .set_canopy(Some(1))
-            .set_nu5(Some(2))
-            .set_nu6(Some(2))
-            .set_nu6_1(Some(2))
-            .set_nu6_2(Some(2))
-            .build(),
-    );
-    let validator = env.add_validator(
-        Validator::zebrad(ZEBRAD_VERSION)
-            .regtest()
-            .mine_to(Pool::Orchard),
-    );
-    let indexer = env.add_indexer(dev!(Indexer::Zainod, "../../Dockerfile").regtest());
-    env.build().await?;
+    let cache = ChainCache::ensure_fixture(Fixture::orchard_only()).await?;
+    let zebrad = Zebrad::launch(cache.zebrad_config()).await?;
+    let indexer = Zainod::launch(cache.indexer_config(&zebrad, Backend::Fetch)).await?;
 
-    let tip = validator.generate_blocks(6).await?;
-    indexer.wait_for_block_num(tip, READY).await?;
+    let tip = cache.manifest.fixture.height;
+    assert_eq!(
+        cache.manifest.fixture.heights.nu6_3, None,
+        "premise: the orchard-only fixture never activates NU6.3"
+    );
+    indexer.wait_for_block(tip, READY).await?;
 
-    let blocks = indexer
-        .get_block_range(BlockHeight::from(1u32), tip)
-        .await?;
+    let blocks = indexer.get_block_range(1, tip).await?;
     assert_eq!(
         blocks.len() as u64,
         u64::from(tip),
@@ -217,7 +205,7 @@ async fn orchard_only_coinbase_routing_zebrad() -> Result<()> {
     // separates them: the raw-block predicate is class 1 (zebrad's own consensus
     // routing, zaino uninvolved), the raw-vs-served comparison is class 2 (zaino's
     // pool routing on the wire). <https://github.com/zingolabs/zaino/issues/1368>
-    let vrpc = validator.json_rpc().await?;
+    let vrpc = zebrad.rpc();
     let mut violations: Vec<String> = Vec::new();
     for (index, served) in blocks.iter().enumerate() {
         let height = index as u64 + 1;
@@ -250,6 +238,7 @@ async fn orchard_only_coinbase_routing_zebrad() -> Result<()> {
             (4, 1.., 0, 0) => Some(CoinbaseEra::Sapling),
             (5, 0, 1.., 0) => Some(CoinbaseEra::Orchard),
             (6, 0, 0, 1..) => Some(CoinbaseEra::Ironwood),
+            (5.., 0, 0, 0) => Some(CoinbaseEra::Transparent),
             _ => None,
         };
 
@@ -258,8 +247,10 @@ async fn orchard_only_coinbase_routing_zebrad() -> Result<()> {
             _ => CoinbaseEra::Sapling,
         };
 
-        let served_orchard: usize = served.vtx.iter().map(|tx| tx.actions.len()).sum();
-        let served_ironwood: usize = served.vtx.iter().map(|tx| tx.ironwood_actions.len()).sum();
+        // The coinbase alone (index 0): the fixture's blocks also carry sends.
+        let coinbase = served.vtx.iter().filter(|tx| tx.index == 0);
+        let served_orchard: usize = coinbase.clone().map(|tx| tx.actions.len()).sum();
+        let served_ironwood: usize = coinbase.map(|tx| tx.ironwood_actions.len()).sum();
         let wire_ok = served_orchard == orchard && served_ironwood == ironwood;
 
         if !is_coinbase || observed != Some(expected) || !wire_ok {
@@ -283,26 +274,19 @@ async fn orchard_only_coinbase_routing_zebrad() -> Result<()> {
 }
 
 /// Ironwood-only era: NU6.3 active from height 2 (with every prior upgrade), so every
-/// post-activation coinbase is an Ironwood coinbase and no Orchard coinbase ever
-/// appears.
-#[ztest::qos::integration]
+/// post-activation shielded coinbase is an Ironwood coinbase and no Orchard coinbase
+/// ever appears. Filler blocks pay a transparent coinbase, which routes nowhere; the
+/// walk requires at least one Ironwood coinbase so the era predicate is not vacuous.
 #[tokio::test(flavor = "multi_thread")]
 async fn ironwood_only_coinbase_routing_zebrad() -> Result<()> {
-    let mut env = TestEnv::builder().ready_timeout(READY);
-    let validator = env.add_validator(
-        Validator::zebrad(ZEBRAD_VERSION)
-            .regtest()
-            .mine_to(Pool::Orchard),
-    );
-    let indexer = env.add_indexer(dev!(Indexer::Zainod, "../../Dockerfile").regtest());
-    env.build().await?;
+    let cache = ChainCache::ensure().await?;
+    let zebrad = Zebrad::launch(cache.zebrad_config()).await?;
+    let indexer = Zainod::launch(cache.indexer_config(&zebrad, Backend::Fetch)).await?;
 
-    let tip = validator.generate_blocks(6).await?;
-    indexer.wait_for_block_num(tip, READY).await?;
+    let tip = cache.manifest.fixture.height;
+    indexer.wait_for_block(tip, READY).await?;
 
-    let blocks = indexer
-        .get_block_range(BlockHeight::from(1u32), tip)
-        .await?;
+    let blocks = indexer.get_block_range(1, tip).await?;
     assert_eq!(
         blocks.len() as u64,
         u64::from(tip),
@@ -313,8 +297,9 @@ async fn ironwood_only_coinbase_routing_zebrad() -> Result<()> {
     // separates them: the raw-block predicate is class 1 (zebrad's own consensus
     // routing, zaino uninvolved), the raw-vs-served comparison is class 2 (zaino's
     // pool routing on the wire). <https://github.com/zingolabs/zaino/issues/1368>
-    let vrpc = validator.json_rpc().await?;
+    let vrpc = zebrad.rpc();
     let mut violations: Vec<String> = Vec::new();
+    let mut ironwood_coinbases = 0usize;
     for (index, served) in blocks.iter().enumerate() {
         let height = index as u64 + 1;
         assert_eq!(served.height, height, "served blocks must be contiguous");
@@ -346,22 +331,31 @@ async fn ironwood_only_coinbase_routing_zebrad() -> Result<()> {
             (4, 1.., 0, 0) => Some(CoinbaseEra::Sapling),
             (5, 0, 1.., 0) => Some(CoinbaseEra::Orchard),
             (6, 0, 0, 1..) => Some(CoinbaseEra::Ironwood),
+            (5.., 0, 0, 0) => Some(CoinbaseEra::Transparent),
             _ => None,
         };
+        if observed == Some(CoinbaseEra::Ironwood) {
+            ironwood_coinbases += 1;
+        }
 
-        let expected = match height {
-            h if h >= 2 => CoinbaseEra::Ironwood,
-            _ => CoinbaseEra::Sapling,
+        let era_ok = match height {
+            h if h >= 2 => matches!(
+                observed,
+                Some(CoinbaseEra::Ironwood | CoinbaseEra::Transparent)
+            ),
+            _ => observed == Some(CoinbaseEra::Sapling),
         };
 
-        let served_orchard: usize = served.vtx.iter().map(|tx| tx.actions.len()).sum();
-        let served_ironwood: usize = served.vtx.iter().map(|tx| tx.ironwood_actions.len()).sum();
+        // The coinbase alone (index 0): the fixture's blocks also carry sends.
+        let coinbase = served.vtx.iter().filter(|tx| tx.index == 0);
+        let served_orchard: usize = coinbase.clone().map(|tx| tx.actions.len()).sum();
+        let served_ironwood: usize = coinbase.map(|tx| tx.ironwood_actions.len()).sum();
         let wire_ok = served_orchard == orchard && served_ironwood == ironwood;
 
-        if !is_coinbase || observed != Some(expected) || !wire_ok {
+        if !is_coinbase || !era_ok || !wire_ok {
             violations.push(format!(
-                "height {height}: want {expected:?}, raw is {observed:?} \
-                 (is_coinbase {is_coinbase}, v{version}, sapling {sapling}, \
+                "height {height}: want Ironwood (or a transparent filler coinbase), raw is \
+                 {observed:?} (is_coinbase {is_coinbase}, v{version}, sapling {sapling}, \
                  orchard {orchard}, ironwood {ironwood}); \
                  zaino served orchard {served_orchard}, ironwood {served_ironwood}"
             ));
@@ -374,6 +368,10 @@ async fn ironwood_only_coinbase_routing_zebrad() -> Result<()> {
         blocks.len(),
         violations.join("\n")
     );
+    assert!(
+        ironwood_coinbases > 0,
+        "the fixture carries no Ironwood coinbase; the era predicate asserted nothing"
+    );
 
     Ok(())
 }
@@ -382,40 +380,20 @@ async fn ironwood_only_coinbase_routing_zebrad() -> Result<()> {
 /// coinbases through NU6.2 and Ironwood coinbases from the NU6.3 activation height —
 /// each predicate exactly delimiting its era, so a mis-timed flip fails on both sides
 /// of the boundary.
-#[ztest::qos::integration]
 #[tokio::test(flavor = "multi_thread")]
 async fn orchard_coinbase_routing_flips_to_ironwood_at_activation_zebrad() -> Result<()> {
-    let mut env = TestEnv::builder().ready_timeout(READY).activation_heights(
-        ActivationHeights::builder()
-            .set_overwinter(Some(1))
-            .set_sapling(Some(1))
-            .set_blossom(Some(1))
-            .set_heartwood(Some(1))
-            .set_canopy(Some(1))
-            .set_nu5(Some(2))
-            .set_nu6(Some(2))
-            .set_nu6_1(Some(2))
-            .set_nu6_2(Some(2))
-            .set_nu6_3(Some(NU6_3_TRANSITION_BOUNDARY))
-            .build(),
-    );
-    let validator = env.add_validator(
-        Validator::zebrad(ZEBRAD_VERSION)
-            .regtest()
-            .mine_to(Pool::Orchard),
-    );
-    let indexer = env.add_indexer(dev!(Indexer::Zainod, "../../Dockerfile").regtest());
-    env.build().await?;
+    let cache = ChainCache::ensure_fixture(nu6_3_boundary()).await?;
+    let zebrad = Zebrad::launch(cache.zebrad_config()).await?;
+    let indexer = Zainod::launch(cache.indexer_config(&zebrad, Backend::Fetch)).await?;
 
     // Two blocks past the boundary, so both eras carry more than one block.
-    let tip = validator
-        .generate_blocks(NU6_3_TRANSITION_BOUNDARY + 2)
+    let tip = zebrad
+        .generate_blocks(NU6_3_TRANSITION_BOUNDARY + 2 - cache.manifest.fixture.height)
         .await?;
-    indexer.wait_for_block_num(tip, READY).await?;
+    assert_eq!(tip, NU6_3_TRANSITION_BOUNDARY + 2);
+    indexer.wait_for_block(tip, READY).await?;
 
-    let blocks = indexer
-        .get_block_range(BlockHeight::from(1u32), tip)
-        .await?;
+    let blocks = indexer.get_block_range(1, tip).await?;
     assert_eq!(
         blocks.len() as u64,
         u64::from(tip),
@@ -426,7 +404,7 @@ async fn orchard_coinbase_routing_flips_to_ironwood_at_activation_zebrad() -> Re
     // separates them: the raw-block predicate is class 1 (zebrad's own consensus
     // routing, zaino uninvolved), the raw-vs-served comparison is class 2 (zaino's
     // pool routing on the wire). <https://github.com/zingolabs/zaino/issues/1368>
-    let vrpc = validator.json_rpc().await?;
+    let vrpc = zebrad.rpc();
     let mut violations: Vec<String> = Vec::new();
     for (index, served) in blocks.iter().enumerate() {
         let height = index as u64 + 1;
@@ -459,6 +437,7 @@ async fn orchard_coinbase_routing_flips_to_ironwood_at_activation_zebrad() -> Re
             (4, 1.., 0, 0) => Some(CoinbaseEra::Sapling),
             (5, 0, 1.., 0) => Some(CoinbaseEra::Orchard),
             (6, 0, 0, 1..) => Some(CoinbaseEra::Ironwood),
+            (5.., 0, 0, 0) => Some(CoinbaseEra::Transparent),
             _ => None,
         };
 
@@ -468,8 +447,10 @@ async fn orchard_coinbase_routing_flips_to_ironwood_at_activation_zebrad() -> Re
             _ => CoinbaseEra::Sapling,
         };
 
-        let served_orchard: usize = served.vtx.iter().map(|tx| tx.actions.len()).sum();
-        let served_ironwood: usize = served.vtx.iter().map(|tx| tx.ironwood_actions.len()).sum();
+        // The coinbase alone (index 0): the fixture's blocks also carry sends.
+        let coinbase = served.vtx.iter().filter(|tx| tx.index == 0);
+        let served_orchard: usize = coinbase.clone().map(|tx| tx.actions.len()).sum();
+        let served_ironwood: usize = coinbase.map(|tx| tx.ironwood_actions.len()).sum();
         let wire_ok = served_orchard == orchard && served_ironwood == ironwood;
 
         if !is_coinbase || observed != Some(expected) || !wire_ok {
