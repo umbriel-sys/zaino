@@ -927,6 +927,11 @@ impl<T: ChainStoreSource> FinalisedState<T> {
         self.db.service_capability()
     }
 
+    /// The network this store indexes.
+    pub(crate) fn network(&self) -> &zebra_chain::parameters::Network {
+        self.cfg.db.network()
+    }
+
     /// Builds up to and including `target`, using the store's own validator.
     ///
     /// Returns only once the persistent database holds `target`: a gap wider

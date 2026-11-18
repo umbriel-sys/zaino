@@ -87,8 +87,15 @@ pub enum SpendStatus {
     /// Excludes the mempool: a chain view does not track one, so a consumer
     /// needing a trustworthy unmined answer asks the mempool itself.
     Unspent,
-    /// Spent by this transaction.
-    SpentBy(TransactionId),
+    /// Spent by this input of this transaction, mined at this height.
+    SpentBy {
+        /// The spending transaction.
+        txid: TransactionId,
+        /// The spending input's index within it.
+        input_index: u32,
+        /// The height it was mined at.
+        height: zaino_primitives::types::Height,
+    },
     /// Spent, but this view cannot name the spender.
     SpentSpenderUnknown,
 }

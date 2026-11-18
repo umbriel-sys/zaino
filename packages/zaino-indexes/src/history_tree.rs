@@ -327,8 +327,8 @@ fn tree_of<V: Version>(epoch: &Epoch) -> Result<Tree<V>, FoldError> {
     Ok(Tree::new(epoch.length, peaks, Vec::new()))
 }
 
-/// The epoch's `hashChainHistoryRoot`.
-fn root_of(epoch: &Epoch) -> Result<[u8; 32], FoldError> {
+/// The epoch's `hashChainHistoryRoot`, from its peaks.
+pub fn root_of(epoch: &Epoch) -> Result<[u8; 32], FoldError> {
     match version(Some(epoch.branch))? {
         Some(NodeVersion::V1) => root_as::<zcash_history::V1>(epoch),
         Some(NodeVersion::V2) => root_as::<zcash_history::V2>(epoch),
@@ -498,9 +498,9 @@ impl<'a, R: BackendReader> Reader<'a, R> {
         })))
     }
 
-    /// The `hashChainHistoryRoot` of the tree after `height`: `None` above
-    /// the tip or before Heartwood. At most 32 node reads.
-    pub fn root(&self, height: Height) -> Result<Option<[u8; 32]>, FoldError> {
+    /// The epoch after `height` with its peaks read: `None` above the tip or
+    /// before Heartwood. At most 32 node reads.
+    pub fn epoch_with_peaks(&self, height: Height) -> Result<Option<Epoch>, FoldError> {
         let Some(Some(EpochAt {
             branch,
             start,
@@ -513,13 +513,21 @@ impl<'a, R: BackendReader> Reader<'a, R> {
             .into_iter()
             .map(|position| Ok((position, self.entry(start, position)?)))
             .collect::<Result<Vec<_>, FoldError>>()?;
-        root_of(&Epoch {
+        Ok(Some(Epoch {
             branch,
             start,
             length,
             peaks,
-        })
-        .map(Some)
+        }))
+    }
+
+    /// The `hashChainHistoryRoot` of the tree after `height`: `None` above
+    /// the tip or before Heartwood.
+    pub fn root(&self, height: Height) -> Result<Option<[u8; 32]>, FoldError> {
+        self.epoch_with_peaks(height)?
+            .as_ref()
+            .map(root_of)
+            .transpose()
     }
 
     /// The entry at MMR `position` of the epoch starting at `start`.

@@ -1,0 +1,23 @@
+[[changes]]
+crate = "zaino-chain-store"
+kind = "feature"
+description = """
+`SpentOutputIndex::outputs_by_outpoint(outpoints)`: the outputs as the chain \
+holds them (value and script), for folds above the store resolving inputs \
+that spend below it. `TxOutSetIndex::remaining_outputs(txids)`: each \
+transaction's counted outputs still unspent at the watermark (D-69), so a \
+fold extending the set knows when a transaction leaves it."""
+
+[[changes]]
+crate = "zaino-chain-store-service"
+kind = "feature"
+description = """
+Both new reads served from I-03 + I-04 and I-11; `previous_outputs` is the \
+same lookup projected to value and address key."""
+
+[[changes]]
+crate = "zaino-chain-store-zainodb"
+kind = "change"
+description = """
+`outputs_by_outpoint` and `remaining_outputs` answer `Unsupported`: zainodb \
+stores script hashes and no per-transaction counts."""

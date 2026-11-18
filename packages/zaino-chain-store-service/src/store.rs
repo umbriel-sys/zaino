@@ -13,7 +13,7 @@ use zaino_chain_store::{
 use zaino_component::{ComponentStatus, StatusSource};
 use zaino_indexes::{FoldError, IndexId, IndexState};
 use zaino_persistence::{Backend, BackendReader, Identity, OpenError, ReadError, Storage};
-use zaino_primitives::types::{BlockHash, BlockRef, Height, NetworkUpgradeInfo};
+use zaino_primitives::types::{BlockHash, BlockRef, Height, Network, NetworkUpgradeInfo};
 
 use crate::config::{network_name, ChainStoreServiceConfig, IngestConfig, OnCorruption};
 use crate::ingest::{self, Ingest};
@@ -179,7 +179,7 @@ fn causes(error: &dyn std::error::Error) -> String {
 /// What every handle onto one running store shares.
 pub(crate) struct Inner<St: Storage, Src> {
     storage: St,
-    network: &'static str,
+    network: Network,
     source: Arc<Src>,
     schedule: Arc<[NetworkUpgradeInfo]>,
     set: IndexSet,
@@ -235,7 +235,7 @@ impl<St: Storage, Src: ChainStoreSource> Inner<St, Src> {
                 };
                 Ok(Self {
                     storage,
-                    network,
+                    network: config.network,
                     source,
                     schedule,
                     trees: set.contains(IndexId::TreeState),
@@ -380,7 +380,7 @@ impl<St: Storage, Src: ChainStoreSource> Inner<St, Src> {
             check_tips(
                 &self.storage,
                 self.source.as_ref(),
-                self.network,
+                network_name(self.network),
                 &mut built.indexes,
                 &mut built.recorder,
             )
@@ -468,7 +468,7 @@ impl<St: Storage, Src: ChainStoreSource> Inner<St, Src> {
                 &self.storage,
                 &closed.dir,
                 closed.id,
-                self.network,
+                network_name(self.network),
                 self.on_corruption,
                 &mut built.recorder,
             ) {
@@ -561,7 +561,13 @@ impl<St: Storage, Src: ChainStoreSource> Inner<St, Src> {
                 }
             })
             .collect();
-        StoreReader::new(readers, watermark, capabilities, self.status())
+        StoreReader::new(
+            readers,
+            watermark,
+            capabilities,
+            self.status(),
+            self.network,
+        )
     }
 
     /// The store's status, from its state and how far it has built.

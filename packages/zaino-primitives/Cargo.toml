@@ -38,5 +38,9 @@ serde = ["dep:serde"]
 txout-commitment = ["dep:blake2"]
 
 [dev-dependencies]
+incrementalmerkletree.workspace = true
+orchard.workspace = true
 proptest.workspace = true
+sapling-crypto.workspace = true
 zaino-consensus.workspace = true
+zebra-chain.workspace = true

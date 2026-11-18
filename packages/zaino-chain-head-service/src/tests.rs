@@ -12,6 +12,12 @@
 //!   the test is the only thing advancing the graph, so what it observes is
 //!   exactly what it caused.
 
+#[cfg(any(
+    feature = "transactions",
+    feature = "tree_state",
+    feature = "history_tree"
+))]
+mod extensions;
 mod reorg_depth;
 
 use std::{sync::Arc, time::Duration};
@@ -29,7 +35,7 @@ use zaino_source_mock::{MockBlock, MockChain, NodeFacts, PoolTrees, Spendable};
 use crate::{
     error::ChainHeadAdvanceError,
     service::{ChainHeadService, TipSelection},
-    snapshot::MapBackedSnapshot,
+    snapshot::PersistentSnapshot,
 };
 
 /// A valid nBits value: non-negative, non-zero, no overflow.
@@ -242,8 +248,8 @@ async fn running(validator: &MockValidator, max_depth: u32) -> Arc<ChainHeadServ
 async fn wait_for(
     service: &ChainHeadService<MockChain>,
     what: &str,
-    predicate: impl Fn(&MapBackedSnapshot) -> bool,
-) -> Arc<MapBackedSnapshot> {
+    predicate: impl Fn(&PersistentSnapshot) -> bool,
+) -> Arc<PersistentSnapshot> {
     let subscriber = service.subscriber();
     for _ in 0..1000 {
         let snapshot = subscriber.current();
@@ -278,7 +284,7 @@ async fn reorg_and_advance(
     validator: &MockValidator,
     from_height: u32,
     ids: &[u16],
-) -> Arc<MapBackedSnapshot> {
+) -> Arc<PersistentSnapshot> {
     validator.reorg(from_height, ids);
     step_to_tip(service, validator).await;
     service.subscriber().current()

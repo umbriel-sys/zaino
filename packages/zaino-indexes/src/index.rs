@@ -91,6 +91,27 @@ impl FoldError {
     }
 }
 
+/// The tip an index resumes from, whose own row in `namespace` must exist:
+/// a tip without it is a broken index. `None` for an empty index.
+pub(crate) fn resume_at_tip<R: BackendReader>(
+    index: &'static str,
+    backend: &R,
+    namespace: zaino_persistence::Namespace,
+    row: &str,
+) -> Result<Option<BlockRef>, FoldError> {
+    let Some(tip) = backend.tip()? else {
+        return Ok(None);
+    };
+    let key = zaino_persistence::sequence_key(u64::from(tip.height));
+    match backend.with_value(namespace, &key, |_| ())? {
+        Some(()) => Ok(Some(tip)),
+        None => Err(FoldError::continuity(
+            index,
+            format!("tip without its {row}"),
+        )),
+    }
+}
+
 /// Refuses `block` unless it extends `tip`, or is genesis when `tip` is
 /// `None`.
 pub(crate) fn check_extends(

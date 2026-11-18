@@ -93,7 +93,7 @@ pub use zaino_encoding::*;
 pub use error::{InitError, SyncError};
 pub use zaino_chain::{ChainViewSnapshot, ComposerSnapshot};
 pub use zaino_chain_head::{ChainHeadBlock, ChainHeadSnapshot};
-pub use zaino_chain_head_service::MapBackedSnapshot;
+pub use zaino_chain_head_service::PersistentSnapshot;
 pub use zaino_primitives::types::MempoolInfo;
 
 /// The finalised store's on-disk types, for this crate's own use only.
@@ -108,9 +108,8 @@ pub use zaino_primitives::types::MempoolInfo;
 /// of the chain through `IndexedBlock`. The re-export goes when it stops.
 ///
 /// `TxOutCompact` has already gone: the finalised reads now come back as
-/// `zaino_chain_store::StoredTxOut` through the ports, so the one place that
-/// held a stored output — the cross-seam UTXO fold — folds domain outputs
-/// instead. The rest of this list shrinks the same way.
+/// domain outputs through the ports. The rest of this list shrinks the same
+/// way.
 pub(crate) use chain_index::types::{BlockHash, IndexedBlock};
 #[cfg(test)]
 pub(crate) use chain_index::types::{Height, Outpoint};

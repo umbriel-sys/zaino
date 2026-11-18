@@ -1,7 +1,8 @@
 //! The address index: balance, UTXOs, txids, deltas.
 //!
 //! As zcashd's insight index and the zebra adapter's synthesis of it answer:
-//! over the confirmed best chain (no mempool); a malformed or TEX address is
+//! over the confirmed best chain (no mempool) without the genesis block's
+//! outputs, which no index holds (they are never spendable); a malformed or TEX address is
 //! the port's `InvalidAddress`; an answer over
 //! [`zaino_source::MAX_ADDRESS_QUERY_RESULTS`] is `TooManyResults`.
 
@@ -83,8 +84,9 @@ impl zaino_source::OneShotGetAddressBalance for MockChain {
         let mut received = Vec::new();
         let mut unspent = Vec::new();
         for (outpoint, created) in &ledger.outputs {
-            let pays = address_of(created.output.script.as_bytes(), network)
-                .is_some_and(|address| wanted.contains(&address));
+            let pays = created.height != Height::GENESIS
+                && address_of(created.output.script.as_bytes(), network)
+                    .is_some_and(|address| wanted.contains(&address));
             if !pays {
                 continue;
             }
@@ -117,7 +119,9 @@ impl zaino_source::OneShotGetAddressUtxos for MockChain {
         let mut rows: Vec<_> = ledger
             .outputs
             .iter()
-            .filter(|(outpoint, _)| !ledger.spenders.contains_key(outpoint))
+            .filter(|(outpoint, created)| {
+                created.height != Height::GENESIS && !ledger.spenders.contains_key(outpoint)
+            })
             .filter_map(|(outpoint, created)| {
                 let encoded = address_of(created.output.script.as_bytes(), network)?;
                 wanted
@@ -168,7 +172,9 @@ fn touching(
     let pays = |script: &[u8]| address_of(script, network).is_some_and(|a| wanted.contains(&a));
     served
         .best_chain()
-        .filter(|block| block.height() >= start && block.height() <= end)
+        .filter(|block| {
+            block.height() != Height::GENESIS && block.height() >= start && block.height() <= end
+        })
         .flat_map(|block| {
             (0u32..)
                 .zip(block.block.transactions())

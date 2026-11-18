@@ -84,7 +84,7 @@ pub use capability::{
 pub use error::{ChainViewError, Result};
 pub use ports::{
     AddressRead, BlockRead, ChainView, ChainViewSnapshot, CompactBlockRead, ForkReconcile,
-    SpendRead, TransactionRead, TreestateRead, TxOutSetRead,
+    HistoryTreeRead, SpendRead, TransactionRead, TreestateRead, TxOutSetRead,
 };
 pub use source::ChainViewSource;
 pub use types::{
@@ -93,7 +93,17 @@ pub use types::{
 };
 
 pub mod composer;
+pub mod store_indexes;
 
 pub use composer::{
     ChainViewComposer, ChainViewComposerBuilder, ChainViewConfig, ChainViewSync, ComposerSnapshot,
 };
+pub use store_indexes::StoreIndexes;
+
+// The integration suites' rig, for the unit tests that need the real services
+// (the read-order hook is test-only, so its test lives inside the crate).
+#[cfg(test)]
+extern crate self as zaino_chain;
+#[cfg(test)]
+#[path = "../tests/common/mod.rs"]
+mod common;

@@ -30,7 +30,7 @@ use core::future::Future;
 
 use futures::Stream;
 use tokio::sync::watch;
-use zaino_chain_store::{PoolFilter, TxOutSetAccumulator};
+use zaino_chain_store::{HistoryEpoch, PoolFilter, TxOutSetAccumulator};
 use zaino_primitives::types::{
     rpc::ChainTip, AddressBalance, AddressDelta, BlockHash, BlockHeader, BlockRef, ChainStateEpoch,
     CompactBlock, Height, Outpoint, ShieldedPool, SubtreeIndex, SubtreeRoot, TransactionId,
@@ -293,9 +293,33 @@ pub trait SpendRead: Send + Sync {
 pub trait TxOutSetRead: Send + Sync {
     /// The accumulator at the snapshot's tip, over the whole chain.
     ///
-    /// The answer `gettxoutsetinfo` serves. A composition extends the store's
-    /// accumulator with what the recent window created and spent, so it refuses
-    /// while a hole separates the two: the validator keeps no such set, and an
-    /// answer spanning a hole would be silently wrong.
+    /// The answer `gettxoutsetinfo` serves: the chain head's set, which starts
+    /// from the store's accumulator at the store's tip and folds the window
+    /// above it. Refused while the head has not built it: the validator keeps
+    /// no such set.
     fn txout_set(&self) -> impl Future<Output = Result<TxOutSetAccumulator>> + Send;
+}
+
+/// The ZIP 221 chain history tree (C6): the store's to its tip, the chain
+/// head's above it. No validator answers it, so it is refused where the two
+/// do not cover the chain together.
+pub trait HistoryTreeRead: Send + Sync {
+    /// The `hashChainHistoryRoot` committed by the block after `height`;
+    /// `None` before Heartwood or above the tip.
+    fn history_root(&self, height: Height)
+        -> impl Future<Output = Result<Option<[u8; 32]>>> + Send;
+
+    /// The epoch (one per network upgrade) the tree is in after `height`.
+    fn history_epoch(
+        &self,
+        height: Height,
+    ) -> impl Future<Output = Result<Option<HistoryEpoch>>> + Send;
+
+    /// The encoded MMR entries at `positions` of that epoch, in the order
+    /// asked; `None` for a position the epoch does not hold.
+    fn history_entries(
+        &self,
+        height: Height,
+        positions: &[u32],
+    ) -> impl Future<Output = Result<Vec<Option<Vec<u8>>>>> + Send;
 }

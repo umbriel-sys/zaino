@@ -1,0 +1,30 @@
+[[changes]]
+crate = "zaino-chain-head"
+kind = "feature"
+description = """
+`extension::StoreTip`: the store's tip, the block the extensions start from."""
+
+[[changes]]
+crate = "zaino-chain-head-service"
+kind = "change"
+description = """
+`ChainHeadBuilder::extensions(schedule, store_tip)` takes the store's tip as a \
+`StoreTip` port instead of a watch. A tick with no new block advances the \
+extensions when the store's tip moved since they last ran, so a store \
+catching up builds them within one poll."""
+
+[[changes]]
+crate = "zaino-chain-head-service"
+kind = "fix"
+description = """
+The extensions start from a store tip that is the floor's parent (the store \
+built to the floor, then the floor moved), and keep their views while the \
+floor descends from their starting block. Before, every seeded extension \
+failed on each new block under `ChainViewSync`, which builds the store \
+exactly to the floor."""
+
+[[changes]]
+crate = "zaino-chain"
+kind = "feature"
+description = """
+`StoreIndexes` answers `StoreTip` from the store's watermark."""

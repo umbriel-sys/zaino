@@ -1,0 +1,28 @@
+[[changes]]
+crate = "zaino-chain-head"
+kind = "change"
+description = """
+Every capability method (`ChainHeadTransactionService`, \
+`ChainHeadTxOutSetService`, `ChainHeadTreeStateService`, \
+`ChainHeadHistoryTreeService`, `ChainHeadTransparentHistoryService`) returns \
+a `Result` whose default body is `ChainHeadError::NotBuilt` (D-56), so a \
+runtime implements only what it builds and a consumer tells "not built" from \
+"nothing in the window". `txout_delta`, `ChainHeadTxOutDelta`, `CreatedTxOut`, \
+the `txout` module and `ChainHeadError::BelowWindow` are removed (D-51). \
+`LocatedTransparentSpend` gains `input_index`."""
+
+[[changes]]
+crate = "zaino-chain-head-service"
+kind = "change"
+description = """
+Each capability is implemented only under its extension's feature; without it \
+the trait default answers `NotBuilt`. Transaction locations and spenders keep \
+the window scan when the `transactions` extension is not built."""
+
+[[changes]]
+crate = "zaino-chain"
+kind = "change"
+description = """
+`TxOutSetRead::txout_set` is a lookup of the chain head's `txout_set` \
+extension (D-51); the store-plus-delta merge is removed. A capability the \
+head does not build is `NotServiceable`."""

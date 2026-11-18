@@ -18,6 +18,7 @@ use zaino_primitives::types::{rpc::ChainTipStatus, BlockHash, BlockRef};
 use super::{chain_head_block, contract::check_contract, InspectableGraph};
 use crate::{
     graph::{NotChildOfTip, NotOnBestChain},
+    snapshot::{display_order, MAX_BRANCHES},
     tests::{best_chain_hashes, hash, height},
 };
 
@@ -155,6 +156,41 @@ impl Model {
             height: height(self.entry(id).height),
         }
     }
+
+    /// The retained blocks nothing retained names as parent, the tip aside.
+    fn side_tips(&self) -> Vec<u16> {
+        let parents: HashSet<u16> = self.retained.values().map(|entry| entry.parent).collect();
+        let tip_id = self.tip_id();
+        self.retained
+            .keys()
+            .copied()
+            .filter(|id| !parents.contains(id) && *id != tip_id)
+            .collect()
+    }
+
+    /// The graph keeps at most `MAX_BRANCHES` side branches: past that, the
+    /// tip lowest by (work, height, display-order hash) goes, with the blocks
+    /// only it reached.
+    fn evict(&mut self) {
+        loop {
+            let mut tips = self.side_tips();
+            if tips.len() <= MAX_BRANCHES {
+                return;
+            }
+            tips.sort_by_key(|id| {
+                let entry = self.entry(*id);
+                (entry.work, entry.height, display_order(hash(*id)))
+            });
+            let mut reachable: HashSet<u16> = self.chain.iter().copied().collect();
+            for tip in tips.iter().skip(1) {
+                let mut id = *tip;
+                while self.retained.contains_key(&id) && reachable.insert(id) {
+                    id = self.entry(id).parent;
+                }
+            }
+            self.retained.retain(|id, _| reachable.contains(id));
+        }
+    }
 }
 
 /// What a refused move must leave untouched.
@@ -242,6 +278,7 @@ fn accept<G: InspectableGraph>(
             model.chain.retain(|id| retained.contains_key(id));
         }
     }
+    model.evict();
     Ok(())
 }
 

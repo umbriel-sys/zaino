@@ -82,9 +82,23 @@ hash, is fetched by height — and there the chain is below the reorg seam anywa
 A pinned block the validator no longer serves is `Transient`: retry on a fresh
 snapshot. A treestate wanted by height is pinned the same way.
 
-A treestate carries each pool's root. The validator's tree port leaves roots
-unset, so the view reads them by the treestate's own block hash and joins them
-in.
+Where the store and the chain head both build tree state with nothing between
+them, a treestate is answered locally: the store's frontiers at or below its
+tip, the head's above it, each encoded as zebrad encodes it
+(`legacy_tree_from_frontier`, all 31 parent slots), with each pool's root from
+the tree roots and the time from the header. Subtree roots are the store's
+list, then the head's. Otherwise the validator answers; its tree port leaves
+roots unset, so the view reads them by the treestate's own block hash and joins
+them in. A hash off the snapshot's best chain, or a pool not active at the
+tip, always goes to the validator. Local subtree roots cover every pool active
+at the tip, whatever the validator indexes: a validator without a pool's
+subtree index (zcashd lacks Ironwood) refuses what Zaino answers from its own.
+
+The four address reads are answered the same way where both build address
+history: the store's effects to its tip and the head's above it, shaped as the
+validator shapes them (genesis outputs excluded, its ordering, its refusals:
+an address for the store's other network, an inverted range, txids past the
+tip, more than `MAX_ADDRESS_QUERY_RESULTS`).
 
 ## Ranges stream
 
@@ -117,20 +131,32 @@ endpoint. Three properties matter at scale:
 
 The always-available reads — `BlockRead`, `CompactBlockRead`,
 `TransactionRead`, `TreestateRead`, `ForkReconcile` — are bundled by
-`ChainViewSnapshot`. `AddressRead`, `SpendRead` and `TxOutSetRead` are
-implemented **only** where the providers can back them, so a store that builds
-no spend index yields a view that does not have the trait:
+`ChainViewSnapshot`. `AddressRead`, `SpendRead`, `TxOutSetRead` and
+`HistoryTreeRead` are implemented **only** where the providers can back them,
+so a store that builds no spend index yields a view that does not have the
+trait:
 
 ```rust,ignore
 fn serve(chain: impl ChainViewSnapshot + SpendRead) { .. }   // names what it needs
 ```
 
 `TxOutSetRead::txout_set` answers at the snapshot's tip, for the whole chain:
-the store's accumulator extended by the chain head's `txout_delta` above the
-store's top, with the window's spends of older outputs resolved through the
-store's `SpentOutputIndex`. It needs the store's `TxOutSet`, `SpentOutputs` and
-`Transactions` indexes, and refuses while a hole separates the store from the
-window.
+it is the chain head's `txout_set` extension, which starts from the store's
+accumulator at the store's tip and folds the window above it (see
+`StoreIndexes` below). It refuses while the head has not built it: the
+extension not enabled, the store without its indexes, or a hole between the
+store and the window.
+
+`HistoryTreeRead` answers the ZIP 221 history tree (root, epoch, entries) from
+the store at or below its tip and the head above it; entries the head's seed
+predates come from the store when the epoch is the same. No validator holds
+it, so it is not serviceable unless both halves build it with nothing between.
+
+The manifest reads both halves the same way the reads do: a capability merged
+from store and head (treestate, subtree roots, address history, history tree)
+is answerable locally only where the store's index and the head's
+`HeadCapabilities` both hold it, and the UTXO set only once the head has built
+it.
 
 That is the point of splitting them: a capability the providers cannot support
 must be absent, not present and always failing, and an impl can only be absent
@@ -217,7 +243,8 @@ ChainViewConfig::default().without_passthrough()  // serve only what we hold
 
 `without_store` replaces the ephemeral mode that used to live inside the store.
 `without_passthrough` makes a hole unserviceable and disables the reads no tier
-holds at all — raw transactions, treestates, address history.
+holds — raw transactions always, and treestates, subtree roots and address
+history wherever the store and the head do not both build them.
 
 ## Bring your own store, your own head, or both
 
@@ -236,6 +263,40 @@ Writing your own `ChainView` is possible too — that is why the ports are
 separate from the composer — but it is for a consumer who wants different
 *composition*, not one who merely has different storage.
 
+## Seeding the head's extensions: `StoreIndexes`
+
+The chain head's extensions (D-50) fold the indexes over the window, starting
+from the store's tip (their root), and ask five questions there, the ports in
+`zaino_chain_head::extension`: the outputs the window spends, how many outputs
+a transaction still had, the UTXO-set accumulator, each pool's frontier, and
+the history tree's epoch and peaks. `StoreIndexes<Store>` answers each from the
+store's reader, and the store's tip itself (`StoreTip`, from the watermark);
+this crate names both ports, so this is where the two meet. `ChainViewSync`
+builds the store to the head's floor, so the store's tip is the floor or the
+floor's parent, and the head starts there:
+
+```rust,ignore
+let indexes = Arc::new(StoreIndexes::new(store.clone()));
+let head = ChainHeadService::builder(source, config, cancel)
+    .extensions(schedule, Some(indexes.clone())) // the store's tip, where the head starts
+    .with_transactions()
+    .with_txout_set(indexes.clone())
+    .with_address_history(indexes.clone())
+    .with_tree_state(indexes.clone())
+    .with_history_tree(indexes)
+    .spawn()
+    .await?;
+```
+
+A port is implemented where the reader has the index port it needs, and a store
+built without that index answers `SeedError::Unavailable`, as it does every
+other read. A root the store does not hold is `RootNotHeld`. The accumulator
+and the remaining counts exist only at the watermark, so they are answered only
+while the watermark is the root; the frontiers, the epoch and the outputs are
+read at the root's height whatever the watermark. There is no validator fill:
+every store index an extension seeds from is built from I-03 and I-04 (D-83),
+so a store that can seed holds the outputs too.
+
 ## Offering less than the tiers can do
 
 `ChainViewComposer::new` offers every capability its tiers can answer, which is
@@ -251,8 +312,9 @@ ChainViewComposer::builder(store, head, source)
 ```
 
 It starts at `ServedCapabilities::CORE` — blocks, compact blocks, transactions,
-treestate, subtree roots, chain tips — and takes the three optional capabilities
-by name.
+treestate, subtree roots, chain tips — and takes the four optional capabilities
+by name (`serving_spend_status`, `serving_txout_set`,
+`serving_address_history`, `serving_history_tree`).
 
 **Each `serving_*` method exists only when both tiers can supply its half.**
 `serving_spend_status` requires `Store::Reader: SpentOutputIndex` and

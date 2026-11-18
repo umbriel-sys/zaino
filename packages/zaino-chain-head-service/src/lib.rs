@@ -13,13 +13,14 @@
 //!
 //! # The graph's representation lives here
 //!
-//! [`MapBackedSnapshot`] is this crate's implementation of
+//! [`PersistentSnapshot`] is this crate's implementation of
 //! `zaino_chain_head::ChainHeadSnapshot`, and the trait is what consumers name.
-//! Storing the graph differently — persistent structures sharing unchanged
-//! subtrees between publishes, rather than maps cloned on each one — is a
-//! change to this crate alone. The writer builds graphs only through the
-//! crate-private `ChainGraph` moves, so another representation implements that
-//! trait as well.
+//! It holds the canonical chain as a trunk, the retained side chains as a
+//! table of at most nine branches and every retained block once in a
+//! directory, all persistent structures, so publishes share whatever did not
+//! change. Storing the graph differently is a change to this crate alone: the
+//! writer builds graphs only through the crate-private `ChainGraph` moves, so
+//! another representation implements that trait as well.
 //!
 //! # Publication is all-or-nothing
 //!
@@ -58,6 +59,12 @@
 pub mod metric_names;
 
 mod error;
+#[cfg(any(
+    feature = "transactions",
+    feature = "tree_state",
+    feature = "history_tree"
+))]
+mod extension;
 mod graph;
 mod service;
 mod snapshot;
@@ -67,6 +74,12 @@ mod subscriber;
 mod tests;
 
 pub use error::{ChainHeadAdvanceError, ChainHeadInitError};
-pub use service::ChainHeadService;
-pub use snapshot::MapBackedSnapshot;
+#[cfg(any(
+    feature = "transactions",
+    feature = "tree_state",
+    feature = "history_tree"
+))]
+pub use service::ExtensionBuilder;
+pub use service::{ChainHeadBuilder, ChainHeadService};
+pub use snapshot::PersistentSnapshot;
 pub use subscriber::ChainHeadSubscriber;

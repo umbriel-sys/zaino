@@ -18,6 +18,7 @@
 )]
 
 pub mod address_history;
+pub mod assemble;
 mod block;
 pub mod chain_metadata;
 mod codec;
@@ -27,7 +28,6 @@ pub mod history_tree;
 mod id;
 mod index;
 mod layout;
-mod legacy_tree;
 mod schema;
 pub mod spent;
 #[cfg(test)]
@@ -45,6 +45,5 @@ pub use block::{
 pub use id::{IndexId, IndexState};
 pub use index::{Fold, FoldError, Index};
 pub use layout::{Field, FieldWidth, Layout, LayoutError};
-pub use legacy_tree::{frontier_from_legacy_tree, LegacyTreeError};
 pub use schema::{NamespaceLayout, Schema};
 pub use tree_state::PoolFrontier;

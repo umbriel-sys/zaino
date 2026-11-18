@@ -81,7 +81,7 @@ pub use capability::{
 };
 pub use config::ChainStoreConfig;
 pub use error::{ChainStoreError, ChainStoreSourceError};
-pub use output::{SpenderRef, StoredTxOut};
+pub use output::SpenderRef;
 pub use ports::{
     ChainStoreIngest, ChainStoreReader, ChainStoreReaderCapability, ChainStoreService,
     ChainStoreSource, CompactBlockRead, CompactBlockReadCapability, SpentOutputIndex,
@@ -99,4 +99,4 @@ pub use ports::{
     TransparentHistoryIndexCapability, TreeStateIndex, TreeStateIndexCapability,
 };
 pub use transparent::{LocatedOutput, LocatedSpend, StoreAddressEffects, TransparentHistoryQuery};
-pub use tree::HistoryEpoch;
+pub use tree::{HistoryEpoch, HistoryPeaks};

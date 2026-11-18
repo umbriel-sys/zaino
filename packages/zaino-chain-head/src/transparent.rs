@@ -1,17 +1,9 @@
 //! Transparent-address effects inside the ChainHead window.
 //!
-//! **Declared, not implemented.** Nothing here has an implementation and no
-//! consumer is wired to it. The module exists to state the boundary while the
-//! capability is built: ChainHead contributes the *effects* it can see within
-//! its window, and never constructs complete address history.
-//!
-//! The distinction matters because the two are easy to conflate. A complete
-//! answer for an address needs the finalised state's indexes; ChainHead holds
-//! only a bounded window, so it can report an output it created and a spend
-//! whose output it also created, but it cannot resolve a spend of an output
-//! created below its floor — it does not hold that output, and going to look
-//! for one would be the historical scan this crate exists to avoid. Joining
-//! those cross-boundary spends is the consumer's job.
+//! Implemented by the head service's `address_history` extension (I-10 folded
+//! over the window above the store's tip). The boundary: ChainHead contributes
+//! the outputs and spends inside that range, and never constructs complete
+//! address history; the consumer joins them with the store's effects below.
 //!
 //! # Addresses are keyed, not encoded
 //!
@@ -61,7 +53,6 @@ pub struct TransparentHistoryQuery {
 
 /// An output created for a queried address, and where it was created.
 #[derive(Debug, Clone, PartialEq, Eq)]
-#[non_exhaustive]
 pub struct LocatedTransparentOutput {
     /// The address the output pays, as an index keys it.
     pub address: TransparentAddressKey,
@@ -77,14 +68,10 @@ pub struct LocatedTransparentOutput {
     pub tx_index: TxIndex,
 }
 
-/// A spend of an output that was itself created inside the window.
-///
-/// Only locally resolvable spends appear here. A spend of an output created
-/// below the retention floor is invisible to ChainHead — it cannot name the
-/// address or value being spent, because it does not hold the output that
-/// carries them.
+/// A spend inside the window of an output paying a queried address, wherever
+/// that output was created (below the store's tip it is resolved through
+/// `PrevoutSource`).
 #[derive(Debug, Clone, PartialEq, Eq)]
-#[non_exhaustive]
 pub struct LocatedTransparentSpend {
     /// The address whose output was spent, as an index keys it.
     pub address: TransparentAddressKey,
@@ -98,6 +85,8 @@ pub struct LocatedTransparentSpend {
     pub txid: TransactionId,
     /// The spending transaction's index within that block.
     pub tx_index: TxIndex,
+    /// The spending input's index within that transaction.
+    pub input_index: u32,
 }
 
 /// What ChainHead can account for, for the queried addresses.
@@ -106,10 +95,9 @@ pub struct LocatedTransparentSpend {
 /// answers, and this is a contribution to one. The consumer combines it with
 /// the finalised state's indexes to produce the complete answer.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
-#[non_exhaustive]
 pub struct ChainHeadAddressEffects {
     /// Outputs created for the queried addresses inside the window.
     pub outputs: Vec<LocatedTransparentOutput>,
-    /// Spends whose referenced output was also created inside the window.
-    pub local_spends: Vec<LocatedTransparentSpend>,
+    /// Spends inside the window of outputs paying the queried addresses.
+    pub spends: Vec<LocatedTransparentSpend>,
 }

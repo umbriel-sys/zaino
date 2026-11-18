@@ -11,3 +11,6 @@ pub struct HistoryEpoch {
     /// Entries in the epoch's MMR.
     pub length: u32,
 }
+
+/// An epoch's MMR peaks, left to right: position and encoded entry.
+pub type HistoryPeaks = Vec<(u32, Vec<u8>)>;

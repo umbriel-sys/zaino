@@ -1,0 +1,16 @@
+[[changes]]
+crate = "zaino-indexes"
+kind = "feature"
+description = """
+`assemble`: the pure half of turning a validator's answers into fold input \
+(`changed_pools`, `frontier_of`, `completed_range`, `completed_subtree`), so \
+every service folding the tree-state index derives frontiers and completed \
+subtrees the same way. `tx_out_set::Reader::remaining(txids)` reads each \
+transaction's remaining counted outputs."""
+
+[[changes]]
+crate = "zaino-chain-store-service"
+kind = "change"
+description = """
+The fold-block assembly derives frontiers and completed subtrees through \
+`zaino_indexes::assemble`; only the two validator calls remain here."""

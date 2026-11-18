@@ -12,10 +12,10 @@ use std::time::Instant;
 
 use futures::Stream;
 use zaino_chain_store::{
-    ChainStoreError, ChainStoreReader, CompactBlockRead, HistoryEpoch, HistoryTreeIndex,
-    LocatedOutput, LocatedSpend, MigrationState, PoolFilter, SchemaVersion, SpenderRef,
-    SpentOutputIndex, StoreAddressEffects, StoreCapabilities, StoreCapability, StoreSchema,
-    StoreWatermark, StoredHeader, StoredTxOut, TransactionIndex, TransparentHistoryIndex,
+    ChainStoreError, ChainStoreReader, CompactBlockRead, HistoryEpoch, HistoryPeaks,
+    HistoryTreeIndex, LocatedOutput, LocatedSpend, MigrationState, PoolFilter, SchemaVersion,
+    SpenderRef, SpentOutputIndex, StoreAddressEffects, StoreCapabilities, StoreCapability,
+    StoreSchema, StoreWatermark, StoredHeader, TransactionIndex, TransparentHistoryIndex,
     TransparentHistoryQuery, TreeRootsIndex, TreeStateIndex, TxOutSetAccumulator, TxOutSetIndex,
 };
 use zaino_component::{ComponentStatus, StatusSource};
@@ -28,8 +28,8 @@ use zaino_indexes::{
 use zaino_persistence::BackendReader;
 use zaino_primitives::types::{
     AbsoluteChainWork, BlockHash, BlockRef, BlockTxPosition, ChainMetadata, CompactBlock,
-    ConsensusBranchId, Height, Outpoint, PoolFrontier, PreIndexCompactTx, ShieldedPool,
-    SubtreeRoot, TransactionId, TransparentData, TreeRoot, TreeRoots, TreeSize,
+    ConsensusBranchId, Height, Network, Outpoint, PoolFrontier, PreIndexCompactTx, ShieldedPool,
+    SubtreeRoot, TransactionId, TransparentData, TransparentOutput, TreeRoot, TreeRoots, TreeSize,
 };
 
 /// Blocks per compact chunk read on the blocking pool.
@@ -58,6 +58,7 @@ struct Snapshot<R> {
     watermark: StoreWatermark,
     capabilities: StoreCapabilities,
     status: ComponentStatus,
+    network: Network,
 }
 
 impl<R> Clone for StoreReader<R> {
@@ -85,6 +86,7 @@ impl<R> StoreReader<R> {
         watermark: StoreWatermark,
         capabilities: StoreCapabilities,
         status: ComponentStatus,
+        network: Network,
     ) -> Self {
         Self {
             snapshot: Arc::new(Snapshot {
@@ -92,6 +94,7 @@ impl<R> StoreReader<R> {
                 watermark,
                 capabilities,
                 status,
+                network,
             }),
         }
     }
@@ -162,6 +165,19 @@ impl<R: BackendReader> Snapshot<R> {
             .ok_or(ChainStoreError::Unavailable(capability))
     }
 
+    /// `read` over index `id`, kept only where the store holds the height
+    /// `at` gives: a row above the watermark is not this snapshot's.
+    fn held<T>(
+        &self,
+        id: IndexId,
+        capability: StoreCapability,
+        read: impl FnOnce(&R) -> Result<Option<T>, FoldError>,
+        at: impl Fn(&T) -> Height,
+    ) -> Result<Option<T>, ChainStoreError> {
+        let value = read(self.index(id, capability)?).map_err(|error| index_error(id, error))?;
+        Ok(value.filter(|value| self.holds(at(value))))
+    }
+
     fn block_hash(&self, height: Height) -> Result<Option<BlockHash>, ChainStoreError> {
         self.bounded(height)?;
         let id = IndexId::Headers;
@@ -171,11 +187,12 @@ impl<R: BackendReader> Snapshot<R> {
     }
 
     fn block_height(&self, hash: BlockHash) -> Result<Option<Height>, ChainStoreError> {
-        let id = IndexId::Headers;
-        let height = headers::Reader::new(self.index(id, StoreCapability::Core)?)
-            .height(hash)
-            .map_err(|error| index_error(id, error))?;
-        Ok(height.filter(|height| self.holds(*height)))
+        self.held(
+            IndexId::Headers,
+            StoreCapability::Core,
+            |reader| headers::Reader::new(reader).height(hash),
+            |height| *height,
+        )
     }
 
     /// The txid at `position` (I-02).
@@ -408,11 +425,12 @@ impl<R: BackendReader> Snapshot<R> {
     }
 
     fn tx_position(&self, txid: TransactionId) -> Result<Option<BlockTxPosition>, ChainStoreError> {
-        let id = IndexId::TxidLocation;
-        let position = txid_location::Reader::new(self.index(id, StoreCapability::Transactions)?)
-            .position(txid)
-            .map_err(|error| index_error(id, error))?;
-        Ok(position.filter(|position| self.holds(position.height)))
+        self.held(
+            IndexId::TxidLocation,
+            StoreCapability::Transactions,
+            |reader| txid_location::Reader::new(reader).position(txid),
+            |position| position.height,
+        )
     }
 
     fn outpoint_spenders(
@@ -434,15 +452,15 @@ impl<R: BackendReader> Snapshot<R> {
                 let txid = self
                     .txid_at(spender.position, capability)?
                     .ok_or_else(|| missing(IndexId::Txids, format!("{:?}", spender.position)))?;
-                Ok(Some(SpenderRef::new(spender.position, txid)))
+                Ok(Some(SpenderRef::new(spender.position, txid, spender.input)))
             })
             .collect()
     }
 
-    fn previous_outputs(
+    fn outputs_by_outpoint(
         &self,
         outpoints: &[Outpoint],
-    ) -> Result<Vec<Option<StoredTxOut>>, ChainStoreError> {
+    ) -> Result<Vec<Option<TransparentOutput>>, ChainStoreError> {
         let capability = StoreCapability::SpentOutputs;
         let mut txids: Vec<TransactionId> =
             outpoints.iter().map(|outpoint| outpoint.txid).collect();
@@ -477,25 +495,20 @@ impl<R: BackendReader> Snapshot<R> {
         let mut found = vec![None; outpoints.len()];
         for ((slot, _), output) in wanted.into_iter().zip(outputs) {
             if let (Some(found), Some(output)) = (found.get_mut(slot), output) {
-                *found = Some(StoredTxOut::from_output(&output));
+                *found = Some(output);
             }
         }
         Ok(found)
     }
 
-    fn transparent_outputs(
+    fn remaining_outputs(
         &self,
-        position: BlockTxPosition,
-    ) -> Result<Option<Vec<StoredTxOut>>, ChainStoreError> {
-        self.bounded(position.height)?;
-        let id = IndexId::Transparent;
-        let transactions = transparent::Reader::new(self.index(id, StoreCapability::SpentOutputs)?)
-            .transactions(position.height)
-            .map_err(|error| index_error(id, error))?;
-        let tx_index = usize::try_from(position.tx_index).unwrap_or(usize::MAX);
-        Ok(transactions
-            .and_then(|txs| txs.into_iter().nth(tx_index))
-            .map(|tx| tx.outputs.iter().map(StoredTxOut::from_output).collect()))
+        txids: &[TransactionId],
+    ) -> Result<Vec<Option<u32>>, ChainStoreError> {
+        let id = IndexId::TxOutSet;
+        tx_out_set::Reader::new(self.index(id, StoreCapability::TxOutSet)?)
+            .remaining(txids)
+            .map_err(|error| index_error(id, error))
     }
 
     fn txout_set(&self) -> Result<TxOutSetAccumulator, ChainStoreError> {
@@ -535,49 +548,58 @@ impl<R: BackendReader> Snapshot<R> {
                     let txid = self
                         .txid_at(event.position, capability)?
                         .ok_or_else(|| missing(IndexId::Txids, format!("{:?}", event.position)))?;
-                    let output = StoredTxOut::new(event.value, *address);
+                    // events come in position order: one block held
+                    let height = event.position.height;
+                    let txs = match held.take() {
+                        Some((at, txs)) if at == height => txs,
+                        _ => inputs
+                            .transactions(height)
+                            .map_err(|error| index_error(IndexId::Transparent, error))?
+                            .ok_or_else(|| missing(IndexId::Transparent, height))?,
+                    };
+                    let tx = usize::try_from(event.position.tx_index)
+                        .ok()
+                        .and_then(|slot| held.insert((height, txs)).1.get(slot))
+                        .ok_or_else(|| {
+                            missing(IndexId::Transparent, format!("{:?}", event.position))
+                        })?;
+                    let io = usize::try_from(event.index).ok();
+                    let absent = |what: &str| {
+                        missing(
+                            IndexId::Transparent,
+                            format!("{what} {} at {:?}", event.index, event.position),
+                        )
+                    };
                     match event.kind {
                         address_history::EventKind::Received => {
+                            let output = io
+                                .and_then(|io| tx.outputs.get(io))
+                                .ok_or_else(|| absent("output"))?;
                             effects.outputs.push(LocatedOutput {
+                                address: *address,
                                 outpoint: Outpoint {
                                     txid,
                                     index: event.index,
                                 },
-                                output,
+                                output: output.clone(),
                                 position: event.position,
                                 txid,
                             })
                         }
                         address_history::EventKind::Spent => {
-                            // events come in position order: one block held
-                            let height = event.position.height;
-                            let txs = match held.take() {
-                                Some((at, txs)) if at == height => txs,
-                                _ => inputs
-                                    .transactions(height)
-                                    .map_err(|error| index_error(IndexId::Transparent, error))?
-                                    .ok_or_else(|| missing(IndexId::Transparent, height))?,
-                            };
-                            let txs = &held.insert((height, txs)).1;
-                            let input = Some(txs)
-                                .and_then(|txs| {
-                                    txs.get(usize::try_from(event.position.tx_index).ok()?)
-                                })
-                                .and_then(|tx| tx.inputs.get(usize::try_from(event.index).ok()?))
-                                .ok_or_else(|| {
-                                    missing(
-                                        IndexId::Transparent,
-                                        format!("input {} at {:?}", event.index, event.position),
-                                    )
-                                })?;
+                            let input = io
+                                .and_then(|io| tx.inputs.get(io))
+                                .ok_or_else(|| absent("input"))?;
                             effects.spends.push(LocatedSpend {
+                                address: *address,
                                 outpoint: Outpoint {
                                     txid: input.prev_txid,
                                     index: input.prev_index,
                                 },
-                                output,
+                                value: event.value,
                                 position: event.position,
                                 txid,
+                                input_index: event.index,
                             })
                         }
                     }
@@ -637,6 +659,17 @@ impl<R: BackendReader> Snapshot<R> {
         history_tree::Reader::new(self.index(id, StoreCapability::HistoryTree)?)
             .root(height)
             .map_err(|error| index_error(id, error))
+    }
+
+    fn history_peaks(&self, height: Height) -> Result<Option<HistoryPeaks>, ChainStoreError> {
+        self.bounded(height)?;
+        let id = IndexId::HistoryTree;
+        Ok(
+            history_tree::Reader::new(self.index(id, StoreCapability::HistoryTree)?)
+                .epoch_with_peaks(height)
+                .map_err(|error| index_error(id, error))?
+                .map(|epoch| epoch.peaks),
+        )
     }
 
     fn history_entries(
@@ -722,6 +755,10 @@ impl<R: BackendReader + Sync + 'static> ChainStoreReader for StoreReader<R> {
 
     fn capabilities(&self) -> StoreCapabilities {
         self.snapshot.capabilities
+    }
+
+    fn network(&self) -> Network {
+        self.snapshot.network
     }
 
     async fn schema(&self) -> Result<StoreSchema, ChainStoreError> {
@@ -848,44 +885,12 @@ impl<R: BackendReader + Sync + 'static> SpentOutputIndex for StoreReader<R> {
         })
     }
 
-    async fn previous_outputs(
+    async fn outputs_by_outpoint(
         &self,
         outpoints: &[Outpoint],
-    ) -> Result<Vec<Option<StoredTxOut>>, ChainStoreError> {
-        timed("previous_outputs", || {
-            self.snapshot.previous_outputs(outpoints)
-        })
-    }
-
-    async fn unspent_output(
-        &self,
-        outpoint: Outpoint,
-    ) -> Result<Option<StoredTxOut>, ChainStoreError> {
-        timed("unspent_output", || {
-            let outpoints = [outpoint];
-            let output = self
-                .snapshot
-                .previous_outputs(&outpoints)?
-                .into_iter()
-                .next()
-                .flatten();
-            let spent = self
-                .snapshot
-                .outpoint_spenders(&outpoints)?
-                .into_iter()
-                .next()
-                .flatten()
-                .is_some();
-            Ok(output.filter(|_| !spent))
-        })
-    }
-
-    async fn transparent_outputs(
-        &self,
-        position: BlockTxPosition,
-    ) -> Result<Option<Vec<StoredTxOut>>, ChainStoreError> {
-        timed("transparent_outputs", || {
-            self.snapshot.transparent_outputs(position)
+    ) -> Result<Vec<Option<TransparentOutput>>, ChainStoreError> {
+        timed("outputs_by_outpoint", || {
+            self.snapshot.outputs_by_outpoint(outpoints)
         })
     }
 }
@@ -893,6 +898,15 @@ impl<R: BackendReader + Sync + 'static> SpentOutputIndex for StoreReader<R> {
 impl<R: BackendReader + Sync + 'static> TxOutSetIndex for StoreReader<R> {
     async fn txout_set(&self) -> Result<TxOutSetAccumulator, ChainStoreError> {
         timed("txout_set", || self.snapshot.txout_set())
+    }
+
+    async fn remaining_outputs(
+        &self,
+        txids: &[TransactionId],
+    ) -> Result<Vec<Option<u32>>, ChainStoreError> {
+        timed("remaining_outputs", || {
+            self.snapshot.remaining_outputs(txids)
+        })
     }
 }
 
@@ -940,6 +954,10 @@ impl<R: BackendReader + Sync + 'static> HistoryTreeIndex for StoreReader<R> {
                 length: epoch.length,
             }))
         })
+    }
+
+    async fn history_peaks(&self, height: Height) -> Result<Option<HistoryPeaks>, ChainStoreError> {
+        timed("history_peaks", || self.snapshot.history_peaks(height))
     }
 
     async fn history_entries(

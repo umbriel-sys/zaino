@@ -80,7 +80,12 @@ impl zaino_source::OneShotGetTxOut for MockChain {
         if ledger.spenders.contains_key(&(txid, index)) || spent_in_mempool {
             return Ok(None);
         }
-        if let Some(created) = ledger.outputs.get(&(txid, index)) {
+        // genesis outputs were never in the UTXO set (consensus: never spendable)
+        if let Some(created) = ledger
+            .outputs
+            .get(&(txid, index))
+            .filter(|created| created.height != zaino_primitives::types::Height::GENESIS)
+        {
             return Ok(Some(TxOut {
                 best_block,
                 confirmations: TxConfirmations::Mined(BlockConfirmations::of_best_chain_block(

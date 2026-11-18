@@ -100,16 +100,10 @@ impl Index for Transparent {
     type State = State;
 
     fn resume<R: BackendReader>(backend: &R) -> Result<Option<State>, FoldError> {
-        let Some(tip) = backend.tip()? else {
-            return Ok(None);
-        };
-        if backend
-            .with_value(T_LAYOUT, &key(tip.height), |_| ())?
-            .is_none()
-        {
-            return Err(FoldError::continuity(NAME, "tip without its layout"));
-        }
-        Ok(Some(State { tip }))
+        Ok(
+            crate::index::resume_at_tip(NAME, backend, T_LAYOUT, "layout")?
+                .map(|tip| State { tip }),
+        )
     }
 
     fn fold(state: Option<&State>, block: &FoldBlock) -> Result<Fold<State>, FoldError> {

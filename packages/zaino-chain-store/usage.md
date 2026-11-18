@@ -32,6 +32,8 @@ implementation to stub what it cannot do, and stubs are where
 Where absence *cannot* be a compile-time fact it is a runtime one:
 `capabilities()` exists because a store on an older schema genuinely lacks an
 index until it has migrated. That is a fact about a database, not a type.
+`network()` is the network the store indexes: what a consumer answering from
+the store checks a queried address against.
 
 The two are tied together by a per-port capability *carrier* trait. Each read
 port `X` has a sibling `XCapability: X` — `TxOutSetIndexCapability`,
@@ -361,9 +363,11 @@ reader added everywhere.
 
 ## The spend reads are batched, and carry what you were going to look up next
 
-`outpoint_spenders`, `previous_outputs` and `transparent_outputs` take slices
-because the call sites they replaced looped a singular form with one `await` per
-input. Ask once:
+`outpoint_spenders` and `outputs_by_outpoint` take slices because the call
+sites they replaced looped a singular form with one `await` per input.
+`outputs_by_outpoint` answers the outputs as the chain holds them (value and
+script), which is what a fold running above the store reads for inputs
+spending below it. Ask once:
 
 ```rust
 // The answer is positional: `spenders[i]` is the spender of `outpoints[i]`,
@@ -382,18 +386,16 @@ for (outpoint, spender) in outpoints.iter().zip(spenders) {
 }
 ```
 
-`unspent_output` is first-class rather than "fetch it, then check whether it is
-spent" — two calls across two capability routes, one of which errored on
-absence. That is what `gettxout` wants.
-
 ## The store never hands you consensus bytes
 
 What is stored is a projection — the fields an index reads, not the bytes a
-block hash commits to. A `StoredTxOut` carries a 20-byte address key and a
-value; the locking script is not recoverable. That key is
+block hash commits to. A transparent output comes back as value and script;
+the transaction around it does not. Address history is keyed by
 `zaino_primitives::TransparentAddressKey`, which can express `NonStandard`,
 where `TransparentAddress` cannot — an index that dropped non-standard outputs
-would answer "no history" for an address that has some.
+would answer "no history" for an address that has some. A located output
+carries the full output, so a UTXO answer needs no second read; a located
+spend carries the value it removed and its input index.
 
 It lives in `zaino-primitives` rather than here because the chain head reports
 its half of an address's history under the same key, so a consumer merging the
@@ -428,6 +430,8 @@ tree:
 - `history_root(height)` and `history_epoch(height)`: the root, and the
   epoch's branch and length, after a block. Both are `None` before
   Heartwood.
+- `history_peaks(height)`: the epoch's MMR peaks (position and encoded
+  entry), which a fold continuing the tree above the store appends onto.
 - `history_entries(height, positions)`: encoded MMR entries for a flyclient
   proof, `None` for a position the epoch does not hold.
 
@@ -438,7 +442,10 @@ Both ports are bounded by the watermark like every other read.
 `TxOutSetIndex::txout_set` returns an accumulator over the finalised set. It is
 completed with the chain head's blocks by whatever merges the two. Serving it
 directly as `gettxoutsetinfo` reports the chain as of the watermark, which is
-not the chain.
+not the chain. `remaining_outputs(txids)` answers how many counted outputs
+each transaction still has unspent at the watermark (`None` = none): the fold
+extending the set reads it for the transactions the recent blocks spend from,
+so it steps `transactions` exactly when the last one goes.
 
 ```rust
 use zaino_chain_store::{is_unspendable, TxOutSetIndex};

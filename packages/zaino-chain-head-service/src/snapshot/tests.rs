@@ -1,5 +1,4 @@
-//! Test support that needs [`MapBackedSnapshot`](super::MapBackedSnapshot)'s
+//! Test support that needs [`PersistentSnapshot`](super::PersistentSnapshot)'s
 //! private fields. The contract tests themselves live in `graph::tests`.
 
 mod invariants;
-mod txout;

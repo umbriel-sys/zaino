@@ -55,7 +55,7 @@ use zaino_status::{NamedAtomicStatus, StatusType};
 use crate::{
     error::{ChainHeadAdvanceError, ChainHeadInitError},
     graph::{ChainGraph as _, NotChildOfTip, NotOnBestChain},
-    snapshot::MapBackedSnapshot,
+    snapshot::PersistentSnapshot,
     subscriber::ChainHeadSubscriber,
 };
 
@@ -106,13 +106,20 @@ pub struct ChainHeadService<S: ChainHeadBlockSource> {
     /// This lock should not be exposed to consumers. Rather, clone the Arc and
     /// offer that. This means we can overwrite the arc without interfering with
     /// readers, who will hold a stale copy.
-    current: Arc<ArcSwap<MapBackedSnapshot>>,
+    current: Arc<ArcSwap<PersistentSnapshot>>,
     updates: watch::Sender<ChainStateEpoch>,
     status: NamedAtomicStatus,
     cancel: CancellationToken,
     task: Mutex<Option<JoinHandle<()>>>,
     config: ChainHeadConfig,
     tip_selection: TipSelection,
+    /// The extensions the builder enabled (D-50), with their ports.
+    #[cfg(any(
+        feature = "transactions",
+        feature = "tree_state",
+        feature = "history_tree"
+    ))]
+    extensions: Option<crate::extension::Enabled>,
 }
 
 impl<S: ChainHeadBlockSource> std::fmt::Debug for ChainHeadService<S> {
@@ -153,7 +160,33 @@ impl<S: ChainHeadBlockSource> ChainHeadService<S> {
         config: ChainHeadConfig,
         cancel: CancellationToken,
     ) -> Result<Arc<Self>, ChainHeadInitError> {
-        let service = Self::anchored(source, config, TipSelection::Source, cancel).await?;
+        Self::builder(source, config, cancel).spawn().await
+    }
+
+    /// A service built step by step: the extensions it folds (D-50), then
+    /// [`spawn`](ChainHeadBuilder::spawn).
+    pub fn builder(
+        source: Arc<S>,
+        config: ChainHeadConfig,
+        cancel: CancellationToken,
+    ) -> ChainHeadBuilder<S> {
+        ChainHeadBuilder {
+            source,
+            config,
+            cancel,
+            tip_selection: TipSelection::Source,
+            #[cfg(any(
+                feature = "transactions",
+                feature = "tree_state",
+                feature = "history_tree"
+            ))]
+            extensions: None,
+        }
+    }
+
+    /// Anchors, then starts the writer task.
+    async fn started(builder: ChainHeadBuilder<S>) -> Result<Arc<Self>, ChainHeadInitError> {
+        let service = Self::anchored(builder).await?;
 
         let worker = Arc::clone(&service);
         let handle = tokio::spawn(async move { worker.run().await });
@@ -178,7 +211,9 @@ impl<S: ChainHeadBlockSource> ChainHeadService<S> {
         config: ChainHeadConfig,
         cancel: CancellationToken,
     ) -> Result<Arc<Self>, ChainHeadInitError> {
-        Self::anchored(source, config, TipSelection::Source, cancel).await
+        Self::builder(source, config, cancel)
+            .spawn_without_writer()
+            .await
     }
 
     /// [`spawn_without_writer`](Self::spawn_without_writer) under a chosen
@@ -190,7 +225,9 @@ impl<S: ChainHeadBlockSource> ChainHeadService<S> {
         tip_selection: TipSelection,
         cancel: CancellationToken,
     ) -> Result<Arc<Self>, ChainHeadInitError> {
-        Self::anchored(source, config, tip_selection, cancel).await
+        let mut builder = Self::builder(source, config, cancel);
+        builder.tip_selection = tip_selection;
+        Self::anchored(builder).await
     }
 
     /// Advances the graph by one iteration and publishes the result.
@@ -204,12 +241,19 @@ impl<S: ChainHeadBlockSource> ChainHeadService<S> {
     }
 
     /// Everything [`spawn`](Self::spawn) does except start the task.
-    async fn anchored(
-        source: Arc<S>,
-        config: ChainHeadConfig,
-        tip_selection: TipSelection,
-        cancel: CancellationToken,
-    ) -> Result<Arc<Self>, ChainHeadInitError> {
+    async fn anchored(builder: ChainHeadBuilder<S>) -> Result<Arc<Self>, ChainHeadInitError> {
+        let ChainHeadBuilder {
+            source,
+            config,
+            cancel,
+            tip_selection,
+            #[cfg(any(
+                feature = "transactions",
+                feature = "tree_state",
+                feature = "history_tree"
+            ))]
+            extensions,
+        } = builder;
         let status = NamedAtomicStatus::new(COMPONENT, StatusType::Syncing);
 
         let snapshot = anchor_with_retry(&source, &config, &cancel).await?;
@@ -232,6 +276,12 @@ impl<S: ChainHeadBlockSource> ChainHeadService<S> {
             task: Mutex::new(None),
             config,
             tip_selection,
+            #[cfg(any(
+                feature = "transactions",
+                feature = "tree_state",
+                feature = "history_tree"
+            ))]
+            extensions,
         });
         // Still `Syncing`: the anchor is the window's floor, not its tip, so a
         // reader served now would see a head up to `max_depth` below the
@@ -390,11 +440,42 @@ impl<S: ChainHeadBlockSource> ChainHeadService<S> {
         // for a same-height reorg, which costs a round trip per poll for an
         // answer that cannot have changed.
         if tip == previous.best_tip() {
+            // the store moved under an unchanged head: the extensions catch up
+            #[cfg(any(
+                feature = "transactions",
+                feature = "tree_state",
+                feature = "history_tree"
+            ))]
+            if let Some(enabled) = &self.extensions {
+                if crate::extension::store_moved(enabled, previous.extensions()) {
+                    let mut next = (*previous).clone();
+                    let slots =
+                        crate::extension::advance(enabled, previous.extensions(), &next).await;
+                    next.set_extensions(slots);
+                    self.mark_fresh();
+                    self.publish_snapshot(&previous, next);
+                    return Ok(());
+                }
+            }
             self.mark_fresh();
             return Ok(());
         }
 
         let next = self.next_graph(&previous, tip.height).await?;
+        #[cfg(any(
+            feature = "transactions",
+            feature = "tree_state",
+            feature = "history_tree"
+        ))]
+        let next = match &self.extensions {
+            Some(enabled) => {
+                let mut next = next;
+                let slots = crate::extension::advance(enabled, previous.extensions(), &next).await;
+                next.set_extensions(slots);
+                next
+            }
+            None => next,
+        };
         self.mark_fresh();
         self.publish_snapshot(&previous, next);
         Ok(())
@@ -414,9 +495,9 @@ impl<S: ChainHeadBlockSource> ChainHeadService<S> {
     /// intermediates.
     async fn next_graph(
         &self,
-        previous: &MapBackedSnapshot,
+        previous: &PersistentSnapshot,
         chain_height: Height,
-    ) -> Result<MapBackedSnapshot, ChainHeadAdvanceError> {
+    ) -> Result<PersistentSnapshot, ChainHeadAdvanceError> {
         // Anchor floor: the chain head must never start more than the
         // configured depth below the chain tip. Previously this took the
         // greater of the finalised database's height and this floor; with the
@@ -427,7 +508,7 @@ impl<S: ChainHeadBlockSource> ChainHeadService<S> {
         let mut graph = if previous.best_tip().height < anchor_height {
             // The chain moved further than the window covers. Re-anchor rather
             // than walking the gap one block at a time.
-            MapBackedSnapshot::from_initial_block(
+            PersistentSnapshot::from_initial_block(
                 anchor_block(self.source.as_ref(), anchor_height).await?,
             )
         } else {
@@ -487,8 +568,8 @@ impl<S: ChainHeadBlockSource> ChainHeadService<S> {
                     extend(&mut graph, chainblock)?;
                 } else {
                     // There's been a reorg. The fresh block is the new chaintip; we
-                    // work backwards from it and update heights_to_hashes with it
-                    // and all its parents, then fetch afresh from there.
+                    // walk back from it to the fork, rewind the trunk there (the
+                    // displaced blocks become a branch), then fetch afresh.
                     self.handle_reorg(&mut graph, &block).await?;
                     continue 'build;
                 }
@@ -533,7 +614,7 @@ impl<S: ChainHeadBlockSource> ChainHeadService<S> {
     /// rather than in call frames, so its depth costs heap and not stack.
     async fn handle_reorg(
         &self,
-        graph: &mut MapBackedSnapshot,
+        graph: &mut PersistentSnapshot,
         block: &impl Block,
     ) -> Result<ChainHeadBlock, ChainHeadAdvanceError> {
         let mut branch: Vec<BranchBlock> = Vec::new();
@@ -594,7 +675,7 @@ impl<S: ChainHeadBlockSource> ChainHeadService<S> {
     /// rollback, produces no such block — this is what sees those.
     async fn check_for_nonhigher_reorgs(
         &self,
-        graph: &mut MapBackedSnapshot,
+        graph: &mut PersistentSnapshot,
     ) -> Result<(), ChainHeadAdvanceError> {
         let tip = graph.best_tip();
         let mut target_height = tip.height;
@@ -629,7 +710,7 @@ impl<S: ChainHeadBlockSource> ChainHeadService<S> {
     /// A plain `store`: the writer task is the only writer, so there is nothing
     /// to lose a compare-and-swap race against. One store per iteration is what
     /// makes a published snapshot always whole.
-    fn publish_snapshot(&self, previous: &MapBackedSnapshot, mut next: MapBackedSnapshot) {
+    fn publish_snapshot(&self, previous: &PersistentSnapshot, mut next: PersistentSnapshot) {
         let (stale_tip, new_tip) = (previous.best_tip(), next.best_tip());
         let tip_changed = new_tip != stale_tip;
 
@@ -841,6 +922,170 @@ where
     }
 }
 
+/// A [`ChainHeadService`] before it is spawned: what it syncs from, how, and
+/// which extensions it folds.
+pub struct ChainHeadBuilder<S: ChainHeadBlockSource> {
+    source: Arc<S>,
+    config: ChainHeadConfig,
+    cancel: CancellationToken,
+    tip_selection: TipSelection,
+    #[cfg(any(
+        feature = "transactions",
+        feature = "tree_state",
+        feature = "history_tree"
+    ))]
+    extensions: Option<crate::extension::Enabled>,
+}
+
+impl<S: ChainHeadBlockSource> ChainHeadBuilder<S> {
+    /// Anchors the graph, then starts the writer task. See
+    /// [`ChainHeadService::spawn`] for the shutdown contract.
+    pub async fn spawn(self) -> Result<Arc<ChainHeadService<S>>, ChainHeadInitError> {
+        ChainHeadService::started(self).await
+    }
+
+    /// An anchored service with no writer task, for tests that step it.
+    #[cfg(any(test, feature = "testing"))]
+    pub async fn spawn_without_writer(
+        self,
+    ) -> Result<Arc<ChainHeadService<S>>, ChainHeadInitError> {
+        ChainHeadService::anchored(self).await
+    }
+
+    /// Enables the extensions (D-50): folds of `zaino-indexes` over the
+    /// window, rooted on the store's tip (`None` = no store: the window's
+    /// floor), under the validator's upgrade `schedule`.
+    #[cfg(any(
+        feature = "transactions",
+        feature = "tree_state",
+        feature = "history_tree"
+    ))]
+    pub fn extensions(
+        self,
+        schedule: Arc<[zaino_primitives::types::NetworkUpgradeInfo]>,
+        store_tip: Option<Arc<dyn zaino_chain_head::StoreTip>>,
+    ) -> ExtensionBuilder<S> {
+        let folds = zaino_component::CpuBudget::detect()
+            .concurrency(zaino_component::Share::ChainHead)
+            .get();
+        ExtensionBuilder {
+            inner: self,
+            enabled: crate::extension::Enabled {
+                schedule,
+                store_tip,
+                folds: Arc::new(tokio::sync::Semaphore::new(folds)),
+                #[cfg(feature = "transactions")]
+                transactions: false,
+                #[cfg(feature = "txout_set")]
+                txout_set: None,
+                #[cfg(feature = "address_history")]
+                address_history: None,
+                #[cfg(feature = "tree_state")]
+                tree_state: None,
+                #[cfg(feature = "history_tree")]
+                history_tree: None,
+            },
+        }
+    }
+}
+
+/// A [`ChainHeadBuilder`] with extensions: each `with_*` enables one and
+/// takes the ports it drives below the root.
+#[cfg(any(
+    feature = "transactions",
+    feature = "tree_state",
+    feature = "history_tree"
+))]
+pub struct ExtensionBuilder<S: ChainHeadBlockSource> {
+    inner: ChainHeadBuilder<S>,
+    enabled: crate::extension::Enabled,
+}
+
+#[cfg(any(
+    feature = "transactions",
+    feature = "tree_state",
+    feature = "history_tree"
+))]
+impl<S: ChainHeadBlockSource> ExtensionBuilder<S> {
+    /// Transaction positions and outpoint spenders inside the window (I-03,
+    /// I-09). Needs nothing below the root.
+    #[cfg(feature = "transactions")]
+    pub fn with_transactions(mut self) -> Self {
+        self.enabled.transactions = true;
+        self
+    }
+
+    /// The UTXO set at the tip (I-11), seeded from `ports` at the root; the
+    /// window's spends of outputs below the root are resolved through them.
+    /// Enables `transactions`, which resolves the spends inside the window.
+    #[cfg(feature = "txout_set")]
+    pub fn with_txout_set<P>(mut self, ports: Arc<P>) -> Self
+    where
+        P: zaino_chain_head::PrevoutSource
+            + zaino_chain_head::RemainingOutputs
+            + zaino_chain_head::TxOutSetSeed,
+    {
+        self.enabled.transactions = true;
+        self.enabled.txout_set = Some(crate::extension::txout_set::Ports {
+            prevouts: crate::extension::below::prevouts(&ports),
+            remaining: crate::extension::below::remaining(&ports),
+            accumulator: crate::extension::below::accumulator(&ports),
+        });
+        self
+    }
+
+    /// Transparent address effects inside the window (I-10); the spends of
+    /// outputs below the root are resolved through `prevouts`. Enables
+    /// `transactions`.
+    #[cfg(feature = "address_history")]
+    pub fn with_address_history<P: zaino_chain_head::PrevoutSource>(
+        mut self,
+        prevouts: Arc<P>,
+    ) -> Self {
+        self.enabled.transactions = true;
+        self.enabled.address_history = Some(crate::extension::below::prevouts(&prevouts));
+        self
+    }
+
+    /// The note commitment trees after each block (C2), seeded from `seed`
+    /// at the root; the validator reports each block's frontiers and
+    /// completed subtrees, by hash.
+    #[cfg(feature = "tree_state")]
+    pub fn with_tree_state<P: zaino_chain_head::TreeStateSeed>(mut self, seed: Arc<P>) -> Self
+    where
+        S: zaino_source::OneShotGetTreestateByHash + zaino_source::OneShotGetSubtreeRoots,
+    {
+        let source: Arc<S> = Arc::clone(&self.inner.source);
+        let trees: Arc<dyn crate::extension::tree_state::TreeInputs> = source;
+        self.enabled.tree_state = Some(crate::extension::tree_state::Ports { seed, trees });
+        self
+    }
+
+    /// The history tree after each block (C6), seeded from `seed` at the root.
+    #[cfg(feature = "history_tree")]
+    pub fn with_history_tree<P: zaino_chain_head::HistoryTreeSeed>(mut self, seed: Arc<P>) -> Self {
+        self.enabled.history_tree = Some(seed);
+        self
+    }
+
+    /// Anchors the graph, then starts the writer task.
+    pub async fn spawn(self) -> Result<Arc<ChainHeadService<S>>, ChainHeadInitError> {
+        let mut inner = self.inner;
+        inner.extensions = Some(self.enabled);
+        inner.spawn().await
+    }
+
+    /// An anchored service with no writer task, for tests that step it.
+    #[cfg(any(test, feature = "testing"))]
+    pub async fn spawn_without_writer(
+        self,
+    ) -> Result<Arc<ChainHeadService<S>>, ChainHeadInitError> {
+        let mut inner = self.inner;
+        inner.extensions = Some(self.enabled);
+        inner.spawn_without_writer().await
+    }
+}
+
 /// The commitment tree roots after the block `hash`, from the source.
 async fn tree_roots<S: ChainHeadBlockSource>(
     source: &S,
@@ -908,7 +1153,7 @@ fn chain_head_block(
 ///
 /// [`ChainGraph::extend`]: crate::graph::ChainGraph::extend
 fn extend(
-    graph: &mut MapBackedSnapshot,
+    graph: &mut PersistentSnapshot,
     block: ChainHeadBlock,
 ) -> Result<(), ChainHeadAdvanceError> {
     graph.extend(block).map_err(|refused: NotChildOfTip| {
@@ -921,7 +1166,7 @@ async fn anchor_with_retry<S: ChainHeadBlockSource>(
     source: &Arc<S>,
     config: &ChainHeadConfig,
     cancel: &CancellationToken,
-) -> Result<MapBackedSnapshot, ChainHeadInitError> {
+) -> Result<PersistentSnapshot, ChainHeadInitError> {
     let mut backoff = config.initial_backoff();
     let mut failures = 0u32;
 
@@ -956,7 +1201,7 @@ async fn anchor_with_retry<S: ChainHeadBlockSource>(
 async fn anchor<S: ChainHeadBlockSource>(
     source: &Arc<S>,
     config: &ChainHeadConfig,
-) -> Result<MapBackedSnapshot, ChainHeadAdvanceError> {
+) -> Result<PersistentSnapshot, ChainHeadAdvanceError> {
     let (_, tip_height) = source
         .get_chain_tip()
         .await
@@ -964,7 +1209,7 @@ async fn anchor<S: ChainHeadBlockSource>(
 
     let anchor_height = height_below(tip_height, config.max_depth());
 
-    Ok(MapBackedSnapshot::from_initial_block(
+    Ok(PersistentSnapshot::from_initial_block(
         anchor_block(source.as_ref(), anchor_height).await?,
     ))
 }

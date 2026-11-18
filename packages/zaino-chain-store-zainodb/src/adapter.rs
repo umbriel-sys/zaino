@@ -39,12 +39,11 @@
 
 mod error_map;
 mod from_domain;
-#[cfg(feature = "transparent_address_history_experimental")]
 mod history;
 mod to_domain;
 
 pub use from_domain::indexed_block_from_stored;
-pub use to_domain::{domain_outpoint, stored_tx_out};
+pub use to_domain::domain_outpoint;
 
 pub(crate) use to_domain::domain_block_ref;
 
@@ -52,7 +51,7 @@ use error_map::{chain_store_error, chain_store_source_error};
 use from_domain::{stored_hash, stored_height, stored_outpoint, tx_location};
 use to_domain::{
     block_tx_position, domain_hash, domain_height, domain_txid, store_capabilities, store_schema,
-    stored_block, stored_tx_outs,
+    stored_block,
 };
 
 use core::future::Future;
@@ -60,8 +59,8 @@ use core::future::Future;
 use zaino_chain_store::{
     ChainStoreError, ChainStoreIngest, ChainStoreReader, ChainStoreService, ChainStoreSource,
     ChainStoreSourceError, CompactBlockRead, PoolFilter, SpenderRef, SpentOutputIndex,
-    StoreCapabilities, StoreSchema, StoreWatermark, StoredHeader, StoredTxOut, TransactionIndex,
-    TreeRootsIndex, TxOutSetAccumulator, TxOutSetIndex,
+    StoreCapabilities, StoreSchema, StoreWatermark, StoredHeader, TransactionIndex, TreeRootsIndex,
+    TxOutSetAccumulator, TxOutSetIndex,
 };
 use zaino_component::{ComponentName, ComponentStatus, Health, Lifecycle, StatusSource};
 use zaino_primitives::types::{
@@ -124,6 +123,10 @@ impl<T: ChainStoreSource> ChainStoreReader for DbReader<T> {
 
     fn capabilities(&self) -> StoreCapabilities {
         store_capabilities::<Self>(self.inner.capability())
+    }
+
+    fn network(&self) -> zaino_primitives::types::Network {
+        zaino_primitives::types::Network::from_zebra(self.inner.network())
     }
 
     async fn schema(&self) -> Result<StoreSchema, ChainStoreError> {
@@ -415,104 +418,89 @@ impl<T: ChainStoreSource> SpentOutputIndex for DbReader<T> {
             metrics::histogram!(crate::metric_names::DB_READ_SECONDS, "op" => "outpoint_spenders"),
         );
         let stored: Vec<Outpoint> = outpoints.iter().map(stored_outpoint).collect();
-        let locations = DbReader::get_outpoint_spenders(self, stored)
+        let locations = DbReader::get_outpoint_spenders(self, stored.clone())
             .await
             .map_err(chain_store_error)?;
 
         // The domain answer carries the spender's txid as well as its position,
         // because every caller resolves one to the other immediately. Doing it
         // here costs the same reads and halves the traffic across the seam.
+        // The spent index holds no input index: it is read off the spender.
         let mut spenders = Vec::with_capacity(locations.len());
-        for location in locations {
+        for (outpoint, location) in stored.iter().zip(locations) {
             let Some(location) = location else {
                 spenders.push(None);
                 continue;
             };
             let txid = self.get_txid(location).await.map_err(chain_store_error)?;
-            spenders.push(Some(SpenderRef {
-                position: block_tx_position(location)?,
-                txid: domain_txid(txid),
-            }));
+            let input_index = DbReader::get_transparent(self, location)
+                .await
+                .map_err(chain_store_error)?
+                .and_then(|transparent| {
+                    let position = transparent.inputs().iter().position(|input| {
+                        !input.is_null_prevout()
+                            && Outpoint::new(*input.prevout_txid(), input.prevout_index())
+                                == *outpoint
+                    })?;
+                    u32::try_from(position).ok()
+                })
+                .ok_or_else(|| {
+                    ChainStoreError::MissingRow(format!("the input spending {outpoint:?}"))
+                })?;
+            spenders.push(Some(SpenderRef::new(
+                block_tx_position(location)?,
+                domain_txid(txid),
+                input_index,
+            )));
         }
         Ok(spenders)
     }
 
-    #[tracing::instrument(skip(self, outpoints), fields(outpoints = outpoints.len()))]
-    async fn previous_outputs(
+    /// zainodb stores script hashes, never scripts (deleted in Stage 6).
+    async fn outputs_by_outpoint(
         &self,
-        outpoints: &[DomainOutpoint],
-    ) -> Result<Vec<Option<StoredTxOut>>, ChainStoreError> {
-        let _timer = crate::timer::Timer::start(
-            metrics::histogram!(crate::metric_names::DB_READ_SECONDS, "op" => "previous_outputs"),
-        );
-        let mut outputs = Vec::with_capacity(outpoints.len());
-        for outpoint in outpoints {
-            outputs.push(self.previous_output(outpoint).await?);
-        }
-        Ok(outputs)
-    }
-
-    #[tracing::instrument(skip(self), fields(outpoint = ?outpoint))]
-    async fn unspent_output(
-        &self,
-        outpoint: DomainOutpoint,
-    ) -> Result<Option<StoredTxOut>, ChainStoreError> {
-        let _timer = crate::timer::Timer::start(
-            metrics::histogram!(crate::metric_names::DB_READ_SECONDS, "op" => "unspent_output"),
-        );
-        let Some(output) = self.previous_output(&outpoint).await? else {
-            return Ok(None);
-        };
-        let spent = DbReader::get_outpoint_spender(self, stored_outpoint(&outpoint))
-            .await
-            .map_err(chain_store_error)?
-            .is_some();
-
-        Ok((!spent).then_some(output))
-    }
-
-    #[tracing::instrument(skip(self), fields(position = ?position))]
-    async fn transparent_outputs(
-        &self,
-        position: BlockTxPosition,
-    ) -> Result<Option<Vec<StoredTxOut>>, ChainStoreError> {
-        self.bounded(position.height)?;
-        let Some(location) = tx_location(position) else {
-            return Ok(None);
-        };
-        let _timer = crate::timer::Timer::start(
-            metrics::histogram!(crate::metric_names::DB_READ_SECONDS, "op" => "transparent_outputs"),
-        );
-        match DbReader::get_transparent(self, location)
-            .await
-            .map_err(chain_store_error)?
-        {
-            Some(transparent) => Ok(Some(stored_tx_outs(&transparent)?)),
-            None => Ok(None),
-        }
+        _outpoints: &[DomainOutpoint],
+    ) -> Result<Vec<Option<zaino_primitives::types::TransparentOutput>>, ChainStoreError> {
+        Err(ChainStoreError::Unsupported(
+            "zainodb stores script hashes, not scripts",
+        ))
     }
 }
 
-impl<T: ChainStoreSource> DbReader<T> {
-    /// One outpoint's output, with a miss as `None`.
-    ///
-    /// The backend errors when the creating transaction is absent; the domain
-    /// treats that as an answer, because an outpoint naming a transaction this
-    /// store does not hold is exactly what a caller merging across the seam
-    /// expects to see.
-    async fn previous_output(
+/// zainodb keeps tree roots, not frontiers (deleted in Stage 6): ChainView's
+/// treestate read needs the port and answers from the validator instead.
+impl<T: ChainStoreSource> zaino_chain_store::TreeStateIndex for DbReader<T> {
+    async fn pool_frontier(
         &self,
-        outpoint: &DomainOutpoint,
-    ) -> Result<Option<StoredTxOut>, ChainStoreError> {
-        match DbReader::get_previous_output(self, stored_outpoint(outpoint)).await {
-            Ok(output) => Ok(Some(stored_tx_out(&output)?)),
-            Err(StoreError::DataUnavailable(_)) => Ok(None),
-            Err(error) => Err(chain_store_error(error)),
-        }
+        _pool: zaino_primitives::types::ShieldedPool,
+        _height: DomainHeight,
+    ) -> Result<Option<zaino_primitives::types::PoolFrontier>, ChainStoreError> {
+        Err(ChainStoreError::Unsupported("zainodb keeps no frontiers"))
+    }
+
+    async fn subtree_roots(
+        &self,
+        _pool: zaino_primitives::types::ShieldedPool,
+        _start: u64,
+        _limit: u64,
+    ) -> Result<Vec<zaino_primitives::types::SubtreeRoot>, ChainStoreError> {
+        Err(ChainStoreError::Unsupported(
+            "zainodb keeps no subtree roots",
+        ))
     }
 }
 
 impl<T: ChainStoreSource> TxOutSetIndex for DbReader<T> {
+    /// zainodb keeps no per-transaction output counts (deleted in Stage 6).
+    async fn remaining_outputs(
+        &self,
+        _txids: &[zaino_primitives::types::TransactionId],
+    ) -> Result<Vec<Option<u32>>, ChainStoreError> {
+        Err(ChainStoreError::Unsupported(
+            "zainodb keeps no per-transaction output counts",
+        ))
+    }
+
     #[tracing::instrument(skip(self))]
     async fn txout_set(&self) -> Result<TxOutSetAccumulator, ChainStoreError> {
         let _timer = crate::timer::Timer::start(

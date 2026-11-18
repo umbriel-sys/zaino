@@ -14,7 +14,7 @@ use std::path::PathBuf;
 use std::sync::{Arc, OnceLock};
 
 use tokio_util::sync::CancellationToken;
-use zaino_chain::{ChainViewComposer, ChainViewComposerBuilder, ChainViewConfig};
+use zaino_chain::{ChainViewComposer, ChainViewComposerBuilder, ChainViewConfig, StoreIndexes};
 use zaino_chain_head::ChainHeadConfig;
 use zaino_chain_head_service::{ChainHeadService, ChainHeadSubscriber};
 use zaino_chain_store_service::{
@@ -316,6 +316,7 @@ pub struct Shape {
     floor: Option<u32>,
     tip: Option<u32>,
     running: bool,
+    extended: bool,
 }
 
 /// A rig over `chain`: the store unbuilt, the head's window the fast depth
@@ -328,6 +329,7 @@ pub fn rig(chain: MockChain) -> Shape {
         floor: None,
         tip: None,
         running: false,
+        extended: false,
     }
 }
 
@@ -358,6 +360,13 @@ impl Shape {
         self
     }
 
+    /// The stepped head with every extension, seeded through `StoreIndexes`
+    /// over the rig's store and rooted at its watermark.
+    pub fn extended_head(mut self) -> Self {
+        self.extended = true;
+        self
+    }
+
     pub async fn build(self) -> Rig {
         let chain = self.chain;
         let chain_tip = chain.tip().map_or(0, |block| u32::from(block.height()));
@@ -380,8 +389,8 @@ impl Shape {
         let depth = NonZeroU32::new(tip.saturating_sub(floor).max(1)).expect("non-zero");
         let mut config = ChainHeadConfig::with_max_depth(depth);
         let source = Arc::new(chain.clone());
-        let head = match self.running {
-            false => {
+        let head = match (self.running, self.extended) {
+            (false, false) => {
                 let head = ChainHeadService::spawn_without_writer(
                     source,
                     config,
@@ -394,7 +403,24 @@ impl Shape {
                     .expect("the head fills its window");
                 head
             }
-            true => {
+            (false, true) => {
+                let indexes = Arc::new(StoreIndexes::new(store.clone()));
+                let head = ChainHeadService::builder(source, config, CancellationToken::new())
+                    .extensions(schedule(), Some(indexes.clone()))
+                    .with_transactions()
+                    .with_txout_set(Arc::clone(&indexes))
+                    .with_address_history(Arc::clone(&indexes))
+                    .with_tree_state(Arc::clone(&indexes))
+                    .with_history_tree(indexes)
+                    .spawn_without_writer()
+                    .await
+                    .expect("the head anchors");
+                head.advance_once()
+                    .await
+                    .expect("the head fills its window");
+                head
+            }
+            (true, _) => {
                 config.set_poll_interval_ms(std::num::NonZeroU64::new(2).expect("non-zero"));
                 ChainHeadService::spawn(source, config, CancellationToken::new())
                     .await

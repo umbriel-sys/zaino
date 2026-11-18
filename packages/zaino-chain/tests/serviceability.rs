@@ -14,7 +14,11 @@ use zaino_primitives::types::{Outpoint, TransactionId};
 
 /// Steady state: the store overlaps the window.
 async fn steady() -> Rig {
-    rig(chain()).store_to(TIP - DEPTH + 50).build().await
+    rig(chain())
+        .store_to(TIP - DEPTH + 50)
+        .extended_head()
+        .build()
+        .await
 }
 
 fn an_outpoint() -> Outpoint {
@@ -119,6 +123,32 @@ async fn the_txout_set_follows_the_same_rule() {
         .txout_set()
         .await
         .is_ok());
+}
+
+/// The manifest and the read agree on the txout set: answerable exactly where
+/// the chain head has built it.
+#[tokio::test]
+async fn the_txout_set_is_advertised_where_the_head_builds_it() {
+    let extended = steady().await;
+    assert_eq!(
+        extended
+            .view()
+            .serviceability()
+            .get(ChainCapability::TxOutSet),
+        Answerable::ToHeight(height(TIP))
+    );
+    assert!(extended.view().snapshot().txout_set().await.is_ok());
+
+    // the store has its index, the head builds no set: not answerable yet
+    let plain = rig(chain()).store_to(TIP - DEPTH + 50).build().await;
+    assert_eq!(
+        plain.view().serviceability().get(ChainCapability::TxOutSet),
+        Answerable::NotAnswerable
+    );
+    assert!(matches!(
+        plain.view().snapshot().txout_set().await,
+        Err(ChainViewError::NotServiceable(_))
+    ));
 }
 
 /// Offering a capability is not a claim that it is answerable.

@@ -1,0 +1,29 @@
+[[changes]]
+crate = "zaino-chain"
+kind = "feature"
+description = """
+`StoreIndexes<Store>` (D-50): the chain head's five seed ports answered from \
+a store's reader, each implemented where the reader has the index port it \
+needs. No validator fill: every store index an extension seeds from is built \
+from I-03 and I-04."""
+
+[[changes]]
+crate = "zaino-chain-store"
+kind = "feature"
+description = """
+`HistoryTreeIndex::history_peaks(height)`: the epoch's MMR peaks, which a \
+fold continuing the history tree above the store appends onto."""
+
+[[changes]]
+crate = "zaino-chain-store-service"
+kind = "feature"
+description = """
+`history_peaks` served from C6 through `history_tree::Reader::epoch_with_peaks`, \
+the read `history_root` was already making."""
+
+[[changes]]
+crate = "zaino-indexes"
+kind = "feature"
+description = """
+`history_tree::Reader::epoch_with_peaks(height)`: the epoch after a block \
+with its peaks read; `root` is now derived from it."""

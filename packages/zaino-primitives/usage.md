@@ -85,6 +85,12 @@ because they *are* domain facts, not because they are a convenient blob.
 A `serde_json::Value` is a different thing entirely and does not belong here.
 If a type needs one, the type belongs at a boundary.
 
+A serialized commitment tree is zcashd's legacy `CommitmentTree` encoding
+(`z_gettreestate`'s `finalState`). `frontier_from_legacy_tree` reads it into a
+`NoteFrontier` and `legacy_tree_from_frontier` writes one back exactly as
+zebrad does (all 31 parent slots), so a treestate built from an index's
+frontier is byte-equal to the validator's.
+
 ## Invariants live in constructors
 
 Types enforce what they claim:
@@ -190,7 +196,7 @@ rule and they have to apply the same one.
 | `Script` | the raw locking bytes, as they appear in the output |
 | `ScriptType` | which standard form those bytes take — `P2PKH`, `P2SH`, or `NonStandard` |
 | `TransparentAddressKey` | the pair an index keys by: 20 bytes plus the form they came from |
-| `TransparentAddress` | the encoded, network-specific string a user sees |
+| `TransparentAddress` | the encoded, network-specific string a user sees; `key()` is the key an index holds it under |
 
 `classify_script` is the rule itself, and `TransparentAddressKey::from_script`
 is the door producers should use:

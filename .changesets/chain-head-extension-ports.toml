@@ -1,0 +1,31 @@
+[[changes]]
+crate = "zaino-chain-head"
+kind = "feature"
+description = """
+The ports the head's extensions drive below the root (D-50), one question \
+each: `PrevoutSource`, `RemainingOutputs`, `TxOutSetSeed`, `TreeStateSeed`, \
+`HistoryTreeSeed`. New capability traits `ChainHeadTreeStateService` and \
+`ChainHeadHistoryTreeService`; `ChainHeadTxOutSetService::txout_set` (the \
+set at the tip where the head folds it)."""
+
+[[changes]]
+crate = "zaino-chain-head"
+kind = "breaking"
+description = """
+The `transparent_address_history_experimental` feature is gone: \
+`ChainHeadTransparentHistoryService` and the `transparent` types are always \
+declared, like every other head port; the `address_history` extension in the \
+service implements them behind its own feature."""
+
+[[changes]]
+crate = "zaino-chain"
+kind = "breaking"
+description = """
+The `transparent_address_history_experimental` feature is gone; \
+`serving_address_history` is always available."""
+
+[[changes]]
+crate = "zaino-chain-head-service"
+kind = "breaking"
+description = """
+The `transparent_address_history_experimental` forwarding feature is gone."""

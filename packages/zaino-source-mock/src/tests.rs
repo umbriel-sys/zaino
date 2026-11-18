@@ -348,7 +348,8 @@ fn notes_before_their_pool_are_refused() {
 
 /// The synthetic treestate of every size decodes, through the real legacy
 /// decoder, to a frontier at the size whose leaf is the last note and whose
-/// first ommer, at an even size, is the note before it.
+/// first ommer, at an even size, is the note before it; and is the bytes
+/// zebrad writes for that frontier (the encoder checked against zebra).
 #[test]
 fn legacy_trees_decode_to_their_size() {
     let (leaf, previous) = ([1; 32], [2; 32]);
@@ -359,14 +360,19 @@ fn legacy_trees_decode_to_their_size() {
         bytes
     };
     assert_eq!(
-        zaino_indexes::frontier_from_legacy_tree(&legacy_tree(0, leaf, previous, node)),
+        zaino_primitives::types::frontier_from_legacy_tree(&legacy_tree(0, leaf, previous, node)),
         Ok(None)
     );
     for size in (1u64..300).chain([65_535, 65_536, 65_537, 1 << 20, (1 << 32) - 1]) {
-        let frontier =
-            zaino_indexes::frontier_from_legacy_tree(&legacy_tree(size, leaf, previous, node))
-                .expect("decodes")
-                .expect("not empty");
+        let encoded = legacy_tree(size, leaf, previous, node);
+        let frontier = zaino_primitives::types::frontier_from_legacy_tree(&encoded)
+            .expect("decodes")
+            .expect("not empty");
+        assert_eq!(
+            zaino_primitives::types::legacy_tree_from_frontier(Some(&frontier)),
+            Ok(encoded),
+            "size {size}"
+        );
         assert_eq!(frontier.position + 1, size, "size {size}");
         assert_eq!(frontier.leaf, leaf, "size {size}");
         assert_eq!(

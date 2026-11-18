@@ -69,7 +69,7 @@ pub(crate) fn block_index(block: domain::BlockRef) -> BlockIndex {
 pub(crate) fn spender(status: SpendStatus) -> Result<Option<TransactionHash>, ChainIndexError> {
     match status {
         SpendStatus::Unspent => Ok(None),
-        SpendStatus::SpentBy(txid) => Ok(Some(local_txid(txid))),
+        SpendStatus::SpentBy { txid, .. } => Ok(Some(local_txid(txid))),
         other => Err(ChainIndexError::internal(format!(
             "outpoint is spent but its spender cannot be named: {other:?}"
         ))),
@@ -226,7 +226,12 @@ mod tests {
     fn a_spend_with_no_nameable_spender_is_an_error_not_unspent() {
         assert_eq!(spender(SpendStatus::Unspent).expect("unspent"), None);
         assert_eq!(
-            spender(SpendStatus::SpentBy(domain::TransactionId::from([4; 32]))).expect("spent"),
+            spender(SpendStatus::SpentBy {
+                txid: domain::TransactionId::from([4; 32]),
+                input_index: 0,
+                height: domain::Height::GENESIS,
+            })
+            .expect("spent"),
             Some(TransactionHash([4; 32]))
         );
         assert!(spender(SpendStatus::SpentSpenderUnknown).is_err());

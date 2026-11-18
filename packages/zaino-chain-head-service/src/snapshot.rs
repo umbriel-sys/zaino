@@ -1,23 +1,27 @@
-//! A map-backed implementation of the ChainHead view.
+//! The persistent implementation of the ChainHead view (D-49).
 //!
-//! The graph's only stored edge is each block's parent hash. Everything else —
-//! which blocks are tips, how far a branch is from the canonical chain, where a
-//! transaction sits — is derived by walking that edge.
+//! The canonical chain is a trunk, the retained side chains a table of at most
+//! [`MAX_BRANCHES`] branches, and every retained block sits once in a
+//! directory. All three share structure between values: the writer's clone
+//! per tick and every published snapshot share whatever did not change, a
+//! reorg splits and pushes instead of copying blocks, and a trim drops exactly
+//! what fell below the floor.
 //!
 //! The representation lives here rather than in `zaino-chain-head` on purpose:
 //! `ChainHeadSnapshot` is a capability, and how the graph is stored is this
-//! runtime's business. A future runtime holding the same graph in persistent
-//! structures — sharing unchanged subtrees between snapshots instead of cloning
-//! maps on every publish — implements the same trait, and no consumer notices.
+//! runtime's business.
 
 use std::collections::{HashMap, HashSet};
+use std::sync::Arc;
 
+use imbl::Vector;
 use zaino_chain_head::{
     snapshot::{
-        ChainHeadBlockIter, ChainHeadTransactionLocations, ChainHeadTransactionService,
+        ChainHeadBlockIter, ChainHeadHistoryTreeService, ChainHeadTransactionLocations,
+        ChainHeadTransactionService, ChainHeadTransparentHistoryService, ChainHeadTreeStateService,
         ChainHeadTxOutSetService, ChainHeadTxPosition, SpenderLocation,
     },
-    ChainHeadBlock, ChainHeadError, ChainHeadSnapshot,
+    ChainHeadBlock, ChainHeadError, ChainHeadSnapshot, HeadCapabilities,
 };
 use zaino_primitives::types::{
     rpc::{ChainTip, ChainTipStatus},
@@ -29,6 +33,13 @@ use crate::graph::{ChainGraph, NotChildOfTip, NotOnBestChain};
 #[cfg(test)]
 mod tests;
 
+/// Side branches retained at most; a further tip evicts the lowest by
+/// [`eviction_key`].
+pub(crate) const MAX_BRANCHES: usize = 9;
+
+/// Every retained block by hash, inserted once.
+type Directory = imbl::HashMap<BlockHash, Arc<ChainHeadBlock>>;
+
 /// A transaction's block-order position, as a [`TxIndex`].
 ///
 /// The slot is a `usize` from iterating the block's transactions; the position
@@ -39,22 +50,39 @@ fn tx_index(position: usize) -> TxIndex {
     TxIndex::try_from(position).unwrap_or(TxIndex::MAX)
 }
 
-/// The retained graph: its tip, and every other retained block in a hash map.
+/// A hash's bytes as a client sees them (hex is byte-reversed).
+pub(crate) fn display_order(hash: BlockHash) -> [u8; 32] {
+    let mut bytes = <[u8; 32]>::from(hash);
+    bytes.reverse();
+    bytes
+}
+
+/// What a branch is evicted by, lowest first: its tip's work, height, hash
+/// in display order.
+pub(crate) fn eviction_key(tip: &ChainHeadBlock) -> (u128, u32, [u8; 32]) {
+    (
+        u128::from(tip.work),
+        u32::from(tip.height()),
+        display_order(tip.hash()),
+    )
+}
+
+/// The retained graph: the trunk, the branches and the directory.
 ///
-/// `retained = {tip} ⊎ others`
-///
-/// `heights_to_hashes` names the canonical block at each height, so a block is
-/// on the best chain exactly when the entry for its height is its own hash.
-///
-/// The tip is a field rather than a map entry, so the graph is never empty and
-/// `tip_block` always has an answer. The fields are private. Besides the
-/// `ChainGraph` invariants, the methods here keep `others` free of the tip's
-/// hash.
+/// `directory = trunk ∪ branches`, each block once (two branches may share a
+/// prefix). The branches are strongest first by [`eviction_key`].
 #[derive(Debug, Clone)]
-pub struct MapBackedSnapshot {
-    tip: ChainHeadBlock,
-    others: HashMap<BlockHash, ChainHeadBlock>,
-    heights_to_hashes: HashMap<Height, BlockHash>,
+pub struct PersistentSnapshot {
+    trunk: Trunk,
+    branches: Vec<Branch>,
+    directory: Directory,
+    /// The extensions' views over this graph (D-50).
+    #[cfg(any(
+        feature = "transactions",
+        feature = "tree_state",
+        feature = "history_tree"
+    ))]
+    extensions: crate::extension::Slots,
     /// The block this graph's work is measured from, recorded at anchoring because retention prunes that block while every surviving block's work still counts from it.
     work_anchor: BlockRef,
     /// Which publication this is, in the sense of [`ChainStateEpoch`].
@@ -67,125 +95,441 @@ pub struct MapBackedSnapshot {
     generation: u64,
 }
 
-impl MapBackedSnapshot {
+/// The canonical blocks: those below the tip, ascending and contiguous, and
+/// the tip. Never empty.
+#[derive(Debug, Clone)]
+struct Trunk {
+    below: Vector<Arc<ChainHeadBlock>>,
+    tip: Arc<ChainHeadBlock>,
+}
+
+impl Trunk {
+    /// The lowest canonical height retained.
+    fn floor(&self) -> Height {
+        self.below
+            .front()
+            .map_or(self.tip.height(), |block| block.height())
+    }
+
+    /// `height`'s index in `below`, if below the tip and at or above the floor.
+    fn index(&self, height: Height) -> Option<usize> {
+        let offset = u32::from(height).checked_sub(u32::from(self.floor()))?;
+        let index = usize::try_from(offset).ok()?;
+        (index < self.below.len()).then_some(index)
+    }
+
+    fn get(&self, height: Height) -> Option<&Arc<ChainHeadBlock>> {
+        if height == self.tip.height() {
+            return Some(&self.tip);
+        }
+        self.below.get(self.index(height)?)
+    }
+
+    fn holds(&self, block: BlockRef) -> bool {
+        self.get(block.height)
+            .is_some_and(|held| held.hash() == block.hash)
+    }
+
+    fn iter(&self) -> impl Iterator<Item = &Arc<ChainHeadBlock>> {
+        self.below.iter().chain(std::iter::once(&self.tip))
+    }
+
+    /// `block` becomes the tip; the previous tip goes below it.
+    fn push(&mut self, block: Arc<ChainHeadBlock>) {
+        let previous = std::mem::replace(&mut self.tip, block);
+        self.below.push_back(previous);
+    }
+
+    /// The canonical block at `height` becomes the tip; the blocks above it
+    /// leave the trunk (they stay in the directory).
+    fn cut_above(&mut self, height: Height) -> Result<(), NotOnBestChain> {
+        if height == self.tip.height() {
+            return Ok(());
+        }
+        let index = self.index(height).ok_or(NotOnBestChain)?;
+        let tip = self.below.get(index).cloned().ok_or(NotOnBestChain)?;
+        self.below.truncate(index);
+        self.tip = tip;
+        Ok(())
+    }
+
+    /// Drops the blocks below `floor`, never the tip; their hashes.
+    fn trim(&mut self, floor: Height) -> Vec<BlockHash> {
+        let dropped = self
+            .below
+            .iter()
+            .take_while(|block| block.height() < floor)
+            .count();
+        let hashes = self
+            .below
+            .iter()
+            .take(dropped)
+            .map(|block| block.hash())
+            .collect();
+        self.below = self.below.skip(dropped);
+        hashes
+    }
+}
+
+/// One retained side branch: its blocks above `fork`, ascending; never empty.
+#[derive(Debug, Clone)]
+pub(crate) struct Branch {
+    /// Where it grows from: a trunk block, or, after trimming, a block below
+    /// the floor that is no longer retained.
+    fork: BlockRef,
+    blocks: Vector<Arc<ChainHeadBlock>>,
+}
+
+impl Branch {
+    /// Where the branch grows from.
+    #[cfg(feature = "transactions")]
+    pub(crate) fn fork(&self) -> BlockRef {
+        self.fork
+    }
+
+    pub(crate) fn tip(&self) -> Option<&Arc<ChainHeadBlock>> {
+        self.blocks.back()
+    }
+
+    /// The branch's block at `height`, above its fork.
+    #[cfg(feature = "transactions")]
+    pub(crate) fn block_at(&self, height: Height) -> Option<&Arc<ChainHeadBlock>> {
+        let first = self.blocks.front()?.height();
+        let offset = u32::from(height).checked_sub(u32::from(first))?;
+        self.blocks.get(usize::try_from(offset).ok()?)
+    }
+
+    /// How many blocks separate the tip from the fork.
+    fn len(&self) -> u32 {
+        u32::try_from(self.blocks.len()).unwrap_or(u32::MAX)
+    }
+
+    fn holds(&self, hash: &BlockHash) -> bool {
+        self.blocks.iter().any(|block| block.hash() == *hash)
+    }
+
+    /// Drops the blocks below `floor`; the fork moves to the highest dropped
+    /// block; their hashes.
+    fn trim(&mut self, floor: Height) -> Vec<BlockHash> {
+        let dropped = self
+            .blocks
+            .iter()
+            .take_while(|block| block.height() < floor)
+            .count();
+        let hashes = self
+            .blocks
+            .iter()
+            .take(dropped)
+            .map(|block| block.hash())
+            .collect();
+        if let Some(highest) = dropped
+            .checked_sub(1)
+            .and_then(|index| self.blocks.get(index))
+        {
+            self.fork = highest.reference;
+        }
+        self.blocks = self.blocks.skip(dropped);
+        hashes
+    }
+}
+
+/// `tip`'s branch: its blocks down to the trunk, or to the window's edge.
+fn branch_of(trunk: &Trunk, directory: &Directory, tip: &Arc<ChainHeadBlock>) -> Branch {
+    let mut current = Arc::clone(tip);
+    let mut descending = Vec::new();
+    let fork = loop {
+        descending.push(Arc::clone(&current));
+        match directory.get(&current.parent_hash) {
+            Some(parent) if trunk.holds(parent.reference) => break parent.reference,
+            Some(parent) => current = Arc::clone(parent),
+            None => {
+                break BlockRef {
+                    hash: current.parent_hash,
+                    height: current.height().saturating_sub(1),
+                }
+            }
+        }
+    };
+    Branch {
+        fork,
+        blocks: descending.into_iter().rev().collect(),
+    }
+}
+
+/// The branch table over `directory` given `trunk`: every tip off the trunk,
+/// strongest first, cut at [`MAX_BRANCHES`]; with it the hashes only an
+/// evicted branch held.
+fn branches_of(trunk: &Trunk, directory: &Directory) -> (Vec<Branch>, Vec<BlockHash>) {
+    let parents: HashSet<BlockHash> = directory.values().map(|block| block.parent_hash).collect();
+    let mut branches: Vec<Branch> = directory
+        .values()
+        .filter(|block| !parents.contains(&block.hash()) && block.hash() != trunk.tip.hash())
+        .map(|tip| branch_of(trunk, directory, tip))
+        .collect();
+    branches.sort_by_key(|branch| {
+        std::cmp::Reverse(
+            branch
+                .tip()
+                .map_or((0, 0, [0; 32]), |tip| eviction_key(tip)),
+        )
+    });
+    let evicted = branches.split_off(branches.len().min(MAX_BRANCHES));
+    let kept: HashSet<BlockHash> = branches
+        .iter()
+        .flat_map(|branch| branch.blocks.iter().map(|block| block.hash()))
+        .collect();
+    let gone = evicted
+        .iter()
+        .flat_map(|branch| branch.blocks.iter())
+        .filter(|block| !kept.contains(&block.hash()) && !trunk.holds(block.reference))
+        .map(|block| block.hash())
+        .collect();
+    (branches, gone)
+}
+
+impl PersistentSnapshot {
     /// How many blocks are retained, canonical and competing together.
     ///
     /// Inherent rather than on the port: it describes what this implementation
     /// is holding, not anything about the chain, so no consumer needs it.
     pub fn retained_block_count(&self) -> usize {
-        self.blocks().count()
-    }
-
-    /// Every retained block, the tip first.
-    fn blocks(&self) -> impl Iterator<Item = &ChainHeadBlock> {
-        std::iter::once(&self.tip).chain(self.others.values())
+        self.directory.len()
     }
 
     /// The lowest canonical height this snapshot retains, which is its anchor after a re-anchor and its trim floor otherwise.
     pub(crate) fn lowest_retained_height(&self) -> Height {
-        self.heights_to_hashes
-            .keys()
-            .min()
-            .copied()
-            .unwrap_or(self.tip.height())
+        self.trunk.floor()
     }
 
-    /// Makes `block` the tip; the previous tip becomes an ordinary retained
-    /// block. `block` may already be retained, in which case it moves out of
-    /// `others`.
-    fn replace_tip(&mut self, block: ChainHeadBlock) {
-        self.others.remove(&block.hash());
-        let previous = std::mem::replace(&mut self.tip, block);
-        if previous.hash() != self.tip.hash() {
-            self.others.insert(previous.hash(), previous);
+    /// The canonical block at `height`, shared.
+    #[cfg(any(
+        feature = "transactions",
+        feature = "tree_state",
+        feature = "history_tree"
+    ))]
+    pub(crate) fn trunk_block(&self, height: Height) -> Option<&Arc<ChainHeadBlock>> {
+        self.trunk.get(height)
+    }
+
+    /// The tip, shared.
+    #[cfg(any(feature = "transactions", feature = "tree_state"))]
+    pub(crate) fn tip(&self) -> &Arc<ChainHeadBlock> {
+        &self.trunk.tip
+    }
+
+    /// Whether `block` is a retained canonical block.
+    #[cfg(any(
+        feature = "transactions",
+        feature = "tree_state",
+        feature = "history_tree"
+    ))]
+    pub(crate) fn is_trunk_block(&self, block: BlockRef) -> bool {
+        self.trunk.holds(block)
+    }
+
+    /// Whether `hash` is retained, on the trunk or a branch.
+    #[cfg(any(
+        feature = "transactions",
+        feature = "tree_state",
+        feature = "history_tree"
+    ))]
+    pub(crate) fn retained(&self, hash: &BlockHash) -> bool {
+        self.directory.contains_key(hash)
+    }
+
+    /// The retained side branches, strongest first.
+    #[cfg(feature = "transactions")]
+    pub(crate) fn branches(&self) -> &[Branch] {
+        &self.branches
+    }
+
+    /// Retained blocks above `height`, parents before children: the trunk
+    /// ascending, then each branch ascending.
+    #[cfg(any(
+        feature = "transactions",
+        feature = "tree_state",
+        feature = "history_tree"
+    ))]
+    pub(crate) fn above(&self, height: Height) -> impl Iterator<Item = &Arc<ChainHeadBlock>> {
+        self.trunk
+            .iter()
+            .filter(move |block| block.height() > height)
+            .chain(self.branches.iter().flat_map(move |branch| {
+                branch
+                    .blocks
+                    .iter()
+                    .filter(move |block| block.height() > height)
+            }))
+    }
+
+    /// The block at `height` on the ancestry of the retained block `of`: the
+    /// trunk's, or the branch's above its fork.
+    #[cfg(any(feature = "txout_set", feature = "address_history"))]
+    pub(crate) fn ancestor_at(
+        &self,
+        of: &BlockHash,
+        height: Height,
+    ) -> Option<&Arc<ChainHeadBlock>> {
+        let block = self.directory.get(of)?;
+        if self.trunk.holds(block.reference) {
+            return self.trunk.get(height);
+        }
+        let branch = self.branches.iter().find(|branch| branch.holds(of))?;
+        match height > branch.fork.height {
+            true => branch.block_at(height),
+            false => self.trunk.get(height),
         }
     }
 
-    /// How many blocks separate this tip from the canonical chain.
-    ///
-    /// Zero for a canonical block. When the walk leaves the window before
-    /// reaching the canonical chain the count so far is returned, matching what
-    /// the caller can actually observe.
-    fn branch_len_to_best_chain(&self, block: &ChainHeadBlock) -> u32 {
-        let mut branch_len = 0;
-        let mut current = block;
+    /// The extensions' views.
+    #[cfg(any(
+        feature = "transactions",
+        feature = "tree_state",
+        feature = "history_tree"
+    ))]
+    pub(crate) fn extensions(&self) -> &crate::extension::Slots {
+        &self.extensions
+    }
 
-        loop {
-            if self.is_on_best_chain(current.reference) {
-                return branch_len;
-            }
-            branch_len = branch_len.saturating_add(1);
-            let Some(parent) = self.block_by_hash(&current.parent_hash) else {
-                return branch_len;
-            };
-            current = parent;
+    /// The extensions that failed on this snapshot, each with its reason;
+    /// they answer nothing until rebuilt at a later tick (D-52).
+    pub fn extension_failures(&self) -> Vec<(zaino_chain_head::HeadCapability, String)> {
+        #[cfg(any(
+            feature = "transactions",
+            feature = "tree_state",
+            feature = "history_tree"
+        ))]
+        {
+            self.extensions.failures()
+        }
+        #[cfg(not(any(
+            feature = "transactions",
+            feature = "tree_state",
+            feature = "history_tree"
+        )))]
+        {
+            Vec::new()
+        }
+    }
+
+    /// Installs the extensions' views after a build.
+    #[cfg(any(
+        feature = "transactions",
+        feature = "tree_state",
+        feature = "history_tree"
+    ))]
+    pub(crate) fn set_extensions(&mut self, extensions: crate::extension::Slots) {
+        self.extensions = extensions;
+    }
+
+    /// The branch table recomputed from the directory and the trunk, the
+    /// blocks of evicted branches dropped.
+    fn rebuild_branches(&mut self) {
+        let (branches, evicted) = branches_of(&self.trunk, &self.directory);
+        self.branches = branches;
+        for hash in evicted {
+            self.directory.remove(&hash);
         }
     }
 }
 
-impl ChainGraph for MapBackedSnapshot {
+impl ChainGraph for PersistentSnapshot {
     fn from_initial_block(block: ChainHeadBlock) -> Self {
-        let heights_to_hashes = HashMap::from([(block.height(), block.hash())]);
+        let block = Arc::new(block);
+        let mut directory = Directory::new();
+        directory.insert(block.hash(), Arc::clone(&block));
         Self {
             work_anchor: block.reference,
-            tip: block,
-            others: HashMap::new(),
-            heights_to_hashes,
+            trunk: Trunk {
+                below: Vector::new(),
+                tip: block,
+            },
+            branches: Vec::new(),
+            directory,
+            #[cfg(any(
+                feature = "transactions",
+                feature = "tree_state",
+                feature = "history_tree"
+            ))]
+            extensions: crate::extension::Slots::default(),
             generation: 0,
         }
     }
 
     fn tip_block(&self) -> &ChainHeadBlock {
-        &self.tip
+        &self.trunk.tip
     }
 
-    /// Folds over `others` from the tip, replacing it only on strictly more
-    /// work.
+    /// The tip, or a branch tip with strictly more work; the table's order
+    /// settles equal-work branches.
     fn heaviest_block(&self) -> &ChainHeadBlock {
-        self.others.values().fold(&self.tip, |heaviest, block| {
-            if block.work > heaviest.work {
-                block
-            } else {
-                heaviest
-            }
-        })
+        self.branches
+            .iter()
+            .filter_map(Branch::tip)
+            .fold(&self.trunk.tip, |heaviest, tip| {
+                if tip.work > heaviest.work {
+                    tip
+                } else {
+                    heaviest
+                }
+            })
     }
 
     fn extend(&mut self, block: ChainHeadBlock) -> Result<(), NotChildOfTip> {
-        let child_height = self.tip.height().checked_add(1);
-        if block.parent_hash != self.tip.hash() || child_height != Some(block.height()) {
+        let tip = self.trunk.tip.reference;
+        if block.parent_hash != tip.hash || tip.height.checked_add(1) != Some(block.height()) {
             return Err(NotChildOfTip {
-                tip: self.tip.reference,
+                tip,
                 block: block.reference,
             });
         }
-        self.heights_to_hashes.insert(block.height(), block.hash());
-        self.replace_tip(block);
+        match self.directory.get(&block.hash()).cloned() {
+            // the first block of a branch forking at the tip: onto the trunk,
+            // the branch's remainder forks at it
+            Some(retained) => {
+                self.trunk.push(retained);
+                self.rebuild_branches();
+            }
+            None => {
+                let block = Arc::new(block);
+                self.directory.insert(block.hash(), Arc::clone(&block));
+                self.trunk.push(block);
+            }
+        }
         Ok(())
     }
 
     fn rewind_to(&mut self, block: BlockRef) -> Result<(), NotOnBestChain> {
-        if block == self.tip.reference {
+        if block == self.trunk.tip.reference {
             return Ok(());
         }
-        if !self.is_on_best_chain(block) {
+        if !self.trunk.holds(block) {
             return Err(NotOnBestChain);
         }
-        let Some(new_tip) = self.others.remove(&block.hash) else {
-            return Err(NotOnBestChain);
-        };
-        self.heights_to_hashes
-            .retain(|height, _hash| *height <= block.height);
-        self.replace_tip(new_tip);
+        self.trunk.cut_above(block.height)?;
+        self.rebuild_branches();
         Ok(())
     }
 
-    /// The tip is not in `others`, so trimming `others` cannot remove it.
     fn remove_finalized_blocks(&mut self, floor: Height) {
-        let tip_hash = self.tip.hash();
-        self.others.retain(|_hash, block| block.height() >= floor);
-        self.heights_to_hashes
-            .retain(|height, hash| *height >= floor || *hash == tip_hash);
+        let mut dropped = self.trunk.trim(floor);
+        for branch in &mut self.branches {
+            dropped.extend(branch.trim(floor));
+        }
+        self.branches.retain(|branch| !branch.blocks.is_empty());
+        for hash in dropped {
+            self.directory.remove(&hash);
+        }
+        #[cfg(any(
+            feature = "transactions",
+            feature = "tree_state",
+            feature = "history_tree"
+        ))]
+        {
+            let mut extensions = std::mem::take(&mut self.extensions);
+            extensions.retain(self);
+            self.extensions = extensions;
+        }
     }
 
     fn stamp_generation(&mut self, previous: &Self, highest_published: u64) {
@@ -197,9 +541,27 @@ impl ChainGraph for MapBackedSnapshot {
     }
 }
 
-impl ChainHeadSnapshot for MapBackedSnapshot {
+impl ChainHeadSnapshot for PersistentSnapshot {
+    /// What the built extensions answer, and transactions always: without
+    /// the extension they are answered by a scan of the window.
+    fn capabilities(&self) -> HeadCapabilities {
+        #[cfg(any(
+            feature = "transactions",
+            feature = "tree_state",
+            feature = "history_tree"
+        ))]
+        let built = self.extensions.capabilities();
+        #[cfg(not(any(
+            feature = "transactions",
+            feature = "tree_state",
+            feature = "history_tree"
+        )))]
+        let built = HeadCapabilities::NONE;
+        built.with(zaino_chain_head::HeadCapability::Transactions)
+    }
+
     fn best_tip(&self) -> BlockRef {
-        self.tip.reference
+        self.trunk.tip.reference
     }
 
     fn work_anchor(&self) -> BlockRef {
@@ -214,81 +576,54 @@ impl ChainHeadSnapshot for MapBackedSnapshot {
     }
 
     fn block_by_hash(&self, hash: &BlockHash) -> Option<&ChainHeadBlock> {
-        if *hash == self.tip.hash() {
-            Some(&self.tip)
-        } else {
-            self.others.get(hash)
-        }
+        self.directory.get(hash).map(Arc::as_ref)
     }
 
     fn best_block_by_height(&self, height: Height) -> Option<&ChainHeadBlock> {
-        self.heights_to_hashes
-            .get(&height)
-            .and_then(|hash| self.block_by_hash(hash))
+        self.trunk.get(height).map(Arc::as_ref)
     }
 
     fn is_on_best_chain(&self, block: BlockRef) -> bool {
-        self.heights_to_hashes.get(&block.height) == Some(&block.hash)
+        self.trunk.holds(block)
     }
 
+    /// A trunk block is its own fork point; a branch block's is its branch's
+    /// fork while that block is still on the trunk.
     fn find_fork_point(&self, hash: &BlockHash) -> Option<BlockRef> {
-        let mut current = self.block_by_hash(hash)?;
-        loop {
-            if self.is_on_best_chain(current.reference) {
-                return Some(current.reference);
-            }
-            current = self.block_by_hash(&current.parent_hash)?;
+        let block = self.directory.get(hash)?;
+        if self.trunk.holds(block.reference) {
+            return Some(block.reference);
         }
+        let branch = self.branches.iter().find(|branch| branch.holds(hash))?;
+        self.trunk.holds(branch.fork).then_some(branch.fork)
     }
 
-    /// A tip is a retained block that no other retained block claims as its
-    /// parent. The canonical tip is always included, even in the degenerate
-    /// case where the window holds a single block.
+    /// The active tip, then each branch's tip as `valid-fork` with its length.
     ///
     /// the legacy full node enumerates block-tree leaves and reports inactive fully-known
     /// branches as `valid-fork`. ChainHead retains whole blocks, never
     /// headers-only or invalid candidates, so those two statuses are the only
     /// ones this can emit.
     fn chain_tips(&self) -> Vec<ChainTip> {
-        let parent_hashes = self
-            .blocks()
-            .map(|block| block.parent_hash)
-            .collect::<HashSet<_>>();
-
-        let mut tips = self
-            .blocks()
-            .filter(|block| {
-                block.hash() == self.tip.hash() || !parent_hashes.contains(&block.hash())
+        let active = ChainTip {
+            height: self.trunk.tip.height(),
+            hash: self.trunk.tip.hash(),
+            branch_len: 0,
+            status: ChainTipStatus::Active,
+        };
+        let forks = self.branches.iter().filter_map(|branch| {
+            branch.tip().map(|tip| ChainTip {
+                height: tip.height(),
+                hash: tip.hash(),
+                branch_len: branch.len(),
+                status: ChainTipStatus::ValidFork,
             })
-            .map(|block| {
-                let is_active_tip = block.hash() == self.tip.hash();
-                ChainTip {
-                    height: block.height(),
-                    hash: block.hash(),
-                    branch_len: if is_active_tip {
-                        0
-                    } else {
-                        self.branch_len_to_best_chain(block)
-                    },
-                    status: if is_active_tip {
-                        ChainTipStatus::Active
-                    } else {
-                        ChainTipStatus::ValidFork
-                    },
-                }
-            })
-            .collect::<Vec<_>>();
+        });
+        let mut tips: Vec<ChainTip> = std::iter::once(active).chain(forks).collect();
 
-        // Descending height, then ascending hash. The tie-break compares
-        // *display-order* bytes, which is the ordering the hex strings a client
-        // sees would produce — hashes are byte-reversed for display, so sorting
-        // internal bytes would silently reorder equal-height tips.
+        // Descending height, then ascending hash in display order: the
+        // ordering the hex strings a client sees would produce.
         tips.sort_by(|left, right| {
-            let display_order = |hash: BlockHash| {
-                let mut bytes = <[u8; 32]>::from(hash);
-                bytes.reverse();
-                bytes
-            };
             right
                 .height
                 .cmp(&left.height)
@@ -298,15 +633,7 @@ impl ChainHeadSnapshot for MapBackedSnapshot {
     }
 
     fn best_chain(&self) -> ChainHeadBlockIter<'_> {
-        // Sorted once per call: the height index is a hash map, and a caller
-        // walking the chain to accumulate state needs the blocks in order.
-        let mut heights: Vec<Height> = self.heights_to_hashes.keys().copied().collect();
-        heights.sort_unstable();
-        ChainHeadBlockIter::new(
-            heights
-                .into_iter()
-                .filter_map(move |height| self.best_block_by_height(height)),
-        )
+        ChainHeadBlockIter::new(self.trunk.iter().map(Arc::as_ref))
     }
 
     fn best_chain_blocks(
@@ -329,16 +656,113 @@ impl ChainHeadSnapshot for MapBackedSnapshot {
     }
 }
 
-impl ChainHeadTxOutSetService for MapBackedSnapshot {}
+// Each capability is implemented only under its extension's feature; without
+// it the trait's default answers `NotBuilt`.
 
-impl ChainHeadTransactionService for MapBackedSnapshot {
-    /// A bounded scan of the window. The window is small and this is not on a
-    /// hot path; when it becomes one, the answer is a `txid ->` position index
-    /// carried alongside the graph, not a faster scan.
-    fn transaction_locations(&self, txid: &TransactionId) -> ChainHeadTransactionLocations {
+impl ChainHeadTxOutSetService for PersistentSnapshot {
+    /// The `txout_set` extension's set after the tip.
+    #[cfg(feature = "txout_set")]
+    fn txout_set(
+        &self,
+    ) -> Result<zaino_primitives::txout_commitment::TxOutSetAccumulator, ChainHeadError> {
+        crate::extension::built(&self.extensions.txout_set, "the txout set")?
+            .txout_set(self)
+            .ok_or_else(|| ChainHeadError::ReadFailed {
+                capability: "the txout set",
+                reason: "a built set holds no view of the tip".to_owned(),
+            })
+    }
+}
+
+impl ChainHeadTransparentHistoryService for PersistentSnapshot {
+    /// The `address_history` extension's effects.
+    #[cfg(feature = "address_history")]
+    fn address_effects(
+        &self,
+        query: &zaino_chain_head::transparent::TransparentHistoryQuery,
+    ) -> Result<zaino_chain_head::transparent::ChainHeadAddressEffects, ChainHeadError> {
+        crate::extension::built(&self.extensions.address_history, "transparent history")?
+            .address_effects(self, query)
+            .map_err(crate::extension::read_failed("transparent history"))
+    }
+}
+
+impl ChainHeadTreeStateService for PersistentSnapshot {
+    #[cfg(feature = "tree_state")]
+    fn pool_frontier(
+        &self,
+        pool: zaino_primitives::types::ShieldedPool,
+        height: Height,
+    ) -> Result<Option<zaino_primitives::types::PoolFrontier>, ChainHeadError> {
+        crate::extension::built(&self.extensions.tree_state, "tree state")?
+            .pool_frontier(self, pool, height)
+            .map_err(crate::extension::read_failed("tree state"))
+    }
+
+    #[cfg(feature = "tree_state")]
+    fn subtree_roots(
+        &self,
+        pool: zaino_primitives::types::ShieldedPool,
+        start: u64,
+        limit: u64,
+    ) -> Result<Vec<zaino_primitives::types::SubtreeRoot>, ChainHeadError> {
+        crate::extension::built(&self.extensions.tree_state, "tree state")?
+            .subtree_roots(self, pool, start, limit)
+            .map_err(crate::extension::read_failed("tree state"))
+    }
+}
+
+impl ChainHeadHistoryTreeService for PersistentSnapshot {
+    #[cfg(feature = "history_tree")]
+    fn history_root(&self, height: Height) -> Result<Option<[u8; 32]>, ChainHeadError> {
+        crate::extension::built(&self.extensions.history_tree, "the history tree")?
+            .history_root(self, height)
+            .map_err(crate::extension::read_failed("the history tree"))
+    }
+
+    #[cfg(feature = "history_tree")]
+    fn history_epoch(
+        &self,
+        height: Height,
+    ) -> Result<Option<zaino_chain_head::HistoryEpochAt>, ChainHeadError> {
+        crate::extension::built(&self.extensions.history_tree, "the history tree")?
+            .history_epoch(self, height)
+            .map_err(crate::extension::read_failed("the history tree"))
+    }
+
+    #[cfg(feature = "history_tree")]
+    fn history_entries(
+        &self,
+        height: Height,
+        positions: &[u32],
+    ) -> Result<Vec<Option<Vec<u8>>>, ChainHeadError> {
+        crate::extension::built(&self.extensions.history_tree, "the history tree")?
+            .history_entries(self, height, positions)
+            .map_err(crate::extension::read_failed("the history tree"))
+    }
+}
+
+impl ChainHeadTransactionService for PersistentSnapshot {
+    /// From the `transactions` extension where it is built; else a bounded
+    /// scan of the window.
+    fn transaction_locations(
+        &self,
+        txid: &TransactionId,
+    ) -> Result<ChainHeadTransactionLocations, ChainHeadError> {
+        #[cfg(feature = "transactions")]
+        if let Some(built) = self
+            .extensions
+            .transactions
+            .as_ref()
+            .and_then(crate::extension::Slot::built)
+        {
+            return built
+                .transaction_locations(self, txid)
+                .map_err(crate::extension::read_failed("transactions"));
+        }
         let mut locations = ChainHeadTransactionLocations::default();
 
-        for block in self.blocks() {
+        for block in self.directory.values() {
             let Some((slot, _transaction)) = block
                 .block
                 .transactions()
@@ -360,26 +784,37 @@ impl ChainHeadTransactionService for MapBackedSnapshot {
             }
         }
 
-        locations
+        Ok(locations)
     }
 
     /// Canonical spenders only: a spend on a competing branch is not a spend of
     /// the chain's UTXO set.
     ///
-    /// One pass over the canonical blocks builds one map for the whole batch,
-    /// so cost is independent of how many outpoints are asked about.
-    fn outpoint_spenders(&self, outpoints: &[Outpoint]) -> Vec<Option<SpenderLocation>> {
+    /// One pass over the trunk builds one map for the whole batch, so cost is
+    /// independent of how many outpoints are asked about.
+    fn outpoint_spenders(
+        &self,
+        outpoints: &[Outpoint],
+    ) -> Result<Vec<Option<SpenderLocation>>, ChainHeadError> {
         if outpoints.is_empty() {
-            return Vec::new();
+            return Ok(Vec::new());
+        }
+        #[cfg(feature = "transactions")]
+        if let Some(built) = self
+            .extensions
+            .transactions
+            .as_ref()
+            .and_then(crate::extension::Slot::built)
+        {
+            return built
+                .outpoint_spenders(self, outpoints)
+                .map_err(crate::extension::read_failed("transactions"));
         }
 
         let mut spenders: HashMap<Outpoint, SpenderLocation> = HashMap::new();
-        for hash in self.heights_to_hashes.values() {
-            let Some(block) = self.block_by_hash(hash) else {
-                continue;
-            };
+        for block in self.trunk.iter() {
             for (slot, transaction) in block.block.transactions().iter().enumerate() {
-                for input in &transaction.transparent.inputs {
+                for (input_index, input) in (0u32..).zip(&transaction.transparent.inputs) {
                     spenders.insert(
                         Outpoint {
                             txid: input.prev_txid,
@@ -389,15 +824,16 @@ impl ChainHeadTransactionService for MapBackedSnapshot {
                             block: block.reference,
                             txid: transaction.txid,
                             tx_index: tx_index(slot),
+                            input_index,
                         },
                     );
                 }
             }
         }
 
-        outpoints
+        Ok(outpoints
             .iter()
             .map(|outpoint| spenders.get(outpoint).copied())
-            .collect()
+            .collect())
     }
 }

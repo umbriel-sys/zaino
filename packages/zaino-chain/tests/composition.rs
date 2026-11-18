@@ -999,22 +999,45 @@ async fn spend_status_merges_the_store_and_the_window() {
             .await
             .expect("contiguous"),
         vec![
-            SpendStatus::SpentBy(spenders[&spent_below]),
-            SpendStatus::SpentBy(spenders[&spent_above]),
+            spent_by(&rig.chain, spent_below),
+            spent_by(&rig.chain, spent_above),
             SpendStatus::Unspent,
         ]
     );
+    assert!(matches!(
+        spent_by(&rig.chain, spent_above),
+        SpendStatus::SpentBy { txid, .. } if txid == spenders[&spent_above]
+    ));
     // The finalised scope stops at the watermark.
     assert_eq!(
         snapshot
             .outpoint_spenders(&[spent_below, spent_above], ChainScope::Finalised)
             .await
             .expect("the store covers its own range"),
-        vec![
-            SpendStatus::SpentBy(spenders[&spent_below]),
-            SpendStatus::Unspent,
-        ]
+        vec![spent_by(&rig.chain, spent_below), SpendStatus::Unspent]
     );
+}
+
+/// The spend of `outpoint` on the chain, read off the blocks: the spending
+/// transaction, its input index and height.
+fn spent_by(
+    chain: &zaino_source_mock::MockChain,
+    outpoint: zaino_primitives::types::Outpoint,
+) -> SpendStatus {
+    for h in 0..=TIP {
+        for tx in block_at(chain, h).block.transactions() {
+            for (input_index, input) in (0u32..).zip(&tx.transparent.inputs) {
+                if (input.prev_txid, input.prev_index) == (outpoint.txid, outpoint.index) {
+                    return SpendStatus::SpentBy {
+                        txid: tx.txid,
+                        input_index,
+                        height: height(h),
+                    };
+                }
+            }
+        }
+    }
+    SpendStatus::Unspent
 }
 
 // ***** Serviceability *****
