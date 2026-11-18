@@ -13,7 +13,6 @@ use std::num::NonZeroU32;
 use std::path::PathBuf;
 use std::sync::{Arc, OnceLock};
 
-use tokio::sync::watch;
 use tokio_util::sync::CancellationToken;
 use zaino_chain::{ChainViewComposer, ChainViewComposerBuilder, ChainViewConfig, StoreIndexes};
 use zaino_chain_head::ChainHeadConfig;
@@ -24,8 +23,8 @@ use zaino_chain_store_service::{
 use zaino_consensus::FAST_TEST_MAX_NONFINALISED_DEPTH;
 use zaino_persistence::in_memory::InMemoryStorage;
 use zaino_primitives::types::{
-    AbsoluteChainWork, BlockHash, BlockRef, Height, Network, NetworkUpgradeInfo, Outpoint,
-    ShieldedPool, Transaction, TransactionId,
+    AbsoluteChainWork, BlockHash, Height, Network, NetworkUpgradeInfo, Outpoint, ShieldedPool,
+    Transaction, TransactionId,
 };
 use zaino_source_mock::{
     Activations, BlockSpec, Call, CallArg, ChainBuilder, MockBlock, MockChain, NodeFacts,
@@ -241,9 +240,6 @@ pub struct Rig {
     pub chain: MockChain,
     pub store: Store,
     pub head: Arc<ChainHeadService<MockChain>>,
-    /// The extended head's root (the store watermark as the head sees it),
-    /// for a test to move; `None` for a head without extensions.
-    pub root: Option<watch::Sender<Option<BlockRef>>>,
 }
 
 impl Rig {
@@ -393,7 +389,6 @@ impl Shape {
         let depth = NonZeroU32::new(tip.saturating_sub(floor).max(1)).expect("non-zero");
         let mut config = ChainHeadConfig::with_max_depth(depth);
         let source = Arc::new(chain.clone());
-        let mut root = None;
         let head = match (self.running, self.extended) {
             (false, false) => {
                 let head = ChainHeadService::spawn_without_writer(
@@ -409,12 +404,9 @@ impl Shape {
                 head
             }
             (false, true) => {
-                let watermark = store.subscribe_watermark().borrow().tip;
-                let (sender, receiver) = watch::channel(watermark);
-                root = Some(sender);
                 let indexes = Arc::new(StoreIndexes::new(store.clone()));
                 let head = ChainHeadService::builder(source, config, CancellationToken::new())
-                    .extensions(schedule(), receiver)
+                    .extensions(schedule(), Some(indexes.clone()))
                     .with_transactions()
                     .with_txout_set(Arc::clone(&indexes))
                     .with_address_history(Arc::clone(&indexes))
@@ -435,12 +427,7 @@ impl Shape {
                     .expect("the head anchors")
             }
         };
-        Rig {
-            chain,
-            store,
-            head,
-            root,
-        }
+        Rig { chain, store, head }
     }
 }
 

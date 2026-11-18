@@ -424,6 +424,19 @@ impl<S: ChainHeadBlockSource> ChainHeadService<S> {
         // for a same-height reorg, which costs a round trip per poll for an
         // answer that cannot have changed.
         if tip == previous.best_tip() {
+            // the store moved under an unchanged head: the extensions catch up
+            #[cfg(feature = "_extensions")]
+            if let Some(enabled) = &self.extensions {
+                if crate::extension::store_moved(enabled, previous.extensions()) {
+                    let mut next = (*previous).clone();
+                    let slots =
+                        crate::extension::advance(enabled, previous.extensions(), &next).await;
+                    next.set_extensions(slots);
+                    self.mark_fresh();
+                    self.publish_snapshot(&previous, next);
+                    return Ok(());
+                }
+            }
             self.mark_fresh();
             return Ok(());
         }
@@ -912,13 +925,13 @@ impl<S: ChainHeadBlockSource> ChainHeadBuilder<S> {
     }
 
     /// Enables the extensions (D-50): folds of `zaino-indexes` over the
-    /// window, rooted on the store watermark `root` (`None` = no store: the
-    /// window's floor), under the validator's upgrade `schedule`.
+    /// window, rooted on the store's tip (`None` = no store: the window's
+    /// floor), under the validator's upgrade `schedule`.
     #[cfg(feature = "_extensions")]
     pub fn extensions(
         self,
         schedule: Arc<[zaino_primitives::types::NetworkUpgradeInfo]>,
-        root: watch::Receiver<Option<BlockRef>>,
+        store_tip: Option<Arc<dyn zaino_chain_head::StoreTip>>,
     ) -> ExtensionBuilder<S> {
         let folds = zaino_component::CpuBudget::detect()
             .concurrency(zaino_component::Share::ChainHead)
@@ -927,7 +940,7 @@ impl<S: ChainHeadBlockSource> ChainHeadBuilder<S> {
             inner: self,
             enabled: crate::extension::Enabled {
                 schedule,
-                root,
+                store_tip,
                 folds: Arc::new(tokio::sync::Semaphore::new(folds)),
                 #[cfg(feature = "transactions")]
                 transactions: false,

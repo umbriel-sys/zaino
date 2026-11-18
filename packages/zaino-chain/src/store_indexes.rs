@@ -1,15 +1,16 @@
 //! The chain head's questions below its root (D-50), answered by the store.
 //!
-//! The head's extensions fold the indexes over the window and ask five
-//! questions at their root, each a port in `zaino_chain_head::extension`.
+//! The head's extensions fold the indexes over the window, starting from the
+//! store's tip (their root), and ask five questions there, each a port in
+//! `zaino_chain_head::extension`.
 //! [`StoreIndexes`] answers every one from a store's reader: this crate names
 //! both ports, so this is where the two meet. A port is implemented where the
 //! reader has the index port it needs; a store built without that index
 //! answers `Unavailable`, as it does every other read.
 
 use zaino_chain_head::extension::{
-    HistoryEpochSeed, HistoryTreeSeed, PrevoutSource, RemainingOutputs, SeedError, TreeStateSeed,
-    TxOutSetSeed,
+    HistoryEpochSeed, HistoryTreeSeed, PrevoutSource, RemainingOutputs, SeedError, StoreTip,
+    TreeStateSeed, TxOutSetSeed,
 };
 use zaino_chain_store::{
     ChainStoreError, ChainStoreReader as _, ChainStoreService, HistoryTreeIndex, SpentOutputIndex,
@@ -52,6 +53,12 @@ impl<Store: ChainStoreService> StoreIndexes<Store> {
                 cause: None,
             }),
         }
+    }
+}
+
+impl<Store: ChainStoreService> StoreTip for StoreIndexes<Store> {
+    fn store_tip(&self) -> Option<BlockRef> {
+        self.store.subscribe_watermark().borrow().tip
     }
 }
 

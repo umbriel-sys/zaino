@@ -171,7 +171,9 @@ pub(crate) async fn advance(
         Err(failure) => return failed(NAME, failure.clone()),
     };
     let mut built = match previous {
-        Some(Slot::Built(built)) if graph.is_trunk_block(built.locations.root()) => {
+        Some(Slot::Built(built))
+            if built.locations.under_trunk(graph) && built.spent.under_trunk(graph) =>
+        {
             let mut built = built.clone();
             if due_for_rebase(built.locations.root(), root) {
                 let above = inputs::above(graph, root);

@@ -238,17 +238,20 @@ separate from the composer — but it is for a consumer who wants different
 
 ## Seeding the head's extensions: `StoreIndexes`
 
-The chain head's extensions (D-50) fold the indexes over the window and ask
-five questions at their root, the ports in `zaino_chain_head::extension`: the
-outputs the window spends, how many outputs a transaction still had, the
-UTXO-set accumulator, each pool's frontier, and the history tree's epoch and
-peaks. `StoreIndexes<Store>` answers each from the store's reader; this crate
-names both ports, so this is where the two meet:
+The chain head's extensions (D-50) fold the indexes over the window, starting
+from the store's tip (their root), and ask five questions there, the ports in
+`zaino_chain_head::extension`: the outputs the window spends, how many outputs
+a transaction still had, the UTXO-set accumulator, each pool's frontier, and
+the history tree's epoch and peaks. `StoreIndexes<Store>` answers each from the
+store's reader, and the store's tip itself (`StoreTip`, from the watermark);
+this crate names both ports, so this is where the two meet. `ChainViewSync`
+builds the store to the head's floor, so the store's tip is the floor or the
+floor's parent, and the head starts there:
 
 ```rust,ignore
 let indexes = Arc::new(StoreIndexes::new(store.clone()));
 let head = ChainHeadService::builder(source, config, cancel)
-    .extensions(schedule, root)       // a watch of the store watermark's tip
+    .extensions(schedule, Some(indexes.clone())) // the store's tip, where the head starts
     .with_transactions()
     .with_txout_set(indexes.clone())
     .with_address_history(indexes.clone())

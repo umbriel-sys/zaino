@@ -187,7 +187,7 @@ pub(crate) async fn advance(
     };
     let seed = |root: BlockRef| address_history::State { tip: root };
     let mut built = match previous {
-        Some(Slot::Built(built)) if graph.is_trunk_block(built.folded.root()) => {
+        Some(Slot::Built(built)) if built.folded.under_trunk(graph) => {
             let mut built = built.clone();
             if due_for_rebase(built.folded.root(), root) {
                 let above = inputs::above(graph, root);

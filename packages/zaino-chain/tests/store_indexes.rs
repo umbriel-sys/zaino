@@ -6,7 +6,10 @@ mod common;
 
 use std::sync::Arc;
 
-use common::{block_at, chain, hash_of, height, ledger, rig, without_indexes, Rig, TIP};
+use common::{
+    block_at, chain, eventually, hash_of, height, ledger, rig, without_indexes, Rig, TIP,
+};
+use tokio_util::sync::CancellationToken;
 use zaino_chain::StoreIndexes;
 use zaino_chain_head::extension::{
     HistoryTreeSeed as _, PrevoutSource as _, RemainingOutputs as _, SeedError, TreeStateSeed as _,
@@ -37,6 +40,71 @@ fn block_ref(chain: &MockChain, h: u32) -> BlockRef {
 
 async fn store_to(chain: &MockChain, top: u32) -> Rig {
     rig(chain.clone()).store_to(top).build().await
+}
+
+/// The extensions the head's snapshot has not built, with why.
+fn dark(rig: &Rig) -> Vec<(HeadCapability, String)> {
+    rig.head.subscriber().current().extension_failures()
+}
+
+/// Waits until the sync has built the store to the head's floor.
+async fn store_at_floor(rig: &Rig) {
+    assert!(
+        eventually(|| rig.store_top() == Some(rig.head_floor())).await,
+        "the sync builds the store to the floor"
+    );
+}
+
+/// With the store empty only the index needing nothing below is built; once
+/// the sync builds the store to the floor, the next tick builds the rest
+/// though no block arrived.
+#[tokio::test]
+async fn the_indexes_build_when_the_store_moves_under_an_unchanged_head() {
+    let rig = rig(chain()).extended_head().build().await;
+    let failed: Vec<HeadCapability> = dark(&rig).into_iter().map(|(c, _)| c).collect();
+    assert_eq!(
+        failed,
+        vec![
+            HeadCapability::TxOutSet,
+            HeadCapability::TransparentHistory,
+            HeadCapability::TreeState,
+            HeadCapability::HistoryTree
+        ]
+    );
+    let sync = Arc::new(rig.view()).spawn_sync(CancellationToken::new());
+    store_at_floor(&rig).await;
+    rig.advance().await;
+    assert!(dark(&rig).is_empty(), "{:?}", dark(&rig));
+    sync.shutdown();
+}
+
+/// Production's shape: the sync builds the store to the head's floor, so
+/// when a block arrives the store's tip is the new floor's parent. The
+/// indexes start there and stay built block by block.
+#[tokio::test]
+async fn under_chain_view_sync_the_indexes_stay_built_block_by_block() {
+    let rig = rig(chain()).extended_head().build().await;
+    let sync = Arc::new(rig.view()).spawn_sync(CancellationToken::new());
+    // the head grows its window by a margin before its floor moves
+    let mut floor_moved = 0;
+    for _ in 0..16 {
+        store_at_floor(&rig).await;
+        let store_tip = rig.store_top();
+        let floor = rig.head_floor();
+        rig.extend(1);
+        rig.advance().await;
+        if rig.head_floor() > floor {
+            floor_moved += 1;
+            assert_eq!(
+                store_tip.and_then(|tip| tip.checked_add(1)),
+                Some(rig.head_floor()),
+                "the store's tip is the floor's parent"
+            );
+        }
+        assert!(dark(&rig).is_empty(), "{:?}", dark(&rig));
+    }
+    assert!(floor_moved >= 4, "the floor moved {floor_moved} times");
+    sync.shutdown();
 }
 
 #[tokio::test]
@@ -203,11 +271,6 @@ async fn an_extended_head_agrees_with_a_store_over_the_whole_chain() {
     // the chain grows; the store follows and the root moves past a rebase
     rig.extend(3);
     rig.store.build_to(height(ROOT + 40)).await.expect("builds");
-    rig.root
-        .as_ref()
-        .expect("extended")
-        .send(Some(block_ref(&chain, ROOT + 40)))
-        .expect("the head holds the receiver");
     rig.advance().await;
     reference.build_to(height(TIP + 3)).await.expect("builds");
     agree(&rig, &reference, ROOT + 40, TIP + 3).await;

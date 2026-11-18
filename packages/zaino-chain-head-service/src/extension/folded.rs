@@ -80,6 +80,15 @@ impl<I: Index> Folded<I> {
         self.views.contains_key(hash)
     }
 
+    /// Whether the views still sit under the trunk: the root is a trunk
+    /// block, or (the root below the window) the trunk's floor has a view.
+    pub(crate) fn under_trunk(&self, graph: &PersistentSnapshot) -> bool {
+        graph.is_trunk_block(self.root)
+            || graph
+                .trunk_block(graph.lowest_retained_height())
+                .is_some_and(|floor| self.has(&floor.hash()))
+    }
+
     /// `block` folded from `state` (the parent's, possibly prepared by the
     /// caller) onto the parent's view.
     pub(crate) fn fold(

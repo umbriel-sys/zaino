@@ -6,14 +6,15 @@
 //! alone; what lies below the root is asked through the ports in
 //! `zaino_chain_head::extension`, and seeded from them at the root.
 //!
-//! The root is the store watermark (D-53), re-read every tick; the views are
+//! The root is the store's tip (D-53), asked every tick; the views are
 //! rebased onto it once it has advanced [`REBASE_EVERY`] blocks. A failing
-//! extension darkens its own slot and is rebuilt at the next tick.
+//! extension darkens its own slot and is rebuilt at the next tick, or as soon
+//! as the store's tip moves.
 
 use std::sync::Arc;
 
-use tokio::sync::{watch, Semaphore};
-use zaino_chain_head::{HeadCapabilities, HeadCapability};
+use tokio::sync::Semaphore;
+use zaino_chain_head::{HeadCapabilities, HeadCapability, StoreTip};
 use zaino_primitives::types::{BlockRef, NetworkUpgradeInfo};
 
 use crate::snapshot::PersistentSnapshot;
@@ -85,6 +86,8 @@ pub(crate) struct Slots {
     pub(crate) tree_state: Option<Slot<tree_state::TreeState>>,
     #[cfg(feature = "history_tree")]
     pub(crate) history_tree: Option<Slot<history_tree::HistoryTree>>,
+    /// The store's tip these slots were advanced with.
+    store_tip: Option<BlockRef>,
 }
 
 impl Slots {
@@ -191,8 +194,8 @@ impl Slots {
 pub(crate) struct Enabled {
     /// The validator's upgrade schedule: a block's consensus branch.
     pub(crate) schedule: Arc<[NetworkUpgradeInfo]>,
-    /// The store watermark: the root the views sit on.
-    pub(crate) root: watch::Receiver<Option<BlockRef>>,
+    /// The store's tip: the root the views sit on. `None`: no store.
+    pub(crate) store_tip: Option<Arc<dyn StoreTip>>,
     /// Folds in flight at once, under the head's CPU share.
     pub(crate) folds: Arc<Semaphore>,
     #[cfg(feature = "transactions")]
@@ -213,14 +216,32 @@ impl std::fmt::Debug for Enabled {
     }
 }
 
-/// The root the views sit on: the store watermark where it is a trunk block,
+impl Enabled {
+    /// The store's tip now; `None` with no store or an empty one.
+    fn store_tip(&self) -> Option<BlockRef> {
+        self.store_tip.as_ref().and_then(|store| store.store_tip())
+    }
+}
+
+/// Whether the store's tip moved since `slots` were advanced, so they should
+/// be advanced again though the head's tip did not move.
+pub(crate) fn store_moved(enabled: &Enabled, slots: &Slots) -> bool {
+    enabled.store_tip() != slots.store_tip
+}
+
+/// The root the views sit on: the store's tip where it is a trunk block or
+/// the floor's parent (the store built to the floor before the floor moved),
 /// else the trunk's floor (a head with no store, or a store still behind).
 ///
-/// `Err` names a watermark the trunk does not hold under that hash: the store
+/// `Err` names a store tip the trunk does not hold under that hash: the store
 /// is on another chain, which the store's own tip check resolves.
 fn root_of(graph: &PersistentSnapshot, watermark: Option<BlockRef>) -> Result<BlockRef, Failure> {
     let floor = graph.lowest_retained_height();
+    let floor_block = graph
+        .trunk_block(floor)
+        .ok_or_else(|| Failure("the window has no floor".to_owned()))?;
     match watermark {
+        Some(watermark) if watermark.hash == floor_block.parent_hash => Ok(watermark),
         Some(watermark) if watermark.height >= floor => match graph.trunk_block(watermark.height) {
             Some(block) if block.hash() == watermark.hash => Ok(block.reference),
             Some(block) => Err(Failure(format!(
@@ -234,10 +255,7 @@ fn root_of(graph: &PersistentSnapshot, watermark: Option<BlockRef>) -> Result<Bl
                 watermark.height
             ))),
         },
-        _ => graph
-            .trunk_block(floor)
-            .map(|block| block.reference)
-            .ok_or_else(|| Failure("the window has no floor".to_owned())),
+        _ => Ok(floor_block.reference),
     }
 }
 
@@ -254,9 +272,12 @@ pub(crate) async fn advance(
     previous: &Slots,
     graph: &PersistentSnapshot,
 ) -> Slots {
-    let watermark = *enabled.root.borrow();
+    let watermark = enabled.store_tip();
     let root = root_of(graph, watermark);
-    let mut next = Slots::default();
+    let mut next = Slots {
+        store_tip: watermark,
+        ..Slots::default()
+    };
 
     #[cfg(feature = "transactions")]
     if enabled.transactions {

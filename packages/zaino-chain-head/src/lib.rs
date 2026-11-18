@@ -72,8 +72,8 @@ pub use capability::{HeadCapabilities, HeadCapability};
 pub use config::ChainHeadConfig;
 pub use error::ChainHeadError;
 pub use extension::{
-    HistoryEpochSeed, HistoryTreeSeed, PrevoutSource, RemainingOutputs, SeedError, TreeStateSeed,
-    TxOutSetSeed,
+    HistoryEpochSeed, HistoryTreeSeed, PrevoutSource, RemainingOutputs, SeedError, StoreTip,
+    TreeStateSeed, TxOutSetSeed,
 };
 pub use ports::{ChainHeadBlockService, ChainHeadBlockSource};
 pub use snapshot::{

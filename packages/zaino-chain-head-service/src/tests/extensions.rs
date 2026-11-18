@@ -5,13 +5,12 @@
 
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
-use tokio::sync::watch;
 use tokio_util::sync::CancellationToken;
 use zaino_chain_head::{
     extension::{
-        HistoryEpochSeed, HistoryTreeSeed, PrevoutSource, RemainingOutputs, SeedError,
+        HistoryEpochSeed, HistoryTreeSeed, PrevoutSource, RemainingOutputs, SeedError, StoreTip,
         TreeStateSeed, TxOutSetSeed,
     },
     snapshot::{
@@ -183,13 +182,25 @@ fn folded<I: Index>(chain: &MockChain, through: u32) -> I::State {
         .expect("at least one block")
 }
 
-/// The ports below the root, answered from the chain itself.
+/// The ports below the root, answered from the chain itself; the store's tip
+/// is set by the test.
 struct Below {
     chain: MockChain,
     failing: AtomicBool,
+    tip: Mutex<Option<BlockRef>>,
+}
+
+impl StoreTip for Below {
+    fn store_tip(&self) -> Option<BlockRef> {
+        *self.tip.lock().expect("tip lock")
+    }
 }
 
 impl Below {
+    fn set_tip(&self, tip: BlockRef) {
+        *self.tip.lock().expect("tip lock") = Some(tip);
+    }
+
     fn guard(&self, root: BlockRef) -> Result<(), SeedError> {
         if self.failing.load(Ordering::SeqCst) {
             return Err(SeedError::Unavailable {
@@ -290,30 +301,29 @@ impl HistoryTreeSeed for Below {
     }
 }
 
-/// A stepped head with every extension, its ports and its root watch.
+/// A stepped head with every extension and its ports.
 struct Harness {
     chain: MockChain,
     below: Arc<Below>,
-    root: watch::Sender<Option<BlockRef>>,
     service: Arc<ChainHeadService<MockChain>>,
 }
 
 impl Harness {
-    /// Anchored `max_depth` below the tip, rooted at `root_height`, advanced
-    /// once to the tip.
+    /// Anchored `max_depth` below the tip, the store's tip at `root_height`,
+    /// advanced once to the tip.
     async fn new(chain: MockChain, max_depth: u32, root_height: u32) -> Self {
+        let root_block = chain.block_at(root_height).expect("root held");
         let below = Arc::new(Below {
             chain: chain.clone(),
             failing: AtomicBool::new(false),
+            tip: Mutex::new(Some(reference(&root_block))),
         });
-        let root_block = chain.block_at(root_height).expect("root held");
-        let (root, root_rx) = watch::channel(Some(reference(&root_block)));
         let service = ChainHeadService::builder(
             Arc::new(chain.clone()),
             test_config(max_depth),
             CancellationToken::new(),
         )
-        .extensions(schedule(), root_rx)
+        .extensions(schedule(), Some(below.clone()))
         .with_transactions()
         .with_txout_set(Arc::clone(&below))
         .with_address_history(Arc::clone(&below))
@@ -326,7 +336,6 @@ impl Harness {
         Self {
             chain,
             below,
-            root,
             service,
         }
     }
@@ -336,7 +345,7 @@ impl Harness {
     }
 
     fn root(&self) -> BlockRef {
-        self.root.borrow().expect("rooted")
+        self.below.store_tip().expect("rooted")
     }
 
     /// One block appended to the chain, then one tick.
@@ -817,10 +826,7 @@ async fn a_failing_port_darkens_one_extension_and_the_next_tick_rebuilds_it() {
 
     harness.below.failing.store(true, Ordering::SeqCst);
     let new_root = chain.block_at(floor + 40).expect("held");
-    harness
-        .root
-        .send(Some(reference(&new_root)))
-        .expect("the service holds the receiver");
+    harness.below.set_tip(reference(&new_root));
     harness.extend_and_advance(BlockSpec::default()).await;
     let dark = harness.snapshot();
     let failed: Vec<HeadCapability> = dark
@@ -885,10 +891,7 @@ async fn a_rebase_leaves_every_answer_unchanged() {
     assert!(before.extension_failures().is_empty());
 
     let new_root = chain.block_at(floor + 40).expect("held");
-    harness
-        .root
-        .send(Some(reference(&new_root)))
-        .expect("the service holds the receiver");
+    harness.below.set_tip(reference(&new_root));
     harness.extend_and_advance(BlockSpec::spends(1)).await;
     let after = harness.snapshot();
     let tip = tip + 1;

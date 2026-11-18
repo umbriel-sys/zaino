@@ -33,6 +33,12 @@ pub enum SeedError {
     },
 }
 
+/// The store's tip: the block the extensions start from (their root).
+pub trait StoreTip: Send + Sync + 'static {
+    /// The highest block the store holds; `None` while it holds none.
+    fn store_tip(&self) -> Option<BlockRef>;
+}
+
 /// The outputs the window's inputs spend from below the root.
 pub trait PrevoutSource: Send + Sync + 'static {
     /// The outputs `outpoints` name as of `root`, in the order asked; `None`

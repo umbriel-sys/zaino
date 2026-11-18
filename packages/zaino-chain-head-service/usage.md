@@ -168,7 +168,7 @@ a head with none pulls in neither `zaino-indexes` nor the persistence port:
 
 ```rust
 let head = ChainHeadService::builder(source, config, cancel)
-    .extensions(schedule, store_watermark)   // the validator's upgrades; a watch of the store's watermark
+    .extensions(schedule, Some(store_indexes.clone())) // the validator's upgrades; the store's tip
     .with_transactions()                      // I-03, I-09: positions and spenders
     .with_txout_set(store_indexes.clone())    // I-11: the set at the tip (enables transactions)
     .with_address_history(store_indexes.clone()) // I-10: address effects (enables transactions)
@@ -178,8 +178,10 @@ let head = ChainHeadService::builder(source, config, cancel)
     .await?;
 ```
 
-Every retained block above the root (the store watermark; the window's floor
-with no store) carries the index after it: its fold state and an overlay of
+Every retained block above the root (the store's tip, asked through
+`StoreTip`: a trunk block or the floor's parent, as when the store has been
+built to the floor and the floor then moved; the window's floor with no store)
+carries the index after it: its fold state and an overlay of
 the rows the window wrote. A view costs one fold per block, a branch's views
 are already there when a reorg returns to it, and an answer is a typed read
 over the tip's view, so it covers the window alone and the store answers
@@ -187,12 +189,15 @@ below. What a fold needs from below the root is asked through the ports in
 `zaino_chain_head::extension`, implemented by `zaino-chain` over the store;
 the head names neither the store nor the validator for it.
 
-Every tick seeds the extensions that are not built, folds the new blocks and,
-once the watermark has advanced 32 blocks past the root, rebases the views
-onto it by replaying each block's own ops. A fold or port failure darkens that
-extension alone (`PersistentSnapshot::extension_failures` names it and why,
-`zaino.chain_head.extension_failures_total` counts it); its slot is rebuilt at
-the next tick. `ChainHeadSnapshot::capabilities` reports what is built.
+Every tick that brings a block seeds the extensions that are not built, folds
+the new blocks and, once the store's tip has advanced 32 blocks past the root,
+rebases the views onto it by replaying each block's own ops. A tick with no
+new block does the same only when the store's tip moved since, so a store
+catching up builds the extensions within one poll and an unchanged store asks
+nothing. A fold or port failure darkens that extension alone
+(`PersistentSnapshot::extension_failures` names it and why,
+`zaino.chain_head.extension_failures_total` counts it).
+`ChainHeadSnapshot::capabilities` reports what is built.
 
 ## Metrics
 
