@@ -217,21 +217,19 @@ impl zaino_source::OneShotGetBlockHeader for MockChain {
     }
 }
 
-/// zcashd's `GetMedianTimePast`: the median of the last eleven block times.
+/// zcashd's `GetMedianTimePast`: the median of the block's time and its ten
+/// predecessors'.
 fn median_time(served: &Served<'_>, block: &MockBlock) -> u32 {
     let mut times = Vec::new();
     let mut at = Some(block);
-    while let Some(current) = at.filter(|_| times.len() < 11) {
+    while let Some(current) = at.filter(|_| times.len() < zaino_consensus::MEDIAN_TIME_SPAN) {
         times.push(current.block.header.time);
         at = (u32::from(current.height()) > 0)
             .then(|| served.by_hash(current.block.header.prev_hash))
             .flatten();
     }
-    times.sort_unstable();
-    times
-        .get(times.len() / 2)
-        .copied()
-        .unwrap_or(block.block.header.time)
+    times.reverse();
+    zaino_consensus::median_time_past(&times).unwrap_or(block.block.header.time)
 }
 
 impl zaino_source::OneShotGetBlockDeltas for MockChain {

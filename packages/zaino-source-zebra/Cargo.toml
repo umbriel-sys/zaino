@@ -25,6 +25,7 @@ tracing = { workspace = true, optional = true }
 chrono.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
+zaino-consensus.workspace = true
 
 [dev-dependencies]
 zcash_address.workspace = true

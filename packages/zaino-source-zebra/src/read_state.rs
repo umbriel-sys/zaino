@@ -1471,11 +1471,6 @@ fn block_difficulty(
     limit / target
 }
 
-/// The number of blocks `getblockdeltas` reports a median time over.
-///
-/// Consensus's median-time-past window: this block and the ten before it.
-const MEDIAN_TIME_PAST_WINDOW: usize = 11;
-
 impl ZebraReadStateAdapter {
     /// The median time past at `block`: the median timestamp of it and up to
     /// the ten blocks before it.
@@ -1488,16 +1483,20 @@ impl ZebraReadStateAdapter {
         &self,
         block: &zebra_chain::block::Block,
     ) -> Result<u32, ReadStateError> {
-        let mut times = Vec::with_capacity(MEDIAN_TIME_PAST_WINDOW);
-        times.push(block.header.time.timestamp());
+        let time = |block: &zebra_chain::block::Block| {
+            u32::try_from(block.header.time.timestamp()).map_err(ReadStateError::invalid_data)
+        };
+        // Newest first while walking back; reversed below.
+        let mut times = Vec::with_capacity(zaino_consensus::MEDIAN_TIME_SPAN);
+        times.push(time(block)?);
 
         let mut previous = block.header.previous_block_hash;
-        for _ in 1..MEDIAN_TIME_PAST_WINDOW {
+        while times.len() < zaino_consensus::MEDIAN_TIME_SPAN {
             // Genesis's parent hash is all zeroes and names no block, so the
             // read below simply misses and ends the walk.
             match read(&self.state, ReadRequest::Block(previous.into())).await? {
                 ReadResponse::Block(Some(parent)) => {
-                    times.push(parent.header.time.timestamp());
+                    times.push(time(&parent)?);
                     previous = parent.header.previous_block_hash;
                 }
                 ReadResponse::Block(None) => break,
@@ -1505,11 +1504,9 @@ impl ZebraReadStateAdapter {
             }
         }
 
-        times.sort_unstable();
-        let median = times
-            .get(times.len() / 2)
-            .ok_or_else(|| ReadStateError::off_contract("no block times to take a median of"))?;
-        u32::try_from(*median).map_err(ReadStateError::invalid_data)
+        times.reverse();
+        zaino_consensus::median_time_past(&times)
+            .ok_or_else(|| ReadStateError::off_contract("no block times to take a median of"))
     }
 
     /// The transaction a spend refers to, for resolving the spent output's

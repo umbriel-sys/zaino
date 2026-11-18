@@ -66,6 +66,29 @@ pub const MAX_NONFINALISED_DEPTH: u32 = MAX_BLOCK_REORG_HEIGHT + 1;
 /// rather than a literal of its own.
 pub const FAST_TEST_MAX_NONFINALISED_DEPTH: u32 = MAX_NONFINALISED_DEPTH / 10;
 
+/// Blocks a median time is taken over: protocol §7.7.3, `PoWMedianBlockSpan`.
+///
+/// No zebra agreement test: zebra-state keeps its `POW_MEDIAN_BLOCK_SPAN`
+/// `pub(crate)`. The getblockdeltas contract (mock, zebrad, zcashd) checks
+/// `mediantime` end to end.
+pub const MEDIAN_TIME_SPAN: usize = 11;
+
+/// The median of the last [`MEDIAN_TIME_SPAN`] of `times` (oldest first), as
+/// protocol §7.7.3's `MedianTime`: `sorted(S)[ceiling((len(S)+1)/2)]`,
+/// 1-based. `None` when `times` is empty.
+///
+/// A block's `mediantime` (zcashd's `GetMedianTimePast`) is this over the
+/// block's time and its ten predecessors'; near genesis, over those that exist.
+pub fn median_time_past(times: &[u32]) -> Option<u32> {
+    let mut window: Vec<u32> = times
+        .iter()
+        .skip(times.len().saturating_sub(MEDIAN_TIME_SPAN))
+        .copied()
+        .collect();
+    window.sort_unstable();
+    window.get(window.len() / 2).copied()
+}
+
 /// Why a client's raw transaction was rejected before it reached a validator.
 ///
 /// A local rejection: nothing here needs the chain, only the protocol's size
@@ -189,5 +212,35 @@ mod raw_transaction_tests {
         let oversized = vec![0u8; MAX_BLOCK_BYTES as usize + 1];
 
         assert!(validate_raw_transaction_bytes(&oversized).is_err());
+    }
+}
+
+#[cfg(test)]
+mod median_time_tests {
+    use super::*;
+
+    #[test]
+    fn no_times_have_no_median() {
+        assert_eq!(median_time_past(&[]), None);
+    }
+
+    /// Timestamps are not monotonic; the median sorts them.
+    #[test]
+    fn an_odd_window_takes_the_middle_of_the_sorted_times() {
+        assert_eq!(median_time_past(&[50, 10, 40, 20, 30]), Some(30));
+    }
+
+    /// `ceiling((len+1)/2)`, 1-based, is the upper middle of an even window.
+    #[test]
+    fn an_even_window_takes_the_upper_middle() {
+        assert_eq!(median_time_past(&[40, 10, 30, 20]), Some(30));
+    }
+
+    /// Only the last eleven count: the older times are outside the span.
+    #[test]
+    fn only_the_last_eleven_times_count() {
+        let mut times = vec![1_000; 5];
+        times.extend(1..=11);
+        assert_eq!(median_time_past(&times), Some(6));
     }
 }

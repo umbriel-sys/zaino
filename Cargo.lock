@@ -6437,6 +6437,7 @@ dependencies = [
  "tokio",
  "tower 0.4.13",
  "tracing",
+ "zaino-consensus",
  "zaino-primitives",
  "zaino-rpc",
  "zaino-source",

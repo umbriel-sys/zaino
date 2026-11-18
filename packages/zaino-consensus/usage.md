@@ -35,6 +35,9 @@ rather than copied across. **Do not fix it by changing our value to match
 zebra's** without reading the spec — that turns the test into a mirror.
 
 If you add a constant here, add its agreement test there in the same change.
+The one exception is `MEDIAN_TIME_SPAN`: zebra-state keeps its
+`POW_MEDIAN_BLOCK_SPAN` `pub(crate)`, so there is nothing public to compare;
+the getblockdeltas source contract checks `mediantime` end to end instead.
 
 ## Use
 
@@ -52,6 +55,10 @@ use zaino_consensus::{
   never a production value: in `zaino-state` the choice between the two is
   `cfg(test)` / the `fast-test-seam` feature, and both arms derive from the
   protocol constant so neither is a literal.
+- `median_time_past(times)` is protocol §7.7.3's `MedianTime` over the last
+  `MEDIAN_TIME_SPAN` (11) of `times`, oldest first. A block's `mediantime`
+  is it over the block's time and its ten predecessors'. Every median-time
+  answer in zaino takes it from here.
 - `validate_raw_transaction_hex` runs before the validator round trip, so a
   malformed or oversized submission is rejected locally. It distinguishes bad
   hex from an oversized transaction — a client that sent a truncated string
