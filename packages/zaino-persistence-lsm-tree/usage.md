@@ -16,12 +16,13 @@ recovery, failure policy), [lsm-deletes.md](./docs/lsm-deletes.md) and
 [`LsmTreeBackend::open_real`] for the real filesystem), the index directory
 (created if absent) and an [`LsmTreeConfig`]:
 
-- `name`, `chain` and `format`: the index's name, the chain its data belongs
-  to (both at most 255 bytes; `chain` is opaque here, the index layer names
-  the network, its genesis hash and, on regtest, its activation heights) and
-  the layout version. All three are written into the manifest and checked at
-  every open, so a directory is never read as another index's, chain's or
-  format's.
+- `name`, `chain`, `format` and `schema`: the index's name, the chain its
+  data belongs to (both at most 255 bytes; `chain` is opaque here, the index
+  layer names the network, its genesis hash and, on regtest, its activation
+  heights), the layout version and the index layer's `SchemaDigest` of every
+  namespace's layout (opaque here too). All four are written into the
+  manifest and checked at every open, so a directory is never read as
+  another index's, chain's, format's or layout's.
 - `namespaces`: the port's `NamespaceSpec`s. The directory remembers the ones
   it was committed with, and an open declaring others is refused.
 - `tuning`: per-namespace [`Tuning`], how a namespace is stored, never what it

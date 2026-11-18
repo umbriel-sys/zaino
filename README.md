@@ -206,6 +206,7 @@ mistakes its design is trying to prevent.
 - [`zaino-primitives`](./packages/zaino-primitives/usage.md): the domain vocabulary, and why it depends on nothing.
 - [`zaino-persistence`](./packages/zaino-persistence/usage.md): the storage backend port, and why index code never names a concrete store.
 - [`zaino-persistence-lsm-tree`](./packages/zaino-persistence-lsm-tree/usage.md): the on-disk backend, how to open and tune it, and what a failed write or merge leaves behind.
+- [`zaino-indexes`](./packages/zaino-indexes/usage.md): per-field record layouts, index schemas and the digest a directory is stamped with.
 - [`zaino-source`](./packages/zaino-source/usage.md): the ports, the domain/fetch error split, and `Resilient`.
 - [`zaino-rpc`](./packages/zaino-rpc/usage.md): JSON-RPC transport, and what it does not do.
 - [`zaino-source-zcash-rpc`](./packages/zaino-source-zcash-rpc/usage.md): the JSON-RPC adapter, its error classification, and the quirk table that keeps it validator-agnostic.

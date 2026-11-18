@@ -6036,7 +6036,6 @@ dependencies = [
 name = "zaino-chain-store"
 version = "0.1.1"
 dependencies = [
- "blake2",
  "futures",
  "thiserror 2.0.20",
  "tokio",
@@ -6113,6 +6112,20 @@ name = "zaino-encoding"
 version = "0.1.1"
 dependencies = [
  "corez",
+]
+
+[[package]]
+name = "zaino-indexes"
+version = "0.1.0"
+dependencies = [
+ "blake2",
+ "imbl",
+ "primitive-types 0.12.2",
+ "thiserror 2.0.20",
+ "zaino-consensus",
+ "zaino-persistence",
+ "zaino-primitives",
+ "zcash_history",
 ]
 
 [[package]]
@@ -6195,6 +6208,7 @@ dependencies = [
 name = "zaino-primitives"
 version = "0.3.0"
 dependencies = [
+ "blake2",
  "orchard",
  "proptest",
  "serde",

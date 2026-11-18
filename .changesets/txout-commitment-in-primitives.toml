@@ -1,0 +1,26 @@
+[[changes]]
+crate = "zaino-primitives"
+kind = "feature"
+description = """
+Feature `txout-commitment`: the UTXO-set commitment (`txout_commitment`: \
+canonical entry, BLAKE2b-256 entry digest, `TxOutSetAccumulator`), moved \
+here from `zaino-chain-store` so every store and the chain head share one \
+definition. The functions take `(value, address)` instead of a \
+`StoredTxOut`; the digest is unchanged."""
+
+[[changes]]
+crate = "zaino-chain-store"
+kind = "breaking"
+description = """
+`txout_set` re-exports the commitment from \
+`zaino_primitives::txout_commitment`. `is_unspendable`, `canonical_entry`, \
+`entry_digest` and `TxOutSetAccumulator::apply_{added,removed}_output` take \
+an output's value and address rather than a `StoredTxOut`."""
+
+[[changes]]
+crate = "zaino-indexes"
+kind = "change"
+description = """
+Stored tx and input indexes are `u16` (I-03, I-09, I-10), checked, with \
+`LayoutError::OutOfRange` past the width. I-10 depends on I-03 for the \
+store's prevout resolution."""

@@ -66,7 +66,7 @@ pub use mempool_info::MempoolInfo;
 pub use merkle_root::MerkleRoot;
 pub use network::{ActivationHeights, Network};
 pub use network_upgrade::{
-    ConsensusBranchId, ConsensusBranchIds, NetworkUpgradeInfo, NetworkUpgradeStatus,
+    branch_at, ConsensusBranchId, ConsensusBranchIds, NetworkUpgradeInfo, NetworkUpgradeStatus,
 };
 pub use note_commitment::NoteCommitment;
 pub use nullifier::Nullifier;
@@ -75,8 +75,8 @@ pub use script::{classify_script, Script, ScriptType, TransparentAddressKey};
 pub use shielded_pool::ShieldedPool;
 pub use subtree_root::SubtreeRoot;
 pub use transaction::{
-    OrchardAction, OrchardData, SaplingData, SaplingOutput, SaplingSpend, Transaction,
-    TransparentData, TransparentInput, TransparentOutput,
+    OrchardAction, OrchardData, PoolBalances, SaplingData, SaplingOutput, SaplingSpend,
+    Transaction, TransparentData, TransparentInput, TransparentOutput,
 };
 pub use transaction_hash::TransactionId;
 pub use transaction_location::TransactionLocation;

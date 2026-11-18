@@ -73,6 +73,7 @@ fn verify_refuses_another_chains_directory() {
         "conformance",
         "mainnet",
         1,
+        crate::testing::SCHEMA,
         &conformance::SPECS,
     )
     .expect_err("another chain's directory");
@@ -1024,6 +1025,7 @@ fn a_failed_cleanup_never_fails_a_commit_and_is_retried() {
             "conformance",
             crate::testing::CHAIN,
             1,
+            crate::testing::SCHEMA,
             &conformance::SPECS,
         )
         .expect("verify")
@@ -1549,6 +1551,7 @@ fn offline_verify_agrees_and_footprint_names_every_namespace() {
         "conformance",
         crate::testing::CHAIN,
         1,
+        crate::testing::SCHEMA,
         &conformance::SPECS,
     )
     .expect("verify_dir");

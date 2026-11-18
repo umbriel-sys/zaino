@@ -316,6 +316,32 @@ mod consensus_agreement {
         );
     }
 
+    /// Every branch id as zebra states it.
+    #[test]
+    fn branch_ids_agree() {
+        use zaino_consensus::branch_id;
+        use zebra_chain::parameters::{ConsensusBranchId, NetworkUpgrade};
+        for (upgrade, ours) in [
+            (NetworkUpgrade::Overwinter, branch_id::OVERWINTER),
+            (NetworkUpgrade::Sapling, branch_id::SAPLING),
+            (NetworkUpgrade::Blossom, branch_id::BLOSSOM),
+            (NetworkUpgrade::Heartwood, branch_id::HEARTWOOD),
+            (NetworkUpgrade::Canopy, branch_id::CANOPY),
+            (NetworkUpgrade::Nu5, branch_id::NU5),
+            (NetworkUpgrade::Nu6, branch_id::NU6),
+            (NetworkUpgrade::Nu6_1, branch_id::NU6_1),
+            (NetworkUpgrade::Nu6_2, branch_id::NU6_2),
+            (NetworkUpgrade::Nu6_3, branch_id::NU6_3),
+            (NetworkUpgrade::Nu7, branch_id::NU7),
+        ] {
+            assert_eq!(
+                upgrade.branch_id(),
+                Some(ConsensusBranchId::from(ours)),
+                "{upgrade:?}"
+            );
+        }
+    }
+
     /// NU7's deployment facts (ZIP 259 branch id, Mainnet and Testnet heights,
     /// ZIP 218 block spacing) as zebra states them. A zebra bump that drops or moves
     /// any of these would otherwise surface only on a live chain.

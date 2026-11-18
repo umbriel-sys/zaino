@@ -2,7 +2,7 @@ use super::*;
 use crate::fs::SimFs;
 
 fn identity() -> Identity {
-    Identity::new("compact_block", "regtest", 1).expect("short name")
+    Identity::new("compact_block", "regtest", 1, crate::testing::SCHEMA).expect("short name")
 }
 
 /// A directory several missing levels deep, and a nested subdirectory, survive a power loss
@@ -88,14 +88,23 @@ fn commits_survive_reopen_the_lock_excludes_and_identity_is_enforced() {
     );
     drop(reopened);
 
-    let foreign = Identity::new("tree_state", "regtest", 1).expect("short name");
+    let foreign =
+        Identity::new("tree_state", "regtest", 1, crate::testing::SCHEMA).expect("short name");
     let foreign = IndexDir::open(fs.clone(), path, foreign);
     assert!(matches!(foreign, Err(ManifestError::Name { .. })));
     drop(foreign);
 
-    let other_chain = Identity::new("compact_block", "mainnet", 1).expect("short name");
-    let other_chain = IndexDir::open(fs, path, other_chain);
+    let other_chain =
+        Identity::new("compact_block", "mainnet", 1, crate::testing::SCHEMA).expect("short name");
+    let other_chain = IndexDir::open(fs.clone(), path, other_chain);
     assert!(matches!(other_chain, Err(ManifestError::Chain { .. })));
+    drop(other_chain);
+
+    let other_schema = zaino_persistence::SchemaDigest::new([0xa5; 32]);
+    let other_schema =
+        Identity::new("compact_block", "regtest", 1, other_schema).expect("short name");
+    let other_schema = IndexDir::open(fs, path, other_schema);
+    assert!(matches!(other_schema, Err(ManifestError::Schema { .. })));
 }
 
 /// A body past the slot: `Full`, the committed state unchanged, later commits continue

@@ -37,16 +37,9 @@
 //! normal operation; [`ChainStoreIngest::rewind_to`] exists as a repair path,
 //! not as part of following the chain.
 //!
-//! # One thing here is a contract, not a choice
-//!
-//! [`txout_set`] defines Zaino's UTXO-set commitment: a canonical entry
-//! encoding and a multiset hash over it. It lives in this crate rather than in
-//! an implementation because every finalised-state implementation must produce
-//! the same commitment for the same set — and because whatever merges
-//! finalised and recent answers extends that commitment across the seam, so it
-//! must compute the identical digest. Two implementations disagreeing about it
-//! would not fail; they would quietly mean different things by the same
-//! number.
+//! [`txout_set`] re-exports Zaino's UTXO-set commitment from
+//! `zaino_primitives::txout_commitment`, its one definition: every store and
+//! the chain head must compute the identical digest.
 
 pub mod block;
 pub mod capability;
@@ -73,9 +66,9 @@ pub use ports::{
     TransactionIndex, TransactionIndexCapability, TxOutSetIndex, TxOutSetIndexCapability,
 };
 pub use txout_set::{
-    canonical_entry, canonical_entry_parts, entry_digest, entry_digest_parts, is_unspendable,
-    script_type_tag, Delta, TxOutSetAccumulator, TxOutSetError, TXOUT_SET_DOMAIN_TAG,
-    TXOUT_SET_ENTRY_LEN,
+    canonical_entry, canonical_entry_parts, commitment_address, entry_digest, entry_digest_parts,
+    is_legacy_unspendable, is_unspendable, script_type_tag, Delta, TxOutSetAccumulator,
+    TxOutSetError, MAX_SCRIPT_SIZE, TXOUT_SET_DOMAIN_TAG, TXOUT_SET_ENTRY_LEN,
 };
 
 #[cfg(feature = "transparent_address_history_experimental")]

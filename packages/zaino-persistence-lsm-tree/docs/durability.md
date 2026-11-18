@@ -42,12 +42,13 @@ of repairing anything in place. Every index directory follows the same six rules
 
 ```text
 field       bytes  meaning
-magic       8      b"ZAINOMS5"
+magic       8      b"ZAINOMS6"
 format      2      u16 LE, the caller's layout version
 name_len    1      u8
 name        n      the index name the caller opens it as (at most 255 bytes)
 chain_len   1      u8
 chain       c      the chain tag the caller opens it as (at most 255 bytes; opaque here)
+schema      32     the caller's schema digest (opaque here)
 seq         8      u64 LE, the commit's sequence number (1, 2, 3, ...)
 body_len    4      u32 LE
 body        m      the engine's layout (§4)

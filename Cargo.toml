@@ -10,6 +10,7 @@ members = [
     "packages/zaino-primitives",
     "packages/zaino-persistence",
     "packages/zaino-persistence-lsm-tree",
+    "packages/zaino-indexes",
     "packages/zaino-address",
     "packages/zaino-source-macros",
     "packages/zaino-source",

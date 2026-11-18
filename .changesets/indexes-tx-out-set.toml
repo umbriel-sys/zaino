@@ -1,0 +1,9 @@
+[[changes]]
+crate = "zaino-indexes"
+kind = "feature"
+description = """
+I-11 `tx_out_set`: `gettxoutsetinfo` totals and commitment at every height \
+over zcashd's UTXO set, maintained per block in O(1) per output; each \
+transaction's remaining counted outputs are fold state, persisted as \
+insert-once rows and cross-checked on resume. Checked at every height \
+against a from-scratch oracle on a randomised chain."""

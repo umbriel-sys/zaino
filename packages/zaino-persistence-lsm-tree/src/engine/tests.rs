@@ -368,7 +368,8 @@ fn a_key_held_twice_is_named_by_reads_and_merges() {
             spill_bytes: crate::testing::SPILL,
             ..LsmConfig::default()
         };
-        let identity = Identity::new("forged", crate::testing::CHAIN, 1).expect("identity");
+        let identity = Identity::new("forged", crate::testing::CHAIN, 1, crate::testing::SCHEMA)
+            .expect("identity");
         let tunings = vec![Tuning::default(); specs.len()];
         let mut engine = Engine::open(
             &fs,
@@ -619,7 +620,13 @@ fn verify_names_bad_pages_and_lost_files_and_rescrubs_after_a_merge() {
     let fs = RealFs::shared();
     let config = crate::testing::config(2, std::num::NonZeroUsize::MAX);
     let backend = LsmTreeBackend::open(fs.clone(), &path, &config).expect("open");
-    let identity = Identity::new("conformance", crate::testing::CHAIN, 1).expect("identity");
+    let identity = Identity::new(
+        "conformance",
+        crate::testing::CHAIN,
+        1,
+        crate::testing::SCHEMA,
+    )
+    .expect("identity");
     let mut model = Model::default();
     commit(&backend, model.advance(3, &[1], 1, &[])).expect("commit");
     backend.flush().expect("flush");
