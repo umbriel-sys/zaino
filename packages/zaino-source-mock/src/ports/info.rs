@@ -290,7 +290,7 @@ impl zaino_source::OneShotGetBlockDeltas for MockChain {
         Ok(BlockDeltas {
             hash,
             confirmations: confirmations(&served, block),
-            size: block.size,
+            size: u64::from(block.block.size()),
             height: block.height(),
             version: header.version,
             merkle_root: header.merkle_root,

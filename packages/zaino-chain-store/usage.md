@@ -203,7 +203,7 @@ reads, each over the one index that holds the data:
 
 | Part | Read | Capability |
 | --- | --- | --- |
-| header and absolute chainwork | `ChainStoreReader::headers_chunk` (one number: `chainwork`) | `Core` |
+| header, absolute chainwork and serialized size | `ChainStoreReader::headers_chunk` (one number: `chainwork`) | `Core` |
 | compact transactions | `CompactBlockRead::compact_chunk` with `PoolFilter::all()` | `CompactBlocks` |
 | tree roots and sizes | `TreeRootsIndex::tree_roots_chunk` | `TreeRoots` |
 

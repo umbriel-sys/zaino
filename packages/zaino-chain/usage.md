@@ -67,7 +67,8 @@ than appearing twice. That is how the chain is addressed (zebra takes a
 `HashOrHeight`), and it halves the surface without removing anything.
 
 A `ChainBlock` is an indexed block: the header, every transaction in compact
-form, the tree roots after it, and the chainwork where known. For a
+form, the tree roots after it, the chainwork where known, and the block's
+serialized size (from I-01, or the parsed block's bytes). For a
 store-covered height it is composed from three store reads, each over one index
 (headers with chainwork, compact transactions with every pool, tree roots), so a
 store answers it with the `CompactBlocks` and `TreeRoots` capabilities; `block_header`

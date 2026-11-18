@@ -73,7 +73,7 @@ pub(crate) fn block(h: u32, id: u16, parent: u16) -> Block {
         nonce: [0; 32],
         solution: EquihashSolution::Regtest([0; 36]),
     };
-    Block::try_new(header, vec![coinbase(id)]).expect("a test block carries its coinbase")
+    Block::try_new(header, vec![coinbase(id)], 1_487).expect("a test block carries its coinbase")
 }
 
 /// A placeholder coinbase whose txid is the block's own id bytes, so every test block carries the one transaction consensus guarantees.
@@ -101,7 +101,6 @@ fn mock_block(h: u32, id: u16, parent: u16) -> MockBlock {
         trees: PoolTrees::default(),
         subtrees: Vec::new(),
         raw: None,
-        size: 0,
         spendable: Spendable::default(),
     }
 }

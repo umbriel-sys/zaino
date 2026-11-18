@@ -117,6 +117,7 @@ async fn headers_chainwork_and_roots_match_the_chain() {
         expected_headers.push(StoredHeader {
             header: block.header.clone(),
             chainwork: chainwork.expect("set"),
+            size: block.size(),
         });
     }
     assert_eq!(

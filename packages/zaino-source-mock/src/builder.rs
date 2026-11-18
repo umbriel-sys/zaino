@@ -402,7 +402,6 @@ pub fn next_block(
         .unwrap_or_else(|error| panic!("the builder encoded an invalid block: {error}"));
     let spendable = spendable_after(parent, &block);
     MockBlock {
-        size: bytes.len() as u64,
         spendable,
         block,
         tree_roots,

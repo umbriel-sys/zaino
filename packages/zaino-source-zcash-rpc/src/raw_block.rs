@@ -273,9 +273,10 @@ fn check_fields(raw: &RawTx<'_>) -> Result<(), RawBlockError> {
 /// The block, structure checked, plus Light's checks from `Light`.
 fn parse_checked(bytes: &[u8], verification: BlockVerification) -> Result<Block, RawBlockError> {
     let light = verification != BlockVerification::Off;
-    if u64::try_from(bytes.len()).map_or(true, |len| len > zaino_consensus::MAX_BLOCK_BYTES) {
-        return Err(RawBlockError::BlockTooLarge(bytes.len()));
-    }
+    let size = match u32::try_from(bytes.len()) {
+        Ok(size) if u64::from(size) <= zaino_consensus::MAX_BLOCK_BYTES => size,
+        _ => return Err(RawBlockError::BlockTooLarge(bytes.len())),
+    };
     let mut r = Reader::new(bytes);
     let header = read_header(&mut r)?;
     let count = r.count(MIN_TX_LEN)?;
@@ -296,7 +297,11 @@ fn parse_checked(bytes: &[u8], verification: BlockVerification) -> Result<Block,
             return Err(RawBlockError::MerkleRoot);
         }
     }
-    Ok(Block::try_new(header.into_header(height), transactions)?)
+    Ok(Block::try_new(
+        header.into_header(height),
+        transactions,
+        size,
+    )?)
 }
 
 /// Header fields, before the coinbase supplies the height.

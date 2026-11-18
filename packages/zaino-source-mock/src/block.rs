@@ -16,8 +16,6 @@ pub struct MockBlock {
     pub subtrees: Vec<(ShieldedPool, u16, SubtreeRoot)>,
     /// Its consensus encoding, where the source of the chain had one.
     pub raw: Option<RawBlock>,
-    /// Its size in bytes: the encoding's, or a synthetic block's estimate.
-    pub size: u64,
     /// What its children may spend.
     pub spendable: Spendable,
 }

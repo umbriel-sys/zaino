@@ -53,6 +53,7 @@ pub(crate) async fn assemble<S: ChainStoreSource>(
     Ok(FoldBlockParts {
         branch: branch_at(schedule, height),
         header,
+        size: block.size(),
         transactions,
         tree_roots,
         frontiers,

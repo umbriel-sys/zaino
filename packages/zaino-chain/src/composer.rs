@@ -1122,6 +1122,7 @@ where
                             transactions: compact.transactions,
                             tree_roots,
                             chainwork: Some(stored.chainwork),
+                            size: stored.size,
                         })
                     })
                     .collect()

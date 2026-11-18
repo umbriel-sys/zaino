@@ -62,6 +62,11 @@ fn every_vector_matches_the_oracle() {
             height,
             "{network} {height}"
         );
+        assert_eq!(
+            usize::try_from(parsed.size()).expect("fits"),
+            bytes.len(),
+            "{network} {height}: size"
+        );
         assert_eq!(parts(parsed), parts(expected), "{network} {height}");
         count += 1;
     }

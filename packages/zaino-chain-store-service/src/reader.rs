@@ -262,7 +262,15 @@ impl<R: BackendReader> Snapshot<R> {
                 .chainwork(height)
                 .map_err(|error| index_error(id, error))?
                 .ok_or_else(|| missing(id, format!("chainwork at {height}")))?;
-            Ok(StoredHeader { header, chainwork })
+            let size = headers
+                .size(height)
+                .map_err(|error| index_error(id, error))?
+                .ok_or_else(|| missing(id, format!("size at {height}")))?;
+            Ok(StoredHeader {
+                header,
+                chainwork,
+                size,
+            })
         })
     }
 

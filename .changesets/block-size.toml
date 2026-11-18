@@ -1,0 +1,48 @@
+[[changes]]
+crate = "zaino-primitives"
+kind = "breaking"
+description = """
+`Block` carries its serialized size: `Block::try_new(header, transactions, \
+size)` and `Block::size()`. `block_from_zebra` sets it from zebra's \
+serialized size."""
+
+[[changes]]
+crate = "zaino-source-zcash-rpc"
+kind = "change"
+description = """
+A parsed block's size is the length of the bytes it was parsed from."""
+
+[[changes]]
+crate = "zaino-indexes"
+kind = "breaking"
+description = """
+I-01 stores each block's serialized size: header layout v2, schema \
+`headers_2` (rebuilt on boot), `FoldBlockParts::size`, `FoldBlock::size()` \
+and `headers::Reader::size(height)`."""
+
+[[changes]]
+crate = "zaino-chain-store"
+kind = "breaking"
+description = """
+`StoredHeader` gains `size`, the block's serialized size."""
+
+[[changes]]
+crate = "zaino-chain-store-service"
+kind = "change"
+description = """
+`headers_chunk` answers each block's size from I-01."""
+
+[[changes]]
+crate = "zaino-chain"
+kind = "breaking"
+description = """
+`ChainBlock` gains `size`, the block's serialized size, from every \
+provider: I-01 for the store, the parsed block for the head and the \
+validator."""
+
+[[changes]]
+crate = "zaino-source-mock"
+kind = "breaking"
+description = """
+`MockBlock::size` is removed: the block's own `Block::size()` is the one \
+size, and the mock's `getblockdeltas` answers it."""

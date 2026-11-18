@@ -136,6 +136,7 @@ fn fold_block_of(
         .collect();
     FoldBlock::try_new(FoldBlockParts {
         header: mock.block.header.clone(),
+        size: mock.block.size(),
         branch: branch_at(schedule, mock.height()),
         transactions,
         tree_roots: mock.tree_roots.clone(),

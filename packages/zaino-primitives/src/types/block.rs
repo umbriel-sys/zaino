@@ -58,6 +58,8 @@ pub struct Block {
     pub header: BlockHeader,
     /// Transactions in block order, fixed at construction.
     transactions: Vec<Transaction>,
+    /// The block's serialized length in bytes.
+    size: u32,
 }
 
 /// A [`Block`] could not be constructed from the given parts.
@@ -75,10 +77,12 @@ impl Block {
     /// The only check is non-emptiness: a block always contains at least its
     /// coinbase. With transaction position derived from list order rather than
     /// stored per transaction, there is no index-versus-slot agreement left to
-    /// validate — the order *is* the position.
+    /// validate — the order *is* the position. `size` is the length of the
+    /// bytes the block was parsed from.
     pub fn try_new(
         header: BlockHeader,
         transactions: Vec<Transaction>,
+        size: u32,
     ) -> Result<Self, BlockError> {
         if transactions.is_empty() {
             return Err(BlockError::NoTransactions);
@@ -86,12 +90,18 @@ impl Block {
         Ok(Self {
             header,
             transactions,
+            size,
         })
     }
 
     /// The transactions in block order.
     pub fn transactions(&self) -> &[Transaction] {
         &self.transactions
+    }
+
+    /// The block's serialized length in bytes (`getblock`'s `size`).
+    pub fn size(&self) -> u32 {
+        self.size
     }
 
     /// Whether the header's merkle root commits to these transactions.
@@ -183,17 +193,18 @@ mod tests {
 
     #[test]
     fn try_new_rejects_an_empty_transaction_list() {
-        let result = Block::try_new(header(), Vec::new());
+        let result = Block::try_new(header(), Vec::new(), 1_487);
 
         assert_eq!(result.unwrap_err(), BlockError::NoTransactions);
     }
 
     #[test]
     fn try_new_accepts_a_block_with_a_coinbase() {
-        let block =
-            Block::try_new(header(), vec![tx(0), tx(1)]).expect("a non-empty block is valid");
+        let block = Block::try_new(header(), vec![tx(0), tx(1)], 1_487)
+            .expect("a non-empty block is valid");
 
         assert_eq!(block.transactions.len(), 2);
+        assert_eq!(block.size(), 1_487);
     }
 
     /// Coinbase-ness is positional: the coinbase is transaction 0, read from
@@ -206,8 +217,8 @@ mod tests {
         let coinbase = tx(0xcb);
         let coinbase_txid = coinbase.txid;
 
-        let block =
-            Block::try_new(header(), vec![coinbase, tx(0x11)]).expect("a non-empty block is valid");
+        let block = Block::try_new(header(), vec![coinbase, tx(0x11)], 1_487)
+            .expect("a non-empty block is valid");
 
         assert_eq!(
             block

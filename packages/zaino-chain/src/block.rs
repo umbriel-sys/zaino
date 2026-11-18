@@ -29,6 +29,8 @@ pub struct ChainBlock {
     pub tree_roots: TreeRoots,
     /// Cumulative work from genesis to this block, when it can be known.
     pub chainwork: Option<AbsoluteChainWork>,
+    /// The block's serialized size in bytes.
+    pub size: u32,
 }
 
 impl ChainBlock {
@@ -55,6 +57,7 @@ impl ChainBlock {
                 .collect(),
             tree_roots,
             chainwork,
+            size: block.size(),
         }
     }
 }

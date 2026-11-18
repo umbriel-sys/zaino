@@ -62,7 +62,10 @@ pub fn block_from_zebra(zb: &zebra_chain::block::Block) -> Result<Block, Convert
         .iter()
         .map(|tx| transaction_from_zebra(tx))
         .collect::<Result<Vec<_>, _>>()?;
-    Block::try_new(header, transactions).map_err(|e| ConvertError::Block(e.to_string()))
+    let size = zebra_chain::serialization::ZcashSerialize::zcash_serialized_size(zb);
+    let size =
+        u32::try_from(size).map_err(|_| ConvertError::Value(format!("{size}-byte block")))?;
+    Block::try_new(header, transactions, size).map_err(|e| ConvertError::Block(e.to_string()))
 }
 
 /// Convert just the header — skips all transaction parsing.

@@ -19,6 +19,7 @@ use crate::index::FoldError;
 #[derive(Debug, Clone)]
 pub struct FoldBlock {
     header: BlockHeader,
+    size: u32,
     branch: Option<ConsensusBranchId>,
     transactions: Vec<FoldTx>,
     tree_roots: TreeRoots,
@@ -31,6 +32,8 @@ pub struct FoldBlock {
 pub struct FoldBlockParts {
     /// The header.
     pub header: BlockHeader,
+    /// The block's serialized length in bytes.
+    pub size: u32,
     /// The consensus branch the block was mined under, from the validator's
     /// schedule (`branch_at`); `None` before Overwinter.
     pub branch: Option<ConsensusBranchId>,
@@ -131,6 +134,7 @@ impl FoldBlock {
     pub fn try_new(parts: FoldBlockParts) -> Result<Self, FoldBlockError> {
         let FoldBlockParts {
             header,
+            size,
             branch,
             transactions,
             tree_roots,
@@ -173,6 +177,7 @@ impl FoldBlock {
         }
         Ok(Self {
             header,
+            size,
             branch,
             transactions,
             tree_roots,
@@ -184,6 +189,11 @@ impl FoldBlock {
     /// The header.
     pub fn header(&self) -> &BlockHeader {
         &self.header
+    }
+
+    /// The block's serialized length in bytes.
+    pub fn size(&self) -> u32 {
+        self.size
     }
 
     /// The consensus branch the block was mined under; `None` before

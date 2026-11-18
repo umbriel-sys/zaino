@@ -9,7 +9,8 @@
 
 use zaino_primitives::types::{AbsoluteChainWork, BlockHeader, BlockRef, ShieldedPool};
 
-/// A block's header with its cumulative work, as the headers index holds it.
+/// A block's header with its cumulative work and size, as the headers index
+/// holds it.
 ///
 /// The chainwork is absolute, measured from genesis: the store's coverage runs
 /// from genesis, so it is the one party that knows it.
@@ -20,6 +21,8 @@ pub struct StoredHeader {
     pub header: BlockHeader,
     /// Cumulative work from genesis to this block.
     pub chainwork: AbsoluteChainWork,
+    /// The block's serialized size in bytes.
+    pub size: u32,
 }
 
 impl StoredHeader {

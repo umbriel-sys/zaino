@@ -7,10 +7,9 @@ use zaino_chain_store::{
     ChainStoreReader, CompactBlockRead, PoolFilter, SpentOutputIndex, StoredHeader,
     TransactionIndex, TreeRootsIndex, TreeStateIndex, TxOutSetIndex,
 };
-use zaino_indexes::frontier_from_legacy_tree;
 use zaino_primitives::types::{
-    ChainMetadata, Height, Outpoint, PoolFrontier, PreIndexCompactTx, ShieldedPool, TransactionId,
-    TreeRootInfo, TreeSize,
+    frontier_from_legacy_tree, ChainMetadata, Height, Outpoint, PoolFrontier, PreIndexCompactTx,
+    ShieldedPool, TransactionId, TreeRootInfo, TreeSize,
 };
 use zaino_source::{
     OneShotGetBlock as _, OneShotGetCommitmentTreeRoots as _, OneShotGetTreestate as _,
@@ -138,7 +137,8 @@ where
             other => report.note(format!("block_height({h}) = {other:?}")),
         }
         match reader.headers_chunk(at, at).await.as_deref() {
-            Ok([StoredHeader { header, .. }]) if *header == block.header => {}
+            Ok([StoredHeader { header, size, .. }])
+                if *header == block.header && *size == block.size() => {}
             other => report.note(format!("headers_chunk({h}) = {other:?}")),
         }
         match reader

@@ -21,10 +21,11 @@ const HEADERS: Namespace = Namespace::new("headers");
 const HEIGHTS: Namespace = Namespace::new("heights");
 
 declared! {
-    /// A header at its height, with the chain work through it.
+    /// A header at its height, with the chain work through it and the
+    /// block's serialized size.
     pub const HEADER: Layout = Layout::new(
         "header",
-        1,
+        2,
         &[
             Field::fixed("hash", 32),
             Field::fixed("version", 4),
@@ -35,6 +36,7 @@ declared! {
             Field::fixed("bits", 4),
             Field::fixed("nonce", 32),
             Field::fixed("chainwork", 32),
+            Field::fixed("size", 4),
             Field::var("solution"),
         ],
     );
@@ -48,9 +50,11 @@ const BLOCK_COMMITMENTS: usize = 5;
 const BITS: usize = 6;
 const NONCE: usize = 7;
 const CHAINWORK: usize = 8;
-const SOLUTION: usize = 9;
+const SIZE: usize = 9;
+const SOLUTION: usize = 10;
 declared! { const HASH_RANGE: Range<usize> = HEADER.fixed_range(HASH); }
 declared! { const CHAINWORK_RANGE: Range<usize> = HEADER.fixed_range(CHAINWORK); }
+declared! { const SIZE_RANGE: Range<usize> = HEADER.fixed_range(SIZE); }
 
 declared! {
     /// A block hash as a map key.
@@ -69,7 +73,7 @@ declared! {
 /// The schema: `headers` by height, `heights` by hash.
 pub const SCHEMA: Schema = Schema::new(
     NAME,
-    1,
+    2,
     &[NamespaceLayout::sequence(HEADERS, &HEADER), HEIGHTS_BY_HASH],
 );
 
@@ -120,6 +124,7 @@ impl Index for Headers {
             &header.bits.as_bits().to_le_bytes(),
             &header.nonce,
             &chainwork.to_be_bytes(),
+            &block.size().to_le_bytes(),
             header.solution.as_bytes(),
         ])?;
         let ops = vec![
@@ -190,6 +195,17 @@ impl<'a, R: BackendReader> Reader<'a, R> {
         AbsoluteChainWork::from_be_bytes(array::<32>(&bytes, "chainwork")?)
             .map(Some)
             .map_err(|_| FoldError::continuity(NAME, "stored chain work of zero"))
+    }
+
+    /// The serialized size of the block at `height`.
+    pub fn size(&self, height: Height) -> Result<Option<u32>, FoldError> {
+        let Some(bytes) =
+            self.backend
+                .get_bytes(HEADERS, &sequence_key(u64::from(height)), SIZE_RANGE)?
+        else {
+            return Ok(None);
+        };
+        Ok(Some(le_u32(&bytes, "size")?))
     }
 
     /// The height of the block with `hash`.
@@ -268,6 +284,7 @@ mod tests {
                 Some(header)
             );
             assert_eq!(reader.hash(height).expect("hash"), Some(header.hash));
+            assert_eq!(reader.size(height).expect("size"), Some(block.size()));
             assert_eq!(reader.height(header.hash).expect("height"), Some(height));
             assert_eq!(reader.chainwork(height).expect("chainwork"), Some(expected));
             expected = expected.accumulate(work).expect("fits");
@@ -329,13 +346,13 @@ mod tests {
         assert_eq!(resumed, folded);
     }
 
-    /// The schema digest every `headers_1` directory carries.
+    /// The schema digest every `headers_2` directory carries.
     #[test]
     fn the_schema_digest_is_golden() {
         const GOLDEN: [u8; 32] = [
-            0x1b, 0xe3, 0x13, 0x90, 0xa4, 0x20, 0x66, 0xd4, 0x07, 0x54, 0xaf, 0xb7, 0x7c, 0x1e,
-            0x19, 0x49, 0xe3, 0x04, 0x78, 0xb1, 0x4b, 0x61, 0xdc, 0x12, 0x3e, 0x82, 0xd2, 0x3f,
-            0xd0, 0x01, 0x7b, 0x92,
+            0x6f, 0x49, 0xba, 0x65, 0x93, 0xfe, 0x20, 0x53, 0xe5, 0xd5, 0x55, 0x5e, 0x7a, 0xe1,
+            0x31, 0x23, 0x75, 0x0f, 0xea, 0x77, 0x8e, 0xc1, 0x6b, 0x02, 0x8c, 0x17, 0x18, 0xe8,
+            0x0f, 0x51, 0xf6, 0x7d,
         ];
         assert_eq!(
             SCHEMA.digest(),
@@ -343,6 +360,6 @@ mod tests {
             "{:02x?}",
             SCHEMA.digest().as_bytes()
         );
-        assert_eq!(SCHEMA.dir_name(), "headers_1");
+        assert_eq!(SCHEMA.dir_name(), "headers_2");
     }
 }

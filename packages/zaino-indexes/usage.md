@@ -122,7 +122,7 @@ block). The treestate and subtree-root calls themselves stay with the caller.
 
 | Index | Module | Holds |
 | --- | --- | --- |
-| I-01 | `headers` | height → header and cumulative chain work (`headers`); hash → height (`heights`) |
+| I-01 | `headers` | height → header, cumulative chain work and the block's serialized size (`headers`, layout v2, `headers_2`); hash → height (`heights`) |
 | I-02 | `txids` | height → transaction count and txids in block order (`txids`); `Reader::txid(height, index)` is two field reads via `Layout::element_range`, the location → txid lookup the other indexes resolve through |
 | I-03 | `txid_location` | txid → (height, tx index) (`txid_location`); `Reader::positions` batches through `get_batch` |
 | I-04 | `transparent` | per height, three columns in wire form: `t_layout` (per tx, cumulative input and output counts), `t_in` (36-byte prevouts), `t_out` (value then script, as a variable-element list); `Reader::output(position, vout)` reads five small fields, never a record |

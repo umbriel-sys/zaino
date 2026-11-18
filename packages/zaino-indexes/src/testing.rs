@@ -56,10 +56,16 @@ pub(crate) fn tx(n: u32) -> FoldTx {
     FoldTx::try_new(compact, PoolBalances::default(), Some(Vec::new())).expect("no inputs")
 }
 
+/// A test block's size: distinct per height, so a read-back names its block.
+pub(crate) fn block_size(header: &BlockHeader) -> u32 {
+    1_000_u32.saturating_add(u32::from(header.height))
+}
+
 /// The parts of a pre-Overwinter block of `header` with no pools, holding
 /// `transactions`.
 pub(crate) fn parts(header: BlockHeader, transactions: Vec<FoldTx>) -> FoldBlockParts {
     FoldBlockParts {
+        size: block_size(&header),
         header,
         branch: None,
         transactions,

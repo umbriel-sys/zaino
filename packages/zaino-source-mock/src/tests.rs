@@ -204,7 +204,10 @@ fn every_block_shape_passes_full_verification() {
         let full = parse_block(&raw.block, BlockVerification::Full)
             .unwrap_or_else(|error| panic!("height {}: {error}", built.height()));
         assert_eq!(full, built.block, "height {}", built.height());
-        assert_eq!(built.size, raw.block.len() as u64);
+        assert_eq!(
+            usize::try_from(built.block.size()).expect("fits"),
+            raw.block.len()
+        );
     }
     let version = |at: usize, tx: usize| {
         let bytes = &blocks[at].raw.as_ref().expect("bytes").transactions[tx];

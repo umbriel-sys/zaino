@@ -264,6 +264,32 @@ async fn streaming_to_the_tip_from_above_it_is_empty() {
 
 /// The same, for indexed blocks, and chainwork marks who answered.
 #[tokio::test]
+async fn every_provider_answers_the_blocks_serialized_size() {
+    let rig = syncing().await;
+    let blocks: Vec<_> = rig
+        .view()
+        .snapshot()
+        .stream_blocks(height(98), height(210))
+        .try_collect::<Vec<_>>()
+        .await
+        .expect("serviceable")
+        .into_iter()
+        .flatten()
+        .collect();
+
+    // 98..=100 the store, 101.. the validator, then the window.
+    assert_eq!(blocks.len(), 113);
+    for block in &blocks {
+        let at = u32::from(block.header.height);
+        assert_eq!(
+            usize::try_from(block.size).expect("fits"),
+            raw_of(&rig.chain, at).len(),
+            "{at}"
+        );
+    }
+}
+
+#[tokio::test]
 async fn a_block_stream_shows_where_chainwork_stops() {
     let blocks: Vec<_> = syncing()
         .await

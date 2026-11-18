@@ -180,6 +180,7 @@ impl<T: ChainStoreSource> ChainStoreReader for DbReader<T> {
             .map(|block| StoredHeader {
                 header: block.header,
                 chainwork: block.chainwork,
+                size: 0,
             })
             .collect())
     }

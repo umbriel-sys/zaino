@@ -38,6 +38,7 @@ pub(crate) fn fold_block(
         .map_err(|error| Failure::of("transactions", error))?;
     FoldBlock::try_new(FoldBlockParts {
         header: block.block.header.clone(),
+        size: block.block.size(),
         branch: branch_at(schedule, block.height()),
         transactions,
         tree_roots: block.tree_roots.clone(),
