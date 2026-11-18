@@ -75,6 +75,14 @@ pub enum ChainStoreError {
     #[error("chain store does not support {0}")]
     Unsupported(&'static str),
 
+    /// A read would hold more rows than the query's limit; refused before
+    /// they are read.
+    #[error("more than {limit} rows of address history")]
+    TooManyRows {
+        /// The query's limit.
+        limit: usize,
+    },
+
     /// A row the store's own indexes reference is missing.
     ///
     /// An internal inconsistency, not a caller error: the store writes a block

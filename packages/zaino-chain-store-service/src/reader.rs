@@ -553,6 +553,9 @@ impl<R: BackendReader> Snapshot<R> {
         for address in &query.addresses {
             for chunk in history.events(*address, query.start..=end, EVENT_CHUNK_BYTES) {
                 for event in chunk.map_err(|error| index_error(id, error))? {
+                    if effects.outputs.len().saturating_add(effects.spends.len()) >= query.limit {
+                        return Err(ChainStoreError::TooManyRows { limit: query.limit });
+                    }
                     let txid = self
                         .txid_at(event.position, capability)?
                         .ok_or_else(|| missing(IndexId::Txids, format!("{:?}", event.position)))?;

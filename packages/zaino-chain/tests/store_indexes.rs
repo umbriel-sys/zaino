@@ -386,6 +386,7 @@ async fn agree(rig: &Rig, reference: &common::Store, root: u32, tip: u32) {
             addresses: vec![address],
             start: height(root + 1),
             end: height(tip),
+            limit: usize::MAX,
         };
         let effects = snapshot.address_effects(&query).expect("built");
         let stored = reference
@@ -393,6 +394,7 @@ async fn agree(rig: &Rig, reference: &common::Store, root: u32, tip: u32) {
                 addresses: vec![address],
                 start: height(root + 1),
                 end: height(tip),
+                limit: usize::MAX,
             })
             .await
             .expect("read");

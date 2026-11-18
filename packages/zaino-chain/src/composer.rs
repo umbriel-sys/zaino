@@ -43,8 +43,8 @@ use zaino_primitives::types::{
     legacy_tree_from_frontier, rpc::ChainTip, AbsoluteChainWork, AddressBalance, AddressDelta,
     BlockConfirmations, BlockHash, BlockHeader, BlockRef, ChainStateEpoch, CompactBlock, Height,
     Outpoint, PoolFrontier, PoolTreestate, ShieldedPool, SignedZatoshis, SubtreeIndex, SubtreeRoot,
-    TransactionId, TransparentAddress, TransparentAddressKey, Treestate, Utxo, Zatoshis,
-    ZatoshisFlowSum,
+    TransactionId, TransparentAddress, TransparentAddressKey, TransparentOutput, Treestate, Utxo,
+    Zatoshis, ZatoshisFlowSum,
 };
 
 use crate::block::ChainBlock;
@@ -54,7 +54,7 @@ use crate::capability::{
 use crate::error::{ChainViewError, Result};
 use crate::ports::{
     AddressRead, BlockRead, ChainView, ChainViewSnapshot, CompactBlockRead, ForkReconcile,
-    HistoryTreeRead, SpendRead, TransactionRead, TreestateRead, TxOutSetRead,
+    HistoryTreeRead, PrevoutRead, SpendRead, TransactionRead, TreestateRead, TxOutSetRead,
 };
 use crate::source::ChainViewSource;
 use crate::types::{
@@ -339,7 +339,7 @@ fn serviceability(
         // Zaino's own indexes. The validator runs none of these, so a hole caps
         // them at the contiguous ceiling rather than being filled — and without
         // the index they are absent outright.
-        ChainCapability::SpendStatus => {
+        ChainCapability::SpendStatus | ChainCapability::Prevouts => {
             if !local(StoreCapability::SpentOutputs, HeadCapability::Transactions) {
                 return Answerable::Absent;
             }
@@ -401,8 +401,8 @@ where
 
 /// Assembles a chain view that offers less than its tiers could.
 ///
-/// Starts at [`ServedCapabilities::CORE`] and takes the three optional
-/// capabilities by name.
+/// Starts at [`ServedCapabilities::CORE`] and takes the optional capabilities
+/// by name.
 ///
 /// # The methods are type-gated
 ///
@@ -452,6 +452,18 @@ where
         Head::Snapshot: ChainHeadTransactionService,
     {
         self.served = self.served.with(ChainCapability::SpendStatus);
+        self
+    }
+
+    /// Offers previous outputs: the output an outpoint names, value and
+    /// script. A merge like spend status: the store's I-03 + I-04 below the
+    /// seam, the window's blocks above it.
+    pub fn serving_prevouts(mut self) -> Self
+    where
+        Store::Reader: SpentOutputIndex,
+        Head::Snapshot: ChainHeadTransactionService,
+    {
+        self.served = self.served.with(ChainCapability::Prevouts);
         self
     }
 
@@ -573,6 +585,8 @@ pub(crate) fn store_err(error: ChainStoreError) -> ChainViewError {
         other @ (ChainStoreError::AboveWatermark { .. } | ChainStoreError::InvalidRange { .. }) => {
             ChainViewError::Fatal(format!("chain view routed a read wrongly: {other}"))
         }
+        // the query is too broad, as the validator refuses over its cap
+        other @ ChainStoreError::TooManyRows { .. } => ChainViewError::Rejected(other.to_string()),
         other => ChainViewError::Fatal(other.to_string()),
     }
 }
@@ -585,6 +599,7 @@ pub(crate) fn head_err(error: ChainHeadError) -> ChainViewError {
         ChainHeadError::NotBuilt { .. } => {
             ChainViewError::NotServiceable("the chain head does not build this capability")
         }
+        other @ ChainHeadError::TooManyRows { .. } => ChainViewError::Rejected(other.to_string()),
         other => ChainViewError::Fatal(other.to_string()),
     }
 }
@@ -638,6 +653,7 @@ fn withheld(capability: ChainCapability) -> ChainViewError {
         ChainCapability::SpendStatus => "this deployment does not serve spend status",
         ChainCapability::TxOutSet => "this deployment does not serve the txout set",
         ChainCapability::HistoryTree => "this deployment does not serve the history tree",
+        ChainCapability::Prevouts => "this deployment does not serve previous outputs",
     })
 }
 
@@ -1647,6 +1663,103 @@ where
     }
 }
 
+impl<Reader, HeadSnapshot, Source> PrevoutRead for ComposerSnapshot<Reader, HeadSnapshot, Source>
+where
+    Reader: ChainStoreReader + SpentOutputIndex,
+    HeadSnapshot: ChainHeadSnapshot + ChainHeadTransactionService,
+    Source: ChainViewSource,
+{
+    async fn previous_outputs(
+        &self,
+        outpoints: &[Outpoint],
+    ) -> Result<Vec<Option<TransparentOutput>>> {
+        if !self.served.contains(ChainCapability::Prevouts) {
+            return Err(withheld(ChainCapability::Prevouts));
+        }
+        if self.coverage.store_top.is_none() {
+            return Err(ChainViewError::NotServiceable(
+                "previous outputs need the finalised store, which is disabled",
+            ));
+        }
+        // No validator index to fill a hole with, as for spend status.
+        if !self.coverage.contiguous() {
+            return Err(ChainViewError::NotServiceable(
+                "previous outputs cannot span the range the finalised store has not built",
+            ));
+        }
+
+        // The window first; what it does not create, the store.
+        let mut found = outpoints
+            .iter()
+            .map(|outpoint| self.window_output(outpoint))
+            .collect::<Result<Vec<_>>>()?;
+        let below: Vec<Outpoint> = outpoints
+            .iter()
+            .zip(&found)
+            .filter(|(_, found)| found.is_none())
+            .map(|(outpoint, _)| *outpoint)
+            .collect();
+        let mut stored = self
+            .reader
+            .outputs_by_outpoint(&below)
+            .await
+            .map_err(store_err)?
+            .into_iter();
+        for slot in found.iter_mut().filter(|found| found.is_none()) {
+            let output = stored.next().ok_or_else(|| {
+                ChainViewError::Fatal(String::from(
+                    "the store answered fewer outputs than it was asked for",
+                ))
+            })?;
+            *slot = Some(output);
+        }
+        Ok(found.into_iter().map(Option::flatten).collect())
+    }
+}
+
+impl<Reader, HeadSnapshot, Source> ComposerSnapshot<Reader, HeadSnapshot, Source>
+where
+    HeadSnapshot: ChainHeadSnapshot + ChainHeadTransactionService,
+{
+    /// The output `outpoint` names, where a best-chain block of the window
+    /// creates it.
+    fn window_output(&self, outpoint: &Outpoint) -> Result<Option<Option<TransparentOutput>>> {
+        let Some(position) = self
+            .head
+            .transaction_locations(&outpoint.txid)
+            .map_err(head_err)?
+            .best_chain
+        else {
+            return Ok(None);
+        };
+        let block = self
+            .head
+            .best_block_by_height(position.block.height)
+            .filter(|block| block.reference == position.block)
+            .ok_or_else(|| {
+                ChainViewError::Fatal(format!(
+                    "the window locates {} in {:?}, which is not on its best chain",
+                    outpoint.txid, position.block
+                ))
+            })?;
+        let output = usize::try_from(position.tx_index)
+            .ok()
+            .and_then(|slot| block.block.transactions().get(slot))
+            .filter(|tx| tx.txid == outpoint.txid)
+            .ok_or_else(|| {
+                ChainViewError::Fatal(format!(
+                    "the window's block {:?} holds no {} at {}",
+                    position.block, outpoint.txid, position.tx_index
+                ))
+            })?
+            .transparent
+            .outputs
+            .get(usize::try_from(outpoint.index).unwrap_or(usize::MAX))
+            .cloned();
+        Ok(Some(output))
+    }
+}
+
 impl<Reader, HeadSnapshot, Source> TxOutSetRead for ComposerSnapshot<Reader, HeadSnapshot, Source>
 where
     Reader: ChainStoreReader + TxOutSetIndex + SpentOutputIndex + TransactionIndex,
@@ -1938,6 +2051,7 @@ where
                     addresses: keys.clone(),
                     start,
                     end: end.min(store_top),
+                    limit: self.config.max_address_scan_rows,
                 })
                 .await
                 .map_err(store_err)?;
@@ -1981,6 +2095,8 @@ where
                     addresses: keys,
                     start: above,
                     end,
+                    // what the store's rows left of the query's bound
+                    limit: self.config.max_address_scan_rows.saturating_sub(all.len()),
                 })
                 .map_err(head_err)?;
             for output in recent

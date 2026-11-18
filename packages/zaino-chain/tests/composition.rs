@@ -16,8 +16,8 @@ use futures::{StreamExt as _, TryStreamExt as _};
 use zaino_chain::{
     AddressRead as _, Answerable, BlockId, BlockRead as _, ChainCapability, ChainScope,
     ChainView as _, ChainViewConfig, ChainViewError, ChainViewSnapshot as _, CompactBlockRead as _,
-    ForkReconcile as _, Locator, SpendRead as _, SpendStatus, TransactionRead as _,
-    TreestateRead as _,
+    ForkReconcile as _, Locator, PrevoutRead as _, SpendRead as _, SpendStatus,
+    TransactionRead as _, TreestateRead as _,
 };
 use zaino_chain_store::PoolFilter;
 use zaino_primitives::types::{
@@ -1042,6 +1042,100 @@ async fn spend_status_merges_the_store_and_the_window() {
             .expect("the store covers its own range"),
         vec![spent_by(&rig.chain, spent_below), SpendStatus::Unspent]
     );
+}
+
+/// Every input's previous output is found where it was created: in the store
+/// or in the window. An outpoint no transaction creates is `None`.
+#[tokio::test]
+async fn previous_outputs_merge_the_store_and_the_window() {
+    let rig = caught_up().await;
+    assert_eq!(
+        rig.view().serviceability().get(ChainCapability::Prevouts),
+        Answerable::ToHeight(height(TIP))
+    );
+    // Spends of the parent (created in the window above the floor) and of
+    // coinbases a hundred blocks down (created in the store).
+    let outpoints: Vec<_> = (FLOOR..=TIP)
+        .flat_map(|h| block_at(&rig.chain, h).block.transactions().to_vec())
+        .flat_map(|tx| tx.transparent.inputs)
+        .map(|input| zaino_primitives::types::Outpoint {
+            txid: input.prev_txid,
+            index: input.prev_index,
+        })
+        .collect();
+    let created_at = |outpoint: &zaino_primitives::types::Outpoint| {
+        (0..=TIP)
+            .find(|h| {
+                block_at(&rig.chain, *h)
+                    .block
+                    .transactions()
+                    .iter()
+                    .any(|tx| tx.txid == outpoint.txid)
+            })
+            .expect("every input spends a chain output")
+    };
+    // Below the floor only the store holds it; above the store, only the window.
+    assert!(outpoints.iter().any(|o| created_at(o) < FLOOR), "store");
+    assert!(outpoints.iter().any(|o| created_at(o) > STEADY), "window");
+
+    let mut asked = outpoints.clone();
+    let known = *outpoints.first().expect("inputs");
+    let missing_tx = zaino_primitives::types::Outpoint {
+        txid: TransactionId::from([0xee; 32]),
+        index: 0,
+    };
+    let missing_index = zaino_primitives::types::Outpoint {
+        index: u32::MAX,
+        ..known
+    };
+    asked.extend([missing_tx, missing_index]);
+
+    let mut expected: Vec<_> = outpoints
+        .iter()
+        .map(|outpoint| Some(output_of(&rig.chain, *outpoint)))
+        .collect();
+    expected.extend([None, None]);
+    assert_eq!(
+        rig.view()
+            .snapshot()
+            .previous_outputs(&asked)
+            .await
+            .expect("contiguous"),
+        expected
+    );
+}
+
+/// No validator index fills a hole, so previous outputs refuse to span one.
+#[tokio::test]
+async fn previous_outputs_refuse_to_span_a_hole() {
+    let rig = syncing().await;
+    assert!(matches!(
+        rig.view()
+            .snapshot()
+            .previous_outputs(&[zaino_primitives::types::Outpoint {
+                txid: TransactionId::from([1; 32]),
+                index: 0,
+            }])
+            .await,
+        Err(ChainViewError::NotServiceable(_))
+    ));
+}
+
+/// The output `outpoint` names, read off the chain's blocks.
+fn output_of(
+    chain: &zaino_source_mock::MockChain,
+    outpoint: zaino_primitives::types::Outpoint,
+) -> zaino_primitives::types::TransparentOutput {
+    (0..=TIP)
+        .flat_map(|h| block_at(chain, h).block.transactions().to_vec())
+        .find(|tx| tx.txid == outpoint.txid)
+        .and_then(|tx| {
+            tx.transparent
+                .outputs
+                .get(usize::try_from(outpoint.index).expect("fits"))
+                .cloned()
+        })
+        .expect("the chain creates it")
 }
 
 /// The spend of `outpoint` on the chain, read off the blocks: the spending

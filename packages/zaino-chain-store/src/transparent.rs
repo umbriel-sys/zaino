@@ -28,6 +28,10 @@ pub struct TransparentHistoryQuery {
     pub start: Height,
     /// Highest height to include.
     pub end: Height,
+    /// Most rows (receives and spends together) to read: past it the read
+    /// is refused, [`ChainStoreError::TooManyRows`](crate::ChainStoreError::TooManyRows),
+    /// before more is held.
+    pub limit: usize,
 }
 
 /// An output the store holds, and where it was created.

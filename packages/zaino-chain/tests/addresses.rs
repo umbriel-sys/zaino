@@ -179,3 +179,74 @@ async fn the_manifest_reports_address_history_from_both_halves() {
         Answerable::Absent
     );
 }
+
+/// Rows of address history (receives and spends) for `script` at heights
+/// `1..=through`, read off the chain: genesis outputs are in no history.
+fn history_rows(chain: &MockChain, script: &[u8], through: u32) -> usize {
+    let blocks: Vec<_> = (1..=through)
+        .map(|h| common::block_at(chain, h).block)
+        .collect();
+    let created: std::collections::HashMap<_, _> = blocks
+        .iter()
+        .flat_map(|block| block.transactions().to_vec())
+        .flat_map(|tx| {
+            (0u32..)
+                .zip(tx.transparent.outputs)
+                .map(move |(index, output)| ((tx.txid, index), output.script))
+        })
+        .collect();
+    let receives = created
+        .values()
+        .filter(|paid| paid.as_bytes() == script)
+        .count();
+    let spends = blocks
+        .iter()
+        .flat_map(|block| block.transactions().to_vec())
+        .flat_map(|tx| tx.transparent.inputs)
+        .filter(|input| {
+            created
+                .get(&(input.prev_txid, input.prev_index))
+                .is_some_and(|paid| paid.as_bytes() == script)
+        })
+        .count();
+    receives + spends
+}
+
+/// One row budget covers the store and the window together: the store's rows
+/// leave the window only the rest, and a query past the budget is refused,
+/// not truncated and not sent to the validator (K-01).
+#[tokio::test]
+async fn a_query_past_the_row_budget_is_refused() {
+    let local = rig(chain())
+        .store_to(STORE_TOP)
+        .extended_head()
+        .build()
+        .await;
+    let rows = history_rows(&local.chain, &MINER_SCRIPT, TIP);
+    let stored = history_rows(&local.chain, &MINER_SCRIPT, STORE_TOP);
+    // the store alone fits; only the window's share overruns
+    assert!(stored < rows - 1, "{stored} of {rows}");
+    let miner = vec![address(&MINER_SCRIPT, Network::Regtest)];
+
+    let source = chain();
+    let within = local
+        .view_over(
+            source.clone(),
+            ChainViewConfig::default().with_max_address_scan_rows(rows),
+        )
+        .snapshot()
+        .address_utxos(&miner)
+        .await;
+    assert!(within.is_ok(), "{within:?}");
+
+    let past = local
+        .view_over(
+            source.clone(),
+            ChainViewConfig::default().with_max_address_scan_rows(rows - 1),
+        )
+        .snapshot()
+        .address_utxos(&miner)
+        .await;
+    assert!(rejected(&past), "{past:?}");
+    assert!(!asked(&source), "the validator is never asked");
+}

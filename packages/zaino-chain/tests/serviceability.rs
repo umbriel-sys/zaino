@@ -7,8 +7,8 @@ mod common;
 
 use common::{chain, height, rig, Rig, DEPTH, TIP};
 use zaino_chain::{
-    Answerable, ChainCapability, ChainScope, ChainView as _, ChainViewError, SpendRead as _,
-    TxOutSetRead as _,
+    Answerable, ChainCapability, ChainScope, ChainView as _, ChainViewError, PrevoutRead as _,
+    SpendRead as _, TxOutSetRead as _,
 };
 use zaino_primitives::types::{Outpoint, TransactionId};
 
@@ -105,6 +105,32 @@ async fn offering_it_makes_the_same_read_work() {
         .outpoint_spenders(&[an_outpoint()], ChainScope::FullChain)
         .await;
     assert!(answered.is_ok(), "{answered:?}");
+}
+
+/// Previous outputs refuse and answer the same way, and are advertised only
+/// when offered.
+#[tokio::test]
+async fn previous_outputs_follow_the_same_rule() {
+    let rig = steady().await;
+    let withheld = rig.builder().build();
+    assert_eq!(
+        withheld.serviceability().get(ChainCapability::Prevouts),
+        Answerable::Absent
+    );
+    assert!(matches!(
+        withheld.snapshot().previous_outputs(&[an_outpoint()]).await,
+        Err(ChainViewError::NotServiceable(_)),
+    ));
+    let offered = rig.builder().serving_prevouts().build();
+    assert_ne!(
+        offered.serviceability().get(ChainCapability::Prevouts),
+        Answerable::Absent
+    );
+    assert!(offered
+        .snapshot()
+        .previous_outputs(&[an_outpoint()])
+        .await
+        .is_ok());
 }
 
 /// The txout set refuses and answers the same way.

@@ -632,6 +632,7 @@ async fn a_built_extension_missing_a_view_fails_every_read() {
                 addresses: Vec::new(),
                 start: height(0),
                 end: at,
+                limit: usize::MAX,
             })
             .map(drop)
     ));
@@ -770,12 +771,13 @@ async fn answers_match_independent_computations() {
         .collect();
     addresses.sort_unstable_by_key(|address| address.hash);
     addresses.dedup();
-    for address in addresses {
+    for address in addresses.clone() {
         let effects = snapshot
             .address_effects(&TransparentHistoryQuery {
                 addresses: vec![address],
                 start: height(0),
                 end: height(tip),
+                limit: usize::MAX,
             })
             .expect("built");
         let mut outputs: Vec<Outpoint> = effects
@@ -802,6 +804,22 @@ async fn answers_match_independent_computations() {
             assert_eq!(created[&spend.outpoint].value, spend.value);
         }
     }
+
+    // the row limit: answered at exactly its rows, refused one fewer
+    let query = |limit| TransparentHistoryQuery {
+        addresses: addresses.clone(),
+        start: height(0),
+        end: height(tip),
+        limit,
+    };
+    let all = snapshot.address_effects(&query(usize::MAX)).expect("built");
+    let rows = all.outputs.len() + all.spends.len();
+    assert!(rows > 1, "{rows}");
+    assert_eq!(snapshot.address_effects(&query(rows)).expect("built"), all);
+    assert_eq!(
+        snapshot.address_effects(&query(rows - 1)),
+        Err(ChainHeadError::TooManyRows { limit: rows - 1 })
+    );
 
     // trees and the history tree at every window height
     let blocks = fold_blocks(&chain, tip);
@@ -982,6 +1000,7 @@ async fn a_failing_port_darkens_one_extension_and_the_next_tick_rebuilds_it() {
             addresses: Vec::new(),
             start: height(0),
             end: height(tip + 1),
+            limit: usize::MAX,
         })
         .is_ok(),
         "address history still answers"

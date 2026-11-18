@@ -84,7 +84,7 @@ pub use capability::{
 pub use error::{ChainViewError, Result};
 pub use ports::{
     AddressRead, BlockRead, ChainView, ChainViewSnapshot, CompactBlockRead, ForkReconcile,
-    HistoryTreeRead, SpendRead, TransactionRead, TreestateRead, TxOutSetRead,
+    HistoryTreeRead, PrevoutRead, SpendRead, TransactionRead, TreestateRead, TxOutSetRead,
 };
 pub use source::ChainViewSource;
 pub use types::{

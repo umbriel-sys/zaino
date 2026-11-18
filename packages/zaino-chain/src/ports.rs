@@ -34,7 +34,7 @@ use zaino_chain_store::{HistoryEpoch, PoolFilter, TxOutSetAccumulator};
 use zaino_primitives::types::{
     rpc::ChainTip, AddressBalance, AddressDelta, BlockHash, BlockHeader, BlockRef, ChainStateEpoch,
     CompactBlock, Height, Outpoint, ShieldedPool, SubtreeIndex, SubtreeRoot, TransactionId,
-    TransparentAddress, Treestate, Utxo,
+    TransparentAddress, TransparentOutput, Treestate, Utxo,
 };
 
 use crate::block::ChainBlock;
@@ -287,6 +287,20 @@ pub trait SpendRead: Send + Sync {
         outpoints: &[Outpoint],
         scope: ChainScope,
     ) -> impl Future<Output = Result<Vec<SpendStatus>>> + Send;
+}
+
+/// The outputs transparent inputs spend.
+pub trait PrevoutRead: Send + Sync {
+    /// The output each outpoint names on the snapshot's best chain, in the
+    /// order asked: value and script. `None` where no best-chain transaction
+    /// creates it.
+    ///
+    /// Local only: the store below the seam, the window above it. A hole
+    /// between them is refused, as the validator runs no such index.
+    fn previous_outputs(
+        &self,
+        outpoints: &[Outpoint],
+    ) -> impl Future<Output = Result<Vec<Option<TransparentOutput>>>> + Send;
 }
 
 /// The unspent transparent output set's running totals.

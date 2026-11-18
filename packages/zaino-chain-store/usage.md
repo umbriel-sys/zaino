@@ -217,6 +217,10 @@ is the party holding that chain, so it is the only one that can know the value,
 and `chainwork(height)` reads it without the header beside it — what a
 consumer rebasing the recent window's work onto the finalised chain needs.
 
+`TransparentHistoryIndex::address_effects` reads at most the query's `limit`
+rows (receives and spends together) and past it refuses with
+`ChainStoreError::TooManyRows` before more is held.
+
 Writing goes through `ChainStoreIngest::build_to` and nothing else: the store
 fetches every block from its own validator. No consumer hands it blocks, so no
 consumer can hand it a wrong one.

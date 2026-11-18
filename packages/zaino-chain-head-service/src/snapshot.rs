@@ -683,7 +683,6 @@ impl ChainHeadTransparentHistoryService for PersistentSnapshot {
     ) -> Result<zaino_chain_head::transparent::ChainHeadAddressEffects, ChainHeadError> {
         crate::extension::built(&self.extensions.address_history, "transparent history")?
             .address_effects(self, query)
-            .map_err(crate::extension::read_failed("transparent history"))
     }
 }
 

@@ -79,6 +79,15 @@ pub struct ChainViewConfig {
     /// latency to first byte stays low — and adapts toward this budget from
     /// what it has actually seen.
     pub chunk_budget_bytes: usize,
+
+    /// The most rows of address history (receives and spends) one local
+    /// address query reads, across the store and the window; past it the
+    /// query is refused before more is held (K-01).
+    ///
+    /// Above [`zaino_source::MAX_ADDRESS_QUERY_RESULTS`], the result cap
+    /// zebrad applies, because a result row can cost several history rows.
+    /// Default 400,000.
+    pub max_address_scan_rows: usize,
 }
 
 impl Default for ChainViewConfig {
@@ -89,6 +98,7 @@ impl Default for ChainViewConfig {
             passthrough_permits: 512,
             passthrough_per_request: 16,
             chunk_budget_bytes: 2 * 1024 * 1024,
+            max_address_scan_rows: 400_000,
         }
     }
 }
@@ -121,6 +131,12 @@ impl ChainViewConfig {
     /// Sets the streamed-chunk byte budget.
     pub fn with_chunk_budget_bytes(mut self, bytes: usize) -> Self {
         self.chunk_budget_bytes = bytes.max(1);
+        self
+    }
+
+    /// Sets the address-history row bound.
+    pub fn with_max_address_scan_rows(mut self, rows: usize) -> Self {
+        self.max_address_scan_rows = rows.max(1);
         self
     }
 }

@@ -99,7 +99,15 @@ The four address reads are answered the same way where both build address
 history: the store's effects to its tip and the head's above it, shaped as the
 validator shapes them (genesis outputs excluded, its ordering, its refusals:
 an address for the store's other network, an inverted range, txids past the
-tip, more than `MAX_ADDRESS_QUERY_RESULTS`).
+tip, more than `MAX_ADDRESS_QUERY_RESULTS`). The scan itself is bounded: the
+store and the head share one budget of `max_address_scan_rows` rows of history
+(default 400,000), and a query past it is refused (`Rejected`) before more is
+held, never truncated (K-01).
+
+`PrevoutRead::previous_outputs` answers the output each outpoint names (value
+and script) from Zaino's own indexes: the window's blocks, else the store's
+I-03 + I-04. Local only, so a hole is refused; `ChainCapability::Prevouts`
+reports it, gated as spend status.
 
 ## Ranges stream
 
@@ -132,8 +140,8 @@ endpoint. Three properties matter at scale:
 
 The always-available reads — `BlockRead`, `CompactBlockRead`,
 `TransactionRead`, `TreestateRead`, `ForkReconcile` — are bundled by
-`ChainViewSnapshot`. `AddressRead`, `SpendRead`, `TxOutSetRead` and
-`HistoryTreeRead` are implemented **only** where the providers can back them,
+`ChainViewSnapshot`. `AddressRead`, `SpendRead`, `PrevoutRead`, `TxOutSetRead`
+and `HistoryTreeRead` are implemented **only** where the providers can back them,
 so a store that builds no spend index yields a view that does not have the
 trait:
 
@@ -240,6 +248,7 @@ ChainViewComposer::new(store, head, source, ChainViewConfig::default())
 
 ChainViewConfig::default().without_store()        // head + validator only
 ChainViewConfig::default().without_passthrough()  // serve only what we hold
+ChainViewConfig::default().with_max_address_scan_rows(400_000) // K-01 bound
 ```
 
 `without_store` replaces the ephemeral mode that used to live inside the store.

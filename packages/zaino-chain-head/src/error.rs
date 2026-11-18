@@ -42,4 +42,11 @@ pub enum ChainHeadError {
         /// Why.
         reason: String,
     },
+    /// A read would hold more rows than the query's limit; refused before
+    /// they are read.
+    #[error("more than {limit} rows of address history")]
+    TooManyRows {
+        /// The query's limit.
+        limit: usize,
+    },
 }

@@ -9,6 +9,7 @@ use zaino_chain_head::transparent::{
     ChainHeadAddressEffects, LocatedTransparentOutput, LocatedTransparentSpend,
     TransparentHistoryQuery,
 };
+use zaino_chain_head::ChainHeadError;
 use zaino_indexes::address_history::{self, AddressHistory as Index, EventKind};
 use zaino_primitives::types::{BlockRef, Outpoint, TxIndex};
 
@@ -45,18 +46,19 @@ impl AddressHistory {
     }
 
     /// What the window did for `query`'s addresses, within its range and
-    /// above the root.
+    /// above the root; refused past the query's row limit.
     pub(crate) fn address_effects(
         &self,
         graph: &PersistentSnapshot,
         query: &TransparentHistoryQuery,
-    ) -> Result<ChainHeadAddressEffects, Failure> {
+    ) -> Result<ChainHeadAddressEffects, ChainHeadError> {
+        let read = |failure: Failure| super::read_failed("transparent history")(failure);
         let mut effects = ChainHeadAddressEffects::default();
         let tip = graph.tip();
         let view = self
             .folded
             .view(&tip.hash())
-            .ok_or_else(|| Failure(format!("no view of the tip {}", tip.hash())))?;
+            .ok_or_else(|| read(Failure(format!("no view of the tip {}", tip.hash()))))?;
         // nothing lies above a root at the last height
         let Some(first) = self.folded.root().height.checked_add(1) else {
             return Ok(effects);
@@ -69,12 +71,15 @@ impl AddressHistory {
         let reader = address_history::Reader::new(&view.overlay);
         for address in &query.addresses {
             for chunk in reader.events(*address, start..=end, CHUNK_BYTES) {
-                for event in chunk.map_err(|error| Failure::of("events", error))? {
+                for event in chunk.map_err(|error| read(Failure::of("events", error)))? {
+                    if effects.outputs.len().saturating_add(effects.spends.len()) >= query.limit {
+                        return Err(ChainHeadError::TooManyRows { limit: query.limit });
+                    }
                     let unheld = || {
-                        Failure(format!(
+                        read(Failure(format!(
                             "an address event names {:?} index {}, which the window lacks",
                             event.position, event.index
-                        ))
+                        )))
                     };
                     let block = graph
                         .trunk_block(event.position.height)

@@ -314,6 +314,7 @@ async fn indexes_ahead_of_the_watermark_answer_only_up_to_it() {
             addresses: vec![TransparentAddressKey::from_script(script)],
             start: height(0),
             end: tip,
+            limit: usize::MAX,
         };
         let (a, b) = (
             uneven.address_effects(&query).await.expect("read"),
@@ -535,6 +536,38 @@ async fn the_txout_set_matches_an_independent_accumulator() {
     );
 }
 
+/// A query reads at most its limit in rows: at exactly its row count it is
+/// answered, one fewer and it is refused before the rows are held.
+#[tokio::test]
+async fn address_effects_are_refused_past_the_row_limit() {
+    let chain = chain();
+    let (store, _) = built(&chain).await;
+    let reader = store.reader();
+    let query = |limit| TransparentHistoryQuery {
+        addresses: vec![
+            TransparentAddressKey::from_script(&MINER_SCRIPT[..]),
+            TransparentAddressKey::from_script(&RECIPIENT_SCRIPT[..]),
+        ],
+        start: height(0),
+        end: tip_of(&chain).height,
+        limit,
+    };
+    let all = reader
+        .address_effects(&query(usize::MAX))
+        .await
+        .expect("read");
+    let rows = all.outputs.len() + all.spends.len();
+    assert!(rows > 1, "{rows}");
+    assert_eq!(
+        reader.address_effects(&query(rows)).await.expect("read"),
+        all
+    );
+    assert!(matches!(
+        reader.address_effects(&query(rows - 1)).await,
+        Err(ChainStoreError::TooManyRows { limit }) if limit == rows - 1
+    ));
+}
+
 #[tokio::test]
 async fn address_effects_match_the_chain() {
     let chain = chain();
@@ -560,6 +593,7 @@ async fn address_effects_match_the_chain() {
                     addresses: vec![key],
                     start,
                     end,
+                    limit: usize::MAX,
                 })
                 .await
                 .expect("read");
