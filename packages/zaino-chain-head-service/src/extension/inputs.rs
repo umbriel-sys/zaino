@@ -2,16 +2,19 @@
 //! with their prevouts where an extension needs them, roots, and the
 //! frontiers and subtrees the validator reports for it.
 
+#[cfg(any(feature = "txout_set", feature = "address_history"))]
 use std::collections::HashMap;
 use std::sync::Arc;
 
 use zaino_chain_head::ChainHeadBlock;
 use zaino_indexes::{CompletedSubtree, FoldBlock, FoldBlockParts, FoldTx, PoolFrontiers};
-use zaino_primitives::types::{
-    branch_at, BlockRef, NetworkUpgradeInfo, Outpoint, TransparentOutput,
-};
+#[cfg(any(feature = "txout_set", feature = "address_history"))]
+use zaino_primitives::types::Outpoint;
+use zaino_primitives::types::{branch_at, BlockRef, NetworkUpgradeInfo, TransparentOutput};
 
-use super::{below, Failure};
+#[cfg(any(feature = "txout_set", feature = "address_history"))]
+use super::below;
+use super::Failure;
 use crate::snapshot::PersistentSnapshot;
 
 /// `block` as fold input. `prevouts`: per transaction, in input order, where
@@ -48,6 +51,7 @@ pub(crate) fn fold_block(
 /// window is read from the block that created it on `block`'s own ancestry
 /// (located through the `transactions` view of the parent); one created
 /// below the root is asked of `below`.
+#[cfg(any(feature = "txout_set", feature = "address_history"))]
 pub(crate) async fn prevouts(
     block: &ChainHeadBlock,
     graph: &PersistentSnapshot,
@@ -124,6 +128,7 @@ pub(crate) async fn prevouts(
 
 /// The txids of `block`'s transparent inputs whose outputs were created below
 /// the root (not located inside the window), deduplicated.
+#[cfg(feature = "txout_set")]
 pub(crate) fn below_root_txids(
     block: &ChainHeadBlock,
     locate: impl Fn(&Outpoint) -> Option<zaino_primitives::types::BlockTxPosition>,
@@ -147,6 +152,7 @@ pub(crate) fn below_root_txids(
 /// Every transparent output `block` itself creates: what a later transaction
 /// in the same block may spend (consensus orders a block's spends after the
 /// outputs they take).
+#[cfg(any(feature = "txout_set", feature = "address_history"))]
 fn own_outputs(block: &ChainHeadBlock) -> HashMap<Outpoint, TransparentOutput> {
     let mut outputs = HashMap::new();
     for tx in block.block.transactions() {

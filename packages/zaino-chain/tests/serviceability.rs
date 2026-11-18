@@ -14,7 +14,11 @@ use zaino_primitives::types::{Outpoint, TransactionId};
 
 /// Steady state: the store overlaps the window.
 async fn steady() -> Rig {
-    rig(chain()).store_to(TIP - DEPTH + 50).build().await
+    rig(chain())
+        .store_to(TIP - DEPTH + 50)
+        .extended_head()
+        .build()
+        .await
 }
 
 fn an_outpoint() -> Outpoint {

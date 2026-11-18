@@ -361,12 +361,11 @@ reader added everywhere.
 
 ## The spend reads are batched, and carry what you were going to look up next
 
-`outpoint_spenders`, `previous_outputs`, `outputs_by_outpoint` and
-`transparent_outputs` take slices because the call sites they replaced looped a
-singular form with one `await` per input. `outputs_by_outpoint` answers the
-outputs as the chain holds them (value and script), which is what a fold
-running above the store reads for inputs spending below it; `previous_outputs`
-is the same lookup projected to value and address key. Ask once:
+`outpoint_spenders` and `outputs_by_outpoint` take slices because the call
+sites they replaced looped a singular form with one `await` per input.
+`outputs_by_outpoint` answers the outputs as the chain holds them (value and
+script), which is what a fold running above the store reads for inputs
+spending below it. Ask once:
 
 ```rust
 // The answer is positional: `spenders[i]` is the spender of `outpoints[i]`,
@@ -385,18 +384,16 @@ for (outpoint, spender) in outpoints.iter().zip(spenders) {
 }
 ```
 
-`unspent_output` is first-class rather than "fetch it, then check whether it is
-spent" — two calls across two capability routes, one of which errored on
-absence. That is what `gettxout` wants.
-
 ## The store never hands you consensus bytes
 
 What is stored is a projection — the fields an index reads, not the bytes a
-block hash commits to. A `StoredTxOut` carries a 20-byte address key and a
-value; the locking script is not recoverable. That key is
+block hash commits to. A transparent output comes back as value and script;
+the transaction around it does not. Address history is keyed by
 `zaino_primitives::TransparentAddressKey`, which can express `NonStandard`,
 where `TransparentAddress` cannot — an index that dropped non-standard outputs
-would answer "no history" for an address that has some.
+would answer "no history" for an address that has some. A located output
+carries the full output, so a UTXO answer needs no second read; a located
+spend carries the value it removed and its input index.
 
 It lives in `zaino-primitives` rather than here because the chain head reports
 its half of an address's history under the same key, so a consumer merging the

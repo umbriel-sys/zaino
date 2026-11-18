@@ -23,20 +23,18 @@ pub(crate) mod fetch;
 pub(crate) mod stream;
 pub(crate) mod sync;
 
-use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 use futures::Stream;
 use tokio::sync::{watch, Semaphore};
 use zaino_chain_head::{
-    ChainHeadBlock, ChainHeadBlockService, ChainHeadSnapshot, ChainHeadTransactionService,
-    ChainHeadTxOutSetService, CreatedTxOut,
+    ChainHeadBlock, ChainHeadBlockService, ChainHeadError, ChainHeadSnapshot,
+    ChainHeadTransactionService, ChainHeadTxOutSetService,
 };
 use zaino_chain_store::{
-    is_legacy_unspendable, ChainStoreError, ChainStoreReader, ChainStoreService,
-    CompactBlockRead as StoreCompactBlockRead, PoolFilter, SpentOutputIndex, StoredTxOut,
-    TransactionIndex, TreeRootsIndex, TxOutSetAccumulator, TxOutSetError, TxOutSetIndex,
-    TXOUT_SET_ENTRY_LEN,
+    ChainStoreError, ChainStoreReader, ChainStoreService,
+    CompactBlockRead as StoreCompactBlockRead, PoolFilter, SpentOutputIndex, TransactionIndex,
+    TreeRootsIndex, TxOutSetAccumulator, TxOutSetIndex,
 };
 use zaino_primitives::types::{
     rpc::ChainTip, AbsoluteChainWork, AddressBalance, AddressDelta, BlockConfirmations, BlockHash,
@@ -501,6 +499,18 @@ pub(crate) fn store_err(error: ChainStoreError) -> ChainViewError {
         // nobody would look twice.
         other @ (ChainStoreError::AboveWatermark { .. } | ChainStoreError::InvalidRange { .. }) => {
             ChainViewError::Fatal(format!("chain view routed a read wrongly: {other}"))
+        }
+        other => ChainViewError::Fatal(other.to_string()),
+    }
+}
+
+/// A chain-head failure, classified for a consumer: a capability the head
+/// does not build (not enabled, or failed and not yet rebuilt) is not
+/// serviceable; anything else is a fault.
+pub(crate) fn head_err(error: ChainHeadError) -> ChainViewError {
+    match error {
+        ChainHeadError::NotBuilt { .. } => {
+            ChainViewError::NotServiceable("the chain head does not build this capability")
         }
         other => ChainViewError::Fatal(other.to_string()),
     }
@@ -1186,7 +1196,7 @@ where
         // The chain head answers first and answers most: it is the only
         // provider retaining competing branches, so the only source of the
         // non-best half.
-        let recent = self.head.transaction_locations(&txid);
+        let recent = self.head.transaction_locations(&txid).map_err(head_err)?;
         let mut locations = TransactionLocations {
             best_chain: recent.best_chain.map(|at| ChainTxPosition {
                 block: at.block,
@@ -1370,6 +1380,7 @@ where
         Ok(self
             .head
             .outpoint_spenders(outpoints)
+            .map_err(head_err)?
             .into_iter()
             .zip(finalised)
             .map(|(recent, finalised)| match (recent, finalised) {
@@ -1387,167 +1398,14 @@ where
     HeadSnapshot: ChainHeadTxOutSetService,
     Source: ChainViewSource,
 {
+    /// The head's set at the tip: the store's set at its tip extended by the
+    /// head's `txout_set` extension, so there is nothing to merge here.
     async fn txout_set(&self) -> Result<TxOutSetAccumulator> {
         if !self.served.contains(ChainCapability::TxOutSet) {
             return Err(withheld(ChainCapability::TxOutSet));
         }
-        let Some(store_top) = self.coverage.store_top else {
-            return Err(ChainViewError::NotServiceable(
-                "the txout set needs the finalised store, which is disabled",
-            ));
-        };
-        if !self.coverage.contiguous() {
-            return Err(ChainViewError::NotServiceable(
-                "the txout set cannot span a range neither the store nor the chain head holds",
-            ));
-        }
-
-        let mut set = self.reader.txout_set().await.map_err(store_err)?;
-        let Some(start) = store_top.checked_add(1) else {
-            return Ok(set);
-        };
-        let delta = self
-            .head
-            .txout_delta(start)
-            .map_err(|error| ChainViewError::Fatal(error.to_string()))?;
-        apply_created(&mut set, &delta.created)?;
-        self.apply_spent_below(&mut set, &delta.spent_below).await?;
-
-        let expected_bytes = set
-            .transaction_outputs
-            .checked_mul(TXOUT_SET_ENTRY_LEN)
-            .ok_or_else(|| {
-                ChainViewError::Fatal(String::from("txout set byte count overflowed"))
-            })?;
-        if set.bytes_serialized != expected_bytes {
-            return Err(ChainViewError::Fatal(format!(
-                "txout set byte count {} disagrees with its {} outputs",
-                set.bytes_serialized, set.transaction_outputs
-            )));
-        }
-        Ok(set)
+        self.head.txout_set().map_err(head_err)
     }
-}
-
-impl<Reader, HeadSnapshot, Source> ComposerSnapshot<Reader, HeadSnapshot, Source>
-where
-    Reader: ChainStoreReader + SpentOutputIndex + TransactionIndex,
-{
-    /// Removes the window's spends of outputs the store created.
-    ///
-    /// The store resolves what each spend removes, and how many of each
-    /// creating transaction's outputs it still holds unspent — which decides
-    /// whether that transaction leaves the set's transaction count.
-    async fn apply_spent_below(
-        &self,
-        set: &mut TxOutSetAccumulator,
-        spent: &[Outpoint],
-    ) -> Result<()> {
-        if spent.is_empty() {
-            return Ok(());
-        }
-        let previous = self
-            .reader
-            .previous_outputs(spent)
-            .await
-            .map_err(store_err)?;
-
-        let mut removed: HashMap<TransactionId, u64> = HashMap::new();
-        for (outpoint, previous) in spent.iter().zip(previous) {
-            let previous = previous.ok_or_else(|| {
-                ChainViewError::Fatal(String::from(
-                    "the chain head spends an output the store does not hold",
-                ))
-            })?;
-            if is_legacy_unspendable(&previous.address) {
-                continue;
-            }
-            set.apply_removed_output(outpoint, previous.value, &previous.address)
-                .map_err(accumulator_err)?;
-            let count = removed.entry(outpoint.txid).or_default();
-            *count = count.saturating_add(1);
-        }
-
-        for (txid, removed) in removed {
-            match self
-                .finalised_unspent_outputs(txid)
-                .await?
-                .checked_sub(removed)
-            {
-                Some(0) => {
-                    set.transactions = set.transactions.checked_sub(1).ok_or_else(|| {
-                        accumulator_err(TxOutSetError::Underflow("transactions"))
-                    })?;
-                }
-                Some(_) => {}
-                None => {
-                    return Err(ChainViewError::Fatal(String::from(
-                        "the chain head spends more of a transaction's outputs than the store holds unspent",
-                    )))
-                }
-            }
-        }
-        Ok(())
-    }
-
-    /// How many of `txid`'s spendable outputs the store holds unspent.
-    async fn finalised_unspent_outputs(&self, txid: TransactionId) -> Result<u64> {
-        let missing = || {
-            ChainViewError::Fatal(String::from(
-                "the chain head spends from a transaction the store does not hold",
-            ))
-        };
-        let position = self
-            .reader
-            .tx_position(&txid)
-            .await
-            .map_err(store_err)?
-            .ok_or_else(missing)?;
-        let outputs = self
-            .reader
-            .transparent_outputs(position)
-            .await
-            .map_err(store_err)?
-            .ok_or_else(missing)?;
-
-        let outpoints: Vec<Outpoint> = outputs
-            .iter()
-            .zip(0..)
-            .filter(|(output, _)| !is_legacy_unspendable(&output.address))
-            .map(|(_, index)| Outpoint { txid, index })
-            .collect();
-        let spenders = self
-            .reader
-            .outpoint_spenders(&outpoints)
-            .await
-            .map_err(store_err)?;
-        Ok(spenders.iter().filter(|spender| spender.is_none()).count() as u64)
-    }
-}
-
-/// Adds the window's surviving outputs, and counts each transaction holding
-/// one into the set.
-fn apply_created(set: &mut TxOutSetAccumulator, created: &[CreatedTxOut]) -> Result<()> {
-    let mut holders = HashSet::new();
-    for created in created {
-        let output = StoredTxOut::from_output(&created.output);
-        if is_legacy_unspendable(&output.address) {
-            continue;
-        }
-        set.apply_added_output(&created.outpoint, output.value, &output.address)
-            .map_err(accumulator_err)?;
-        holders.insert(created.outpoint.txid);
-    }
-    set.transactions = set
-        .transactions
-        .checked_add(holders.len() as u64)
-        .ok_or_else(|| accumulator_err(TxOutSetError::Overflow("transactions")))?;
-    Ok(())
-}
-
-/// An accumulator counter left its range: two providers disagree about the set.
-fn accumulator_err(error: TxOutSetError) -> ChainViewError {
-    ChainViewError::Fatal(error.to_string())
 }
 
 impl<Reader, HeadSnapshot, Source> ComposerSnapshot<Reader, HeadSnapshot, Source>

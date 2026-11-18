@@ -1,9 +1,9 @@
 //! Transparent address history, as the finalised range can report it.
 //!
-//! These are the port and effect types; `zaino-chain-store-zainodb` implements
-//! [`TransparentHistoryIndex`](crate::TransparentHistoryIndex) against them.
-//! The module is shaped to mirror `zaino_chain_head::transparent`, so a
-//! consumer merging the two halves meets one shape rather than two.
+//! These are the port and effect types of
+//! [`TransparentHistoryIndex`](crate::TransparentHistoryIndex). The module is
+//! shaped to mirror `zaino_chain_head::transparent`, so a consumer merging the
+//! two halves meets one shape rather than two.
 //!
 //! The store contributes the *effects* it can see below the finalised
 //! watermark. It never constructs a complete history: an address's full
@@ -12,10 +12,8 @@
 
 use zaino_primitives::types::{
     BlockTxPosition, Height, Outpoint, SignedZatoshis, TransactionId, TransparentAddressKey,
-    ZatoshisFlowSum,
+    TransparentOutput, Zatoshis, ZatoshisFlowSum,
 };
-
-use crate::output::StoredTxOut;
 
 /// What to report on, and over what range.
 ///
@@ -35,10 +33,12 @@ pub struct TransparentHistoryQuery {
 /// An output the store holds, and where it was created.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LocatedOutput {
+    /// The queried address it pays.
+    pub address: TransparentAddressKey,
     /// The outpoint that names it.
     pub outpoint: Outpoint,
-    /// Its value and address key.
-    pub output: StoredTxOut,
+    /// The output itself: value and script.
+    pub output: TransparentOutput,
     /// Where the transaction creating it sits.
     pub position: BlockTxPosition,
     /// That transaction's identifier.
@@ -48,15 +48,19 @@ pub struct LocatedOutput {
 /// An output the store has seen spent, and where.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LocatedSpend {
+    /// The queried address whose output was spent.
+    pub address: TransparentAddressKey,
     /// The outpoint that was spent.
     pub outpoint: Outpoint,
     /// What it held, so a consumer can account for the value without a second
     /// lookup.
-    pub output: StoredTxOut,
+    pub value: Zatoshis,
     /// Where the spending transaction sits.
     pub position: BlockTxPosition,
     /// That transaction's identifier.
     pub txid: TransactionId,
+    /// The spending input's index within that transaction.
+    pub input_index: u32,
 }
 
 /// What the finalised range shows happening to a set of addresses.
@@ -110,8 +114,7 @@ impl StoreAddressEffects {
     pub fn net_value(&self) -> Option<SignedZatoshis> {
         let received =
             ZatoshisFlowSum::try_accumulate(self.outputs.iter().map(|output| output.output.value))?;
-        let spent =
-            ZatoshisFlowSum::try_accumulate(self.spends.iter().map(|spend| spend.output.value))?;
+        let spent = ZatoshisFlowSum::try_accumulate(self.spends.iter().map(|spend| spend.value))?;
 
         received.net(spent)
     }
@@ -125,20 +128,21 @@ impl StoreAddressEffects {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use zaino_primitives::types::{ScriptType, Zatoshis};
+    use zaino_primitives::types::{Script, ScriptType};
 
     /// The largest amount the protocol allows, so two of them on one side
     /// exceed the supply magnitude a net delta may hold.
     const MAX: u64 = Zatoshis::MAX.as_u64();
 
-    fn amount(value: u64) -> StoredTxOut {
-        StoredTxOut::new(
-            Zatoshis::new(value).expect("a valid amount"),
-            TransparentAddressKey {
-                hash: [0u8; 20],
-                script_type: ScriptType::P2PKH,
-            },
-        )
+    fn amount(value: u64) -> Zatoshis {
+        Zatoshis::new(value).expect("a valid amount")
+    }
+
+    fn address() -> TransparentAddressKey {
+        TransparentAddressKey {
+            hash: [0u8; 20],
+            script_type: ScriptType::P2PKH,
+        }
     }
 
     fn position() -> BlockTxPosition {
@@ -160,8 +164,12 @@ mod tests {
             outputs: outputs
                 .iter()
                 .map(|value| LocatedOutput {
+                    address: address(),
                     outpoint: outpoint(),
-                    output: amount(*value),
+                    output: TransparentOutput {
+                        value: amount(*value),
+                        script: Script::from(Vec::new()),
+                    },
                     position: position(),
                     txid: TransactionId::from([0u8; 32]),
                 })
@@ -169,10 +177,12 @@ mod tests {
             spends: spends
                 .iter()
                 .map(|value| LocatedSpend {
+                    address: address(),
                     outpoint: outpoint(),
-                    output: amount(*value),
+                    value: amount(*value),
                     position: position(),
                     txid: TransactionId::from([0u8; 32]),
+                    input_index: 0,
                 })
                 .collect(),
         }

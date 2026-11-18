@@ -24,10 +24,10 @@ use zaino_primitives::types::{BlockTxPosition, Height as DomainHeight, TxIndex};
 use zaino_proto::proto::utils::PoolTypeFilter;
 
 use super::v1::load_vectors_v1db_and_reader;
-use crate::adapter::{domain_outpoint, stored_tx_out};
+use crate::adapter::domain_outpoint;
 use crate::conversion::{compact_block_to_wire, pool_filter_from_wire};
 use crate::tests::fixtures::indexed_block_chain;
-use crate::types::{Height, Outpoint, TxLocation};
+use crate::types::{Height, Outpoint};
 
 /// The domain height for a stored one, in a test that has already established
 /// the height is real.
@@ -271,96 +271,6 @@ async fn outpoint_spenders_match_the_inherent_reads() {
             (port, inherent) => panic!(
                 "spend status disagrees for {outpoint:?}: port {port:?}, inherent {inherent:?}"
             ),
-        }
-    }
-}
-
-/// Previous outputs, and the unspent view of them, agree with the inherent
-/// read and with the spent index.
-#[tokio::test(flavor = "multi_thread")]
-async fn previous_and_unspent_outputs_match_the_inherent_reads() {
-    let (data, _dir, _db, reader) = load_vectors_v1db_and_reader().await;
-
-    for block in indexed_block_chain(&data.blocks) {
-        for tx in block.transactions() {
-            for index in 0..tx.transparent().outputs().len() {
-                let outpoint = Outpoint::new(tx.txid().0, index as u32);
-                let domain = domain_outpoint(&outpoint);
-
-                let expected = reader
-                    .get_previous_output(outpoint)
-                    .await
-                    .expect("the store holds every vector output");
-                let expected = stored_tx_out(&expected).expect("a stored output is expressible");
-
-                let previous = SpentOutputIndex::previous_outputs(&reader, &[domain])
-                    .await
-                    .expect("the store holds every vector output");
-                assert_eq!(previous, vec![Some(expected)]);
-
-                // `unspent_output` is the composition the port adds: present,
-                // and not spent. It must agree with asking those two separately.
-                let spent = reader
-                    .get_outpoint_spender(outpoint)
-                    .await
-                    .expect("the store carries the spent index")
-                    .is_some();
-                let unspent = SpentOutputIndex::unspent_output(&reader, domain)
-                    .await
-                    .expect("the store holds every vector output");
-                assert_eq!(
-                    unspent.is_none(),
-                    spent,
-                    "unspent view disagrees with the spent index for {outpoint:?}"
-                );
-            }
-        }
-    }
-}
-
-/// A transaction's transparent outputs, read by position, are the outputs the
-/// inherent read returns.
-#[tokio::test(flavor = "multi_thread")]
-async fn transparent_outputs_match_the_inherent_read() {
-    let (data, _dir, _db, reader) = load_vectors_v1db_and_reader().await;
-
-    for block in indexed_block_chain(&data.blocks) {
-        for (index, tx) in block.transactions().iter().enumerate() {
-            let location = TxLocation::new(
-                block.height().0,
-                u16::try_from(index).expect("vector blocks are small"),
-            );
-            // `None` where a transaction has no transparent row at all — a
-            // shielded-only transaction has none — and that absence must agree
-            // between the two paths as much as the contents do.
-            let expected = reader
-                .get_transparent(location)
-                .await
-                .expect("the store holds every vector transaction")
-                .map(|transparent| {
-                    transparent
-                        .outputs()
-                        .iter()
-                        .map(|out| stored_tx_out(out).expect("a stored output is expressible"))
-                        .collect::<Vec<_>>()
-                });
-
-            let position = BlockTxPosition {
-                height: domain(block.height()),
-                tx_index: TxIndex::from(u16::try_from(index).expect("vector blocks are small")),
-            };
-            let through_ports = SpentOutputIndex::transparent_outputs(&reader, position)
-                .await
-                .expect("the store holds every vector transaction");
-
-            assert_eq!(
-                through_ports,
-                expected,
-                "tx {} of block {} differs between the port and the inherent read",
-                index,
-                block.height()
-            );
-            let _ = tx;
         }
     }
 }

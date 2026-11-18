@@ -114,6 +114,7 @@ impl AddressHistory {
                                 block: block.reference,
                                 txid: tx.txid,
                                 tx_index,
+                                input_index: event.index,
                             });
                         }
                     }

@@ -1,41 +1,6 @@
-//! Transparent outputs, as the store indexes them.
+//! Who spent a transparent output, as the store indexes it.
 
-use zaino_primitives::types::{
-    BlockTxPosition, TransactionId, TransparentAddressKey, TransparentOutput, Zatoshis,
-};
-
-/// A transparent output, as the store holds it.
-///
-/// Carries what an index needs — how much, and to whom — not the output
-/// itself. The locking script is not stored, so this cannot reproduce the
-/// bytes a block committed to. A consumer needing those asks the validator for
-/// the transaction.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct StoredTxOut {
-    /// The output's value.
-    pub value: Zatoshis,
-    /// The address it pays to, as an index keys it.
-    ///
-    /// [`TransparentAddressKey`] rather than a wallet-facing address type: the
-    /// store indexes outputs that have no address at all, and one that dropped
-    /// them would answer "no history" for an address that has some.
-    pub address: TransparentAddressKey,
-}
-
-impl StoredTxOut {
-    /// An output from its parts.
-    pub fn new(value: Zatoshis, address: TransparentAddressKey) -> Self {
-        Self { value, address }
-    }
-
-    /// A domain output, reduced to what the store indexes.
-    pub fn from_output(output: &TransparentOutput) -> Self {
-        Self::new(
-            output.value,
-            TransparentAddressKey::from_script(output.script.as_bytes()),
-        )
-    }
-}
+use zaino_primitives::types::{BlockTxPosition, TransactionId};
 
 /// The transaction that spent an outpoint, and where it sits.
 ///

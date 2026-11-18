@@ -65,7 +65,6 @@ pub mod extension;
 pub mod ports;
 pub mod snapshot;
 pub mod transparent;
-pub mod txout;
 
 pub use block::ChainHeadBlock;
 pub use capability::{HeadCapabilities, HeadCapability};
@@ -86,4 +85,3 @@ pub use transparent::{
     ChainHeadAddressEffects, LocatedTransparentOutput, LocatedTransparentSpend,
     TransparentHistoryQuery,
 };
-pub use txout::{ChainHeadTxOutDelta, CreatedTxOut};

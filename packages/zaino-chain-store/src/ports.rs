@@ -40,7 +40,7 @@ use zaino_primitives::types::{
 use crate::block::{PoolFilter, StoredHeader};
 use crate::capability::{StoreCapabilities, StoreCapability, StoreSchema, StoreWatermark};
 use crate::error::{ChainStoreError, ChainStoreSourceError};
-use crate::output::{SpenderRef, StoredTxOut};
+use crate::output::SpenderRef;
 use crate::tree::{HistoryEpoch, HistoryPeaks};
 use crate::txout_set::TxOutSetAccumulator;
 
@@ -266,48 +266,15 @@ pub trait SpentOutputIndex: ChainStoreReader {
         outpoints: &[Outpoint],
     ) -> impl Future<Output = Result<Vec<Option<SpenderRef>>, ChainStoreError>> + Send;
 
-    /// What each outpoint refers to, in the order asked.
-    ///
-    /// `None` when the store does not hold the creating transaction. Batched
-    /// for the same reason as [`Self::outpoint_spenders`]: resolving the
-    /// inputs of recent blocks against finalised outputs asks about every
-    /// input of every block at once.
-    fn previous_outputs(
-        &self,
-        outpoints: &[Outpoint],
-    ) -> impl Future<Output = Result<Vec<Option<StoredTxOut>>, ChainStoreError>> + Send;
-
     /// The outputs `outpoints` name, in the order asked, as the chain holds
     /// them: value and script. `None` when the store does not hold the
-    /// creating transaction. What a fold running above this store reads for
-    /// the inputs that spend below it.
+    /// creating transaction. Batched for the same reason as
+    /// [`Self::outpoint_spenders`]; what a fold running above this store reads
+    /// for the inputs that spend below it.
     fn outputs_by_outpoint(
         &self,
         outpoints: &[Outpoint],
     ) -> impl Future<Output = Result<Vec<Option<TransparentOutput>>, ChainStoreError>> + Send;
-
-    /// The output at `outpoint` if it exists and this store has not seen it
-    /// spent.
-    ///
-    /// A first-class question rather than two: composed from
-    /// [`Self::previous_outputs`] and [`Self::outpoint_spenders`] it costs two
-    /// reads across two indexes, and the caller has to know that "exists" and
-    /// "unspent" are different lookups. As with `outpoint_spenders`, unspent
-    /// here means unspent *as far as this store knows*.
-    fn unspent_output(
-        &self,
-        outpoint: Outpoint,
-    ) -> impl Future<Output = Result<Option<StoredTxOut>, ChainStoreError>> + Send;
-
-    /// The transparent outputs of the transaction at `position`.
-    ///
-    /// `None` when the store does not hold that position. Needed to decide how
-    /// many of a transaction's outputs remain unspent, which is what the
-    /// txout-set's transaction count is counting.
-    fn transparent_outputs(
-        &self,
-        position: BlockTxPosition,
-    ) -> impl Future<Output = Result<Option<Vec<StoredTxOut>>, ChainStoreError>> + Send;
 }
 
 /// The store's running totals over the unspent transparent output set.

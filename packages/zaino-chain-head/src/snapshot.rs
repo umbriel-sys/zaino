@@ -25,14 +25,7 @@ use zaino_primitives::types::{
     PoolFrontier, ShieldedPool, SubtreeRoot, TransactionId, TxIndex,
 };
 
-use std::collections::HashSet;
-
-use crate::{
-    block::ChainHeadBlock,
-    capability::HeadCapabilities,
-    error::ChainHeadError,
-    txout::{ChainHeadTxOutDelta, CreatedTxOut},
-};
+use crate::{block::ChainHeadBlock, capability::HeadCapabilities, error::ChainHeadError};
 
 /// Where a transaction sits in the ChainHead graph.
 ///
@@ -246,13 +239,24 @@ impl<T: ChainHeadSnapshot> ChainHeadSnapshot for std::sync::Arc<T> {
 }
 
 impl<T: ChainHeadTransactionService> ChainHeadTransactionService for std::sync::Arc<T> {
-    fn transaction_locations(&self, txid: &TransactionId) -> ChainHeadTransactionLocations {
+    fn transaction_locations(
+        &self,
+        txid: &TransactionId,
+    ) -> Result<ChainHeadTransactionLocations, ChainHeadError> {
         self.as_ref().transaction_locations(txid)
     }
 
-    fn outpoint_spenders(&self, outpoints: &[Outpoint]) -> Vec<Option<SpenderLocation>> {
+    fn outpoint_spenders(
+        &self,
+        outpoints: &[Outpoint],
+    ) -> Result<Vec<Option<SpenderLocation>>, ChainHeadError> {
         self.as_ref().outpoint_spenders(outpoints)
     }
+}
+
+/// The default body of a capability the snapshot does not build (D-56).
+fn not_built<T>(capability: &'static str) -> Result<T, ChainHeadError> {
+    Err(ChainHeadError::NotBuilt { capability })
 }
 
 /// Transaction facts derivable from a snapshot's blocks.
@@ -260,114 +264,99 @@ impl<T: ChainHeadTransactionService> ChainHeadTransactionService for std::sync::
 /// Separate from [`ChainHeadSnapshot`] so a consumer's bound names only what it
 /// uses. ChainHead answers only about what it retains; complete transaction
 /// status — which needs the finalised state and the mempool too — is composed
-/// by the consumer.
+/// by the consumer. Every capability method here and below defaults to
+/// [`ChainHeadError::NotBuilt`], so a runtime implements only what it builds.
 pub trait ChainHeadTransactionService: ChainHeadSnapshot {
-    /// Every place this transaction appears in the retained graph.
-    ///
-    /// Total: a transaction that appears nowhere is an empty result, not a
-    /// failure.
-    fn transaction_locations(&self, txid: &TransactionId) -> ChainHeadTransactionLocations;
+    /// Every place this transaction appears in the retained graph; empty
+    /// where it appears nowhere.
+    fn transaction_locations(
+        &self,
+        txid: &TransactionId,
+    ) -> Result<ChainHeadTransactionLocations, ChainHeadError> {
+        let _ = txid;
+        not_built("transactions")
+    }
 
     /// For each outpoint, the canonical transaction that spent it.
     ///
     /// Output ordering matches input ordering. `None` means "not spent within
     /// ChainHead", which is not the same as unspent — the finalised state holds
     /// the rest of the chain.
-    fn outpoint_spenders(&self, outpoints: &[Outpoint]) -> Vec<Option<SpenderLocation>>;
+    fn outpoint_spenders(
+        &self,
+        outpoints: &[Outpoint],
+    ) -> Result<Vec<Option<SpenderLocation>>, ChainHeadError> {
+        let _ = outpoints;
+        not_built("transactions")
+    }
 }
 
-/// The canonical window's effect on the transparent UTXO set.
-///
-/// Separate from [`ChainHeadSnapshot`] so a consumer's bound names only what it
-/// uses. Derived from the canonical blocks alone, so the fold is provided here
-/// once and every snapshot answers it the same way.
+/// The transparent UTXO set at the tip (I-11 folded over the window by the
+/// `txout_set` extension, seeded from the finalised set at the store's tip).
 pub trait ChainHeadTxOutSetService: ChainHeadSnapshot {
-    /// The UTXO set as of the tip, where the head folds it (the `txout_set`
-    /// extension, seeded from the finalised set at the head's root); `None`
-    /// where it does not.
-    fn txout_set(&self) -> Option<TxOutSetAccumulator> {
-        None
-    }
-
-    /// What the canonical blocks from `start` up to the tip created and spent.
-    ///
-    /// A `start` above the tip is an empty delta. A `start` below the window is
-    /// refused: the blocks beneath the floor are not held, and a delta missing
-    /// them would be silently wrong.
-    fn txout_delta(&self, start: Height) -> Result<ChainHeadTxOutDelta, ChainHeadError> {
-        let tip = self.best_tip().height;
-        if start > tip {
-            return Ok(ChainHeadTxOutDelta::default());
-        }
-        let floor = self.best_chain().next().map_or(tip, ChainHeadBlock::height);
-        if start < floor {
-            return Err(ChainHeadError::BelowWindow { start, floor });
-        }
-
-        let mut created = Vec::new();
-        let mut spent = Vec::new();
-        for block in self.best_chain_blocks(start, tip)? {
-            for transaction in block.block.transactions() {
-                spent.extend(transaction.transparent.inputs.iter().map(|input| Outpoint {
-                    txid: input.prev_txid,
-                    index: input.prev_index,
-                }));
-                created.extend(transaction.transparent.outputs.iter().zip(0..).map(
-                    |(output, index)| CreatedTxOut {
-                        outpoint: Outpoint {
-                            txid: transaction.txid,
-                            index,
-                        },
-                        output: output.clone(),
-                    },
-                ));
-            }
-        }
-
-        let spent_set: HashSet<Outpoint> = spent.iter().copied().collect();
-        let created_set: HashSet<Outpoint> = created.iter().map(|out| out.outpoint).collect();
-        Ok(ChainHeadTxOutDelta {
-            created: created
-                .into_iter()
-                .filter(|out| !spent_set.contains(&out.outpoint))
-                .collect(),
-            spent_below: spent
-                .into_iter()
-                .filter(|outpoint| !created_set.contains(outpoint))
-                .collect(),
-        })
+    /// The UTXO set as of the tip.
+    fn txout_set(&self) -> Result<TxOutSetAccumulator, ChainHeadError> {
+        not_built("the txout set")
     }
 }
 
 /// The note commitment trees as the window's blocks leave them (C2 folded
 /// over the window by the `tree_state` extension).
 ///
-/// Answers cover the window alone: a height below it is `None`, and the
-/// subtrees listed are those completed inside it.
+/// Answers cover the window above the store's tip alone: a height at or below
+/// it is `None`, and the subtrees listed are those completed above it.
 pub trait ChainHeadTreeStateService: ChainHeadSnapshot {
     /// `pool`'s tree after the canonical block at `height`.
-    fn pool_frontier(&self, pool: ShieldedPool, height: Height) -> Option<PoolFrontier>;
+    fn pool_frontier(
+        &self,
+        pool: ShieldedPool,
+        height: Height,
+    ) -> Result<Option<PoolFrontier>, ChainHeadError> {
+        let _ = (pool, height);
+        not_built("tree state")
+    }
 
     /// Up to `limit` of `pool`'s 2¹⁶ subtrees completed inside the window,
     /// from index `start`, ascending.
-    fn subtree_roots(&self, pool: ShieldedPool, start: u64, limit: u64) -> Vec<SubtreeRoot>;
+    fn subtree_roots(
+        &self,
+        pool: ShieldedPool,
+        start: u64,
+        limit: u64,
+    ) -> Result<Vec<SubtreeRoot>, ChainHeadError> {
+        let _ = (pool, start, limit);
+        not_built("tree state")
+    }
 }
 
 /// The ZIP 221 history tree as the window's blocks leave it (C6 folded over
 /// the window by the `history_tree` extension).
 ///
-/// Answers cover the window alone: entries at positions the window did not
-/// append are `None`, the finalised store holding them.
+/// Answers cover the window above the store's tip alone: entries at positions
+/// the window did not append are `None`, the finalised store holding them.
 pub trait ChainHeadHistoryTreeService: ChainHeadSnapshot {
     /// The `hashChainHistoryRoot` committed by the block after the canonical
     /// block at `height`; `None` outside the window or before Heartwood.
-    fn history_root(&self, height: Height) -> Option<[u8; 32]>;
+    fn history_root(&self, height: Height) -> Result<Option<[u8; 32]>, ChainHeadError> {
+        let _ = height;
+        not_built("the history tree")
+    }
 
     /// The epoch in force after the canonical block at `height`.
-    fn history_epoch(&self, height: Height) -> Option<HistoryEpochAt>;
+    fn history_epoch(&self, height: Height) -> Result<Option<HistoryEpochAt>, ChainHeadError> {
+        let _ = height;
+        not_built("the history tree")
+    }
 
     /// The entries at `positions` of that epoch, in the order asked.
-    fn history_entries(&self, height: Height, positions: &[u32]) -> Vec<Option<Vec<u8>>>;
+    fn history_entries(
+        &self,
+        height: Height,
+        positions: &[u32],
+    ) -> Result<Vec<Option<Vec<u8>>>, ChainHeadError> {
+        let _ = (height, positions);
+        not_built("the history tree")
+    }
 }
 
 /// Where the history tree stood after a block: its epoch's branch and length.
@@ -386,5 +375,8 @@ pub trait ChainHeadTransparentHistoryService: ChainHeadSnapshot {
     fn address_effects(
         &self,
         query: &crate::transparent::TransparentHistoryQuery,
-    ) -> Result<crate::transparent::ChainHeadAddressEffects, ChainHeadError>;
+    ) -> Result<crate::transparent::ChainHeadAddressEffects, ChainHeadError> {
+        let _ = query;
+        not_built("transparent history")
+    }
 }

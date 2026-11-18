@@ -31,6 +31,7 @@ async fn the_set_at_the_tip_matches_a_fold_over_the_whole_chain() {
         let composed = rig(chain())
             .store_to(store_top)
             .window(floor, TIP)
+            .extended_head()
             .build()
             .await
             .builder()
@@ -52,6 +53,7 @@ async fn a_hole_between_store_and_window_is_not_serviceable() {
     let view = rig(chain())
         .store_to(10)
         .window(20, TIP)
+        .extended_head()
         .build()
         .await
         .builder()

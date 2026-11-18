@@ -44,7 +44,7 @@ mod history;
 mod to_domain;
 
 pub use from_domain::indexed_block_from_stored;
-pub use to_domain::{domain_outpoint, stored_tx_out};
+pub use to_domain::domain_outpoint;
 
 pub(crate) use to_domain::domain_block_ref;
 
@@ -52,7 +52,7 @@ use error_map::{chain_store_error, chain_store_source_error};
 use from_domain::{stored_hash, stored_height, stored_outpoint, tx_location};
 use to_domain::{
     block_tx_position, domain_hash, domain_height, domain_txid, store_capabilities, store_schema,
-    stored_block, stored_tx_outs,
+    stored_block,
 };
 
 use core::future::Future;
@@ -60,8 +60,8 @@ use core::future::Future;
 use zaino_chain_store::{
     ChainStoreError, ChainStoreIngest, ChainStoreReader, ChainStoreService, ChainStoreSource,
     ChainStoreSourceError, CompactBlockRead, PoolFilter, SpenderRef, SpentOutputIndex,
-    StoreCapabilities, StoreSchema, StoreWatermark, StoredHeader, StoredTxOut, TransactionIndex,
-    TreeRootsIndex, TxOutSetAccumulator, TxOutSetIndex,
+    StoreCapabilities, StoreSchema, StoreWatermark, StoredHeader, TransactionIndex, TreeRootsIndex,
+    TxOutSetAccumulator, TxOutSetIndex,
 };
 use zaino_component::{ComponentName, ComponentStatus, Health, Lifecycle, StatusSource};
 use zaino_primitives::types::{
@@ -445,80 +445,6 @@ impl<T: ChainStoreSource> SpentOutputIndex for DbReader<T> {
         Err(ChainStoreError::Unsupported(
             "zainodb stores script hashes, not scripts",
         ))
-    }
-
-    #[tracing::instrument(skip(self, outpoints), fields(outpoints = outpoints.len()))]
-    async fn previous_outputs(
-        &self,
-        outpoints: &[DomainOutpoint],
-    ) -> Result<Vec<Option<StoredTxOut>>, ChainStoreError> {
-        let _timer = crate::timer::Timer::start(
-            metrics::histogram!(crate::metric_names::DB_READ_SECONDS, "op" => "previous_outputs"),
-        );
-        let mut outputs = Vec::with_capacity(outpoints.len());
-        for outpoint in outpoints {
-            outputs.push(self.previous_output(outpoint).await?);
-        }
-        Ok(outputs)
-    }
-
-    #[tracing::instrument(skip(self), fields(outpoint = ?outpoint))]
-    async fn unspent_output(
-        &self,
-        outpoint: DomainOutpoint,
-    ) -> Result<Option<StoredTxOut>, ChainStoreError> {
-        let _timer = crate::timer::Timer::start(
-            metrics::histogram!(crate::metric_names::DB_READ_SECONDS, "op" => "unspent_output"),
-        );
-        let Some(output) = self.previous_output(&outpoint).await? else {
-            return Ok(None);
-        };
-        let spent = DbReader::get_outpoint_spender(self, stored_outpoint(&outpoint))
-            .await
-            .map_err(chain_store_error)?
-            .is_some();
-
-        Ok((!spent).then_some(output))
-    }
-
-    #[tracing::instrument(skip(self), fields(position = ?position))]
-    async fn transparent_outputs(
-        &self,
-        position: BlockTxPosition,
-    ) -> Result<Option<Vec<StoredTxOut>>, ChainStoreError> {
-        self.bounded(position.height)?;
-        let Some(location) = tx_location(position) else {
-            return Ok(None);
-        };
-        let _timer = crate::timer::Timer::start(
-            metrics::histogram!(crate::metric_names::DB_READ_SECONDS, "op" => "transparent_outputs"),
-        );
-        match DbReader::get_transparent(self, location)
-            .await
-            .map_err(chain_store_error)?
-        {
-            Some(transparent) => Ok(Some(stored_tx_outs(&transparent)?)),
-            None => Ok(None),
-        }
-    }
-}
-
-impl<T: ChainStoreSource> DbReader<T> {
-    /// One outpoint's output, with a miss as `None`.
-    ///
-    /// The backend errors when the creating transaction is absent; the domain
-    /// treats that as an answer, because an outpoint naming a transaction this
-    /// store does not hold is exactly what a caller merging across the seam
-    /// expects to see.
-    async fn previous_output(
-        &self,
-        outpoint: &DomainOutpoint,
-    ) -> Result<Option<StoredTxOut>, ChainStoreError> {
-        match DbReader::get_previous_output(self, stored_outpoint(outpoint)).await {
-            Ok(output) => Ok(Some(stored_tx_out(&output)?)),
-            Err(StoreError::DataUnavailable(_)) => Ok(None),
-            Err(error) => Err(chain_store_error(error)),
-        }
     }
 }
 

@@ -14,23 +14,22 @@ use super::error_map::{corrupt_row, corrupt_row_because};
 use zaino_chain_store::{
     ChainStoreError, ChainStoreReaderCapability, CompactBlockReadCapability, MigrationState,
     SchemaVersion, SpentOutputIndexCapability, StoreCapabilities, StoreCapability, StoreSchema,
-    StoredTxOut, TransactionIndexCapability, TreeRootsIndexCapability, TxOutSetIndexCapability,
+    TransactionIndexCapability, TreeRootsIndexCapability, TxOutSetIndexCapability,
 };
 
 use super::{StoredBlock, StoredTx};
 use zaino_primitives::types::{
     BlockHash as DomainBlockHash, BlockHeader, BlockRef, BlockTxPosition, CompactCiphertext,
     Height as DomainHeight, Nullifier, OrchardAction, Outpoint as DomainOutpoint,
-    PreIndexCompactTx, SaplingOutput, Script, ScriptType, SignedZatoshis, TransactionId,
-    TransparentAddressKey, TransparentInput, TransparentOutput, TreeRootInfo, TreeRoots, TxIndex,
-    Zatoshis,
+    PreIndexCompactTx, SaplingOutput, Script, SignedZatoshis, TransactionId, TransparentInput,
+    TransparentOutput, TreeRootInfo, TreeRoots, TxIndex, Zatoshis,
 };
 
 use crate::store::capability::{Capability, DbMetadata, MigrationStatus};
 use crate::store::finalised_source::v1::DB_VERSION_V1;
 use crate::types::{
     AbsoluteChainWork, BlockHash, CommitmentTreeData, CompactTxData, Height, IndexedBlock,
-    Outpoint, TransactionHash, TransparentCompactTx, TxLocation, TxOutCompact,
+    Outpoint, TransactionHash, TxLocation, TxOutCompact,
 };
 
 /// This crate's height, as the domain names it.
@@ -70,8 +69,8 @@ pub(super) fn block_tx_position(location: TxLocation) -> Result<BlockTxPosition,
 
 /// The same 32 bytes and index, as the domain names them.
 ///
-/// Public for the reason [`stored_tx_out`] is: ChainIndex keys its cross-seam
-/// UTXO fold by outpoint, and both halves must key it the same way.
+/// Public because zaino-state names outpoints in the domain's terms when it
+/// asks the store about them.
 pub fn domain_outpoint(outpoint: &Outpoint) -> DomainOutpoint {
     DomainOutpoint {
         txid: TransactionId::from(*outpoint.prev_txid()),
@@ -82,52 +81,6 @@ pub fn domain_outpoint(outpoint: &Outpoint) -> DomainOutpoint {
 /// A stored txid, as the domain names it.
 pub(super) fn domain_txid(txid: TransactionHash) -> TransactionId {
     TransactionId::from(txid.0)
-}
-
-/// A stored transparent output, as the domain names it.
-///
-/// The type tag is decoded rather than passed through: on disk it is a byte,
-/// and a byte that names no script form is a corrupt row. Rejecting it here
-/// keeps every domain-side consumer from having to consider a fourth case.
-///
-/// Public because ChainIndex folds the recent window onto the accumulator this
-/// store hands it, and the recent window still arrives as [`IndexedBlock`]. It
-/// therefore has to express a stored output as a domain one using the *same*
-/// rule this crate uses, or the two halves of one commitment would disagree.
-/// It goes private again when the recent window stops being expressed in this
-/// crate's shapes.
-pub fn stored_tx_out(output: &TxOutCompact) -> Result<StoredTxOut, ChainStoreError> {
-    let script_type = match output.script_type_enum() {
-        Some(crate::types::ScriptType::P2PKH) => ScriptType::P2PKH,
-        Some(crate::types::ScriptType::P2SH) => ScriptType::P2SH,
-        Some(crate::types::ScriptType::NonStandard) => ScriptType::NonStandard,
-        None => {
-            return Err(corrupt_row(format!(
-                "valid script type for stored output tag {}",
-                output.script_type()
-            )))
-        }
-    };
-
-    Ok(StoredTxOut {
-        value: Zatoshis::new(output.value()).map_err(|error| {
-            corrupt_row_because(
-                format!("in-range value for stored output {}", output.value()),
-                error,
-            )
-        })?,
-        address: TransparentAddressKey {
-            hash: *output.script_hash(),
-            script_type,
-        },
-    })
-}
-
-/// Every transparent output of a stored transaction.
-pub(super) fn stored_tx_outs(
-    transparent: &TransparentCompactTx,
-) -> Result<Vec<StoredTxOut>, ChainStoreError> {
-    transparent.outputs().iter().map(stored_tx_out).collect()
 }
 
 /// A stored block, as the domain names it.
@@ -502,19 +455,15 @@ mod tests {
 
         let output = TxOutCompact::new(u64::MAX, [0u8; 20], 0).expect("a valid script type");
 
-        for error in [
-            transparent_output(&output).expect_err("above the money supply"),
-            stored_tx_out(&output).expect_err("above the money supply"),
-        ] {
-            assert!(
-                matches!(error, ChainStoreError::CorruptRow { .. }),
-                "a present row holding a bad amount is corrupt, not missing: {error:?}"
-            );
-            assert!(
-                error.source().is_some(),
-                "the overflow names the bound it exceeded; that should survive"
-            );
-        }
+        let error = transparent_output(&output).expect_err("above the money supply");
+        assert!(
+            matches!(error, ChainStoreError::CorruptRow { .. }),
+            "a present row holding a bad amount is corrupt, not missing: {error:?}"
+        );
+        assert!(
+            error.source().is_some(),
+            "the overflow names the bound it exceeded; that should survive"
+        );
     }
 
     /// The capability mapping reports what a consumer can actually ask for.

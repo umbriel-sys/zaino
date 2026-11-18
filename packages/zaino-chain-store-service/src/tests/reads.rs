@@ -7,9 +7,9 @@ use futures::TryStreamExt as _;
 use zaino_chain_store::{
     ChainStoreError, ChainStoreIngest as _, ChainStoreReader as _, ChainStoreService as _,
     CompactBlockRead as _, HistoryTreeIndex as _, PoolFilter, SpenderRef, SpentOutputIndex as _,
-    StoreCapability, StoredHeader, StoredTxOut, TransactionIndex as _,
-    TransparentHistoryIndex as _, TransparentHistoryQuery, TreeRootsIndex as _,
-    TreeStateIndex as _, TxOutSetAccumulator, TxOutSetIndex as _,
+    StoreCapability, StoredHeader, TransactionIndex as _, TransparentHistoryIndex as _,
+    TransparentHistoryQuery, TreeRootsIndex as _, TreeStateIndex as _, TxOutSetAccumulator,
+    TxOutSetIndex as _,
 };
 use zaino_component::{Lifecycle, StatusSource as _};
 use zaino_indexes::{frontier_from_legacy_tree, IndexId};
@@ -287,8 +287,8 @@ async fn indexes_ahead_of_the_watermark_answer_only_up_to_it() {
     let (created, _) = ground_truth(&all);
     let outpoints: Vec<Outpoint> = created.iter().map(|(outpoint, _)| *outpoint).collect();
     assert_eq!(
-        uneven.previous_outputs(&outpoints).await.expect("read"),
-        even.previous_outputs(&outpoints).await.expect("read")
+        uneven.outputs_by_outpoint(&outpoints).await.expect("read"),
+        even.outputs_by_outpoint(&outpoints).await.expect("read")
     );
     assert_eq!(
         uneven.outpoint_spenders(&outpoints).await.expect("read"),
@@ -419,16 +419,6 @@ async fn transactions_and_outputs_match_the_chain() {
                 Some(position)
             );
             assert_eq!(reader.txid_at(position).await.expect("read"), Some(tx.txid));
-            let outputs: Vec<StoredTxOut> = tx
-                .transparent
-                .outputs
-                .iter()
-                .map(StoredTxOut::from_output)
-                .collect();
-            assert_eq!(
-                reader.transparent_outputs(position).await.expect("read"),
-                Some(outputs)
-            );
         }
     }
     assert_eq!(
@@ -441,14 +431,6 @@ async fn transactions_and_outputs_match_the_chain() {
 
     let (created, spenders) = ground_truth(&all);
     let outpoints: Vec<Outpoint> = created.iter().map(|(outpoint, _)| *outpoint).collect();
-    let expected_outputs: Vec<Option<StoredTxOut>> = created
-        .iter()
-        .map(|(_, output)| Some(StoredTxOut::from_output(output)))
-        .collect();
-    assert_eq!(
-        reader.previous_outputs(&outpoints).await.expect("read"),
-        expected_outputs
-    );
     let expected_full: Vec<Option<TransparentOutput>> = created
         .iter()
         .map(|(_, output)| Some(output.clone()))
@@ -473,16 +455,6 @@ async fn transactions_and_outputs_match_the_chain() {
         expected_spenders
     );
     assert!(spenders.len() > 10, "the chain spends: {}", spenders.len());
-    for (outpoint, output) in &created {
-        let expected = match spenders.contains_key(outpoint) {
-            true => None,
-            false => Some(StoredTxOut::from_output(output)),
-        };
-        assert_eq!(
-            reader.unspent_output(*outpoint).await.expect("read"),
-            expected
-        );
-    }
 }
 
 #[tokio::test]
@@ -627,16 +599,35 @@ async fn address_effects_match_the_chain() {
             assert_eq!(read_outputs, outputs, "{start}..={end} outputs");
             assert_eq!(read_spends, spends, "{start}..={end} spends");
             for output in &effects.outputs {
-                assert_eq!(
-                    output.output,
-                    StoredTxOut::from_output(&created[&output.outpoint])
-                );
+                assert_eq!(output.address, key);
+                assert_eq!(output.output, created[&output.outpoint]);
                 assert_eq!(output.txid, output.outpoint.txid);
             }
             for spend in &effects.spends {
+                assert_eq!(spend.address, key);
+                assert_eq!(spend.value, created[&spend.outpoint].value);
                 assert_eq!(
                     Some(&SpenderRef::new(spend.position, spend.txid)),
                     spenders.get(&spend.outpoint)
+                );
+                let input = all
+                    .iter()
+                    .find(|block| block.header.height == spend.position.height)
+                    .and_then(|block| {
+                        block
+                            .transactions()
+                            .get(usize::try_from(spend.position.tx_index).ok()?)
+                    })
+                    .and_then(|tx| {
+                        tx.transparent
+                            .inputs
+                            .get(usize::try_from(spend.input_index).ok()?)
+                    })
+                    .expect("the spending input");
+                assert_eq!(
+                    (input.prev_txid, input.prev_index),
+                    (spend.outpoint.txid, spend.outpoint.index),
+                    "the input index names the spending input"
                 );
             }
         }

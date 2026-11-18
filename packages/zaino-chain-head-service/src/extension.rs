@@ -19,6 +19,12 @@ use zaino_primitives::types::{BlockRef, NetworkUpgradeInfo};
 
 use crate::snapshot::PersistentSnapshot;
 
+#[cfg(any(
+    feature = "txout_set",
+    feature = "address_history",
+    feature = "tree_state",
+    feature = "history_tree"
+))]
 pub(crate) mod below;
 pub(crate) mod folded;
 pub(crate) mod inputs;
@@ -71,6 +77,22 @@ impl<T> Slot<T> {
             Self::Failed(failure) => Some(failure),
         }
     }
+}
+
+/// The extension built in `slot`, else `NotBuilt` for `capability`.
+#[cfg(any(
+    feature = "txout_set",
+    feature = "address_history",
+    feature = "tree_state",
+    feature = "history_tree"
+))]
+pub(crate) fn built<'a, T>(
+    slot: &'a Option<Slot<T>>,
+    capability: &'static str,
+) -> Result<&'a T, zaino_chain_head::ChainHeadError> {
+    slot.as_ref()
+        .and_then(Slot::built)
+        .ok_or(zaino_chain_head::ChainHeadError::NotBuilt { capability })
 }
 
 /// The extensions' slots on a snapshot.

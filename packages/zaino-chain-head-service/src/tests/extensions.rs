@@ -19,7 +19,7 @@ use zaino_chain_head::{
         ChainHeadTxOutSetService as _,
     },
     transparent::TransparentHistoryQuery,
-    ChainHeadBlockService as _, ChainHeadSnapshot as _, HeadCapability,
+    ChainHeadBlockService as _, ChainHeadError, ChainHeadSnapshot as _, HeadCapability,
 };
 use zaino_indexes::{
     address_history, assemble, history_tree, spent, tree_state, tx_out_set, txid_location,
@@ -555,7 +555,7 @@ async fn answers_match_independent_computations() {
     let mut spent_in_window: HashMap<Outpoint, (BlockRef, TransactionId, u32)> = HashMap::new();
     for block in &window {
         for (tx_index, tx) in (0u32..).zip(block.block.transactions()) {
-            let located = snapshot.transaction_locations(&tx.txid);
+            let located = snapshot.transaction_locations(&tx.txid).expect("built");
             let best = located.best_chain.expect("located");
             assert_eq!(best.block, block.reference);
             assert_eq!(best.tx_index, tx_index);
@@ -578,7 +578,9 @@ async fn answers_match_independent_computations() {
     );
     let below_window = chain.block_at(2).expect("held").block.transactions()[0].txid;
     assert_eq!(
-        snapshot.transaction_locations(&below_window),
+        snapshot
+            .transaction_locations(&below_window)
+            .expect("built"),
         Default::default()
     );
     let mut outpoints: Vec<Outpoint> = spent_in_window.keys().copied().collect();
@@ -586,7 +588,7 @@ async fn answers_match_independent_computations() {
         txid: below_window,
         index: 0,
     });
-    let spenders = snapshot.outpoint_spenders(&outpoints);
+    let spenders = snapshot.outpoint_spenders(&outpoints).expect("built");
     for (outpoint, spender) in outpoints.iter().zip(&spenders) {
         match spent_in_window.get(outpoint) {
             Some((block, txid, tx_index)) => {
@@ -705,22 +707,26 @@ async fn answers_match_independent_computations() {
         let trees = trees.expect("folded");
         for (slot, pool) in trees.pools.iter().zip(ShieldedPool::ALL) {
             assert_eq!(
-                snapshot.pool_frontier(pool, block.height()),
+                snapshot.pool_frontier(pool, block.height()).expect("built"),
                 Some(frontier_of_tree(slot)),
                 "{pool} at {h}"
             );
         }
         assert!(snapshot
             .subtree_roots(ShieldedPool::Sapling, 0, 8)
+            .expect("built")
             .is_empty());
         let (backend, history) = fold_from::<history_tree::HistoryTree>(None, through);
         let epoch = history.expect("folded").epoch.expect("an epoch");
         assert_eq!(
-            snapshot.history_root(block.height()),
+            snapshot.history_root(block.height()).expect("built"),
             Some(history_tree::root_of(&epoch).expect("a root")),
             "history root at {h}"
         );
-        let at = snapshot.history_epoch(block.height()).expect("an epoch");
+        let at = snapshot
+            .history_epoch(block.height())
+            .expect("built")
+            .expect("an epoch");
         assert_eq!(u32::from(at.branch), epoch.branch);
         assert_eq!(at.length, epoch.length);
         let backend_reader = backend.reader().expect("reader");
@@ -730,7 +736,9 @@ async fn answers_match_independent_computations() {
             .expect("an epoch")
             .length;
         let positions: Vec<u32> = (0..epoch.length).collect();
-        let entries = snapshot.history_entries(block.height(), &positions);
+        let entries = snapshot
+            .history_entries(block.height(), &positions)
+            .expect("built");
         for (position, entry) in positions.iter().zip(entries) {
             match *position < seed_length {
                 true => assert!(entry.is_none(), "position {position} is the store's"),
@@ -745,6 +753,7 @@ async fn answers_match_independent_computations() {
     assert!(
         snapshot
             .pool_frontier(ShieldedPool::Sapling, height(u32::from(root.height) - 1))
+            .expect("built")
             .is_none(),
         "below the window is not the head's"
     );
@@ -786,7 +795,7 @@ async fn a_reorg_keeps_branch_views_and_answers_follow_the_trunk() {
         "{:?}",
         after.extension_failures()
     );
-    let located = after.transaction_locations(&displaced_txid);
+    let located = after.transaction_locations(&displaced_txid).expect("built");
     assert!(located.best_chain.is_none());
     assert_eq!(located.non_best_chain.len(), 1);
     assert_eq!(located.non_best_chain[0].block, reference(&displaced));
@@ -794,7 +803,10 @@ async fn a_reorg_keeps_branch_views_and_answers_follow_the_trunk() {
         after.txout_set().expect("built"),
         independent_accumulator(&chain, tip + 1)
     );
-    assert_ne!(after.txout_set(), before.txout_set());
+    assert_ne!(
+        after.txout_set().expect("built"),
+        before.txout_set().expect("built")
+    );
     // every trunk transaction is located on the trunk (a branch block may
     // repeat a trunk transaction, which is then the trunk's)
     for block in window(&after, harness.root())
@@ -805,6 +817,7 @@ async fn a_reorg_keeps_branch_views_and_answers_follow_the_trunk() {
             assert_eq!(
                 after
                     .transaction_locations(&tx.txid)
+                    .expect("built")
                     .best_chain
                     .map(|at| at.block),
                 Some(block.reference)
@@ -843,14 +856,18 @@ async fn a_failing_port_darkens_one_extension_and_the_next_tick_rebuilds_it() {
         ],
         "the three seeded below the root"
     );
-    assert!(dark.txout_set().is_none());
-    assert!(dark.history_root(height(tip)).is_none());
-    assert!(dark
-        .pool_frontier(ShieldedPool::Sapling, height(tip))
-        .is_none());
+    let not_built =
+        |result: Result<(), ChainHeadError>| matches!(result, Err(ChainHeadError::NotBuilt { .. }));
+    assert!(not_built(dark.txout_set().map(drop)));
+    assert!(not_built(dark.history_root(height(tip)).map(drop)));
+    assert!(not_built(
+        dark.pool_frontier(ShieldedPool::Sapling, height(tip))
+            .map(drop)
+    ));
     let newest = chain.tip().expect("a chain");
     assert!(
         dark.transaction_locations(&newest.block.transactions()[0].txid)
+            .expect("built")
             .best_chain
             .is_some(),
         "transactions still answers"
@@ -920,19 +937,20 @@ async fn a_rebase_leaves_every_answer_unchanged() {
         let (_, history) = fold_from::<history_tree::HistoryTree>(None, through);
         let epoch = history.expect("folded").epoch.expect("an epoch");
         assert_eq!(
-            after.history_root(block.height()),
+            after.history_root(block.height()).expect("built"),
             Some(history_tree::root_of(&epoch).expect("a root"))
         );
         let (_, trees) = fold_from::<tree_state::TreeState>(None, through);
         for (slot, pool) in trees.expect("folded").pools.iter().zip(ShieldedPool::ALL) {
             assert_eq!(
-                after.pool_frontier(pool, block.height()),
+                after.pool_frontier(pool, block.height()).expect("built"),
                 Some(frontier_of_tree(slot))
             );
         }
         for (tx_index, tx) in (0u32..).zip(block.block.transactions()) {
             let best = after
                 .transaction_locations(&tx.txid)
+                .expect("built")
                 .best_chain
                 .expect("located");
             assert_eq!((best.block, best.tx_index), (block.reference, tx_index));
@@ -941,6 +959,7 @@ async fn a_rebase_leaves_every_answer_unchanged() {
     assert!(
         after
             .pool_frontier(ShieldedPool::Sapling, new_root.height())
+            .expect("built")
             .is_none(),
         "the root itself is the store's"
     );

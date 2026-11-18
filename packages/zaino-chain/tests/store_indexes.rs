@@ -304,7 +304,7 @@ async fn agree(rig: &Rig, reference: &common::Store, root: u32, tip: u32) {
     for h in root + 1..=tip {
         let at = height(h);
         assert_eq!(
-            snapshot.history_root(at),
+            snapshot.history_root(at).expect("built"),
             reference.history_root(at).await.expect("read"),
             "history root at {h}"
         );
@@ -313,14 +313,17 @@ async fn agree(rig: &Rig, reference: &common::Store, root: u32, tip: u32) {
             .await
             .expect("read")
             .expect("Heartwood is active");
-        let head_epoch = snapshot.history_epoch(at).expect("an epoch");
+        let head_epoch = snapshot
+            .history_epoch(at)
+            .expect("built")
+            .expect("an epoch");
         assert_eq!(
             (head_epoch.branch, head_epoch.length),
             (epoch.branch, epoch.length)
         );
         // positions the window appended are the head's, the rest the store's
         let positions = [seed_length - 1, seed_length, epoch.length - 1];
-        let head_entries = snapshot.history_entries(at, &positions);
+        let head_entries = snapshot.history_entries(at, &positions).expect("built");
         let stored = reference
             .history_entries(at, &positions)
             .await
@@ -330,7 +333,7 @@ async fn agree(rig: &Rig, reference: &common::Store, root: u32, tip: u32) {
         assert_eq!(head_entries[2], stored[2], "last appended at {h}");
         for pool in ShieldedPool::ALL {
             assert_eq!(
-                snapshot.pool_frontier(pool, at),
+                snapshot.pool_frontier(pool, at).expect("built"),
                 reference.pool_frontier(pool, at).await.expect("read"),
                 "{pool} at {h}"
             );
@@ -338,14 +341,19 @@ async fn agree(rig: &Rig, reference: &common::Store, root: u32, tip: u32) {
         for (tx_index, tx) in (0u32..).zip(block_at(chain, h).block.transactions()) {
             let best = snapshot
                 .transaction_locations(&tx.txid)
+                .expect("built")
                 .best_chain
                 .expect("located");
             assert_eq!((best.block, best.tx_index), (block_ref(chain, h), tx_index));
         }
     }
-    assert!(snapshot.history_root(height(root)).is_none());
+    assert!(snapshot
+        .history_root(height(root))
+        .expect("built")
+        .is_none());
     assert!(snapshot
         .pool_frontier(ShieldedPool::Sapling, height(root))
+        .expect("built")
         .is_none());
 
     // spenders: every outpoint the window spent, and one spent below the root
@@ -359,7 +367,8 @@ async fn agree(rig: &Rig, reference: &common::Store, root: u32, tip: u32) {
     assert!(!outpoints.is_empty(), "the window spends");
     let below = *spent_below.keys().next().expect("spends below the root");
     outpoints.push(below);
-    for (outpoint, spender) in outpoints.iter().zip(snapshot.outpoint_spenders(&outpoints)) {
+    let head_spenders = snapshot.outpoint_spenders(&outpoints).expect("built");
+    for (outpoint, spender) in outpoints.iter().zip(head_spenders) {
         match *outpoint == below {
             true => assert!(spender.is_none(), "below the root is the store's"),
             false => assert_eq!(

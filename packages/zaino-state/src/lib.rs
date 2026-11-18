@@ -108,9 +108,8 @@ pub use zaino_primitives::types::MempoolInfo;
 /// of the chain through `IndexedBlock`. The re-export goes when it stops.
 ///
 /// `TxOutCompact` has already gone: the finalised reads now come back as
-/// `zaino_chain_store::StoredTxOut` through the ports, so the one place that
-/// held a stored output — the cross-seam UTXO fold — folds domain outputs
-/// instead. The rest of this list shrinks the same way.
+/// domain outputs through the ports. The rest of this list shrinks the same
+/// way.
 pub(crate) use chain_index::types::{BlockHash, IndexedBlock};
 #[cfg(test)]
 pub(crate) use chain_index::types::{Height, Outpoint};
