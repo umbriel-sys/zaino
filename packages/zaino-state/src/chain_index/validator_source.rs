@@ -1135,9 +1135,7 @@ impl ZebraValidatorSource {
         .map_err(|e| invalid(format!("cannot build the validator RPC client: {e}")))?;
 
         Ok(Self::new(
-            zaino_source_zebra::ZebraValidator::rpc_only(
-                zaino_source_zebra_rpc::ZebraRpcAdapter::new(client),
-            ),
+            zaino_source_zebra::ZebraValidator::rpc_only(zaino_source_zebra::rpc_adapter(client)),
             network,
             None,
         ))
@@ -1294,7 +1292,7 @@ impl ZebraValidatorSource {
 
         let validator = zaino_source_zebra::ZebraValidator::with_read_state(
             adapter,
-            zaino_source_zebra_readstate::ZebraReadStateAdapter::from_service(
+            zaino_source_zebra::ZebraReadStateAdapter::from_service(
                 read_state_service,
                 &network,
                 Some(Arc::new(sync_task_handle)),
@@ -1333,13 +1331,12 @@ fn rpc_client(
     .map_err(|e| invalid(format!("cannot build the validator RPC client: {e}")))
 }
 
-/// The JSON-RPC adapter for the new source stack.
+/// The JSON-RPC adapter for the new source stack, reading replies as zebrad
+/// sends them.
 fn rpc_adapter(
     common: &crate::config::CommonBackendConfig,
-) -> Result<zaino_source_zebra_rpc::ZebraRpcAdapter, BlockchainSourceError> {
-    Ok(zaino_source_zebra_rpc::ZebraRpcAdapter::new(rpc_client(
-        common,
-    )?))
+) -> Result<zaino_source_zcash_rpc::ZcashRpcAdapter, BlockchainSourceError> {
+    Ok(zaino_source_zebra::rpc_adapter(rpc_client(common)?))
 }
 
 #[cfg(test)]

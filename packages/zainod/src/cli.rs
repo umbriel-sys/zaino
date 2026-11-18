@@ -3,7 +3,7 @@
 use std::path::PathBuf;
 
 use clap::{Parser, Subcommand};
-use zaino_common::xdg::resolve_path_with_xdg_config_defaults;
+use zaino_state::legacy::xdg::resolve_path_with_xdg_config_defaults;
 
 /// Returns the default config path following XDG Base Directory spec.
 ///

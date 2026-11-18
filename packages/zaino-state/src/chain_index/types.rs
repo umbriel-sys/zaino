@@ -304,7 +304,7 @@ mod tests {
             .iter()
             .zip(indexed_block_chain(&vectors.blocks))
         {
-            let block = zaino_convert_zebra::block_from_zebra(
+            let block = zaino_primitives::zebra::block_from_zebra(
                 &vector.zebra_block,
                 domain::ChainMetadata::new(
                     vector_tree_size(vector.sapling_tree_size),

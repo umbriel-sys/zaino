@@ -85,11 +85,13 @@ pub(crate) async fn adopt_network(
     };
 
     match common.network {
-        zaino_common::Network::Mainnet => verified(zebra_chain::parameters::Network::Mainnet),
-        zaino_common::Network::PubTestnet => {
+        zaino_primitives::types::Network::Mainnet => {
+            verified(zebra_chain::parameters::Network::Mainnet)
+        }
+        zaino_primitives::types::Network::PubTestnet => {
             verified(zebra_chain::parameters::Network::new_default_testnet())
         }
-        zaino_common::Network::Regtest => {
+        zaino_primitives::types::Network::Regtest => {
             let heights = activation_heights_from_upgrades(upgrades).map_err(|reason| {
                 BlockchainSourceError::Unrecoverable(format!(
                     "cannot adopt activation heights from the validator at {}: {reason}",
@@ -171,8 +173,8 @@ fn verify_reported_upgrades(
 /// runtime network from these heights.
 fn activation_heights_from_upgrades(
     upgrades: &[NetworkUpgradeInfo],
-) -> Result<zaino_common::config::network::ActivationHeights, String> {
-    let mut heights = zaino_common::config::network::ActivationHeights::NEVER_ACTIVATED;
+) -> Result<zaino_primitives::types::ActivationHeights, String> {
+    let mut heights = zaino_primitives::types::ActivationHeights::NEVER_ACTIVATED;
     for upgrade_info in upgrades {
         // A branch id this build does not know has no configuration slot.
         let Some(upgrade) = zebra_bridge::network_upgrade(upgrade_info) else {
@@ -235,7 +237,7 @@ mod test_upgrades {
 #[cfg(test)]
 mod tests {
     use super::test_upgrades::*;
-    use zaino_common::config::network::ActivationHeights;
+    use zaino_primitives::types::ActivationHeights;
     use zaino_primitives::types::NetworkUpgradeInfo;
 
     /// All-`None` heights: the starting point adoption fills from the
@@ -332,7 +334,7 @@ mod tests {
 #[cfg(test)]
 mod verify_reported_upgrades {
     use super::test_upgrades::*;
-    use zaino_common::config::network::ActivationHeights;
+    use zaino_primitives::types::ActivationHeights;
 
     /// A report agreeing with the compiled schedule passes.
     #[test]

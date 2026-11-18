@@ -13,7 +13,7 @@
 use std::sync::Arc;
 
 use tempfile::TempDir;
-use zaino_common::network::ActivationHeights;
+use zaino_primitives::types::ActivationHeights;
 use zaino_proto::proto::utils::{prune_compact_block, PoolTypeFilter};
 
 use crate::config::ZainoDbConfig;

@@ -89,7 +89,7 @@ zaino-chain = { path = ".", features = ["testing"] }
 # `zaino-state` takes the same feature the same way rather than keeping a
 # second copy of the vectors.
 zaino-chain-store-zainodb = { workspace = true, features = ["testing"] }
-zaino-convert-zebra = { workspace = true }
+zaino-primitives = { workspace = true, features = ["zebra"] }
 futures = { workspace = true }
 
 [lints.rust]

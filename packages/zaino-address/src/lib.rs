@@ -12,8 +12,8 @@
 //! `zcash_transparent`, `sapling-crypto`) is a dependency set no other Zaino
 //! crate wants. It cannot go in `zaino-primitives`, whose whole dependency
 //! list is `thiserror` — that minimalism is what lets every other crate depend
-//! on it. It does not belong in `zaino-common` either, which is configuration,
-//! logging and networking infrastructure rather than domain logic. So it is a
+//! on it. It does not belong in `zaino-state` either, which is the legacy
+//! stack rather than domain logic. So it is a
 //! leaf: nothing in Zaino depends on it except the consumers of these two
 //! RPCs.
 //!

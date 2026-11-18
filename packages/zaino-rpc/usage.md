@@ -13,11 +13,11 @@ use zaino_rpc::{RpcClient, RpcClientConfig};
 
 let client = RpcClient::new(config)?;
 let value = client.call("getblockchaininfo", vec![]).await?;
-// -> serde_json::Value; interpreting it is zaino-source-zebra-rpc's problem
+// -> serde_json::Value; interpreting it is zaino-source-zcash-rpc's problem
 ```
 
 This is the boundary that lets one client serve both the production adapter
-(`zaino-source-zebra-rpc`, which parses into domain types) and the live tests'
+(`zaino-source-zcash-rpc`, which parses into domain types) and the live tests'
 `ValidatorOracle` (which compares raw JSON against Zaino's answers). An oracle
 that shared the parser under test would not be an oracle.
 
@@ -62,6 +62,20 @@ let info = probe_node(&addr, auth).await?;   // 6 attempts, 3s apart
 `std::process::exit(1)`, which made the startup path untestable and gave an
 embedding process no say in its own shutdown.
 
+## Address resolution and the crypto provider
+
+Two things every network endpoint in Zaino needs live here, so no crate has
+to pull in a configuration crate to get them:
+
+- `net::resolve_socket_addr` / `net::try_resolve_address`: `host:port` to a
+  `SocketAddr`. `try_resolve_address` answers an `AddressResolution`, which
+  separates a well-formed hostname DNS cannot resolve yet (Docker-style
+  deferred resolution, accepted) from a malformed address (always an error).
+- `ensure_default_crypto_provider`: installs rustls's `aws-lc-rs` provider as
+  the process default if none is installed. `RpcClient::new` calls it; a TLS
+  server must call it before building its acceptor. First-install-wins, so an
+  embedder that installed its own provider keeps it (ADR-0006).
+
 ## Metrics
 
 | Metric                                           | Meaning                                                   |
@@ -76,5 +90,5 @@ embedding process no say in its own shutdown.
 
 ## Related
 
-- `zaino-source-zebra-rpc` — parses what this returns.
+- `zaino-source-zcash-rpc` — parses what this returns.
 - ADR-0008 — where this sits in the crate graph.

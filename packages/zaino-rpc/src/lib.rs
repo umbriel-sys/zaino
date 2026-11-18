@@ -3,14 +3,20 @@
 //! Handles the transport layer: HTTP requests, JSON-RPC envelope,
 //! retry on work-queue exhaustion, authentication. Returns raw
 //! `serde_json::Value` results — response parsing is the adapter's job.
+//! Also home to what every network endpoint in Zaino needs: address
+//! resolution ([`net`]) and the process-level rustls provider
+//! ([`ensure_default_crypto_provider`]).
 
 mod client;
+mod crypto;
 mod envelope;
 mod error;
+pub mod net;
 mod probe;
 mod retry;
 
 pub use client::{RpcClient, RpcClientConfig, HEAVY_METHOD_TIMEOUT, MAX_RESPONSE_BYTES};
+pub use crypto::ensure_default_crypto_provider;
 pub use error::RpcError;
 pub use probe::{auth_from_parts, probe_node, ProbeError};
 

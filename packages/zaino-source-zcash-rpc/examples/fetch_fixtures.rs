@@ -6,7 +6,7 @@
 use zaino_primitives::types::Height;
 use zaino_rpc::{RpcClient, RpcClientConfig};
 use zaino_source::OneShotGetBlock;
-use zaino_source_zebra_rpc::ZebraRpcAdapter;
+use zaino_source_zcash_rpc::ZcashRpcAdapter;
 
 const HEIGHTS: &[u32] = &[
     419_200,   // Sapling activation height — coinbase only
@@ -25,7 +25,7 @@ async fn main() {
     })
     .expect("client creation");
 
-    let adapter = ZebraRpcAdapter::new(rpc);
+    let adapter = ZcashRpcAdapter::new(rpc);
 
     for &h in HEIGHTS {
         let height = Height::try_from(h).expect("valid height");

@@ -158,12 +158,12 @@ Audit facts grounding the implementation:
 - zainod's TOML is already kind-only: `NetworkSerde` serializes
   "Mainnet"/"Testnet"/"Regtest", and deserializing "Regtest" injects the
   compiled-in `ZEBRAD_DEFAULT_ACTIVATION_HEIGHTS`
-  (`zaino-common/src/config/network.rs`). The real second channel is the
+  (`zaino-primitives/src/types/network.rs`). The real second channel is the
   library seam: `Network::Regtest(ActivationHeights)` constructed
   programmatically (e.g. by `TestManager`) and consumed via
   `config.get_network()` → `to_zebra_network()`.
 - The validator channel already exists in zaino's types:
-  `GetBlockchainInfoResponse.upgrades` is parsed (zaino-source-zebra-rpc's
+  `GetBlockchainInfoResponse.upgrades` is parsed (zaino-source-zcash-rpc's
   `parse.rs` since ADR-0008; zaino-fetch
   `jsonrpsee/response.rs`) and consumed (`backends/fetch.rs`,
   `latest_network_upgrade`). The work is deriving the runtime

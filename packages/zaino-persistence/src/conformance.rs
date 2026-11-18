@@ -422,7 +422,7 @@ fn within(
 ) -> Vec<(RawKey, RawValue)> {
     let held = entries
         .iter()
-        .filter(|(key, _)| bounds.contains(key.as_slice()));
+        .filter(|(key, _)| RangeBounds::<[u8]>::contains(&bounds, key.as_slice()));
     held.cloned().collect()
 }
 

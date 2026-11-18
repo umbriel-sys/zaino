@@ -1,8 +1,31 @@
-//! Storage configuration types shared across Zaino services.
+//! Service and storage configuration of the legacy stack.
 
 use std::path::PathBuf;
 
-use crate::xdg::resolve_path_with_xdg_cache_defaults;
+pub use zaino_chain_store_zainodb::{
+    AccumulatorRebuildMemorySize, DatabaseSize, SyncWriteBatchSize,
+    DEFAULT_SYNC_CHECKPOINT_INTERVAL_SECS,
+};
+
+use crate::legacy::xdg::resolve_path_with_xdg_cache_defaults;
+
+/// Service-level configuration for timeouts and channels.
+#[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
+pub struct ServiceConfig {
+    /// Service RPC timeout in seconds
+    pub timeout: u32,
+    /// Service RPC maximum channel size
+    pub channel_size: u32,
+}
+
+impl Default for ServiceConfig {
+    fn default() -> Self {
+        Self {
+            timeout: 30,
+            channel_size: 32,
+        }
+    }
+}
 
 /// Cache configuration for DashMaps.
 ///
@@ -23,8 +46,6 @@ pub struct CacheConfig {
 impl CacheConfig {
     /// Get the actual number of shards (2^shard_power)
     pub fn shard_count(&self) -> u32 {
-        // // 'a<<b' works by shifting the binary representation of a, b postions to the left
-        // 1 << self.shard_power // 2^shard_power
         2u32.pow(self.shard_power.into())
     }
 }
@@ -35,77 +56,6 @@ impl Default for CacheConfig {
             capacity: 10000, // Default capacity
             shard_power: 4,  // Default to 16 shards
         }
-    }
-}
-
-/// Database size limit in gigabytes.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Deserialize, serde::Serialize)]
-#[serde(transparent)]
-pub struct DatabaseSize(pub usize);
-
-impl Default for DatabaseSize {
-    fn default() -> Self {
-        DatabaseSize(384) // Default to 384 GB
-    }
-}
-
-impl DatabaseSize {
-    /// Convert to bytes.
-    pub fn to_byte_count(&self) -> usize {
-        self.0 * 1024 * 1024 * 1024
-    }
-}
-
-/// Finalised-state bulk-sync write-batch memory budget, in gibibytes.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Deserialize, serde::Serialize)]
-#[serde(transparent)]
-pub struct SyncWriteBatchSize(pub usize);
-
-impl Default for SyncWriteBatchSize {
-    fn default() -> Self {
-        // 8 GiB. This is a *heap* budget for buffered blocks only; lower it on a memory-constrained
-        // host (or a cgroup-limited container). A larger value does not make a small host faster — it
-        // just risks the OOM-killer, and a kill under `NO_SYNC` is what then corrupts the on-disk DB.
-        // (Previously 32 GiB, which OOM-killed small hosts.)
-        //
-        // Bulk sync is pipelined, so this bounds *one* batch and peak usage is up to twice it: the
-        // batch being committed stays resident while its successor fills.
-        SyncWriteBatchSize(8)
-    }
-}
-
-impl SyncWriteBatchSize {
-    /// Convert to bytes, saturating instead of overflowing on an absurd configured value.
-    pub fn to_byte_count(&self) -> usize {
-        self.0.saturating_mul(1024 * 1024 * 1024)
-    }
-}
-
-/// Memory budget (in gibibytes) for the from-genesis txout-set accumulator rebuild's in-RAM spent
-/// set.
-///
-/// Deliberately separate from [`SyncWriteBatchSize`]: the accumulator rebuild and the bulk-sync
-/// write batch are different operations with different peak-memory shapes. Coupling them caused a
-/// large block-buffer budget to be silently reused as the accumulator's per-shard cap, OOM-killing
-/// small hosts.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Deserialize, serde::Serialize)]
-#[serde(transparent)]
-pub struct AccumulatorRebuildMemorySize(pub usize);
-
-impl Default for AccumulatorRebuildMemorySize {
-    fn default() -> Self {
-        // 8 GiB. The rebuild auto-shards the spent set to keep each shard's `HashSet` within this
-        // budget, so raising it only trades fewer/larger passes (faster) for more peak RAM, and
-        // lowering it bounds peak RAM at the cost of more passes. Over-sharding is safe; a too-large
-        // budget on a small host is not — lower this on a memory-constrained host.
-        AccumulatorRebuildMemorySize(8)
-    }
-}
-
-impl AccumulatorRebuildMemorySize {
-    /// Convert to bytes, saturating instead of overflowing on an absurd configured value.
-    pub fn to_byte_count(&self) -> usize {
-        self.0.saturating_mul(1024 * 1024 * 1024)
     }
 }
 
@@ -162,9 +112,9 @@ pub struct DatabaseConfig {
     pub sync_checkpoint_interval: u64,
 }
 
-/// Default [`DatabaseConfig::sync_checkpoint_interval`]: 120 seconds (2 minutes).
+/// Default [`DatabaseConfig::sync_checkpoint_interval`]: the store's.
 fn default_sync_checkpoint_interval() -> u64 {
-    120
+    DEFAULT_SYNC_CHECKPOINT_INTERVAL_SECS
 }
 
 impl Default for DatabaseConfig {
@@ -204,19 +154,5 @@ mod tests {
             AccumulatorRebuildMemorySize(8)
         );
         assert_eq!(database.sync_checkpoint_interval, 120);
-    }
-
-    #[test]
-    fn budget_byte_counts_saturate_instead_of_overflowing() {
-        assert_eq!(
-            SyncWriteBatchSize(8).to_byte_count(),
-            8 * 1024 * 1024 * 1024
-        );
-        assert_eq!(
-            AccumulatorRebuildMemorySize(8).to_byte_count(),
-            8 * 1024 * 1024 * 1024
-        );
-        // An absurd configured value saturates rather than wrapping to a tiny (or zero) budget.
-        assert_eq!(SyncWriteBatchSize(usize::MAX).to_byte_count(), usize::MAX);
     }
 }

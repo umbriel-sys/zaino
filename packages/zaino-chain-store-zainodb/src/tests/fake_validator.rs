@@ -249,7 +249,7 @@ fn fake_blocks_from_vectors(blocks: &[super::vectors::VectorBlock]) -> Vec<FakeB
     blocks
         .iter()
         .map(|vector| {
-            let block = zaino_convert_zebra::block_from_zebra(
+            let block = zaino_primitives::zebra::block_from_zebra(
                 &vector.zebra_block,
                 zaino_primitives::types::ChainMetadata::new(
                     vector_tree_size(vector.sapling_tree_size),

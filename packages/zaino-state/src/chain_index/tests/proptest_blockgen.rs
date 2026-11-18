@@ -6,6 +6,7 @@ use std::{
 };
 use zaino_chain::ChainViewSnapshot as _;
 
+use crate::legacy::config::{DatabaseConfig, StorageConfig};
 use futures::stream::FuturesUnordered;
 use proptest::{
     prelude::{Arbitrary as _, BoxedStrategy, Just},
@@ -13,7 +14,7 @@ use proptest::{
 };
 use rand::seq::IndexedRandom;
 use tokio_stream::StreamExt as _;
-use zaino_common::{network::ActivationHeights, DatabaseConfig, StorageConfig};
+use zaino_primitives::types::ActivationHeights;
 use zebra_chain::{
     block::arbitrary::{self, LedgerStateOverride},
     fmt::SummaryDebug,
@@ -1104,8 +1105,11 @@ impl ProptestMockchain {
         let block = zebra_chain::block::Block::zcash_deserialize(bytes)
             .map_err(|error| format!("proptest block did not deserialize: {error}"))?;
         // The proptest chains carry no commitment trees, so every pool is empty.
-        zaino_convert_zebra::block_from_zebra(&block, zaino_primitives::types::ChainMetadata::ZERO)
-            .map_err(|error| format!("proptest block did not convert: {error}"))
+        zaino_primitives::zebra::block_from_zebra(
+            &block,
+            zaino_primitives::types::ChainMetadata::ZERO,
+        )
+        .map_err(|error| format!("proptest block did not convert: {error}"))
     }
 
     fn serialize(block: &zebra_chain::block::Block) -> Result<Vec<u8>, String> {

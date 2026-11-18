@@ -1,9 +1,10 @@
-//! Conversion: `zebra_chain` types → `zaino_primitives` domain types.
+//! Conversion: `zebra_chain` types → domain types (feature `zebra`).
 //!
-//! Each function maps one zebra type to one domain type.
-//! The `block_from_zebra` entry point composes them.
+//! Each function maps one zebra type to one domain type, as a named function
+//! and never a `From`: the zebra → domain step is the validation of a foreign
+//! value. The `block_from_zebra` entry point composes them.
 
-use zaino_primitives::types::{
+use crate::types::{
     Block, BlockCommitments, BlockHash, BlockHeader, ChainMetadata, CompactCiphertext,
     CompactCiphertextLength, CompactDifficulty, CompactDifficultyError, EphemeralKey,
     EquihashSolution, Height, MerkleRoot, NoteCommitment, Nullifier, OrchardAction, OrchardData,
@@ -105,29 +106,6 @@ fn solution_from_zebra(solution: zebra_chain::work::equihash::Solution) -> Equih
         zebra_chain::work::equihash::Solution::Common(bytes) => EquihashSolution::Standard(bytes),
         zebra_chain::work::equihash::Solution::Regtest(bytes) => EquihashSolution::Regtest(bytes),
     }
-}
-
-/// Convert from pre-parsed header components (from ReadRequest::BlockHeader).
-/// No block deserialization needed at all.
-pub fn header_from_parts(
-    header: &zebra_chain::block::Header,
-    hash: zebra_chain::block::Hash,
-    height: zebra_chain::block::Height,
-) -> Result<BlockHeader, ConvertError> {
-    Ok(BlockHeader {
-        hash: BlockHash::from(hash.0),
-        version: header.version,
-        prev_hash: BlockHash::from(header.previous_block_hash.0),
-        height: Height::try_from(height.0).map_err(|e| ConvertError::Height(e.to_string()))?,
-        time: header.time.timestamp() as u32,
-        merkle_root: MerkleRoot::from(header.merkle_root.0),
-        block_commitments: BlockCommitments::from(*header.commitment_bytes),
-        bits: CompactDifficulty::try_from_be_bytes(
-            header.difficulty_threshold.bytes_in_display_order(),
-        )?,
-        nonce: *header.nonce,
-        solution: solution_from_zebra(header.solution),
-    })
 }
 
 /// Convert one zebra transaction into the domain's.
@@ -383,7 +361,7 @@ mod difficulty_agreement {
 
     use proptest::prelude::*;
 
-    use zaino_primitives::types::{CompactDifficulty, CompactDifficultyError};
+    use crate::types::{CompactDifficulty, CompactDifficultyError};
 
     /// Both pipeline judgements at once: `None` for a rejected encoding,
     /// `Some(None)` for a well-formed target whose work does not fit `u128`,

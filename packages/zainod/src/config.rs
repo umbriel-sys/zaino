@@ -18,10 +18,13 @@ use tracing::info;
 use tracing::warn;
 
 use crate::error::IndexerError;
-use zaino_common::{
-    try_resolve_address, AddressResolution, Network, ServiceConfig, StorageConfig, ValidatorConfig,
-};
+use zaino_primitives::types::Network;
+use zaino_rpc::net::{try_resolve_address, AddressResolution};
 use zaino_serve::server::config::{GrpcServerConfig, JsonRpcServerConfig};
+use zaino_state::legacy::config::{ServiceConfig, StorageConfig};
+
+mod validator;
+pub use validator::ValidatorConfig;
 use zaino_state::{
     CommonBackendConfig, DirectConnectionConfig, DonationAddress, NodeBackedIndexerServiceConfig,
     ValidatorConnectionType,
@@ -389,17 +392,17 @@ impl Default for ZainodConfig {
 
 /// Returns the default path for Zaino's ephemeral authentication cookie.
 pub fn default_ephemeral_cookie_path() -> PathBuf {
-    zaino_common::xdg::resolve_path_with_xdg_runtime_defaults("zaino/.cookie")
+    zaino_state::legacy::xdg::resolve_path_with_xdg_runtime_defaults("zaino/.cookie")
 }
 
 /// Loads the default file path for zebra's local db.
 pub fn default_zebra_db_path() -> PathBuf {
-    zaino_common::xdg::resolve_path_with_xdg_cache_defaults("zebra")
+    zaino_state::legacy::xdg::resolve_path_with_xdg_cache_defaults("zebra")
 }
 
 /// Resolves a hostname to a SocketAddr.
 fn fetch_socket_addr_from_hostname(address: &str) -> Result<SocketAddr, IndexerError> {
-    zaino_common::net::resolve_socket_addr(address)
+    zaino_rpc::net::resolve_socket_addr(address)
         .map_err(|e| IndexerError::ConfigError(format!("Invalid address '{address}': {e}")))
 }
 

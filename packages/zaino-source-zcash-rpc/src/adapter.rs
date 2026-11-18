@@ -1,4 +1,4 @@
-//! Trait implementations: zaino-source query traits on [`ZebraRpcAdapter`].
+//! Trait implementations: zaino-source query traits on [`ZcashRpcAdapter`].
 
 use zaino_primitives::types::{Block, BlockHash, ChainMetadata, Height, TransactionId, Treestate};
 use zaino_rpc::RpcClient;
@@ -9,23 +9,42 @@ use zebra_chain::serialization::ZcashDeserializeInto;
 
 use crate::parse;
 
-/// Zebra JSON-RPC adapter.
+/// Zcash JSON-RPC adapter.
 ///
 /// Implements zaino-source query traits by delegating to an [`RpcClient`],
-/// deserializing via `zebra-chain`, and converting to domain types.
+/// parsing replies as the zcash RPC spec defines them (raw blocks are
+/// deserialized with `zebra-chain`), and converting to domain types.
 /// Single-attempt — wrap with [`zaino_source::ValidatorClient`] for retries.
-pub struct ZebraRpcAdapter {
+pub struct ZcashRpcAdapter {
     rpc: RpcClient,
+    quirks: Quirks,
 }
 
-impl ZebraRpcAdapter {
-    /// Wrap an existing [`RpcClient`].
+impl ZcashRpcAdapter {
+    /// Wrap an existing [`RpcClient`], reading every reply as the spec says.
     pub fn new(rpc: RpcClient) -> Self {
-        Self { rpc }
+        Self::with_quirks(rpc, Quirks::default())
+    }
+
+    /// Wrap an existing [`RpcClient`], reading the replies the spec leaves to
+    /// the node through `quirks`.
+    pub fn with_quirks(rpc: RpcClient, quirks: Quirks) -> Self {
+        Self { rpc, quirks }
     }
 }
 
-impl zaino_source::ValidatorSource for ZebraRpcAdapter {
+/// Readings of the replies the zcash RPC spec leaves to the node, supplied by
+/// the crate that knows which node answers. `Quirks::default()` reads every
+/// reply as the spec says.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct Quirks {
+    /// Reads the node's refusal of an address query that matched too many
+    /// rows, answering the cap. The spec has no such refusal: without this,
+    /// every such reply is a failure.
+    pub result_cap: Option<fn(&NonDomainError) -> Option<usize>>,
+}
+
+impl zaino_source::ValidatorSource for ZcashRpcAdapter {
     // The RPC adapter's non-domain faults are already the seam type, via
     // `From<RpcError> for NonDomainError`; the identity mapping applies.
     type NonDomain = NonDomainError;
@@ -177,26 +196,14 @@ where
     }
 }
 
-/// The cap zebrad 7 reports when an address query matches too much.
-///
-/// zebrad answers `-8` with `more than {cap} … match; …`. `-8` is overloaded
-/// (a malformed envelope too), so only that message shape is read as the cap.
-fn result_cap_exceeded(error: &NonDomainError) -> Option<usize> {
-    if !matches!(error.mode, FailureMode::RpcError(-8)) {
-        return None;
-    }
-    let rest = error.message.strip_prefix("more than ")?;
-    let (cap, rest) = rest.split_once(' ')?;
-    rest.contains(" match").then(|| cap.parse().ok()).flatten()
-}
-
 /// Classifies a transport failure on an address-keyed method.
 ///
 /// Separate from [`absent_or_fetch`] because these methods reject the caller's
 /// *address*, not a missing object, and only `-5` says so — see
-/// [`INVALID_ADDRESS_CODE`]. `too_many` maps zebrad's result cap, for the
-/// methods that have one.
+/// [`INVALID_ADDRESS_CODE`]. `too_many` maps the node's result cap, read by
+/// [`Quirks::result_cap`], for the methods that have one.
 fn invalid_address_or_fetch<E>(
+    quirks: &Quirks,
     error: zaino_rpc::RpcError,
     invalid: impl FnOnce(String) -> E,
     too_many: impl FnOnce(usize) -> Option<E>,
@@ -208,13 +215,14 @@ where
     if is_invalid_address(&error) {
         return QueryError::Domain(invalid(error.message));
     }
-    match result_cap_exceeded(&error).and_then(too_many) {
+    let cap = quirks.result_cap.and_then(|read| read(&error));
+    match cap.and_then(too_many) {
         Some(rejection) => QueryError::Domain(rejection),
         None => QueryError::NonDomain(error),
     }
 }
 
-impl zaino_source::OneShotGetBlock for ZebraRpcAdapter {
+impl zaino_source::OneShotGetBlock for ZcashRpcAdapter {
     #[cfg_attr(feature = "tracing", tracing::instrument(skip(self), fields(h = u32::from(height))))]
     async fn get_block(&self, height: Height) -> Result<Block, QueryError<GetBlockError>> {
         // Fetch raw hex block via getblock(height, 0).
@@ -242,12 +250,12 @@ impl zaino_source::OneShotGetBlock for ZebraRpcAdapter {
         // them off this block.
         let chain_metadata = ChainMetadata::ZERO;
 
-        zaino_convert_zebra::block_from_zebra(&zebra_block, chain_metadata)
+        zaino_primitives::zebra::block_from_zebra(&zebra_block, chain_metadata)
             .map_err(|e| NonDomainError::from_cause(FailureMode::Parse, e).into())
     }
 }
 
-impl zaino_source::OneShotGetChainTip for ZebraRpcAdapter {
+impl zaino_source::OneShotGetChainTip for ZcashRpcAdapter {
     #[cfg_attr(feature = "tracing", tracing::instrument(skip(self)))]
     async fn get_chain_tip(&self) -> Result<(BlockHash, Height), QueryError<GetChainTipError>> {
         let hash_value = self
@@ -268,7 +276,7 @@ impl zaino_source::OneShotGetChainTip for ZebraRpcAdapter {
     }
 }
 
-impl zaino_source::OneShotGetPreIndexCompactBlock for ZebraRpcAdapter {
+impl zaino_source::OneShotGetPreIndexCompactBlock for ZcashRpcAdapter {
     #[cfg_attr(feature = "tracing", tracing::instrument(skip(self), fields(h = u32::from(height))))]
     async fn get_pre_index_compact_block(
         &self,
@@ -287,7 +295,7 @@ impl zaino_source::OneShotGetPreIndexCompactBlock for ZebraRpcAdapter {
     }
 }
 
-impl zaino_source::OneShotGetTreestate for ZebraRpcAdapter {
+impl zaino_source::OneShotGetTreestate for ZcashRpcAdapter {
     #[cfg_attr(feature = "tracing", tracing::instrument(skip(self), fields(h = u32::from(height))))]
     async fn get_treestate(
         &self,
@@ -328,7 +336,7 @@ fn addresses_param(addresses: Vec<String>) -> serde_json::Value {
     serde_json::json!({ "addresses": addresses })
 }
 
-impl ZebraRpcAdapter {
+impl ZcashRpcAdapter {
     /// Issue a call and parse its result, classifying transport failures with
     /// `classify` and parse failures as [`QueryError::NonDomain`].
     ///
@@ -408,7 +416,7 @@ impl ZebraRpcAdapter {
         E: std::fmt::Debug + std::fmt::Display,
     {
         self.call_parsed_classified(method, params, None, parse, |error| {
-            invalid_address_or_fetch(error, invalid, too_many)
+            invalid_address_or_fetch(&self.quirks, error, invalid, too_many)
         })
         .await
     }
@@ -447,7 +455,7 @@ impl ZebraRpcAdapter {
     }
 }
 
-impl zaino_source::OneShotGetBlockByHash for ZebraRpcAdapter {
+impl zaino_source::OneShotGetBlockByHash for ZcashRpcAdapter {
     async fn get_block_by_hash(
         &self,
         hash: BlockHash,
@@ -468,12 +476,12 @@ impl zaino_source::OneShotGetBlockByHash for ZebraRpcAdapter {
 
         // Tree sizes are indexed state, not block data — see `GetBlock`.
         let chain_metadata = ChainMetadata::ZERO;
-        zaino_convert_zebra::block_from_zebra(&zebra_block, chain_metadata)
+        zaino_primitives::zebra::block_from_zebra(&zebra_block, chain_metadata)
             .map_err(|e| NonDomainError::from_cause(FailureMode::Parse, e).into())
     }
 }
 
-impl zaino_source::OneShotGetBestBlockHeight for ZebraRpcAdapter {
+impl zaino_source::OneShotGetBestBlockHeight for ZcashRpcAdapter {
     async fn get_best_block_height(
         &self,
     ) -> Result<Height, QueryError<zaino_source::GetBestBlockHeightError>> {
@@ -482,7 +490,7 @@ impl zaino_source::OneShotGetBestBlockHeight for ZebraRpcAdapter {
     }
 }
 
-impl zaino_source::OneShotGetBlockVerbose for ZebraRpcAdapter {
+impl zaino_source::OneShotGetBlockVerbose for ZcashRpcAdapter {
     async fn get_block_verbose(
         &self,
         height: Height,
@@ -502,7 +510,7 @@ impl zaino_source::OneShotGetBlockVerbose for ZebraRpcAdapter {
     }
 }
 
-impl zaino_source::OneShotGetBlockVerboseByHash for ZebraRpcAdapter {
+impl zaino_source::OneShotGetBlockVerboseByHash for ZcashRpcAdapter {
     async fn get_block_verbose_by_hash(
         &self,
         hash: BlockHash,
@@ -519,7 +527,7 @@ impl zaino_source::OneShotGetBlockVerboseByHash for ZebraRpcAdapter {
     }
 }
 
-impl zaino_source::OneShotGetBlockHeader for ZebraRpcAdapter {
+impl zaino_source::OneShotGetBlockHeader for ZcashRpcAdapter {
     async fn get_block_header(
         &self,
         hash: BlockHash,
@@ -541,7 +549,7 @@ impl zaino_source::OneShotGetBlockHeader for ZebraRpcAdapter {
     }
 }
 
-impl zaino_source::OneShotGetRawBlockHeader for ZebraRpcAdapter {
+impl zaino_source::OneShotGetRawBlockHeader for ZcashRpcAdapter {
     async fn get_raw_block_header(
         &self,
         hash: BlockHash,
@@ -557,7 +565,7 @@ impl zaino_source::OneShotGetRawBlockHeader for ZebraRpcAdapter {
     }
 }
 
-impl zaino_source::OneShotGetBlockDeltas for ZebraRpcAdapter {
+impl zaino_source::OneShotGetBlockDeltas for ZcashRpcAdapter {
     async fn get_block_deltas(
         &self,
         hash: BlockHash,
@@ -575,7 +583,7 @@ impl zaino_source::OneShotGetBlockDeltas for ZebraRpcAdapter {
     }
 }
 
-impl zaino_source::OneShotGetChainTips for ZebraRpcAdapter {
+impl zaino_source::OneShotGetChainTips for ZcashRpcAdapter {
     async fn get_chain_tips(
         &self,
     ) -> Result<
@@ -587,7 +595,7 @@ impl zaino_source::OneShotGetChainTips for ZebraRpcAdapter {
     }
 }
 
-impl zaino_source::OneShotGetDifficulty for ZebraRpcAdapter {
+impl zaino_source::OneShotGetDifficulty for ZcashRpcAdapter {
     async fn get_difficulty(
         &self,
     ) -> Result<zaino_primitives::types::Difficulty, QueryError<zaino_source::GetDifficultyError>>
@@ -597,7 +605,7 @@ impl zaino_source::OneShotGetDifficulty for ZebraRpcAdapter {
     }
 }
 
-impl zaino_source::OneShotGetBlockchainInfo for ZebraRpcAdapter {
+impl zaino_source::OneShotGetBlockchainInfo for ZcashRpcAdapter {
     async fn get_blockchain_info(
         &self,
     ) -> Result<
@@ -609,7 +617,7 @@ impl zaino_source::OneShotGetBlockchainInfo for ZebraRpcAdapter {
     }
 }
 
-impl zaino_source::OneShotGetMempoolTxids for ZebraRpcAdapter {
+impl zaino_source::OneShotGetMempoolTxids for ZcashRpcAdapter {
     async fn get_mempool_txids(
         &self,
     ) -> Result<Vec<TransactionId>, QueryError<zaino_source::GetMempoolTxidsError>> {
@@ -626,7 +634,7 @@ impl zaino_source::OneShotGetMempoolTxids for ZebraRpcAdapter {
     }
 }
 
-impl zaino_source::OneShotGetMempoolMetadata for ZebraRpcAdapter {
+impl zaino_source::OneShotGetMempoolMetadata for ZcashRpcAdapter {
     async fn get_mempool_metadata(
         &self,
     ) -> Result<Vec<zaino_source::MempoolTxMeta>, QueryError<zaino_source::GetMempoolMetadataError>>
@@ -651,7 +659,7 @@ impl zaino_source::OneShotGetMempoolMetadata for ZebraRpcAdapter {
     }
 }
 
-impl zaino_source::OneShotGetRawMempoolTransaction for ZebraRpcAdapter {
+impl zaino_source::OneShotGetRawMempoolTransaction for ZcashRpcAdapter {
     async fn get_raw_mempool_transaction(
         &self,
         txid: TransactionId,
@@ -673,7 +681,7 @@ impl zaino_source::OneShotGetRawMempoolTransaction for ZebraRpcAdapter {
     }
 }
 
-impl zaino_source::OneShotGetMempoolSourceTip for ZebraRpcAdapter {
+impl zaino_source::OneShotGetMempoolSourceTip for ZcashRpcAdapter {
     async fn get_mempool_source_tip(
         &self,
     ) -> Result<(BlockHash, Height), QueryError<std::convert::Infallible>> {
@@ -689,7 +697,7 @@ impl zaino_source::OneShotGetMempoolSourceTip for ZebraRpcAdapter {
     }
 }
 
-impl zaino_source::OneShotGetAddressBalance for ZebraRpcAdapter {
+impl zaino_source::OneShotGetAddressBalance for ZcashRpcAdapter {
     async fn get_address_balance(
         &self,
         addresses: Vec<String>,
@@ -708,7 +716,7 @@ impl zaino_source::OneShotGetAddressBalance for ZebraRpcAdapter {
     }
 }
 
-impl zaino_source::OneShotGetAddressDeltas for ZebraRpcAdapter {
+impl zaino_source::OneShotGetAddressDeltas for ZcashRpcAdapter {
     async fn get_address_deltas(
         &self,
         addresses: Vec<String>,
@@ -734,7 +742,7 @@ impl zaino_source::OneShotGetAddressDeltas for ZebraRpcAdapter {
     }
 }
 
-impl zaino_source::OneShotGetAddressTxids for ZebraRpcAdapter {
+impl zaino_source::OneShotGetAddressTxids for ZcashRpcAdapter {
     async fn get_address_txids(
         &self,
         addresses: Vec<String>,
@@ -757,7 +765,7 @@ impl zaino_source::OneShotGetAddressTxids for ZebraRpcAdapter {
     }
 }
 
-impl zaino_source::OneShotGetAddressUtxos for ZebraRpcAdapter {
+impl zaino_source::OneShotGetAddressUtxos for ZcashRpcAdapter {
     async fn get_address_utxos(
         &self,
         addresses: Vec<String>,
@@ -774,7 +782,7 @@ impl zaino_source::OneShotGetAddressUtxos for ZebraRpcAdapter {
     }
 }
 
-impl zaino_source::OneShotGetTreestateByHash for ZebraRpcAdapter {
+impl zaino_source::OneShotGetTreestateByHash for ZcashRpcAdapter {
     async fn get_treestate_by_hash(
         &self,
         hash: BlockHash,
@@ -789,7 +797,7 @@ impl zaino_source::OneShotGetTreestateByHash for ZebraRpcAdapter {
     }
 }
 
-impl zaino_source::OneShotGetCommitmentTreeRoots for ZebraRpcAdapter {
+impl zaino_source::OneShotGetCommitmentTreeRoots for ZcashRpcAdapter {
     async fn get_commitment_tree_roots(
         &self,
         block: BlockHash,
@@ -807,7 +815,7 @@ impl zaino_source::OneShotGetCommitmentTreeRoots for ZebraRpcAdapter {
     }
 }
 
-impl zaino_source::OneShotGetCommitmentTreeRootsByHeight for ZebraRpcAdapter {
+impl zaino_source::OneShotGetCommitmentTreeRootsByHeight for ZcashRpcAdapter {
     async fn get_commitment_tree_roots_by_height(
         &self,
         height: Height,
@@ -825,7 +833,7 @@ impl zaino_source::OneShotGetCommitmentTreeRootsByHeight for ZebraRpcAdapter {
     }
 }
 
-impl zaino_source::OneShotGetSubtreeRoots for ZebraRpcAdapter {
+impl zaino_source::OneShotGetSubtreeRoots for ZcashRpcAdapter {
     async fn get_subtree_roots(
         &self,
         pool: zaino_primitives::types::ShieldedPool,
@@ -849,7 +857,7 @@ impl zaino_source::OneShotGetSubtreeRoots for ZebraRpcAdapter {
     }
 }
 
-impl zaino_source::OneShotGetSpentInfo for ZebraRpcAdapter {
+impl zaino_source::OneShotGetSpentInfo for ZcashRpcAdapter {
     async fn get_spent_info(
         &self,
         outpoint: zaino_primitives::types::rpc::SpentOutpoint,
@@ -883,7 +891,7 @@ impl zaino_source::OneShotGetSpentInfo for ZebraRpcAdapter {
     }
 }
 
-impl zaino_source::OneShotGetTxOut for ZebraRpcAdapter {
+impl zaino_source::OneShotGetTxOut for ZcashRpcAdapter {
     async fn get_tx_out(
         &self,
         txid: TransactionId,
@@ -901,7 +909,7 @@ impl zaino_source::OneShotGetTxOut for ZebraRpcAdapter {
     }
 }
 
-impl zaino_source::OneShotSendRawTransaction for ZebraRpcAdapter {
+impl zaino_source::OneShotSendRawTransaction for ZcashRpcAdapter {
     async fn send_raw_transaction(
         &self,
         transaction: Vec<u8>,
@@ -923,7 +931,7 @@ impl zaino_source::OneShotSendRawTransaction for ZebraRpcAdapter {
     }
 }
 
-impl zaino_source::OneShotGetNodeInfo for ZebraRpcAdapter {
+impl zaino_source::OneShotGetNodeInfo for ZcashRpcAdapter {
     async fn get_node_info(
         &self,
     ) -> Result<zaino_primitives::types::rpc::NodeInfo, QueryError<zaino_source::GetNodeInfoError>>
@@ -933,7 +941,7 @@ impl zaino_source::OneShotGetNodeInfo for ZebraRpcAdapter {
     }
 }
 
-impl zaino_source::OneShotGetPeerInfo for ZebraRpcAdapter {
+impl zaino_source::OneShotGetPeerInfo for ZcashRpcAdapter {
     async fn get_peer_info(
         &self,
     ) -> Result<
@@ -945,7 +953,7 @@ impl zaino_source::OneShotGetPeerInfo for ZebraRpcAdapter {
     }
 }
 
-impl zaino_source::OneShotGetMiningInfo for ZebraRpcAdapter {
+impl zaino_source::OneShotGetMiningInfo for ZcashRpcAdapter {
     async fn get_mining_info(
         &self,
     ) -> Result<
@@ -957,7 +965,7 @@ impl zaino_source::OneShotGetMiningInfo for ZebraRpcAdapter {
     }
 }
 
-impl zaino_source::OneShotGetStandardFee for ZebraRpcAdapter {
+impl zaino_source::OneShotGetStandardFee for ZcashRpcAdapter {
     async fn get_standard_fee(
         &self,
     ) -> Result<
@@ -977,7 +985,7 @@ impl zaino_source::OneShotGetStandardFee for ZebraRpcAdapter {
     }
 }
 
-impl zaino_source::OneShotGetBlockSubsidy for ZebraRpcAdapter {
+impl zaino_source::OneShotGetBlockSubsidy for ZcashRpcAdapter {
     async fn get_block_subsidy(
         &self,
         height: Height,
@@ -996,7 +1004,7 @@ impl zaino_source::OneShotGetBlockSubsidy for ZebraRpcAdapter {
     }
 }
 
-impl zaino_source::OneShotGetNetworkSolPs for ZebraRpcAdapter {
+impl zaino_source::OneShotGetNetworkSolPs for ZcashRpcAdapter {
     async fn get_network_sol_ps(
         &self,
         blocks: Option<u32>,
@@ -1018,14 +1026,14 @@ impl zaino_source::OneShotGetNetworkSolPs for ZebraRpcAdapter {
 
 /// The RPC adapter owns no background work: it holds a connection pool that
 /// drops with it, so there is nothing to release.
-impl zaino_source::SourceLifecycle for ZebraRpcAdapter {}
+impl zaino_source::SourceLifecycle for ZcashRpcAdapter {}
 
 /// Reaching the validator over request/response gives no push path, so this
 /// adapter has no block-arrival signal to offer and inherits `None`. Consumers
 /// pace themselves on their own timer.
-impl zaino_source::SubscribeBlocks for ZebraRpcAdapter {}
+impl zaino_source::SubscribeBlocks for ZcashRpcAdapter {}
 
-impl zaino_source::OneShotGetTransaction for ZebraRpcAdapter {
+impl zaino_source::OneShotGetTransaction for ZcashRpcAdapter {
     async fn get_transaction(
         &self,
         txid: TransactionId,
@@ -1048,7 +1056,7 @@ impl zaino_source::OneShotGetTransaction for ZebraRpcAdapter {
     }
 }
 
-impl zaino_source::OneShotGetRawBlock for ZebraRpcAdapter {
+impl zaino_source::OneShotGetRawBlock for ZcashRpcAdapter {
     async fn get_raw_block(
         &self,
         height: Height,
@@ -1064,7 +1072,7 @@ impl zaino_source::OneShotGetRawBlock for ZebraRpcAdapter {
     }
 }
 
-impl zaino_source::OneShotGetRawBlockByHash for ZebraRpcAdapter {
+impl zaino_source::OneShotGetRawBlockByHash for ZcashRpcAdapter {
     async fn get_raw_block_by_hash(
         &self,
         hash: BlockHash,
@@ -1167,6 +1175,7 @@ mod classification_tests {
         use zaino_source::GetAddressBalanceError;
 
         let rejected: QueryError<GetAddressBalanceError> = invalid_address_or_fetch(
+            &Quirks::default(),
             rpc(-5, "invalid address"),
             GetAddressBalanceError::InvalidAddress,
             |_| None,
@@ -1177,6 +1186,7 @@ mod classification_tests {
         ));
 
         let malformed: QueryError<GetAddressBalanceError> = invalid_address_or_fetch(
+            &Quirks::default(),
             rpc(-8, "start must be less than end"),
             GetAddressBalanceError::InvalidAddress,
             |_| None,
@@ -1187,31 +1197,41 @@ mod classification_tests {
         );
     }
 
-    /// zebrad 7's result cap (`-8 more than {cap} … match`) is the port's
-    /// `TooManyResults`; any other `-8` stays a failure.
+    /// A result cap is the node's to read: through a quirk it is the port's
+    /// `TooManyResults`; without one, the same reply stays a failure, as does
+    /// any `-8` the quirk does not read.
     #[test]
-    fn zebrads_result_cap_is_too_many_results() {
+    fn a_result_cap_is_read_only_through_the_quirk_table() {
         use zaino_source::GetAddressTxidsError;
 
-        let classify = |error| {
-            invalid_address_or_fetch(error, GetAddressTxidsError::InvalidAddress, |limit| {
-                Some(GetAddressTxidsError::TooManyResults { limit })
-            })
+        fn cap(error: &NonDomainError) -> Option<usize> {
+            error
+                .message
+                .strip_prefix("cap ")
+                .and_then(|cap| cap.parse().ok())
+        }
+        let classify = |quirks: &Quirks, error| {
+            invalid_address_or_fetch(
+                quirks,
+                error,
+                GetAddressTxidsError::InvalidAddress,
+                |limit| Some(GetAddressTxidsError::TooManyResults { limit }),
+            )
+        };
+        let quirks = Quirks {
+            result_cap: Some(cap),
         };
 
         assert!(matches!(
-            classify(rpc(
-                -8,
-                "more than 100000 transactions match; narrow the height range"
-            )),
+            classify(&quirks, rpc(-8, "cap 100000")),
             QueryError::Domain(GetAddressTxidsError::TooManyResults { limit: 100_000 })
         ));
         assert!(matches!(
-            classify(rpc(-8, "start must be less than end")),
+            classify(&quirks, rpc(-8, "start must be less than end")),
             QueryError::NonDomain(_)
         ));
         assert!(matches!(
-            classify(rpc(-1, "more than 100000 transactions match")),
+            classify(&Quirks::default(), rpc(-8, "cap 100000")),
             QueryError::NonDomain(_)
         ));
     }

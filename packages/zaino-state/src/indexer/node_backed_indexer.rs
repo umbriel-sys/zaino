@@ -337,7 +337,7 @@ fn utxo_reply(utxo: zaino_primitives::types::Utxo) -> Result<GetAddressUtxosRepl
 fn test_service_parts(
     network: zebra_chain::parameters::Network,
 ) -> (ServiceMetadata, CommonBackendConfig) {
-    let network_kind = zaino_common::Network::from(network.clone());
+    let network_kind = zaino_primitives::types::Network::from_zebra(&network);
     (
         ServiceMetadata::new(
             get_build_info("test".to_string()),
@@ -350,8 +350,8 @@ fn test_service_parts(
             None,
             None,
             None,
-            zaino_common::ServiceConfig::default(),
-            zaino_common::StorageConfig::default(),
+            crate::legacy::config::ServiceConfig::default(),
+            crate::legacy::config::StorageConfig::default(),
             true,
             network_kind,
             None,
@@ -1462,7 +1462,7 @@ impl<
                                 ))
                             })
                             .and_then(|transaction| {
-                                zaino_convert_zebra::transaction_from_zebra(&transaction)
+                                zaino_primitives::zebra::transaction_from_zebra(&transaction)
                                     .map_err(|e| tonic::Status::unknown(e.to_string()))
                             })
                             .map(|transaction| {

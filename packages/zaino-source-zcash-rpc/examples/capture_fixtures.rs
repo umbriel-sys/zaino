@@ -1,7 +1,7 @@
 //! Capture raw JSON-RPC responses for test fixtures.
 //!
 //! Usage:
-//!   cargo run -p zaino-source-zebra-rpc --example capture_fixtures
+//!   cargo run -p zaino-source-zcash-rpc --example capture_fixtures
 //!
 //! Prints the raw hex string returned by `getblock` (verbosity=0) for each
 //! fixture height. These are stored as test fixtures for offline unit tests.

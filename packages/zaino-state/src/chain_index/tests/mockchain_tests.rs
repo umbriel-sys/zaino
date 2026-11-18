@@ -1411,7 +1411,7 @@ async fn get_difficulty() {
 async fn node_backed_indexer_service_serves_latest_block() {
     use crate::indexer::node_backed_indexer::NodeBackedIndexerServiceSubscriber;
     use crate::LightWalletIndexer as _;
-    use zaino_common::network::ActivationHeights;
+    use zaino_primitives::types::ActivationHeights;
 
     let (blocks, _indexer, index_reader, _mockchain) =
         load_test_vectors_and_sync_chain_index(MockchainMode::Static).await;
@@ -1512,7 +1512,7 @@ async fn z_get_block_invalid_identifier_keeps_legacy_error_code() {
 #[tokio::test(flavor = "multi_thread")]
 async fn service_drop_survives_thread_without_runtime() {
     use crate::indexer::node_backed_indexer::NodeBackedIndexerService;
-    use zaino_common::network::ActivationHeights;
+    use zaino_primitives::types::ActivationHeights;
 
     let (_blocks, indexer, _index_reader, _mockchain) =
         load_test_vectors_and_sync_chain_index(MockchainMode::Static).await;
@@ -1536,7 +1536,7 @@ async fn service_drop_survives_thread_without_runtime() {
 #[tokio::test(flavor = "multi_thread")]
 async fn service_drop_survives_current_thread_runtime() {
     use crate::indexer::node_backed_indexer::NodeBackedIndexerService;
-    use zaino_common::network::ActivationHeights;
+    use zaino_primitives::types::ActivationHeights;
 
     let (_blocks, indexer, _index_reader, _mockchain) =
         load_test_vectors_and_sync_chain_index(MockchainMode::Static).await;
@@ -1567,7 +1567,7 @@ async fn service_drop_survives_current_thread_runtime() {
 #[tokio::test(flavor = "multi_thread")]
 async fn chaintip_update_subscriber_absent_without_tip_stream() {
     use crate::indexer::node_backed_indexer::NodeBackedIndexerServiceSubscriber;
-    use zaino_common::network::ActivationHeights;
+    use zaino_primitives::types::ActivationHeights;
 
     let (_blocks, _indexer, index_reader, _mockchain) =
         load_test_vectors_and_sync_chain_index(MockchainMode::Static).await;

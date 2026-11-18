@@ -3,7 +3,7 @@
 use lmdb::{Cursor as _, Transaction as _, WriteFlags};
 use std::path::PathBuf;
 use tempfile::TempDir;
-use zaino_common::network::ActivationHeights;
+use zaino_primitives::types::ActivationHeights;
 
 use crate::config::{StoreSettings, ZainoDbConfig};
 use crate::entry::{StoredEntryFixed, StoredEntryVar};

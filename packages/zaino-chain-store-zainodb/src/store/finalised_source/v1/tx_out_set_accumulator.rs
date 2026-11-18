@@ -1839,6 +1839,7 @@ pub(crate) async fn assert_tx_out_set_info_accumulator_matches_transparent_data(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::config::SyncWriteBatchSize;
     use crate::config::ZainoDbConfig;
     use crate::store::FinalisedState;
     use crate::tests::finalised_state::v1::load_vectors_and_spawn_and_sync_v1_zaino_db;
@@ -1852,8 +1853,7 @@ mod tests {
     use tempfile::TempDir;
     use zaino_chain_store::ChainStoreConfig;
     use zaino_chain_store::TXOUT_SET_ENTRY_LEN;
-    use zaino_common::network::ActivationHeights;
-    use zaino_common::{DatabaseConfig, StorageConfig, SyncWriteBatchSize};
+    use zaino_primitives::types::ActivationHeights;
 
     fn p2pkh_out(value: u64) -> TxOutCompact {
         TxOutCompact::new(value, [0x11; 20], 0).expect("P2PKH script_type should be valid")
@@ -2237,21 +2237,12 @@ mod tests {
 
         let source = fake_validator_from_vectors(&blocks);
         let temp_dir: TempDir = tempfile::tempdir().unwrap();
-        let storage = StorageConfig {
-            database: DatabaseConfig {
-                path: temp_dir.path().to_path_buf(),
-                sync_write_batch_size,
-                ..Default::default()
-            },
-            ..Default::default()
-        };
+        let mut db_config = ZainoDbConfig::new(ActivationHeights::default().to_regtest_network());
+        db_config.set_sync_write_batch_size(sync_write_batch_size);
 
         let zaino_db = FinalisedState::spawn(
             ChainStoreConfig::at_path(temp_dir.path()),
-            ZainoDbConfig::from_storage(
-                &storage,
-                ActivationHeights::default().to_regtest_network(),
-            ),
+            db_config,
             source.clone(),
         )
         .await

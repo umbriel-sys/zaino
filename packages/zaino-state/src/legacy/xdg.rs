@@ -13,7 +13,7 @@
 //! # Example
 //!
 //! ```
-//! use zaino_common::xdg::{resolve_path_with_xdg_cache_defaults, resolve_path_with_xdg_config_defaults};
+//! use zaino_state::legacy::xdg::{resolve_path_with_xdg_cache_defaults, resolve_path_with_xdg_config_defaults};
 //!
 //! // Resolves to $XDG_CONFIG_HOME/zaino/zainod.toml, or ~/.config/zaino/zainod.toml
 //! let config_path = resolve_path_with_xdg_config_defaults("zaino/zainod.toml");
@@ -122,7 +122,7 @@ fn resolve_path_with_xdg_defaults(dir: XdgDir, subpath: &str) -> PathBuf {
 /// # Example
 ///
 /// ```
-/// use zaino_common::xdg::resolve_path_with_xdg_config_defaults;
+/// use zaino_state::legacy::xdg::resolve_path_with_xdg_config_defaults;
 ///
 /// let path = resolve_path_with_xdg_config_defaults("zaino/zainod.toml");
 /// // Returns: $XDG_CONFIG_HOME/zaino/zainod.toml
@@ -140,7 +140,7 @@ pub fn resolve_path_with_xdg_config_defaults(subpath: &str) -> PathBuf {
 /// # Example
 ///
 /// ```
-/// use zaino_common::xdg::resolve_path_with_xdg_cache_defaults;
+/// use zaino_state::legacy::xdg::resolve_path_with_xdg_cache_defaults;
 ///
 /// let path = resolve_path_with_xdg_cache_defaults("zaino");
 /// // Returns: $XDG_CACHE_HOME/zaino
@@ -161,7 +161,7 @@ pub fn resolve_path_with_xdg_cache_defaults(subpath: &str) -> PathBuf {
 /// # Example
 ///
 /// ```
-/// use zaino_common::xdg::resolve_path_with_xdg_runtime_defaults;
+/// use zaino_state::legacy::xdg::resolve_path_with_xdg_runtime_defaults;
 ///
 /// let path = resolve_path_with_xdg_runtime_defaults("zaino/.cookie");
 /// // Returns: $XDG_RUNTIME_DIR/zaino/.cookie

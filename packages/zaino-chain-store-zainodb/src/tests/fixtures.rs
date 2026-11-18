@@ -240,7 +240,7 @@ pub fn test_store_config(
     (
         zaino_chain_store::ChainStoreConfig::at_path(path),
         crate::config::ZainoDbConfig::new(
-            zaino_common::network::ActivationHeights::default().to_regtest_network(),
+            zaino_primitives::types::ActivationHeights::default().to_regtest_network(),
         ),
     )
 }

@@ -20,7 +20,80 @@
 //! it. Those two are now one `Option<PathBuf>` on the neutral half.
 
 use zaino_chain_store::ChainStoreConfig;
-use zaino_common::{AccumulatorRebuildMemorySize, DatabaseSize, StorageConfig, SyncWriteBatchSize};
+
+/// Default [`ZainoDbConfig::sync_checkpoint_interval`]: 120 seconds (2 minutes).
+pub const DEFAULT_SYNC_CHECKPOINT_INTERVAL_SECS: u64 = 120;
+
+/// Database size limit in gigabytes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Deserialize, serde::Serialize)]
+#[serde(transparent)]
+pub struct DatabaseSize(pub usize);
+
+impl Default for DatabaseSize {
+    fn default() -> Self {
+        DatabaseSize(384) // Default to 384 GB
+    }
+}
+
+impl DatabaseSize {
+    /// Convert to bytes.
+    pub fn to_byte_count(&self) -> usize {
+        self.0 * 1024 * 1024 * 1024
+    }
+}
+
+/// Finalised-state bulk-sync write-batch memory budget, in gibibytes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Deserialize, serde::Serialize)]
+#[serde(transparent)]
+pub struct SyncWriteBatchSize(pub usize);
+
+impl Default for SyncWriteBatchSize {
+    fn default() -> Self {
+        // 8 GiB. This is a *heap* budget for buffered blocks only; lower it on a memory-constrained
+        // host (or a cgroup-limited container). A larger value does not make a small host faster — it
+        // just risks the OOM-killer, and a kill under `NO_SYNC` is what then corrupts the on-disk DB.
+        // (Previously 32 GiB, which OOM-killed small hosts.)
+        //
+        // Bulk sync is pipelined, so this bounds *one* batch and peak usage is up to twice it: the
+        // batch being committed stays resident while its successor fills.
+        SyncWriteBatchSize(8)
+    }
+}
+
+impl SyncWriteBatchSize {
+    /// Convert to bytes, saturating instead of overflowing on an absurd configured value.
+    pub fn to_byte_count(&self) -> usize {
+        self.0.saturating_mul(1024 * 1024 * 1024)
+    }
+}
+
+/// Memory budget (in gibibytes) for the from-genesis txout-set accumulator rebuild's in-RAM spent
+/// set.
+///
+/// Deliberately separate from [`SyncWriteBatchSize`]: the accumulator rebuild and the bulk-sync
+/// write batch are different operations with different peak-memory shapes. Coupling them caused a
+/// large block-buffer budget to be silently reused as the accumulator's per-shard cap, OOM-killing
+/// small hosts.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Deserialize, serde::Serialize)]
+#[serde(transparent)]
+pub struct AccumulatorRebuildMemorySize(pub usize);
+
+impl Default for AccumulatorRebuildMemorySize {
+    fn default() -> Self {
+        // 8 GiB. The rebuild auto-shards the spent set to keep each shard's `HashSet` within this
+        // budget, so raising it only trades fewer/larger passes (faster) for more peak RAM, and
+        // lowering it bounds peak RAM at the cost of more passes. Over-sharding is safe; a too-large
+        // budget on a small host is not — lower this on a memory-constrained host.
+        AccumulatorRebuildMemorySize(8)
+    }
+}
+
+impl AccumulatorRebuildMemorySize {
+    /// Convert to bytes, saturating instead of overflowing on an absurd configured value.
+    pub fn to_byte_count(&self) -> usize {
+        self.0.saturating_mul(1024 * 1024 * 1024)
+    }
+}
 
 /// The ZainoDB-specific half of a store's configuration.
 ///
@@ -48,25 +121,11 @@ impl ZainoDbConfig {
     /// wrong activation schedule writes wrong commitment-tree rows — so it is
     /// the one thing this cannot fill in, and therefore the only argument.
     pub fn new(network: zebra_chain::parameters::Network) -> Self {
-        Self::from_storage(&StorageConfig::default(), network)
-    }
-
-    /// The budgets an operator configured, against `network`.
-    ///
-    /// Takes the whole [`StorageConfig`] and reads the four budgets out of it,
-    /// ignoring its `path`: the path an operator configures reaches the store
-    /// through [`ChainStoreConfig::at_path`], so that the passthrough case is
-    /// the absence of a path rather than a flag beside one. The cache settings
-    /// are not read here either — nothing in this crate consults them.
-    pub fn from_storage(
-        storage: &StorageConfig,
-        network: zebra_chain::parameters::Network,
-    ) -> Self {
         Self {
-            size: storage.database.size,
-            sync_write_batch_size: storage.database.sync_write_batch_size,
-            accumulator_rebuild_memory_size: storage.database.accumulator_rebuild_memory_size,
-            sync_checkpoint_interval: storage.database.sync_checkpoint_interval,
+            size: DatabaseSize::default(),
+            sync_write_batch_size: SyncWriteBatchSize::default(),
+            accumulator_rebuild_memory_size: AccumulatorRebuildMemorySize::default(),
+            sync_checkpoint_interval: DEFAULT_SYNC_CHECKPOINT_INTERVAL_SECS,
             network,
         }
     }
@@ -131,5 +190,24 @@ pub(crate) struct StoreSettings {
 impl StoreSettings {
     pub(crate) fn new(store: ChainStoreConfig, db: ZainoDbConfig) -> Self {
         Self { store, db }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn budget_byte_counts_saturate_instead_of_overflowing() {
+        assert_eq!(
+            SyncWriteBatchSize(8).to_byte_count(),
+            8 * 1024 * 1024 * 1024
+        );
+        assert_eq!(
+            AccumulatorRebuildMemorySize(8).to_byte_count(),
+            8 * 1024 * 1024 * 1024
+        );
+        // An absurd configured value saturates rather than wrapping to a tiny (or zero) budget.
+        assert_eq!(SyncWriteBatchSize(usize::MAX).to_byte_count(), usize::MAX);
     }
 }

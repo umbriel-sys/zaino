@@ -148,7 +148,7 @@ to retry.
 ## Capability is structural
 
 An adapter implements only the ports it can answer.
-`zaino-source-zebra-readstate` does not implement the mempool traits, because a
+`zaino-source-zebra`'s read-state adapter does not implement the mempool traits, because a
 read-state service has no mempool — so routing a mempool query to it is a
 compile error rather than a runtime panic. Do not add a port impl that
 `unimplemented!()`s; leave it out and let the type system carry the fact.
@@ -181,7 +181,7 @@ answer exists elsewhere. `ZebraValidator` does: they sit in the JSON-RPC-only
 section of `routing.rs`, and `GetMempoolSourceTip` deliberately does not use the
 `fast_or_slow!` macro its `GetChainTip` neighbour does.
 
-The listing caps live in the adapter (`zaino-source-zebra-rpc`'s
+The listing caps live in the adapter (`zaino-source-zcash-rpc`'s
 `MAX_MEMPOOL_LISTING_ENTRIES`), checked on the declared entry count before any
 entry is decoded. That bounds the parse's peak allocation *and* stops an
 oversized listing from driving a million raw-transaction fetches upstream.

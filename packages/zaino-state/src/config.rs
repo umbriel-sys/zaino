@@ -1,8 +1,10 @@
 //! Holds config data for Zaino-State services.
 
 use std::path::PathBuf;
-use zaino_common::{Network, ServiceConfig, StorageConfig};
+use zaino_primitives::types::Network;
 use zcash_address::ZcashAddress;
+
+use crate::legacy::config::{ServiceConfig, StorageConfig};
 
 /// A validated Zcash donation address (transparent, sapling, orchard, or unified).
 ///
@@ -320,7 +322,13 @@ impl ChainIndexConfig {
     /// the two things a domain crate cannot name: an LMDB budget and a
     /// `zebra-chain` network.
     pub fn zainodb_config(&self) -> zaino_chain_store_zainodb::ZainoDbConfig {
-        zaino_chain_store_zainodb::ZainoDbConfig::from_storage(&self.storage, self.network.clone())
+        let database = &self.storage.database;
+        let mut config = zaino_chain_store_zainodb::ZainoDbConfig::new(self.network.clone());
+        config.set_size(database.size);
+        config.set_sync_write_batch_size(database.sync_write_batch_size);
+        config.set_accumulator_rebuild_memory_size(database.accumulator_rebuild_memory_size);
+        config.set_sync_checkpoint_interval(database.sync_checkpoint_interval);
+        config
     }
 }
 
