@@ -13,6 +13,13 @@ use crate::snapshot::PersistentSnapshot;
 
 const NAME: &str = "transactions";
 
+/// An index row naming a transaction the window does not hold.
+fn unheld(position: BlockTxPosition) -> Failure {
+    Failure(format!(
+        "an index row names {position:?}, which the window lacks"
+    ))
+}
+
 /// The two indexes, folded in step over the same blocks.
 #[derive(Debug, Clone)]
 pub(crate) struct Transactions {
@@ -33,18 +40,20 @@ impl Transactions {
         self.spent.retain(graph);
     }
 
-    /// Where `txid` sits on the ancestry of the block `view_of`, if the
-    /// window placed it.
+    /// Where `txid` sits on the ancestry of the block `view_of`; `None` where
+    /// the window did not place it.
     pub(crate) fn locate(
         &self,
         view_of: &zaino_primitives::types::BlockHash,
         txid: TransactionId,
-    ) -> Option<BlockTxPosition> {
-        let view = self.locations.view(view_of)?;
+    ) -> Result<Option<BlockTxPosition>, Failure> {
+        let view = self
+            .locations
+            .view(view_of)
+            .ok_or_else(|| Failure(format!("no view of {view_of}")))?;
         txid_location::Reader::new(&view.overlay)
             .position(txid)
-            .ok()
-            .flatten()
+            .map_err(|error| Failure::of("txid location", error))
     }
 
     /// Every place the window holds `txid`: on the trunk, and on each branch
@@ -53,32 +62,38 @@ impl Transactions {
         &self,
         graph: &PersistentSnapshot,
         txid: &TransactionId,
-    ) -> ChainHeadTransactionLocations {
+    ) -> Result<ChainHeadTransactionLocations, Failure> {
         let mut locations = ChainHeadTransactionLocations::default();
         let tip = graph.tip().hash();
-        if let Some(position) = self.locate(&tip, *txid) {
-            if let Some(block) = graph.trunk_block(position.height) {
-                locations.best_chain = Some(ChainHeadTxPosition {
-                    block: block.reference,
-                    tx_index: TxIndex::from(position.tx_index),
-                });
-            }
+        if let Some(position) = self.locate(&tip, *txid)? {
+            let block = graph
+                .trunk_block(position.height)
+                .ok_or_else(|| unheld(position))?;
+            locations.best_chain = Some(ChainHeadTxPosition {
+                block: block.reference,
+                tx_index: TxIndex::from(position.tx_index),
+            });
         }
         for branch in graph.branches() {
-            let Some(branch_tip) = branch.tip() else {
+            let branch_tip = branch
+                .tip()
+                .ok_or_else(|| Failure("a branch without blocks".to_owned()))?;
+            let Some(position) = self.locate(&branch_tip.hash(), *txid)? else {
                 continue;
             };
-            let Some(position) = self.locate(&branch_tip.hash(), *txid) else {
+            // a position below the fork is the trunk's, already reported
+            if position.height <= branch.fork().height {
                 continue;
-            };
-            if let Some(block) = branch.block_at(position.height) {
-                locations.non_best_chain.push(ChainHeadTxPosition {
-                    block: block.reference,
-                    tx_index: TxIndex::from(position.tx_index),
-                });
             }
+            let block = branch
+                .block_at(position.height)
+                .ok_or_else(|| unheld(position))?;
+            locations.non_best_chain.push(ChainHeadTxPosition {
+                block: block.reference,
+                tx_index: TxIndex::from(position.tx_index),
+            });
         }
-        locations
+        Ok(locations)
     }
 
     /// The canonical spender of each outpoint the window spent.
@@ -86,28 +101,34 @@ impl Transactions {
         &self,
         graph: &PersistentSnapshot,
         outpoints: &[Outpoint],
-    ) -> Vec<Option<SpenderLocation>> {
+    ) -> Result<Vec<Option<SpenderLocation>>, Failure> {
         let tip = graph.tip().hash();
-        let Some(view) = self.spent.view(&tip) else {
-            return vec![None; outpoints.len()];
-        };
+        let view = self
+            .spent
+            .view(&tip)
+            .ok_or_else(|| Failure(format!("no view of the tip {tip}")))?;
         let spenders = spent::Reader::new(&view.overlay)
             .spenders(outpoints)
-            .unwrap_or_else(|_| vec![None; outpoints.len()]);
+            .map_err(|error| Failure::of("spenders", error))?;
         spenders
             .into_iter()
             .map(|spender| {
-                let spender = spender?;
-                let block = graph.trunk_block(spender.position.height)?;
-                let tx = block
-                    .block
-                    .transactions()
-                    .get(usize::try_from(spender.position.tx_index).ok()?)?;
-                Some(SpenderLocation {
+                let Some(spender) = spender else {
+                    return Ok(None);
+                };
+                let block = graph
+                    .trunk_block(spender.position.height)
+                    .ok_or_else(|| unheld(spender.position))?;
+                let tx = usize::try_from(spender.position.tx_index)
+                    .ok()
+                    .and_then(|slot| block.block.transactions().get(slot))
+                    .ok_or_else(|| unheld(spender.position))?;
+                Ok(Some(SpenderLocation {
                     block: block.reference,
                     txid: tx.txid,
                     tx_index: TxIndex::from(spender.position.tx_index),
-                })
+                    input_index: spender.input,
+                }))
             })
             .collect()
     }

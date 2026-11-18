@@ -12,9 +12,7 @@ use crate::types::{Height, TxIndex};
 /// best-chain position, where height names the block on its own. The chain
 /// head's equivalent — `ChainHeadTxPosition` — carries a `BlockRef` instead,
 /// because it retains competing branches and a height there names several
-/// blocks at once. The two are near-duplicates today and are worth reconciling
-/// once both halves are read through their own vocabularies; they are separate
-/// for now because the difference between them is real.
+/// blocks at once.
 ///
 /// `tx_index` is a [`TxIndex`] (`u32`), which is wider than any block can
 /// currently hold — the block size limit bounds a block to far fewer

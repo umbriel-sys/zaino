@@ -568,8 +568,8 @@ impl<S: ChainHeadBlockSource> ChainHeadService<S> {
                     extend(&mut graph, chainblock)?;
                 } else {
                     // There's been a reorg. The fresh block is the new chaintip; we
-                    // work backwards from it and update heights_to_hashes with it
-                    // and all its parents, then fetch afresh from there.
+                    // walk back from it to the fork, rewind the trunk there (the
+                    // displaced blocks become a branch), then fetch afresh.
                     self.handle_reorg(&mut graph, &block).await?;
                     continue 'build;
                 }

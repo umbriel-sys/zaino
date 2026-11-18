@@ -124,21 +124,30 @@ impl Recorder for Aggregating {
     fn describe_histogram(&self, _: KeyName, _: Option<Unit>, _: SharedString) {}
 
     fn register_counter(&self, key: &Key, _: &Metadata<'_>) -> Counter {
-        let mut store = self.store.lock().unwrap_or_else(PoisonError::into_inner);
-        let cell = Arc::clone(store.counters.entry(label(key)).or_default());
+        let cell = self.cell(key, |store| &mut store.counters);
         Counter::from_arc(Arc::new(CounterHandle(cell)))
     }
 
     fn register_gauge(&self, key: &Key, _: &Metadata<'_>) -> Gauge {
-        let mut store = self.store.lock().unwrap_or_else(PoisonError::into_inner);
-        let cell = Arc::clone(store.gauges.entry(label(key)).or_default());
+        let cell = self.cell(key, |store| &mut store.gauges);
         Gauge::from_arc(Arc::new(GaugeHandle(cell)))
     }
 
     fn register_histogram(&self, key: &Key, _: &Metadata<'_>) -> Histogram {
-        let mut store = self.store.lock().unwrap_or_else(PoisonError::into_inner);
-        let hist = Arc::clone(store.histograms.entry(label(key)).or_default());
+        let hist = self.cell(key, |store| &mut store.histograms);
         Histogram::from_arc(Arc::new(HistHandle(hist)))
+    }
+}
+
+impl Aggregating {
+    /// The cell `key` names in the map `pick` selects, created on first use.
+    fn cell<T: Default>(
+        &self,
+        key: &Key,
+        pick: impl FnOnce(&mut Store) -> &mut BTreeMap<String, Arc<T>>,
+    ) -> Arc<T> {
+        let mut store = self.store.lock().unwrap_or_else(PoisonError::into_inner);
+        Arc::clone(pick(&mut store).entry(label(key)).or_default())
     }
 }
 

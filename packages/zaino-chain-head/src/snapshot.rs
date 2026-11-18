@@ -55,7 +55,8 @@ pub struct ChainHeadTransactionLocations {
     pub non_best_chain: Vec<ChainHeadTxPosition>,
 }
 
-/// The transaction that spent an outpoint, and where it sits.
+/// The transaction that spent an outpoint, where it sits, and which of its
+/// inputs spent it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct SpenderLocation {
     /// The block containing the spending transaction.
@@ -64,6 +65,8 @@ pub struct SpenderLocation {
     pub txid: TransactionId,
     /// The spending transaction's index within that block.
     pub tx_index: TxIndex,
+    /// The spending input's index within that transaction.
+    pub input_index: u32,
 }
 
 /// The blocks a range or window query yields, ascending.

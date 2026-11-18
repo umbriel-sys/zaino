@@ -53,15 +53,14 @@ impl AddressHistory {
     ) -> Result<ChainHeadAddressEffects, Failure> {
         let mut effects = ChainHeadAddressEffects::default();
         let tip = graph.tip();
-        let Some(view) = self.folded.view(&tip.hash()) else {
+        let view = self
+            .folded
+            .view(&tip.hash())
+            .ok_or_else(|| Failure(format!("no view of the tip {}", tip.hash())))?;
+        // nothing lies above a root at the last height
+        let Some(first) = self.folded.root().height.checked_add(1) else {
             return Ok(effects);
         };
-        let first = self
-            .folded
-            .root()
-            .height
-            .checked_add(1)
-            .unwrap_or(self.folded.root().height);
         let start = query.start.max(first);
         let end = query.end.min(tip.height());
         if start > end {
@@ -71,23 +70,24 @@ impl AddressHistory {
         for address in &query.addresses {
             for chunk in reader.events(*address, start..=end, CHUNK_BYTES) {
                 for event in chunk.map_err(|error| Failure::of("events", error))? {
-                    let Some(block) = graph.trunk_block(event.position.height) else {
-                        continue;
+                    let unheld = || {
+                        Failure(format!(
+                            "an address event names {:?} index {}, which the window lacks",
+                            event.position, event.index
+                        ))
                     };
-                    let Some(tx) = block
-                        .block
-                        .transactions()
-                        .get(usize::try_from(event.position.tx_index).unwrap_or(usize::MAX))
-                    else {
-                        continue;
-                    };
-                    let index = usize::try_from(event.index).unwrap_or(usize::MAX);
+                    let block = graph
+                        .trunk_block(event.position.height)
+                        .ok_or_else(unheld)?;
+                    let tx = usize::try_from(event.position.tx_index)
+                        .ok()
+                        .and_then(|slot| block.block.transactions().get(slot))
+                        .ok_or_else(unheld)?;
+                    let index = usize::try_from(event.index).map_err(|_| unheld())?;
                     let tx_index = TxIndex::from(event.position.tx_index);
                     match event.kind {
                         EventKind::Received => {
-                            let Some(output) = tx.transparent.outputs.get(index) else {
-                                continue;
-                            };
+                            let output = tx.transparent.outputs.get(index).ok_or_else(unheld)?;
                             effects.outputs.push(LocatedTransparentOutput {
                                 address: *address,
                                 outpoint: Outpoint {
@@ -101,9 +101,7 @@ impl AddressHistory {
                             });
                         }
                         EventKind::Spent => {
-                            let Some(input) = tx.transparent.inputs.get(index) else {
-                                continue;
-                            };
+                            let input = tx.transparent.inputs.get(index).ok_or_else(unheld)?;
                             effects.spends.push(LocatedTransparentSpend {
                                 address: *address,
                                 outpoint: Outpoint {

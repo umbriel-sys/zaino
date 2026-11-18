@@ -95,6 +95,16 @@ pub(crate) fn built<'a, T>(
         .ok_or(zaino_chain_head::ChainHeadError::NotBuilt { capability })
 }
 
+/// A built extension's failed read, as the head reports it.
+pub(crate) fn read_failed(
+    capability: &'static str,
+) -> impl FnOnce(Failure) -> zaino_chain_head::ChainHeadError {
+    move |failure| zaino_chain_head::ChainHeadError::ReadFailed {
+        capability,
+        reason: failure.0,
+    }
+}
+
 /// The extensions' slots on a snapshot.
 #[derive(Debug, Clone, Default)]
 pub(crate) struct Slots {

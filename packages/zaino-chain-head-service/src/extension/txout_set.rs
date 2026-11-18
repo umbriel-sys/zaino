@@ -90,7 +90,7 @@ impl TxOutSet {
                 .view(&parent)
                 .map(|view| view.state.clone())
                 .ok_or_else(|| Failure(format!("no view of the parent {parent}")))?;
-            let unknown: Vec<TransactionId> = inputs::below_root_txids(&block, locate)
+            let unknown: Vec<TransactionId> = inputs::below_root_txids(&block, locate)?
                 .into_iter()
                 .filter(|txid| !state.remaining.contains_key(txid))
                 .collect();

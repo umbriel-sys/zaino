@@ -19,3 +19,16 @@ a chain-store capability to an RPC chain-tip status for no reason beyond their \
 both being enums. They also live in crates that do not and should not depend \
 on each other.
 """
+
+[[ignore]]
+fingerprint = "f7f7b594cb1389c0"
+members = [
+    "CapabilityRequest::name",
+    "Upgrade::name",
+]
+reason = """
+Two unrelated enums mapping their own variants to their own names: zainodb's \
+capability requests and the mock's network upgrades. The shape is shared; \
+nothing else is, and the crates do not depend on each other. zainodb is \
+deleted in Stage 6, which removes the group.
+"""

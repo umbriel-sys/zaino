@@ -385,12 +385,12 @@ fn ground_truth(
     for block in blocks {
         for (tx_index, tx) in (0u32..).zip(block.transactions()) {
             let position = BlockTxPosition::new(block.header.height, tx_index);
-            for input in &tx.transparent.inputs {
+            for (input_index, input) in (0u32..).zip(&tx.transparent.inputs) {
                 let spent = Outpoint {
                     txid: input.prev_txid,
                     index: input.prev_index,
                 };
-                spenders.insert(spent, SpenderRef::new(position, tx.txid));
+                spenders.insert(spent, SpenderRef::new(position, tx.txid, input_index));
             }
             for (index, output) in (0u32..).zip(&tx.transparent.outputs) {
                 created.push((
@@ -608,7 +608,11 @@ async fn address_effects_match_the_chain() {
                 assert_eq!(spend.address, key);
                 assert_eq!(spend.value, created[&spend.outpoint].value);
                 assert_eq!(
-                    Some(&SpenderRef::new(spend.position, spend.txid)),
+                    Some(&SpenderRef::new(
+                        spend.position,
+                        spend.txid,
+                        spend.input_index
+                    )),
                     spenders.get(&spend.outpoint)
                 );
                 let input = all

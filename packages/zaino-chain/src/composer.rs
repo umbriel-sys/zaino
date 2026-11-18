@@ -1300,21 +1300,20 @@ where
             return Ok(locations);
         };
         // The store answers with a height; a position names a block, so
-        // complete it with the hash at that height.
-        if let Some(hash) = self
+        // complete it with the hash at that height, which it must hold.
+        let hash = self
             .reader
             .block_hash(position.height)
             .await
             .map_err(store_err)?
-        {
-            locations.best_chain = Some(ChainTxPosition {
-                block: BlockRef {
-                    hash,
-                    height: position.height,
-                },
-                tx_index: position.tx_index,
-            });
-        }
+            .ok_or_else(|| unpinned(position.height))?;
+        locations.best_chain = Some(ChainTxPosition {
+            block: BlockRef {
+                hash,
+                height: position.height,
+            },
+            tx_index: position.tx_index,
+        });
         Ok(locations)
     }
 }
@@ -1609,7 +1608,7 @@ where
             return Ok(finalised
                 .into_iter()
                 .map(|spender| match spender {
-                    Some(spender) => SpendStatus::SpentBy(spender.txid),
+                    Some(spender) => stored_spender(spender),
                     None => SpendStatus::Unspent,
                 })
                 .collect());
@@ -1635,8 +1634,12 @@ where
             .into_iter()
             .zip(finalised)
             .map(|(recent, finalised)| match (recent, finalised) {
-                (Some(spender), _) => SpendStatus::SpentBy(spender.txid),
-                (None, Some(spender)) => SpendStatus::SpentBy(spender.txid),
+                (Some(spender), _) => SpendStatus::SpentBy {
+                    txid: spender.txid,
+                    input_index: spender.input_index,
+                    height: spender.block.height,
+                },
+                (None, Some(spender)) => stored_spender(spender),
                 (None, None) => SpendStatus::Unspent,
             })
             .collect())
@@ -2147,6 +2150,15 @@ where
             Some(top) if height <= top => Provider::Store,
             _ => Provider::Head,
         }))
+    }
+}
+
+/// The store's spender as a spend status.
+fn stored_spender(spender: zaino_chain_store::SpenderRef) -> SpendStatus {
+    SpendStatus::SpentBy {
+        txid: spender.txid,
+        input_index: spender.input_index,
+        height: spender.position.height,
     }
 }
 

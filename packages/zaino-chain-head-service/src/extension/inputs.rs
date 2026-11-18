@@ -55,7 +55,7 @@ pub(crate) fn fold_block(
 pub(crate) async fn prevouts(
     block: &ChainHeadBlock,
     graph: &PersistentSnapshot,
-    locate: impl Fn(&Outpoint) -> Option<zaino_primitives::types::BlockTxPosition>,
+    locate: impl Fn(&Outpoint) -> Result<Option<zaino_primitives::types::BlockTxPosition>, Failure>,
     below: &dyn below::Prevouts,
     root: BlockRef,
 ) -> Result<Vec<Vec<TransparentOutput>>, Failure> {
@@ -70,18 +70,13 @@ pub(crate) async fn prevouts(
                 index: input.prev_index,
             };
             // created earlier in this block, else earlier on this ancestry
-            let inside = own.get(&outpoint).cloned().or_else(|| {
-                let position = locate(&outpoint)?;
-                let creator = graph.ancestor_at(&block.hash(), position.height)?;
-                let tx = creator
-                    .block
-                    .transactions()
-                    .get(usize::try_from(position.tx_index).ok()?)?;
-                tx.transparent
-                    .outputs
-                    .get(usize::try_from(outpoint.index).ok()?)
-                    .cloned()
-            });
+            let inside = match own.get(&outpoint) {
+                Some(output) => Some(output.clone()),
+                None => match locate(&outpoint)? {
+                    Some(position) => Some(created_at(graph, block, position, outpoint)?),
+                    None => None,
+                },
+            };
             if inside.is_none() {
                 unresolved.push((tx_slot, input_slot, outpoint));
             }
@@ -126,13 +121,44 @@ pub(crate) async fn prevouts(
         .collect()
 }
 
+/// The output `outpoint` names, created at `position` on `block`'s ancestry;
+/// a located output the window cannot produce is a fault.
+#[cfg(any(feature = "txout_set", feature = "address_history"))]
+fn created_at(
+    graph: &PersistentSnapshot,
+    block: &ChainHeadBlock,
+    position: zaino_primitives::types::BlockTxPosition,
+    outpoint: Outpoint,
+) -> Result<TransparentOutput, Failure> {
+    graph
+        .ancestor_at(&block.hash(), position.height)
+        .and_then(|creator| {
+            creator
+                .block
+                .transactions()
+                .get(usize::try_from(position.tx_index).ok()?)
+        })
+        .and_then(|tx| {
+            tx.transparent
+                .outputs
+                .get(usize::try_from(outpoint.index).ok()?)
+        })
+        .cloned()
+        .ok_or_else(|| {
+            Failure(format!(
+                "{}:{} is located at {position:?}, which holds no such output",
+                outpoint.txid, outpoint.index
+            ))
+        })
+}
+
 /// The txids of `block`'s transparent inputs whose outputs were created below
 /// the root (not located inside the window), deduplicated.
 #[cfg(feature = "txout_set")]
 pub(crate) fn below_root_txids(
     block: &ChainHeadBlock,
-    locate: impl Fn(&Outpoint) -> Option<zaino_primitives::types::BlockTxPosition>,
-) -> Vec<zaino_primitives::types::TransactionId> {
+    locate: impl Fn(&Outpoint) -> Result<Option<zaino_primitives::types::BlockTxPosition>, Failure>,
+) -> Result<Vec<zaino_primitives::types::TransactionId>, Failure> {
     let own = own_outputs(block);
     let mut seen: HashMap<zaino_primitives::types::TransactionId, ()> = HashMap::new();
     for tx in block.block.transactions() {
@@ -141,12 +167,12 @@ pub(crate) fn below_root_txids(
                 txid: input.prev_txid,
                 index: input.prev_index,
             };
-            if !own.contains_key(&outpoint) && locate(&outpoint).is_none() {
+            if !own.contains_key(&outpoint) && locate(&outpoint)?.is_none() {
                 seen.entry(outpoint.txid).or_insert(());
             }
         }
     }
-    seen.into_keys().collect()
+    Ok(seen.into_keys().collect())
 }
 
 /// Every transparent output `block` itself creates: what a later transaction

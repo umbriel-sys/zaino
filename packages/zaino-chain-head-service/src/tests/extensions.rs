@@ -147,12 +147,7 @@ fn fold_block_of(
 
 /// The chain's blocks `0..=through` as fold input.
 fn fold_blocks(chain: &MockChain, through: u32) -> Vec<FoldBlock> {
-    let schedule = schedule();
-    let mut outputs = HashMap::new();
-    blocks_through(chain, through)
-        .iter()
-        .map(|mock| fold_block_of(mock, &schedule, &mut outputs))
-        .collect()
+    fold_blocks_of(&blocks_through(chain, through))
 }
 
 /// `I` folded over `blocks` from `state`: the backend holding the rows written,
@@ -422,14 +417,73 @@ async fn every_view_equals_a_fold_from_genesis() {
     let chain = chain();
     let tip = tip_height(&chain);
     let harness = Harness::new(chain.clone(), 20, tip - 18).await;
-    let snapshot = harness.snapshot();
+    assert_views_are_folds(
+        &harness.snapshot(),
+        harness.root(),
+        &[blocks_through(&chain, tip)],
+    );
+}
+
+/// After a reorg the displaced blocks stay retained on a branch: every view,
+/// trunk and branch alike, equals a fold from genesis along its own ancestry.
+#[tokio::test]
+async fn every_branch_view_equals_a_fold_along_its_ancestry() {
+    let chain = chain();
+    let tip = tip_height(&chain);
+    let harness = Harness::new(chain.clone(), 20, tip - 18).await;
+    let displaced = blocks_through(&chain, tip);
+    let activations = Activations::default();
+    let mut parent = chain.block_at(tip - 4).expect("held");
+    let mut branch = Vec::new();
+    for seed in 1..=5u64 {
+        let block = next_block(
+            Some(&parent),
+            &activations,
+            BlockSpec::spends(1).seeded(seed),
+        );
+        parent = block.clone();
+        branch.push(block);
+    }
+    chain.reorg(tip - 3, branch);
+    harness.service.advance_once().await.expect("advances");
+    let after = harness.snapshot();
     let root = harness.root();
+    assert!(
+        window(&after, root)
+            .iter()
+            .any(|block| !after.is_trunk_block(block.reference)),
+        "the displaced blocks are retained on a branch"
+    );
+    assert_views_are_folds(&after, root, &[blocks_through(&chain, tip + 1), displaced]);
+}
+
+/// The chain's blocks as fold input, genesis first.
+fn fold_blocks_of(mocks: &[MockBlock]) -> Vec<FoldBlock> {
+    let schedule = schedule();
+    let mut outputs = HashMap::new();
+    mocks
+        .iter()
+        .map(|mock| fold_block_of(mock, &schedule, &mut outputs))
+        .collect()
+}
+
+/// Every view above `root` holds exactly what a fold from the root's state
+/// writes along its block's own ancestry, one of `chains` (each genesis
+/// first), and its fold states agree with a fold from genesis.
+fn assert_views_are_folds(
+    snapshot: &PersistentSnapshot,
+    root: BlockRef,
+    chains: &[Vec<MockBlock>],
+) {
     assert!(
         snapshot.extension_failures().is_empty(),
         "{:?}",
         snapshot.extension_failures()
     );
-    let blocks = fold_blocks(&chain, tip);
+    let folded: Vec<(&Vec<MockBlock>, Vec<FoldBlock>)> = chains
+        .iter()
+        .map(|mocks| (mocks, fold_blocks_of(mocks)))
+        .collect();
     let at = |h: u32| usize::try_from(h).expect("small");
     let slots = snapshot.extensions();
     let transactions = slots
@@ -458,8 +512,16 @@ async fn every_view_equals_a_fold_from_genesis() {
         .and_then(|slot| slot.built())
         .expect("built");
 
-    for block in window(&snapshot, root) {
+    for block in window(snapshot, root) {
         let h = u32::from(block.height());
+        let (_, blocks) = folded
+            .iter()
+            .find(|(mocks, _)| {
+                mocks
+                    .get(at(h))
+                    .is_some_and(|mock| mock.hash() == block.hash())
+            })
+            .expect("the block is on one of the chains");
         let through = &blocks[..=at(h)];
         let from_root = &blocks[at(u32::from(root.height)) + 1..=at(h)];
 
@@ -535,6 +597,52 @@ async fn every_view_equals_a_fold_from_genesis() {
             "history root at {h}"
         );
     }
+}
+
+/// A built extension that cannot read what it must hold answers `ReadFailed`,
+/// never an empty or absent answer: here every view of the newest block is
+/// dropped from otherwise built slots.
+#[tokio::test]
+async fn a_built_extension_missing_a_view_fails_every_read() {
+    let chain = chain();
+    let tip = tip_height(&chain);
+    let harness = Harness::new(chain.clone(), 20, tip - 18).await;
+    let before = harness.snapshot();
+    harness.extend_and_advance(BlockSpec::spends(1)).await;
+    let after = harness.snapshot();
+    let mut slots = after.extensions().clone();
+    slots.retain(&before);
+    let mut broken = (*after).clone();
+    broken.set_extensions(slots);
+
+    let failed = |result: Result<(), ChainHeadError>| {
+        matches!(result, Err(ChainHeadError::ReadFailed { .. }))
+    };
+    let newest = chain.tip().expect("a chain");
+    let at = newest.height();
+    let txid = newest.block.transactions()[0].txid;
+    let outpoint = Outpoint { txid, index: 0 };
+    assert!(failed(broken.transaction_locations(&txid).map(drop)));
+    assert!(failed(broken.outpoint_spenders(&[outpoint]).map(drop)));
+    assert!(failed(broken.txout_set().map(drop)));
+    assert!(failed(
+        broken
+            .address_effects(&TransparentHistoryQuery {
+                addresses: Vec::new(),
+                start: height(0),
+                end: at,
+            })
+            .map(drop)
+    ));
+    assert!(failed(
+        broken.pool_frontier(ShieldedPool::Sapling, at).map(drop)
+    ));
+    assert!(failed(
+        broken.subtree_roots(ShieldedPool::Sapling, 0, 1).map(drop)
+    ));
+    assert!(failed(broken.history_root(at).map(drop)));
+    assert!(failed(broken.history_epoch(at).map(drop)));
+    assert!(failed(broken.history_entries(at, &[0]).map(drop)));
 }
 
 /// What the extensions answer, against computations that use no index.

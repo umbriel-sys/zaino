@@ -165,6 +165,19 @@ impl<R: BackendReader> Snapshot<R> {
             .ok_or(ChainStoreError::Unavailable(capability))
     }
 
+    /// `read` over index `id`, kept only where the store holds the height
+    /// `at` gives: a row above the watermark is not this snapshot's.
+    fn held<T>(
+        &self,
+        id: IndexId,
+        capability: StoreCapability,
+        read: impl FnOnce(&R) -> Result<Option<T>, FoldError>,
+        at: impl Fn(&T) -> Height,
+    ) -> Result<Option<T>, ChainStoreError> {
+        let value = read(self.index(id, capability)?).map_err(|error| index_error(id, error))?;
+        Ok(value.filter(|value| self.holds(at(value))))
+    }
+
     fn block_hash(&self, height: Height) -> Result<Option<BlockHash>, ChainStoreError> {
         self.bounded(height)?;
         let id = IndexId::Headers;
@@ -174,11 +187,12 @@ impl<R: BackendReader> Snapshot<R> {
     }
 
     fn block_height(&self, hash: BlockHash) -> Result<Option<Height>, ChainStoreError> {
-        let id = IndexId::Headers;
-        let height = headers::Reader::new(self.index(id, StoreCapability::Core)?)
-            .height(hash)
-            .map_err(|error| index_error(id, error))?;
-        Ok(height.filter(|height| self.holds(*height)))
+        self.held(
+            IndexId::Headers,
+            StoreCapability::Core,
+            |reader| headers::Reader::new(reader).height(hash),
+            |height| *height,
+        )
     }
 
     /// The txid at `position` (I-02).
@@ -411,11 +425,12 @@ impl<R: BackendReader> Snapshot<R> {
     }
 
     fn tx_position(&self, txid: TransactionId) -> Result<Option<BlockTxPosition>, ChainStoreError> {
-        let id = IndexId::TxidLocation;
-        let position = txid_location::Reader::new(self.index(id, StoreCapability::Transactions)?)
-            .position(txid)
-            .map_err(|error| index_error(id, error))?;
-        Ok(position.filter(|position| self.holds(position.height)))
+        self.held(
+            IndexId::TxidLocation,
+            StoreCapability::Transactions,
+            |reader| txid_location::Reader::new(reader).position(txid),
+            |position| position.height,
+        )
     }
 
     fn outpoint_spenders(
@@ -437,7 +452,7 @@ impl<R: BackendReader> Snapshot<R> {
                 let txid = self
                     .txid_at(spender.position, capability)?
                     .ok_or_else(|| missing(IndexId::Txids, format!("{:?}", spender.position)))?;
-                Ok(Some(SpenderRef::new(spender.position, txid)))
+                Ok(Some(SpenderRef::new(spender.position, txid, spender.input)))
             })
             .collect()
     }

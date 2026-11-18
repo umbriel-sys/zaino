@@ -37,12 +37,36 @@ impl HistoryTree {
 
     /// The epoch after the canonical block at `height`, above the root (the
     /// root's own is the store's).
-    fn epoch_after(&self, graph: &PersistentSnapshot, height: Height) -> Option<Epoch> {
+    /// The view after the canonical block at `height`, above the root (the
+    /// root's own is the store's); `None` at or below the root or above the
+    /// tip.
+    fn view_after(
+        &self,
+        graph: &PersistentSnapshot,
+        height: Height,
+    ) -> Result<Option<&super::folded::View<history_tree::State>>, Failure> {
         if height <= self.folded.root().height {
-            return None;
+            return Ok(None);
         }
-        let block = graph.trunk_block(height)?;
-        self.folded.view(&block.hash())?.state.epoch.clone()
+        let Some(block) = graph.trunk_block(height) else {
+            return Ok(None);
+        };
+        self.folded
+            .view(&block.hash())
+            .map(Some)
+            .ok_or_else(|| Failure(format!("no view of the trunk block at {height}")))
+    }
+
+    /// The epoch after the canonical block at `height`; `None` before
+    /// Heartwood, at or below the root, or above the tip.
+    fn epoch_after(
+        &self,
+        graph: &PersistentSnapshot,
+        height: Height,
+    ) -> Result<Option<Epoch>, Failure> {
+        Ok(self
+            .view_after(graph, height)?
+            .and_then(|view| view.state.epoch.clone()))
     }
 
     /// The root committed by the block after the canonical block at `height`.
@@ -50,21 +74,25 @@ impl HistoryTree {
         &self,
         graph: &PersistentSnapshot,
         height: Height,
-    ) -> Option<[u8; 32]> {
-        let epoch = self.epoch_after(graph, height)?;
-        history_tree::root_of(&epoch).ok()
+    ) -> Result<Option<[u8; 32]>, Failure> {
+        self.epoch_after(graph, height)?
+            .map(|epoch| {
+                history_tree::root_of(&epoch).map_err(|error| Failure::of("history root", error))
+            })
+            .transpose()
     }
 
     pub(crate) fn history_epoch(
         &self,
         graph: &PersistentSnapshot,
         height: Height,
-    ) -> Option<HistoryEpochAt> {
-        let epoch = self.epoch_after(graph, height)?;
-        Some(HistoryEpochAt {
-            branch: ConsensusBranchId::from(epoch.branch),
-            length: epoch.length,
-        })
+    ) -> Result<Option<HistoryEpochAt>, Failure> {
+        Ok(self
+            .epoch_after(graph, height)?
+            .map(|epoch| HistoryEpochAt {
+                branch: ConsensusBranchId::from(epoch.branch),
+                length: epoch.length,
+            }))
     }
 
     /// The entries the window appended at `positions` of the epoch after
@@ -74,33 +102,30 @@ impl HistoryTree {
         graph: &PersistentSnapshot,
         height: Height,
         positions: &[u32],
-    ) -> Vec<Option<Vec<u8>>> {
-        if height <= self.folded.root().height {
-            return vec![None; positions.len()];
-        }
-        let Some(block) = graph.trunk_block(height) else {
-            return vec![None; positions.len()];
-        };
-        let Some(view) = self.folded.view(&block.hash()) else {
-            return vec![None; positions.len()];
+    ) -> Result<Vec<Option<Vec<u8>>>, Failure> {
+        let Some(view) = self.view_after(graph, height)? else {
+            return Ok(vec![None; positions.len()]);
         };
         let Some(epoch) = &view.state.epoch else {
-            return vec![None; positions.len()];
+            return Ok(vec![None; positions.len()]);
         };
         let reader = history_tree::Reader::new(&view.overlay);
         positions
             .iter()
             .map(|position| {
                 if *position >= epoch.length {
-                    return None;
+                    return Ok(None);
                 }
                 if self
                     .seeded
                     .is_some_and(|(branch, length)| branch == epoch.branch && *position < length)
                 {
-                    return None;
+                    return Ok(None);
                 }
-                reader.entry(epoch.start, *position).ok()
+                reader
+                    .entry(epoch.start, *position)
+                    .map(Some)
+                    .map_err(|error| Failure::of("history entry", error))
             })
             .collect()
     }

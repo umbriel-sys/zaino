@@ -418,24 +418,40 @@ impl<T: ChainStoreSource> SpentOutputIndex for DbReader<T> {
             metrics::histogram!(crate::metric_names::DB_READ_SECONDS, "op" => "outpoint_spenders"),
         );
         let stored: Vec<Outpoint> = outpoints.iter().map(stored_outpoint).collect();
-        let locations = DbReader::get_outpoint_spenders(self, stored)
+        let locations = DbReader::get_outpoint_spenders(self, stored.clone())
             .await
             .map_err(chain_store_error)?;
 
         // The domain answer carries the spender's txid as well as its position,
         // because every caller resolves one to the other immediately. Doing it
         // here costs the same reads and halves the traffic across the seam.
+        // The spent index holds no input index: it is read off the spender.
         let mut spenders = Vec::with_capacity(locations.len());
-        for location in locations {
+        for (outpoint, location) in stored.iter().zip(locations) {
             let Some(location) = location else {
                 spenders.push(None);
                 continue;
             };
             let txid = self.get_txid(location).await.map_err(chain_store_error)?;
-            spenders.push(Some(SpenderRef {
-                position: block_tx_position(location)?,
-                txid: domain_txid(txid),
-            }));
+            let input_index = DbReader::get_transparent(self, location)
+                .await
+                .map_err(chain_store_error)?
+                .and_then(|transparent| {
+                    let position = transparent.inputs().iter().position(|input| {
+                        !input.is_null_prevout()
+                            && Outpoint::new(*input.prevout_txid(), input.prevout_index())
+                                == *outpoint
+                    })?;
+                    u32::try_from(position).ok()
+                })
+                .ok_or_else(|| {
+                    ChainStoreError::MissingRow(format!("the input spending {outpoint:?}"))
+                })?;
+            spenders.push(Some(SpenderRef::new(
+                block_tx_position(location)?,
+                domain_txid(txid),
+                input_index,
+            )));
         }
         Ok(spenders)
     }

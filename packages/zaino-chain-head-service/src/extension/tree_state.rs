@@ -126,23 +126,31 @@ impl TreeState {
         graph: &PersistentSnapshot,
         pool: ShieldedPool,
         height: Height,
-    ) -> Option<PoolFrontier> {
+    ) -> Result<Option<PoolFrontier>, Failure> {
         if height <= self.folded.root().height {
-            return None;
+            return Ok(None);
         }
-        let block = graph.trunk_block(height)?;
-        let view = self.folded.view(&block.hash())?;
-        let slot = ShieldedPool::ALL
+        // above the tip: not the head's
+        let Some(block) = graph.trunk_block(height) else {
+            return Ok(None);
+        };
+        let view = self
+            .folded
+            .view(&block.hash())
+            .ok_or_else(|| Failure(format!("no view of the trunk block at {height}")))?;
+        let tree = ShieldedPool::ALL
             .iter()
-            .position(|candidate| *candidate == pool)?;
-        Some(match view.state.pools.get(slot)? {
+            .position(|candidate| *candidate == pool)
+            .and_then(|slot| view.state.pools.get(slot))
+            .ok_or_else(|| Failure(format!("no {pool} slot in the tree state")))?;
+        Ok(Some(match tree {
             None => PoolFrontier::Absent,
             Some(PoolTree { frontier: None, .. }) => PoolFrontier::Empty,
             Some(PoolTree {
                 frontier: Some(frontier),
                 ..
             }) => PoolFrontier::Frontier(frontier.clone()),
-        })
+        }))
     }
 
     /// `pool`'s subtrees completed inside the window from `start`.
@@ -152,19 +160,21 @@ impl TreeState {
         pool: ShieldedPool,
         start: u64,
         limit: u64,
-    ) -> Vec<SubtreeRoot> {
-        let Some(view) = self.folded.view(&graph.tip().hash()) else {
-            return Vec::new();
-        };
-        tree_state::Reader::new(&view.overlay)
+    ) -> Result<Vec<SubtreeRoot>, Failure> {
+        let tip = graph.tip().hash();
+        let view = self
+            .folded
+            .view(&tip)
+            .ok_or_else(|| Failure(format!("no view of the tip {tip}")))?;
+        Ok(tree_state::Reader::new(&view.overlay)
             .subtree_roots(pool, start, limit)
-            .unwrap_or_default()
+            .map_err(|error| Failure::of("subtree roots", error))?
             .into_iter()
             .map(|root| SubtreeRoot {
                 root: root.root.into(),
                 end_height: root.completed,
             })
-            .collect()
+            .collect())
     }
 
     async fn catch_up(
