@@ -9,10 +9,13 @@ pub const CHAIN_HEAD_REORG_DEPTH: &str = "zaino.sync.reorg_depth";
 pub const CHAIN_TIP_HEIGHT: &str = "zaino.chain.tip_height";
 pub const SYNC_CONSECUTIVE_FAILURES: &str = "zaino.sync.consecutive_failures";
 pub const SYNC_BACKOFF_SECONDS: &str = "zaino.sync.backoff_seconds";
+pub const CHAIN_HEAD_EXTENSION_FAILURES_TOTAL: &str = "zaino.chain_head.extension_failures_total";
+pub const EXTENSION_LABEL: &str = "extension";
 
 #[rustfmt::skip]
 pub const COUNTERS: &[(&str, &str)] = &[
     (CHAIN_HEAD_REORG_TOTAL, "Reorganizations: tip changes where the previous tip stopped being canonical"),
+    (CHAIN_HEAD_EXTENSION_FAILURES_TOTAL, "Extension folds or seeds that failed, per extension; the slot answers nothing until rebuilt"),
 ];
 
 #[rustfmt::skip]

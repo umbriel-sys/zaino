@@ -437,6 +437,16 @@ impl<T: ChainStoreSource> SpentOutputIndex for DbReader<T> {
         Ok(spenders)
     }
 
+    /// zainodb stores script hashes, never scripts (deleted in Stage 6).
+    async fn outputs_by_outpoint(
+        &self,
+        _outpoints: &[DomainOutpoint],
+    ) -> Result<Vec<Option<zaino_primitives::types::TransparentOutput>>, ChainStoreError> {
+        Err(ChainStoreError::Unsupported(
+            "zainodb stores script hashes, not scripts",
+        ))
+    }
+
     #[tracing::instrument(skip(self, outpoints), fields(outpoints = outpoints.len()))]
     async fn previous_outputs(
         &self,
@@ -513,6 +523,16 @@ impl<T: ChainStoreSource> DbReader<T> {
 }
 
 impl<T: ChainStoreSource> TxOutSetIndex for DbReader<T> {
+    /// zainodb keeps no per-transaction output counts (deleted in Stage 6).
+    async fn remaining_outputs(
+        &self,
+        _txids: &[zaino_primitives::types::TransactionId],
+    ) -> Result<Vec<Option<u32>>, ChainStoreError> {
+        Err(ChainStoreError::Unsupported(
+            "zainodb keeps no per-transaction output counts",
+        ))
+    }
+
     #[tracing::instrument(skip(self))]
     async fn txout_set(&self) -> Result<TxOutSetAccumulator, ChainStoreError> {
         let _timer = crate::timer::Timer::start(

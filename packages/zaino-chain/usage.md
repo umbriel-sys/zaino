@@ -236,6 +236,37 @@ Writing your own `ChainView` is possible too — that is why the ports are
 separate from the composer — but it is for a consumer who wants different
 *composition*, not one who merely has different storage.
 
+## Seeding the head's extensions: `StoreIndexes`
+
+The chain head's extensions (D-50) fold the indexes over the window and ask
+five questions at their root, the ports in `zaino_chain_head::extension`: the
+outputs the window spends, how many outputs a transaction still had, the
+UTXO-set accumulator, each pool's frontier, and the history tree's epoch and
+peaks. `StoreIndexes<Store>` answers each from the store's reader; this crate
+names both ports, so this is where the two meet:
+
+```rust,ignore
+let indexes = Arc::new(StoreIndexes::new(store.clone()));
+let head = ChainHeadService::builder(source, config, cancel)
+    .extensions(schedule, root)       // a watch of the store watermark's tip
+    .with_transactions()
+    .with_txout_set(indexes.clone())
+    .with_address_history(indexes.clone())
+    .with_tree_state(indexes.clone())
+    .with_history_tree(indexes)
+    .spawn()
+    .await?;
+```
+
+A port is implemented where the reader has the index port it needs, and a store
+built without that index answers `SeedError::Unavailable`, as it does every
+other read. A root the store does not hold is `RootNotHeld`. The accumulator
+and the remaining counts exist only at the watermark, so they are answered only
+while the watermark is the root; the frontiers, the epoch and the outputs are
+read at the root's height whatever the watermark. There is no validator fill:
+every store index an extension seeds from is built from I-03 and I-04 (D-83),
+so a store that can seed holds the outputs too.
+
 ## Offering less than the tiers can do
 
 `ChainViewComposer::new` offers every capability its tiers can answer, which is

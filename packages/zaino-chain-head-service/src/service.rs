@@ -113,6 +113,9 @@ pub struct ChainHeadService<S: ChainHeadBlockSource> {
     task: Mutex<Option<JoinHandle<()>>>,
     config: ChainHeadConfig,
     tip_selection: TipSelection,
+    /// The extensions the builder enabled (D-50), with their ports.
+    #[cfg(feature = "_extensions")]
+    extensions: Option<crate::extension::Enabled>,
 }
 
 impl<S: ChainHeadBlockSource> std::fmt::Debug for ChainHeadService<S> {
@@ -153,7 +156,29 @@ impl<S: ChainHeadBlockSource> ChainHeadService<S> {
         config: ChainHeadConfig,
         cancel: CancellationToken,
     ) -> Result<Arc<Self>, ChainHeadInitError> {
-        let service = Self::anchored(source, config, TipSelection::Source, cancel).await?;
+        Self::builder(source, config, cancel).spawn().await
+    }
+
+    /// A service built step by step: the extensions it folds (D-50), then
+    /// [`spawn`](ChainHeadBuilder::spawn).
+    pub fn builder(
+        source: Arc<S>,
+        config: ChainHeadConfig,
+        cancel: CancellationToken,
+    ) -> ChainHeadBuilder<S> {
+        ChainHeadBuilder {
+            source,
+            config,
+            cancel,
+            tip_selection: TipSelection::Source,
+            #[cfg(feature = "_extensions")]
+            extensions: None,
+        }
+    }
+
+    /// Anchors, then starts the writer task.
+    async fn started(builder: ChainHeadBuilder<S>) -> Result<Arc<Self>, ChainHeadInitError> {
+        let service = Self::anchored(builder).await?;
 
         let worker = Arc::clone(&service);
         let handle = tokio::spawn(async move { worker.run().await });
@@ -178,7 +203,9 @@ impl<S: ChainHeadBlockSource> ChainHeadService<S> {
         config: ChainHeadConfig,
         cancel: CancellationToken,
     ) -> Result<Arc<Self>, ChainHeadInitError> {
-        Self::anchored(source, config, TipSelection::Source, cancel).await
+        Self::builder(source, config, cancel)
+            .spawn_without_writer()
+            .await
     }
 
     /// [`spawn_without_writer`](Self::spawn_without_writer) under a chosen
@@ -190,7 +217,9 @@ impl<S: ChainHeadBlockSource> ChainHeadService<S> {
         tip_selection: TipSelection,
         cancel: CancellationToken,
     ) -> Result<Arc<Self>, ChainHeadInitError> {
-        Self::anchored(source, config, tip_selection, cancel).await
+        let mut builder = Self::builder(source, config, cancel);
+        builder.tip_selection = tip_selection;
+        Self::anchored(builder).await
     }
 
     /// Advances the graph by one iteration and publishes the result.
@@ -204,12 +233,15 @@ impl<S: ChainHeadBlockSource> ChainHeadService<S> {
     }
 
     /// Everything [`spawn`](Self::spawn) does except start the task.
-    async fn anchored(
-        source: Arc<S>,
-        config: ChainHeadConfig,
-        tip_selection: TipSelection,
-        cancel: CancellationToken,
-    ) -> Result<Arc<Self>, ChainHeadInitError> {
+    async fn anchored(builder: ChainHeadBuilder<S>) -> Result<Arc<Self>, ChainHeadInitError> {
+        let ChainHeadBuilder {
+            source,
+            config,
+            cancel,
+            tip_selection,
+            #[cfg(feature = "_extensions")]
+            extensions,
+        } = builder;
         let status = NamedAtomicStatus::new(COMPONENT, StatusType::Syncing);
 
         let snapshot = anchor_with_retry(&source, &config, &cancel).await?;
@@ -232,6 +264,8 @@ impl<S: ChainHeadBlockSource> ChainHeadService<S> {
             task: Mutex::new(None),
             config,
             tip_selection,
+            #[cfg(feature = "_extensions")]
+            extensions,
         });
         // Still `Syncing`: the anchor is the window's floor, not its tip, so a
         // reader served now would see a head up to `max_depth` below the
@@ -395,6 +429,16 @@ impl<S: ChainHeadBlockSource> ChainHeadService<S> {
         }
 
         let next = self.next_graph(&previous, tip.height).await?;
+        #[cfg(feature = "_extensions")]
+        let next = match &self.extensions {
+            Some(enabled) => {
+                let mut next = next;
+                let slots = crate::extension::advance(enabled, previous.extensions(), &next).await;
+                next.set_extensions(slots);
+                next
+            }
+            None => next,
+        };
         self.mark_fresh();
         self.publish_snapshot(&previous, next);
         Ok(())
@@ -838,6 +882,154 @@ where
         zaino_source::QueryError::Domain(domain) => {
             ChainHeadAdvanceError::InconsistentSource(format!("{context}: {domain}"))
         }
+    }
+}
+
+/// A [`ChainHeadService`] before it is spawned: what it syncs from, how, and
+/// which extensions it folds.
+pub struct ChainHeadBuilder<S: ChainHeadBlockSource> {
+    source: Arc<S>,
+    config: ChainHeadConfig,
+    cancel: CancellationToken,
+    tip_selection: TipSelection,
+    #[cfg(feature = "_extensions")]
+    extensions: Option<crate::extension::Enabled>,
+}
+
+impl<S: ChainHeadBlockSource> ChainHeadBuilder<S> {
+    /// Anchors the graph, then starts the writer task. See
+    /// [`ChainHeadService::spawn`] for the shutdown contract.
+    pub async fn spawn(self) -> Result<Arc<ChainHeadService<S>>, ChainHeadInitError> {
+        ChainHeadService::started(self).await
+    }
+
+    /// An anchored service with no writer task, for tests that step it.
+    #[cfg(any(test, feature = "testing"))]
+    pub async fn spawn_without_writer(
+        self,
+    ) -> Result<Arc<ChainHeadService<S>>, ChainHeadInitError> {
+        ChainHeadService::anchored(self).await
+    }
+
+    /// Enables the extensions (D-50): folds of `zaino-indexes` over the
+    /// window, rooted on the store watermark `root` (`None` = no store: the
+    /// window's floor), under the validator's upgrade `schedule`.
+    #[cfg(feature = "_extensions")]
+    pub fn extensions(
+        self,
+        schedule: Arc<[zaino_primitives::types::NetworkUpgradeInfo]>,
+        root: watch::Receiver<Option<BlockRef>>,
+    ) -> ExtensionBuilder<S> {
+        let folds = zaino_component::CpuBudget::detect()
+            .concurrency(zaino_component::Share::ChainHead)
+            .get();
+        ExtensionBuilder {
+            inner: self,
+            enabled: crate::extension::Enabled {
+                schedule,
+                root,
+                folds: Arc::new(tokio::sync::Semaphore::new(folds)),
+                #[cfg(feature = "transactions")]
+                transactions: false,
+                #[cfg(feature = "txout_set")]
+                txout_set: None,
+                #[cfg(feature = "address_history")]
+                address_history: None,
+                #[cfg(feature = "tree_state")]
+                tree_state: None,
+                #[cfg(feature = "history_tree")]
+                history_tree: None,
+            },
+        }
+    }
+}
+
+/// A [`ChainHeadBuilder`] with extensions: each `with_*` enables one and
+/// takes the ports it drives below the root.
+#[cfg(feature = "_extensions")]
+pub struct ExtensionBuilder<S: ChainHeadBlockSource> {
+    inner: ChainHeadBuilder<S>,
+    enabled: crate::extension::Enabled,
+}
+
+#[cfg(feature = "_extensions")]
+impl<S: ChainHeadBlockSource> ExtensionBuilder<S> {
+    /// Transaction positions and outpoint spenders inside the window (I-03,
+    /// I-09). Needs nothing below the root.
+    #[cfg(feature = "transactions")]
+    pub fn with_transactions(mut self) -> Self {
+        self.enabled.transactions = true;
+        self
+    }
+
+    /// The UTXO set at the tip (I-11), seeded from `ports` at the root; the
+    /// window's spends of outputs below the root are resolved through them.
+    /// Enables `transactions`, which resolves the spends inside the window.
+    #[cfg(feature = "txout_set")]
+    pub fn with_txout_set<P>(mut self, ports: Arc<P>) -> Self
+    where
+        P: zaino_chain_head::PrevoutSource
+            + zaino_chain_head::RemainingOutputs
+            + zaino_chain_head::TxOutSetSeed,
+    {
+        self.enabled.transactions = true;
+        self.enabled.txout_set = Some(crate::extension::txout_set::Ports {
+            prevouts: crate::extension::below::prevouts(&ports),
+            remaining: crate::extension::below::remaining(&ports),
+            accumulator: crate::extension::below::accumulator(&ports),
+        });
+        self
+    }
+
+    /// Transparent address effects inside the window (I-10); the spends of
+    /// outputs below the root are resolved through `prevouts`. Enables
+    /// `transactions`.
+    #[cfg(feature = "address_history")]
+    pub fn with_address_history<P: zaino_chain_head::PrevoutSource>(
+        mut self,
+        prevouts: Arc<P>,
+    ) -> Self {
+        self.enabled.transactions = true;
+        self.enabled.address_history = Some(crate::extension::below::prevouts(&prevouts));
+        self
+    }
+
+    /// The note commitment trees after each block (C2), seeded from `seed`
+    /// at the root; the validator reports each block's frontiers and
+    /// completed subtrees, by hash.
+    #[cfg(feature = "tree_state")]
+    pub fn with_tree_state<P: zaino_chain_head::TreeStateSeed>(mut self, seed: Arc<P>) -> Self
+    where
+        S: zaino_source::OneShotGetTreestateByHash + zaino_source::OneShotGetSubtreeRoots,
+    {
+        let source: Arc<S> = Arc::clone(&self.inner.source);
+        let trees: Arc<dyn crate::extension::tree_state::TreeInputs> = source;
+        self.enabled.tree_state = Some(crate::extension::tree_state::Ports { seed, trees });
+        self
+    }
+
+    /// The history tree after each block (C6), seeded from `seed` at the root.
+    #[cfg(feature = "history_tree")]
+    pub fn with_history_tree<P: zaino_chain_head::HistoryTreeSeed>(mut self, seed: Arc<P>) -> Self {
+        self.enabled.history_tree = Some(seed);
+        self
+    }
+
+    /// Anchors the graph, then starts the writer task.
+    pub async fn spawn(self) -> Result<Arc<ChainHeadService<S>>, ChainHeadInitError> {
+        let mut inner = self.inner;
+        inner.extensions = Some(self.enabled);
+        inner.spawn().await
+    }
+
+    /// An anchored service with no writer task, for tests that step it.
+    #[cfg(any(test, feature = "testing"))]
+    pub async fn spawn_without_writer(
+        self,
+    ) -> Result<Arc<ChainHeadService<S>>, ChainHeadInitError> {
+        let mut inner = self.inner;
+        inner.extensions = Some(self.enabled);
+        inner.spawn_without_writer().await
     }
 }
 

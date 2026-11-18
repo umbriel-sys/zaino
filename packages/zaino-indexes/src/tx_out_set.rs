@@ -307,6 +307,34 @@ impl<'a, R: BackendReader> Reader<'a, R> {
             hash_serialized: array::<32>(field(4)?, "hash")?,
         }))
     }
+
+    /// Each of `txids`' remaining counted outputs, `None` for a transaction
+    /// holding none: one bounded scan over its `txid ‖ count` row.
+    pub fn remaining(&self, txids: &[TransactionId]) -> Result<Vec<Option<u32>>, FoldError> {
+        let chunk_bytes =
+            NonZeroUsize::new(KEY_BYTES.saturating_mul(2)).unwrap_or(NonZeroUsize::MIN);
+        txids
+            .iter()
+            .map(|txid| {
+                let range = ScanRange {
+                    lower: Bound::Included(key(*txid, 0).to_vec()),
+                    upper: Bound::Included(key(*txid, u32::MAX).to_vec()),
+                    direction: ScanDirection::Forward,
+                    chunk_bytes,
+                };
+                let mut found = None;
+                for chunk in self
+                    .backend
+                    .scan_range(REMAINING, range, |key, _| Some(decode_key(key)))
+                {
+                    for entry in chunk? {
+                        found = Some(entry?.1);
+                    }
+                }
+                Ok(found)
+            })
+            .collect()
+    }
 }
 
 fn key(txid: TransactionId, remaining: u32) -> [u8; KEY_BYTES] {

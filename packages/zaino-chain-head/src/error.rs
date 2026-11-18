@@ -34,4 +34,11 @@ pub enum ChainHeadError {
         /// The lowest canonical height retained.
         floor: Height,
     },
+    /// The capability's extension is not built on this snapshot: not enabled,
+    /// or failed and not yet rebuilt. The consumer falls back.
+    #[error("the chain head does not build {capability}")]
+    NotBuilt {
+        /// The capability asked for.
+        capability: &'static str,
+    },
 }

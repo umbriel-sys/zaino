@@ -58,28 +58,32 @@
 )]
 
 pub mod block;
+pub mod capability;
 pub mod config;
 pub mod error;
+pub mod extension;
 pub mod ports;
 pub mod snapshot;
-#[cfg(feature = "transparent_address_history_experimental")]
 pub mod transparent;
 pub mod txout;
 
 pub use block::ChainHeadBlock;
+pub use capability::{HeadCapabilities, HeadCapability};
 pub use config::ChainHeadConfig;
 pub use error::ChainHeadError;
+pub use extension::{
+    HistoryEpochSeed, HistoryTreeSeed, PrevoutSource, RemainingOutputs, SeedError, TreeStateSeed,
+    TxOutSetSeed,
+};
 pub use ports::{ChainHeadBlockService, ChainHeadBlockSource};
 pub use snapshot::{
-    ChainHeadBlockIter, ChainHeadSnapshot, ChainHeadTransactionLocations,
-    ChainHeadTransactionService, ChainHeadTxOutSetService, ChainHeadTxPosition, SpenderLocation,
+    ChainHeadBlockIter, ChainHeadHistoryTreeService, ChainHeadSnapshot,
+    ChainHeadTransactionLocations, ChainHeadTransactionService, ChainHeadTransparentHistoryService,
+    ChainHeadTreeStateService, ChainHeadTxOutSetService, ChainHeadTxPosition, HistoryEpochAt,
+    SpenderLocation,
 };
-pub use txout::{ChainHeadTxOutDelta, CreatedTxOut};
-
-#[cfg(feature = "transparent_address_history_experimental")]
-pub use snapshot::ChainHeadTransparentHistoryService;
-#[cfg(feature = "transparent_address_history_experimental")]
 pub use transparent::{
     ChainHeadAddressEffects, LocatedTransparentOutput, LocatedTransparentSpend,
     TransparentHistoryQuery,
 };
+pub use txout::{ChainHeadTxOutDelta, CreatedTxOut};

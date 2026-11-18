@@ -113,6 +113,13 @@ Each index module also exposes a `Reader` over any `BackendReader` with the
 typed reads the chain-store ports need. Readers slice fields through the
 layouts and fetch single fields with `get_bytes`.
 
+`assemble` holds the pure half of turning a validator's answers into fold
+input, shared by every service that folds C2: `changed_pools` (which pools a
+block added notes to, with the sizes its roots report), `frontier_of` (a
+treestate's frontier), `completed_range` (the 2¹⁶ subtrees a size change
+completed) and `completed_subtree` (a reported root checked to end at the
+block). The treestate and subtree-root calls themselves stay with the caller.
+
 | Index | Module | Holds |
 | --- | --- | --- |
 | I-01 | `headers` | height → header and cumulative chain work (`headers`); hash → height (`heights`) |
@@ -124,7 +131,7 @@ layouts and fetch single fields with `get_bytes`.
 | I-09 | `spent` | outpoint → spender (height, tx index, input index); `Reader::spenders` batches |
 | I-10 | `address_history` | one row per receive and per spend, keyed address hash, script type, height, tx index, io index, kind (big-endian, so an address's history is one key range in chain order), valued by the amount; P2PKH and P2SH only; `Reader::events` streams bounded chunks over a height range and never materialises a whole history |
 
-| I-11 | `tx_out_set` | `gettxoutsetinfo` at every height: the `TxOutSetAccumulator` per height (64 B, one read), over zcashd's set (all unspent transparent outputs but `OP_RETURN` and oversized scripts, never genesis); the fold state holds each transaction's remaining counted outputs, persisted as `txid ‖ remaining` rows and rebuilt and cross-checked against `transactions` on resume |
+| I-11 | `tx_out_set` | `gettxoutsetinfo` at every height: the `TxOutSetAccumulator` per height (64 B, one read), over zcashd's set (all unspent transparent outputs but `OP_RETURN` and oversized scripts, never genesis); the fold state holds each transaction's remaining counted outputs, persisted as `txid ‖ remaining` rows and rebuilt and cross-checked against `transactions` on resume; `Reader::remaining(txids)` reads them, one bounded scan each |
 | C2 | `tree_state` | every pool's note commitment tree at every height, built from the validator's per-block frontiers and subtree roots with no hashing (D-68): each block-end frontier's nodes once, keyed (level, index); completed 2¹⁶ subtree roots with their completing heights; per height each pool's size (absent before activation). The fold checks each frontier's leaf against the block's last note, the size change against the notes added, shared nodes against the previous frontier, and subtrees against the size change; `Reader::frontier` is at most 33 lookups |
 | C6 | `history_tree` | the ZIP 221 chain history tree: every MMR node of every epoch in one global `nodes` sequence (`zcash_history` entries, each epoch contiguous), and per height the block's branch, its epoch's start and length; V1/V2/V3 nodes by branch, an unknown branch refused; every Heartwood and Canopy header's commitment checked against the root of the blocks before it; `Reader::root(height)` rebuilds from at most 32 peaks |
 

@@ -1,0 +1,29 @@
+[[changes]]
+crate = "zaino-chain-head-service"
+kind = "feature"
+description = """
+The extensions (D-50): `transactions`, `txout_set`, `address_history`, \
+`tree_state` and `history_tree`, each a cargo feature enabled through \
+`ChainHeadService::builder(..).extensions(schedule, root)`. Each folds one \
+`zaino-indexes` index over the window above the store watermark; every \
+retained block carries the index after it, a reorg needs no refold, the \
+views rebase onto the watermark every 32 blocks, and a failing extension \
+darkens its slot alone (`extension_failures`, \
+`zaino.chain_head.extension_failures_total`). A head with no extension pulls \
+in neither the indexes nor the persistence port."""
+
+[[changes]]
+crate = "zaino-chain-head"
+kind = "feature"
+description = """
+`HeadCapabilities` and `ChainHeadSnapshot::capabilities` (D-56): what a \
+snapshot's extensions build. `ChainHeadError::NotBuilt` for a capability the \
+snapshot does not build. The transparent effect types are constructible by a \
+runtime (no longer `#[non_exhaustive]`)."""
+
+[[changes]]
+crate = "zaino-indexes"
+kind = "feature"
+description = """
+`history_tree::root_of(epoch)`: the epoch's history root from its peaks, for \
+a runtime that carries the fold state without the stored nodes."""

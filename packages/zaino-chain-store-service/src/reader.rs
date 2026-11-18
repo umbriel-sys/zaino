@@ -12,11 +12,12 @@ use std::time::Instant;
 
 use futures::Stream;
 use zaino_chain_store::{
-    ChainStoreError, ChainStoreReader, CompactBlockRead, HistoryEpoch, HistoryTreeIndex,
-    LocatedOutput, LocatedSpend, MigrationState, PoolFilter, SchemaVersion, SpenderRef,
-    SpentOutputIndex, StoreAddressEffects, StoreCapabilities, StoreCapability, StoreSchema,
-    StoreWatermark, StoredHeader, StoredTxOut, TransactionIndex, TransparentHistoryIndex,
-    TransparentHistoryQuery, TreeRootsIndex, TreeStateIndex, TxOutSetAccumulator, TxOutSetIndex,
+    ChainStoreError, ChainStoreReader, CompactBlockRead, HistoryEpoch, HistoryPeaks,
+    HistoryTreeIndex, LocatedOutput, LocatedSpend, MigrationState, PoolFilter, SchemaVersion,
+    SpenderRef, SpentOutputIndex, StoreAddressEffects, StoreCapabilities, StoreCapability,
+    StoreSchema, StoreWatermark, StoredHeader, StoredTxOut, TransactionIndex,
+    TransparentHistoryIndex, TransparentHistoryQuery, TreeRootsIndex, TreeStateIndex,
+    TxOutSetAccumulator, TxOutSetIndex,
 };
 use zaino_component::{ComponentStatus, StatusSource};
 
@@ -29,7 +30,7 @@ use zaino_persistence::BackendReader;
 use zaino_primitives::types::{
     AbsoluteChainWork, BlockHash, BlockRef, BlockTxPosition, ChainMetadata, CompactBlock,
     ConsensusBranchId, Height, Outpoint, PoolFrontier, PreIndexCompactTx, ShieldedPool,
-    SubtreeRoot, TransactionId, TransparentData, TreeRoot, TreeRoots, TreeSize,
+    SubtreeRoot, TransactionId, TransparentData, TransparentOutput, TreeRoot, TreeRoots, TreeSize,
 };
 
 /// Blocks per compact chunk read on the blocking pool.
@@ -443,6 +444,17 @@ impl<R: BackendReader> Snapshot<R> {
         &self,
         outpoints: &[Outpoint],
     ) -> Result<Vec<Option<StoredTxOut>>, ChainStoreError> {
+        Ok(self
+            .outputs_by_outpoint(outpoints)?
+            .iter()
+            .map(|output| output.as_ref().map(StoredTxOut::from_output))
+            .collect())
+    }
+
+    fn outputs_by_outpoint(
+        &self,
+        outpoints: &[Outpoint],
+    ) -> Result<Vec<Option<TransparentOutput>>, ChainStoreError> {
         let capability = StoreCapability::SpentOutputs;
         let mut txids: Vec<TransactionId> =
             outpoints.iter().map(|outpoint| outpoint.txid).collect();
@@ -477,10 +489,20 @@ impl<R: BackendReader> Snapshot<R> {
         let mut found = vec![None; outpoints.len()];
         for ((slot, _), output) in wanted.into_iter().zip(outputs) {
             if let (Some(found), Some(output)) = (found.get_mut(slot), output) {
-                *found = Some(StoredTxOut::from_output(&output));
+                *found = Some(output);
             }
         }
         Ok(found)
+    }
+
+    fn remaining_outputs(
+        &self,
+        txids: &[TransactionId],
+    ) -> Result<Vec<Option<u32>>, ChainStoreError> {
+        let id = IndexId::TxOutSet;
+        tx_out_set::Reader::new(self.index(id, StoreCapability::TxOutSet)?)
+            .remaining(txids)
+            .map_err(|error| index_error(id, error))
     }
 
     fn transparent_outputs(
@@ -637,6 +659,17 @@ impl<R: BackendReader> Snapshot<R> {
         history_tree::Reader::new(self.index(id, StoreCapability::HistoryTree)?)
             .root(height)
             .map_err(|error| index_error(id, error))
+    }
+
+    fn history_peaks(&self, height: Height) -> Result<Option<HistoryPeaks>, ChainStoreError> {
+        self.bounded(height)?;
+        let id = IndexId::HistoryTree;
+        Ok(
+            history_tree::Reader::new(self.index(id, StoreCapability::HistoryTree)?)
+                .epoch_with_peaks(height)
+                .map_err(|error| index_error(id, error))?
+                .map(|epoch| epoch.peaks),
+        )
     }
 
     fn history_entries(
@@ -857,6 +890,15 @@ impl<R: BackendReader + Sync + 'static> SpentOutputIndex for StoreReader<R> {
         })
     }
 
+    async fn outputs_by_outpoint(
+        &self,
+        outpoints: &[Outpoint],
+    ) -> Result<Vec<Option<TransparentOutput>>, ChainStoreError> {
+        timed("outputs_by_outpoint", || {
+            self.snapshot.outputs_by_outpoint(outpoints)
+        })
+    }
+
     async fn unspent_output(
         &self,
         outpoint: Outpoint,
@@ -893,6 +935,15 @@ impl<R: BackendReader + Sync + 'static> SpentOutputIndex for StoreReader<R> {
 impl<R: BackendReader + Sync + 'static> TxOutSetIndex for StoreReader<R> {
     async fn txout_set(&self) -> Result<TxOutSetAccumulator, ChainStoreError> {
         timed("txout_set", || self.snapshot.txout_set())
+    }
+
+    async fn remaining_outputs(
+        &self,
+        txids: &[TransactionId],
+    ) -> Result<Vec<Option<u32>>, ChainStoreError> {
+        timed("remaining_outputs", || {
+            self.snapshot.remaining_outputs(txids)
+        })
     }
 }
 
@@ -940,6 +991,10 @@ impl<R: BackendReader + Sync + 'static> HistoryTreeIndex for StoreReader<R> {
                 length: epoch.length,
             }))
         })
+    }
+
+    async fn history_peaks(&self, height: Height) -> Result<Option<HistoryPeaks>, ChainStoreError> {
+        timed("history_peaks", || self.snapshot.history_peaks(height))
     }
 
     async fn history_entries(

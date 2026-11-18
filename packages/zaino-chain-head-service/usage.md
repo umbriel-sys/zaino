@@ -159,6 +159,41 @@ then hash), and every retained block sits once in an `imbl::HashMap`
 directory. Cloning is O(1) and snapshots share what did not change; a reorg
 splits the trunk and pushes, a trim drops exactly the blocks below the floor.
 
+## Extensions: the indexes folded over the window
+
+An extension (D-50) runs one `zaino-indexes` fold over the window, so the head
+answers from an index above the store's watermark as the store does below it.
+Each is a cargo feature of the same name and is enabled through the builder;
+a head with none pulls in neither `zaino-indexes` nor the persistence port:
+
+```rust
+let head = ChainHeadService::builder(source, config, cancel)
+    .extensions(schedule, store_watermark)   // the validator's upgrades; a watch of the store's watermark
+    .with_transactions()                      // I-03, I-09: positions and spenders
+    .with_txout_set(store_indexes.clone())    // I-11: the set at the tip (enables transactions)
+    .with_address_history(store_indexes.clone()) // I-10: address effects (enables transactions)
+    .with_tree_state(store_indexes.clone())   // C2: trees after each block
+    .with_history_tree(store_indexes)         // C6: the history tree after each block
+    .spawn()
+    .await?;
+```
+
+Every retained block above the root (the store watermark; the window's floor
+with no store) carries the index after it: its fold state and an overlay of
+the rows the window wrote. A view costs one fold per block, a branch's views
+are already there when a reorg returns to it, and an answer is a typed read
+over the tip's view, so it covers the window alone and the store answers
+below. What a fold needs from below the root is asked through the ports in
+`zaino_chain_head::extension`, implemented by `zaino-chain` over the store;
+the head names neither the store nor the validator for it.
+
+Every tick seeds the extensions that are not built, folds the new blocks and,
+once the watermark has advanced 32 blocks past the root, rebases the views
+onto it by replaying each block's own ops. A fold or port failure darkens that
+extension alone (`PersistentSnapshot::extension_failures` names it and why,
+`zaino.chain_head.extension_failures_total` counts it); its slot is rebuilt at
+the next tick. `ChainHeadSnapshot::capabilities` reports what is built.
+
 ## Metrics
 
 `metric_names` lists what the writer task emits, with `COUNTERS`, `GAUGES` and

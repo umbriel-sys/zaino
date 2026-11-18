@@ -79,7 +79,7 @@ pub struct CompletedSubtree {
 }
 
 /// Leaves in one completed subtree.
-const SUBTREE_LEAVES: u64 = 1 << 16;
+pub(crate) const SUBTREE_LEAVES: u64 = 1 << 16;
 
 /// A transaction in a [`FoldBlock`]: its compact form, pool balances and,
 /// where resolved, the outputs its transparent inputs spend, in input order.

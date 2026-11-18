@@ -19,14 +19,17 @@
 //! everything it needs to interrogate it, and each capability is then defined
 //! in exactly one place.
 
+use zaino_primitives::txout_commitment::TxOutSetAccumulator;
 use zaino_primitives::types::{
-    rpc::ChainTip, BlockHash, BlockRef, ChainStateEpoch, Height, Outpoint, TransactionId, TxIndex,
+    rpc::ChainTip, BlockHash, BlockRef, ChainStateEpoch, ConsensusBranchId, Height, Outpoint,
+    PoolFrontier, ShieldedPool, SubtreeRoot, TransactionId, TxIndex,
 };
 
 use std::collections::HashSet;
 
 use crate::{
     block::ChainHeadBlock,
+    capability::HeadCapabilities,
     error::ChainHeadError,
     txout::{ChainHeadTxOutDelta, CreatedTxOut},
 };
@@ -103,6 +106,12 @@ impl<'a> Iterator for ChainHeadBlockIter<'a> {
 /// [`best_block_by_height`](Self::best_block_by_height) and
 /// [`is_on_best_chain`](Self::is_on_best_chain) are what distinguish them.
 pub trait ChainHeadSnapshot: Send + Sync + 'static {
+    /// What this snapshot builds beyond the graph (D-56): nothing unless a
+    /// runtime's extensions say otherwise.
+    fn capabilities(&self) -> HeadCapabilities {
+        HeadCapabilities::NONE
+    }
+
     /// The canonical tip of this view.
     fn best_tip(&self) -> BlockRef;
 
@@ -187,6 +196,10 @@ pub trait ChainHeadSnapshot: Send + Sync + 'static {
 /// them that way, so without this every call site would have to deref before
 /// asking a question.
 impl<T: ChainHeadSnapshot> ChainHeadSnapshot for std::sync::Arc<T> {
+    fn capabilities(&self) -> HeadCapabilities {
+        self.as_ref().capabilities()
+    }
+
     fn best_tip(&self) -> BlockRef {
         self.as_ref().best_tip()
     }
@@ -269,6 +282,13 @@ pub trait ChainHeadTransactionService: ChainHeadSnapshot {
 /// uses. Derived from the canonical blocks alone, so the fold is provided here
 /// once and every snapshot answers it the same way.
 pub trait ChainHeadTxOutSetService: ChainHeadSnapshot {
+    /// The UTXO set as of the tip, where the head folds it (the `txout_set`
+    /// extension, seeded from the finalised set at the head's root); `None`
+    /// where it does not.
+    fn txout_set(&self) -> Option<TxOutSetAccumulator> {
+        None
+    }
+
     /// What the canonical blocks from `start` up to the tip created and spent.
     ///
     /// A `start` above the tip is an empty delta. A `start` below the window is
@@ -319,12 +339,48 @@ pub trait ChainHeadTxOutSetService: ChainHeadSnapshot {
     }
 }
 
-/// Transparent-address effects derivable from a snapshot's blocks.
+/// The note commitment trees as the window's blocks leave them (C2 folded
+/// over the window by the `tree_state` extension).
 ///
-/// **Declared, not implemented.** Nothing implements this trait and no consumer
-/// is wired to it. See [`crate::transparent`] for why the boundary is drawn
-/// where it is.
-#[cfg(feature = "transparent_address_history_experimental")]
+/// Answers cover the window alone: a height below it is `None`, and the
+/// subtrees listed are those completed inside it.
+pub trait ChainHeadTreeStateService: ChainHeadSnapshot {
+    /// `pool`'s tree after the canonical block at `height`.
+    fn pool_frontier(&self, pool: ShieldedPool, height: Height) -> Option<PoolFrontier>;
+
+    /// Up to `limit` of `pool`'s 2¹⁶ subtrees completed inside the window,
+    /// from index `start`, ascending.
+    fn subtree_roots(&self, pool: ShieldedPool, start: u64, limit: u64) -> Vec<SubtreeRoot>;
+}
+
+/// The ZIP 221 history tree as the window's blocks leave it (C6 folded over
+/// the window by the `history_tree` extension).
+///
+/// Answers cover the window alone: entries at positions the window did not
+/// append are `None`, the finalised store holding them.
+pub trait ChainHeadHistoryTreeService: ChainHeadSnapshot {
+    /// The `hashChainHistoryRoot` committed by the block after the canonical
+    /// block at `height`; `None` outside the window or before Heartwood.
+    fn history_root(&self, height: Height) -> Option<[u8; 32]>;
+
+    /// The epoch in force after the canonical block at `height`.
+    fn history_epoch(&self, height: Height) -> Option<HistoryEpochAt>;
+
+    /// The entries at `positions` of that epoch, in the order asked.
+    fn history_entries(&self, height: Height, positions: &[u32]) -> Vec<Option<Vec<u8>>>;
+}
+
+/// Where the history tree stood after a block: its epoch's branch and length.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct HistoryEpochAt {
+    /// The upgrade's consensus branch.
+    pub branch: ConsensusBranchId,
+    /// Entries in the epoch's MMR.
+    pub length: u32,
+}
+
+/// Transparent-address effects inside the window (I-10 folded over it by the
+/// `address_history` extension). See [`crate::transparent`] for the boundary.
 pub trait ChainHeadTransparentHistoryService: ChainHeadSnapshot {
     /// The address effects this snapshot can account for.
     fn address_effects(

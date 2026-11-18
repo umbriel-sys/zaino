@@ -93,7 +93,9 @@ pub use types::{
 };
 
 pub mod composer;
+pub mod store_indexes;
 
 pub use composer::{
     ChainViewComposer, ChainViewComposerBuilder, ChainViewConfig, ChainViewSync, ComposerSnapshot,
 };
+pub use store_indexes::StoreIndexes;

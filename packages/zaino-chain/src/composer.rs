@@ -411,7 +411,6 @@ where
     ///
     /// A merge like spend status: the store's finalised effects joined with the
     /// window's recent ones.
-    #[cfg(feature = "transparent_address_history_experimental")]
     pub fn serving_address_history(mut self) -> Self
     where
         Store::Reader: zaino_chain_store::TransparentHistoryIndex,

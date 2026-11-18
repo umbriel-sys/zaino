@@ -17,14 +17,18 @@ use std::sync::Arc;
 use imbl::Vector;
 use zaino_chain_head::{
     snapshot::{
-        ChainHeadBlockIter, ChainHeadTransactionLocations, ChainHeadTransactionService,
-        ChainHeadTxOutSetService, ChainHeadTxPosition, SpenderLocation,
+        ChainHeadBlockIter, ChainHeadHistoryTreeService, ChainHeadTransactionLocations,
+        ChainHeadTransactionService, ChainHeadTransparentHistoryService, ChainHeadTreeStateService,
+        ChainHeadTxOutSetService, ChainHeadTxPosition, HistoryEpochAt, SpenderLocation,
     },
-    ChainHeadBlock, ChainHeadError, ChainHeadSnapshot,
+    transparent::{ChainHeadAddressEffects, TransparentHistoryQuery},
+    ChainHeadBlock, ChainHeadError, ChainHeadSnapshot, HeadCapabilities,
 };
+use zaino_primitives::txout_commitment::TxOutSetAccumulator;
 use zaino_primitives::types::{
     rpc::{ChainTip, ChainTipStatus},
-    BlockHash, BlockRef, ChainStateEpoch, Height, Outpoint, TransactionId, TxIndex,
+    BlockHash, BlockRef, ChainStateEpoch, Height, Outpoint, PoolFrontier, ShieldedPool,
+    SubtreeRoot, TransactionId, TxIndex,
 };
 
 use crate::graph::{ChainGraph, NotChildOfTip, NotOnBestChain};
@@ -75,6 +79,9 @@ pub struct PersistentSnapshot {
     trunk: Trunk,
     branches: Vec<Branch>,
     directory: Directory,
+    /// The extensions' views over this graph (D-50).
+    #[cfg(feature = "_extensions")]
+    extensions: crate::extension::Slots,
     /// The block this graph's work is measured from, recorded at anchoring because retention prunes that block while every surviving block's work still counts from it.
     work_anchor: BlockRef,
     /// Which publication this is, in the sense of [`ChainStateEpoch`].
@@ -165,7 +172,7 @@ impl Trunk {
 
 /// One retained side branch: its blocks above `fork`, ascending; never empty.
 #[derive(Debug, Clone)]
-struct Branch {
+pub(crate) struct Branch {
     /// Where it grows from: a trunk block, or, after trimming, a block below
     /// the floor that is no longer retained.
     fork: BlockRef,
@@ -173,8 +180,16 @@ struct Branch {
 }
 
 impl Branch {
-    fn tip(&self) -> Option<&Arc<ChainHeadBlock>> {
+    pub(crate) fn tip(&self) -> Option<&Arc<ChainHeadBlock>> {
         self.blocks.back()
+    }
+
+    /// The branch's block at `height`, above its fork.
+    #[cfg(feature = "_extensions")]
+    pub(crate) fn block_at(&self, height: Height) -> Option<&Arc<ChainHeadBlock>> {
+        let first = self.blocks.front()?.height();
+        let offset = u32::from(height).checked_sub(u32::from(first))?;
+        self.blocks.get(usize::try_from(offset).ok()?)
     }
 
     /// How many blocks separate the tip from the fork.
@@ -279,6 +294,95 @@ impl PersistentSnapshot {
         self.trunk.floor()
     }
 
+    /// The canonical block at `height`, shared.
+    #[cfg(feature = "_extensions")]
+    pub(crate) fn trunk_block(&self, height: Height) -> Option<&Arc<ChainHeadBlock>> {
+        self.trunk.get(height)
+    }
+
+    /// The tip, shared.
+    #[cfg(feature = "_extensions")]
+    pub(crate) fn tip(&self) -> &Arc<ChainHeadBlock> {
+        &self.trunk.tip
+    }
+
+    /// Whether `block` is a retained canonical block.
+    #[cfg(feature = "_extensions")]
+    pub(crate) fn is_trunk_block(&self, block: BlockRef) -> bool {
+        self.trunk.holds(block)
+    }
+
+    /// Whether `hash` is retained, on the trunk or a branch.
+    #[cfg(feature = "_extensions")]
+    pub(crate) fn retained(&self, hash: &BlockHash) -> bool {
+        self.directory.contains_key(hash)
+    }
+
+    /// The retained side branches, strongest first.
+    #[cfg(feature = "_extensions")]
+    pub(crate) fn branches(&self) -> &[Branch] {
+        &self.branches
+    }
+
+    /// Retained blocks above `height`, parents before children: the trunk
+    /// ascending, then each branch ascending.
+    #[cfg(feature = "_extensions")]
+    pub(crate) fn above(&self, height: Height) -> impl Iterator<Item = &Arc<ChainHeadBlock>> {
+        self.trunk
+            .iter()
+            .filter(move |block| block.height() > height)
+            .chain(self.branches.iter().flat_map(move |branch| {
+                branch
+                    .blocks
+                    .iter()
+                    .filter(move |block| block.height() > height)
+            }))
+    }
+
+    /// The block at `height` on the ancestry of the retained block `of`: the
+    /// trunk's, or the branch's above its fork.
+    #[cfg(feature = "_extensions")]
+    pub(crate) fn ancestor_at(
+        &self,
+        of: &BlockHash,
+        height: Height,
+    ) -> Option<&Arc<ChainHeadBlock>> {
+        let block = self.directory.get(of)?;
+        if self.trunk.holds(block.reference) {
+            return self.trunk.get(height);
+        }
+        let branch = self.branches.iter().find(|branch| branch.holds(of))?;
+        match height > branch.fork.height {
+            true => branch.block_at(height),
+            false => self.trunk.get(height),
+        }
+    }
+
+    /// The extensions' views.
+    #[cfg(feature = "_extensions")]
+    pub(crate) fn extensions(&self) -> &crate::extension::Slots {
+        &self.extensions
+    }
+
+    /// The extensions that failed on this snapshot, each with its reason;
+    /// they answer nothing until rebuilt at a later tick (D-52).
+    pub fn extension_failures(&self) -> Vec<(zaino_chain_head::HeadCapability, String)> {
+        #[cfg(feature = "_extensions")]
+        {
+            self.extensions.failures()
+        }
+        #[cfg(not(feature = "_extensions"))]
+        {
+            Vec::new()
+        }
+    }
+
+    /// Installs the extensions' views after a build.
+    #[cfg(feature = "_extensions")]
+    pub(crate) fn set_extensions(&mut self, extensions: crate::extension::Slots) {
+        self.extensions = extensions;
+    }
+
     /// The branch table recomputed from the directory and the trunk, the
     /// blocks of evicted branches dropped.
     fn rebuild_branches(&mut self) {
@@ -303,6 +407,8 @@ impl ChainGraph for PersistentSnapshot {
             },
             branches: Vec::new(),
             directory,
+            #[cfg(feature = "_extensions")]
+            extensions: crate::extension::Slots::default(),
             generation: 0,
         }
     }
@@ -371,6 +477,12 @@ impl ChainGraph for PersistentSnapshot {
         for hash in dropped {
             self.directory.remove(&hash);
         }
+        #[cfg(feature = "_extensions")]
+        {
+            let mut extensions = std::mem::take(&mut self.extensions);
+            extensions.retain(self);
+            self.extensions = extensions;
+        }
     }
 
     fn stamp_generation(&mut self, previous: &Self, highest_published: u64) {
@@ -383,6 +495,17 @@ impl ChainGraph for PersistentSnapshot {
 }
 
 impl ChainHeadSnapshot for PersistentSnapshot {
+    fn capabilities(&self) -> HeadCapabilities {
+        #[cfg(feature = "_extensions")]
+        {
+            self.extensions.capabilities()
+        }
+        #[cfg(not(feature = "_extensions"))]
+        {
+            HeadCapabilities::NONE
+        }
+    }
+
     fn best_tip(&self) -> BlockRef {
         self.trunk.tip.reference
     }
@@ -479,13 +602,158 @@ impl ChainHeadSnapshot for PersistentSnapshot {
     }
 }
 
-impl ChainHeadTxOutSetService for PersistentSnapshot {}
+impl ChainHeadTxOutSetService for PersistentSnapshot {
+    /// The `txout_set` extension's set after the tip, where it is built.
+    fn txout_set(&self) -> Option<TxOutSetAccumulator> {
+        #[cfg(feature = "txout_set")]
+        {
+            self.extensions
+                .txout_set
+                .as_ref()
+                .and_then(crate::extension::Slot::built)
+                .and_then(|built| built.txout_set(self))
+        }
+        #[cfg(not(feature = "txout_set"))]
+        {
+            None
+        }
+    }
+}
+
+impl ChainHeadTransparentHistoryService for PersistentSnapshot {
+    /// The `address_history` extension's effects, where it is built.
+    fn address_effects(
+        &self,
+        query: &TransparentHistoryQuery,
+    ) -> Result<ChainHeadAddressEffects, ChainHeadError> {
+        #[cfg(feature = "address_history")]
+        {
+            let built = self
+                .extensions
+                .address_history
+                .as_ref()
+                .and_then(crate::extension::Slot::built)
+                .ok_or(ChainHeadError::NotBuilt {
+                    capability: "transparent history",
+                })?;
+            built
+                .address_effects(self, query)
+                .map_err(|_| ChainHeadError::NotBuilt {
+                    capability: "transparent history",
+                })
+        }
+        #[cfg(not(feature = "address_history"))]
+        {
+            let _ = query;
+            Err(ChainHeadError::NotBuilt {
+                capability: "transparent history",
+            })
+        }
+    }
+}
+
+impl ChainHeadTreeStateService for PersistentSnapshot {
+    fn pool_frontier(&self, pool: ShieldedPool, height: Height) -> Option<PoolFrontier> {
+        #[cfg(feature = "tree_state")]
+        {
+            self.extensions
+                .tree_state
+                .as_ref()
+                .and_then(crate::extension::Slot::built)
+                .and_then(|built| built.pool_frontier(self, pool, height))
+        }
+        #[cfg(not(feature = "tree_state"))]
+        {
+            let _ = (pool, height);
+            None
+        }
+    }
+
+    fn subtree_roots(&self, pool: ShieldedPool, start: u64, limit: u64) -> Vec<SubtreeRoot> {
+        #[cfg(feature = "tree_state")]
+        {
+            self.extensions
+                .tree_state
+                .as_ref()
+                .and_then(crate::extension::Slot::built)
+                .map_or_else(Vec::new, |built| {
+                    built.subtree_roots(self, pool, start, limit)
+                })
+        }
+        #[cfg(not(feature = "tree_state"))]
+        {
+            let _ = (pool, start, limit);
+            Vec::new()
+        }
+    }
+}
+
+impl ChainHeadHistoryTreeService for PersistentSnapshot {
+    fn history_root(&self, height: Height) -> Option<[u8; 32]> {
+        #[cfg(feature = "history_tree")]
+        {
+            self.extensions
+                .history_tree
+                .as_ref()
+                .and_then(crate::extension::Slot::built)
+                .and_then(|built| built.history_root(self, height))
+        }
+        #[cfg(not(feature = "history_tree"))]
+        {
+            let _ = height;
+            None
+        }
+    }
+
+    fn history_epoch(&self, height: Height) -> Option<HistoryEpochAt> {
+        #[cfg(feature = "history_tree")]
+        {
+            self.extensions
+                .history_tree
+                .as_ref()
+                .and_then(crate::extension::Slot::built)
+                .and_then(|built| built.history_epoch(self, height))
+        }
+        #[cfg(not(feature = "history_tree"))]
+        {
+            let _ = height;
+            None
+        }
+    }
+
+    fn history_entries(&self, height: Height, positions: &[u32]) -> Vec<Option<Vec<u8>>> {
+        #[cfg(feature = "history_tree")]
+        {
+            self.extensions
+                .history_tree
+                .as_ref()
+                .and_then(crate::extension::Slot::built)
+                .map_or_else(
+                    || vec![None; positions.len()],
+                    |built| built.history_entries(self, height, positions),
+                )
+        }
+        #[cfg(not(feature = "history_tree"))]
+        {
+            let _ = height;
+            vec![None; positions.len()]
+        }
+    }
+}
 
 impl ChainHeadTransactionService for PersistentSnapshot {
-    /// A bounded scan of the window. The window is small and this is not on a
-    /// hot path; when it becomes one, the answer is a `txid ->` position index
-    /// carried alongside the graph, not a faster scan.
+    /// From the `transactions` extension where it is built; else a bounded
+    /// scan of the window.
     fn transaction_locations(&self, txid: &TransactionId) -> ChainHeadTransactionLocations {
+        #[cfg(feature = "transactions")]
+        if let Some(built) = self
+            .extensions
+            .transactions
+            .as_ref()
+            .and_then(crate::extension::Slot::built)
+        {
+            return built.transaction_locations(self, txid);
+        }
         let mut locations = ChainHeadTransactionLocations::default();
 
         for block in self.directory.values() {
@@ -521,6 +789,15 @@ impl ChainHeadTransactionService for PersistentSnapshot {
     fn outpoint_spenders(&self, outpoints: &[Outpoint]) -> Vec<Option<SpenderLocation>> {
         if outpoints.is_empty() {
             return Vec::new();
+        }
+        #[cfg(feature = "transactions")]
+        if let Some(built) = self
+            .extensions
+            .transactions
+            .as_ref()
+            .and_then(crate::extension::Slot::built)
+        {
+            return built.outpoint_spenders(self, outpoints);
         }
 
         let mut spenders: HashMap<Outpoint, SpenderLocation> = HashMap::new();

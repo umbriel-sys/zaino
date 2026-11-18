@@ -99,4 +99,4 @@ pub use ports::{
     TransparentHistoryIndexCapability, TreeStateIndex, TreeStateIndexCapability,
 };
 pub use transparent::{LocatedOutput, LocatedSpend, StoreAddressEffects, TransparentHistoryQuery};
-pub use tree::HistoryEpoch;
+pub use tree::{HistoryEpoch, HistoryPeaks};

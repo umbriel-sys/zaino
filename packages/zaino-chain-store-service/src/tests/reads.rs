@@ -449,6 +449,21 @@ async fn transactions_and_outputs_match_the_chain() {
         reader.previous_outputs(&outpoints).await.expect("read"),
         expected_outputs
     );
+    let expected_full: Vec<Option<TransparentOutput>> = created
+        .iter()
+        .map(|(_, output)| Some(output.clone()))
+        .collect();
+    let mut with_unknown = outpoints.clone();
+    with_unknown.push(Outpoint {
+        txid: TransactionId::from([0xab; 32]),
+        index: 0,
+    });
+    let mut full = reader
+        .outputs_by_outpoint(&with_unknown)
+        .await
+        .expect("read");
+    assert_eq!(full.pop(), Some(None), "an unknown outpoint is None");
+    assert_eq!(full, expected_full);
     let expected_spenders: Vec<Option<SpenderRef>> = outpoints
         .iter()
         .map(|outpoint| spenders.get(outpoint).copied())
@@ -512,6 +527,38 @@ async fn the_txout_set_matches_an_independent_accumulator() {
     txids.dedup();
     expected.transactions = txids.len() as u64;
     assert_eq!(store.reader().txout_set().await.expect("read"), expected);
+
+    // each transaction's remaining count is its unspent counted outputs; one
+    // fully spent, and one never seen, hold none
+    let mut asked = txids.clone();
+    let spent_out: Vec<TransactionId> = all
+        .iter()
+        .flat_map(|block| block.transactions())
+        .map(|tx| tx.txid)
+        .filter(|txid| !unspent.keys().any(|outpoint| outpoint.txid == *txid))
+        .take(1)
+        .collect();
+    assert_eq!(spent_out.len(), 1, "the chain fully spends a transaction");
+    asked.extend(spent_out);
+    asked.push(TransactionId::from([0xab; 32]));
+    let expected_remaining: Vec<Option<u32>> = asked
+        .iter()
+        .map(|txid| {
+            let count = unspent
+                .keys()
+                .filter(|outpoint| outpoint.txid == *txid)
+                .count();
+            (count > 0).then(|| u32::try_from(count).expect("small"))
+        })
+        .collect();
+    assert_eq!(
+        store
+            .reader()
+            .remaining_outputs(&asked)
+            .await
+            .expect("read"),
+        expected_remaining
+    );
 }
 
 #[tokio::test]
@@ -647,11 +694,29 @@ async fn history_reads_follow_their_epoch() {
             .unwrap_or_else(|| panic!("Heartwood is active from height 1, none after {at}"));
         assert!(previous.is_none_or(|length| epoch.length > length), "{at}");
         previous = Some(epoch.length);
-        assert!(reader
+        let root = reader
             .history_root(height(at))
             .await
             .expect("read")
-            .is_some());
+            .expect("Heartwood is active");
+        // the peaks are what a fold above the store continues from: they
+        // reproduce the root
+        let peaks = reader
+            .history_peaks(height(at))
+            .await
+            .expect("read")
+            .expect("Heartwood is active");
+        assert_eq!(
+            zaino_indexes::history_tree::root_of(&zaino_indexes::history_tree::Epoch {
+                branch: u32::from(epoch.branch),
+                start: 0,
+                length: epoch.length,
+                peaks,
+            })
+            .expect("stored peaks decode"),
+            root,
+            "{at}"
+        );
         let entries = reader
             .history_entries(height(at), &[0, epoch.length - 1, epoch.length])
             .await

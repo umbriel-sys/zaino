@@ -361,9 +361,12 @@ reader added everywhere.
 
 ## The spend reads are batched, and carry what you were going to look up next
 
-`outpoint_spenders`, `previous_outputs` and `transparent_outputs` take slices
-because the call sites they replaced looped a singular form with one `await` per
-input. Ask once:
+`outpoint_spenders`, `previous_outputs`, `outputs_by_outpoint` and
+`transparent_outputs` take slices because the call sites they replaced looped a
+singular form with one `await` per input. `outputs_by_outpoint` answers the
+outputs as the chain holds them (value and script), which is what a fold
+running above the store reads for inputs spending below it; `previous_outputs`
+is the same lookup projected to value and address key. Ask once:
 
 ```rust
 // The answer is positional: `spenders[i]` is the spender of `outpoints[i]`,
@@ -428,6 +431,8 @@ tree:
 - `history_root(height)` and `history_epoch(height)`: the root, and the
   epoch's branch and length, after a block. Both are `None` before
   Heartwood.
+- `history_peaks(height)`: the epoch's MMR peaks (position and encoded
+  entry), which a fold continuing the tree above the store appends onto.
 - `history_entries(height, positions)`: encoded MMR entries for a flyclient
   proof, `None` for a position the epoch does not hold.
 
@@ -438,7 +443,10 @@ Both ports are bounded by the watermark like every other read.
 `TxOutSetIndex::txout_set` returns an accumulator over the finalised set. It is
 completed with the chain head's blocks by whatever merges the two. Serving it
 directly as `gettxoutsetinfo` reports the chain as of the watermark, which is
-not the chain.
+not the chain. `remaining_outputs(txids)` answers how many counted outputs
+each transaction still has unspent at the watermark (`None` = none): the fold
+extending the set reads it for the transactions the recent blocks spend from,
+so it steps `transactions` exactly when the last one goes.
 
 ```rust
 use zaino_chain_store::{is_unspendable, TxOutSetIndex};

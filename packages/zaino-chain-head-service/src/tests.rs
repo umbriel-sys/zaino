@@ -12,6 +12,8 @@
 //!   the test is the only thing advancing the graph, so what it observes is
 //!   exactly what it caused.
 
+#[cfg(feature = "_extensions")]
+mod extensions;
 mod reorg_depth;
 
 use std::{sync::Arc, time::Duration};

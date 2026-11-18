@@ -14,18 +14,6 @@ version = "0.1.0"
 [features]
 default = []
 
-# Declares the transparent-address-history capability: the `AddressRead` port
-# and its merge. Forwards to the same feature on both halves, which is what
-# the capability is — a merge of the store's finalised effects with the chain
-# head's recent ones, and neither alone is an address's history.
-#
-# Nothing implements the chain head's half yet, so `serving_address_history`
-# has a bound no type satisfies: the builder method is there, and unreachable
-# until one does. See the crate docs.
-transparent_address_history_experimental = [
-    "zaino-chain-head/transparent_address_history_experimental",
-]
-
 [dependencies]
 # The domain vocabulary. This crate names no wire, node, or backend type.
 zaino-primitives = { workspace = true }
@@ -72,10 +60,11 @@ futures = { workspace = true }
 # through its `testing` feature. No fakes of the ports exist here.
 zaino-source-mock = { workspace = true }
 zaino-chain-store-service = { workspace = true }
-zaino-chain-head-service = { workspace = true, features = ["testing"] }
+zaino-chain-head-service = { workspace = true, features = ["address_history", "history_tree", "testing", "transactions", "tree_state", "txout_set"] }
 zaino-persistence = { path = "../zaino-persistence", features = ["testing"] }
 zaino-consensus = { workspace = true }
 tokio-util = { workspace = true }
+zaino-indexes = { path = "../zaino-indexes" }
 
 [lints.rust]
 unsafe_code = "forbid"

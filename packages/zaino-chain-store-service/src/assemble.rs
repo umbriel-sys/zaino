@@ -6,18 +6,11 @@
 use std::fmt;
 
 use zaino_chain_store::{ChainStoreSource, ChainStoreSourceError};
-use zaino_indexes::{
-    frontier_from_legacy_tree, CompletedSubtree, FoldBlockParts, FoldTx, NoteFrontier,
-    PoolFrontiers,
-};
+use zaino_indexes::{assemble, CompletedSubtree, FoldBlockParts, FoldTx, PoolFrontiers};
 use zaino_primitives::types::{
-    branch_at, Block, Height, NetworkUpgradeInfo, PoolTreestate, ShieldedPool, Transaction,
-    TreeRoots,
+    branch_at, Block, Height, NetworkUpgradeInfo, ShieldedPool, TreeRoots,
 };
 use zaino_source::QueryError;
-
-/// Leaves in one completed subtree.
-const SUBTREE_LEAVES: u64 = 1 << 16;
 
 /// The block at `height`, its prevouts unresolved; `trees` = fetch
 /// frontiers and subtrees (only C2 reads them).
@@ -74,21 +67,7 @@ async fn notes<S: ChainStoreSource>(
     block: &Block,
     roots: &TreeRoots,
 ) -> Result<(PoolFrontiers, Vec<CompletedSubtree>), ChainStoreSourceError> {
-    let added = |pool| -> u64 {
-        block
-            .transactions()
-            .iter()
-            .map(|tx| notes_in(tx, pool))
-            .sum()
-    };
-    let changed: Vec<(ShieldedPool, u64, u64)> = ShieldedPool::ALL
-        .into_iter()
-        .filter_map(|pool| {
-            let count = added(pool);
-            let size = pool_size(roots, pool)?;
-            (count > 0).then_some((pool, count, size))
-        })
-        .collect();
+    let changed = assemble::changed_pools(block.transactions(), roots);
     let mut frontiers = PoolFrontiers::default();
     let mut subtrees = Vec::new();
     if changed.is_empty() {
@@ -99,37 +78,31 @@ async fn notes<S: ChainStoreSource>(
         .get_treestate(height)
         .await
         .map_err(|error| query("treestate", error))?;
-    for (pool, count, size) in changed {
-        let tree = match pool {
+    for pool in changed {
+        let tree = match pool.pool {
             ShieldedPool::Sapling => treestate.sapling.as_ref(),
             ShieldedPool::Orchard => treestate.orchard.as_ref(),
             ShieldedPool::Ironwood => treestate.ironwood.as_ref(),
         };
-        let frontier = frontier(tree, pool)?;
-        match pool {
+        let frontier = assemble::frontier_of(tree, pool.pool).map_err(inconsistent)?;
+        match pool.pool {
             ShieldedPool::Sapling => frontiers.sapling = Some(frontier),
             ShieldedPool::Orchard => frontiers.orchard = Some(frontier),
             ShieldedPool::Ironwood => frontiers.ironwood = Some(frontier),
         }
-        let before = size.checked_sub(count).ok_or_else(|| {
-            ChainStoreSourceError::inconsistent_data(format!(
-                "{pool} added {count} notes to a tree of {size}"
-            ))
-        })?;
-        let (first, end) = (before / SUBTREE_LEAVES, size / SUBTREE_LEAVES);
-        if end > first {
-            subtrees.extend(completed(source, pool, first, end, height).await?);
+        let range = assemble::completed_range(&pool).map_err(inconsistent)?;
+        if !range.is_empty() {
+            subtrees.extend(completed(source, pool.pool, range, height).await?);
         }
     }
     Ok((frontiers, subtrees))
 }
 
-/// Subtrees `first..end` of `pool`, each checked to end at `height`.
+/// Subtrees `range` of `pool`, each checked to end at `height`.
 async fn completed<S: ChainStoreSource>(
     source: &S,
     pool: ShieldedPool,
-    first: u64,
-    end: u64,
+    range: std::ops::Range<u64>,
     height: Height,
 ) -> Result<Vec<CompletedSubtree>, ChainStoreSourceError> {
     let index = |at: u64| {
@@ -137,63 +110,25 @@ async fn completed<S: ChainStoreSource>(
             ChainStoreSourceError::inconsistent_data(format!("{pool} subtree {at} past u16"))
         })
     };
-    let count = index(end.saturating_sub(first))?;
+    let count = index(range.end.saturating_sub(range.start))?;
     let roots = source
-        .get_subtree_roots(pool, index(first)?, Some(count))
+        .get_subtree_roots(pool, index(range.start)?, Some(count))
         .await
         .map_err(|error| query("subtree roots", error))?;
     if roots.len() != usize::from(count) {
         return Err(ChainStoreSourceError::not_ready(format!(
-            "{pool} subtrees {first}..{end}: {} answered",
+            "{pool} subtrees {}..{}: {} answered",
+            range.start,
+            range.end,
             roots.len()
         )));
     }
-    (first..end)
+    range
         .zip(roots)
-        .map(|(index, root)| match root.end_height == height {
-            true => Ok(CompletedSubtree {
-                pool,
-                index,
-                root: root.root.into(),
-            }),
-            false => Err(ChainStoreSourceError::inconsistent_data(format!(
-                "{pool} subtree {index} ends at {}, not {height}",
-                root.end_height
-            ))),
+        .map(|(index, root)| {
+            assemble::completed_subtree(pool, index, &root, height).map_err(inconsistent)
         })
         .collect()
-}
-
-fn frontier(
-    tree: Option<&PoolTreestate>,
-    pool: ShieldedPool,
-) -> Result<NoteFrontier, ChainStoreSourceError> {
-    let tree = tree.ok_or_else(|| {
-        ChainStoreSourceError::inconsistent_data(format!("{pool} notes added without a treestate"))
-    })?;
-    frontier_from_legacy_tree(&tree.final_state)
-        .map_err(inconsistent)?
-        .ok_or_else(|| {
-            ChainStoreSourceError::inconsistent_data(format!("{pool} treestate empty after notes"))
-        })
-}
-
-fn notes_in(tx: &Transaction, pool: ShieldedPool) -> u64 {
-    let count = match pool {
-        ShieldedPool::Sapling => tx.sapling.outputs.len(),
-        ShieldedPool::Orchard => tx.orchard.actions.len(),
-        ShieldedPool::Ironwood => tx.ironwood.actions.len(),
-    };
-    u64::try_from(count).unwrap_or(u64::MAX)
-}
-
-fn pool_size(roots: &TreeRoots, pool: ShieldedPool) -> Option<u64> {
-    let info = match pool {
-        ShieldedPool::Sapling => roots.sapling.as_ref(),
-        ShieldedPool::Orchard => roots.orchard.as_ref(),
-        ShieldedPool::Ironwood => roots.ironwood.as_ref(),
-    }?;
-    Some(u64::from(info.size.get()))
 }
 
 /// A source failure: a domain refusal (not there yet) or the transport.

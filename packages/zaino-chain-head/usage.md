@@ -161,6 +161,22 @@ The bound is deliberately not `Clone`. A source may own connections and a
 database handle that must not be duplicated; the runtime shares one behind an
 `Arc`.
 
+## The ports the extensions drive
+
+An extension (D-50) folds one `zaino-indexes` index over the window; it reads
+nothing below the head's root except through one of five ports in
+`extension`, each a single question: `PrevoutSource` (the outputs the
+window's inputs spend from below the root), `RemainingOutputs` (how many
+counted outputs a transaction still had there, for the UTXO set's transaction
+count), `TxOutSetSeed` (the accumulator at the root), `TreeStateSeed` (each
+pool's frontier at the root) and `HistoryTreeSeed` (the history tree's epoch
+at the root). `zaino-chain` implements them over the finalised store and,
+where the store lacks the index, the validator; the head names neither. The
+answers an extension adds are capability traits beside the others:
+`ChainHeadTreeStateService`, `ChainHeadHistoryTreeService`,
+`ChainHeadTransparentHistoryService`, and `ChainHeadTxOutSetService::txout_set`;
+each covers the window alone, the store answering below it.
+
 ## What the chain head is not
 
 It is not an index. It holds a bounded window and nothing below it, never reads

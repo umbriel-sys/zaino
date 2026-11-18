@@ -18,6 +18,7 @@
 )]
 
 pub mod address_history;
+pub mod assemble;
 mod block;
 pub mod chain_metadata;
 mod codec;

@@ -34,14 +34,14 @@ use tokio::sync::watch;
 use zaino_component::StatusSource;
 use zaino_primitives::types::{
     AbsoluteChainWork, BlockHash, BlockTxPosition, CompactBlock, Height, Outpoint, PoolFrontier,
-    ShieldedPool, SubtreeRoot, TransactionId, TreeRoots,
+    ShieldedPool, SubtreeRoot, TransactionId, TransparentOutput, TreeRoots,
 };
 
 use crate::block::{PoolFilter, StoredHeader};
 use crate::capability::{StoreCapabilities, StoreCapability, StoreSchema, StoreWatermark};
 use crate::error::{ChainStoreError, ChainStoreSourceError};
 use crate::output::{SpenderRef, StoredTxOut};
-use crate::tree::HistoryEpoch;
+use crate::tree::{HistoryEpoch, HistoryPeaks};
 use crate::txout_set::TxOutSetAccumulator;
 
 /// Everything a chain store asks of a validator.
@@ -277,6 +277,15 @@ pub trait SpentOutputIndex: ChainStoreReader {
         outpoints: &[Outpoint],
     ) -> impl Future<Output = Result<Vec<Option<StoredTxOut>>, ChainStoreError>> + Send;
 
+    /// The outputs `outpoints` name, in the order asked, as the chain holds
+    /// them: value and script. `None` when the store does not hold the
+    /// creating transaction. What a fold running above this store reads for
+    /// the inputs that spend below it.
+    fn outputs_by_outpoint(
+        &self,
+        outpoints: &[Outpoint],
+    ) -> impl Future<Output = Result<Vec<Option<TransparentOutput>>, ChainStoreError>> + Send;
+
     /// The output at `outpoint` if it exists and this store has not seen it
     /// spent.
     ///
@@ -313,6 +322,15 @@ pub trait TxOutSetIndex: ChainStoreReader {
     fn txout_set(
         &self,
     ) -> impl Future<Output = Result<TxOutSetAccumulator, ChainStoreError>> + Send;
+
+    /// How many counted outputs each of `txids` still has unspent as of the
+    /// watermark, in the order asked; `None` for a transaction holding none.
+    /// The count the set's `transactions` total is made of (D-69), so a fold
+    /// extending this set knows when a transaction leaves it.
+    fn remaining_outputs(
+        &self,
+        txids: &[TransactionId],
+    ) -> impl Future<Output = Result<Vec<Option<u32>>, ChainStoreError>> + Send;
 }
 
 /// Commitment tree roots and sizes after each block (I-08).
@@ -371,6 +389,14 @@ pub trait HistoryTreeIndex: ChainStoreReader {
         &self,
         height: Height,
     ) -> impl Future<Output = Result<Option<HistoryEpoch>, ChainStoreError>> + Send;
+
+    /// The peaks of the epoch's MMR after `height`, left to right as MMR
+    /// position and encoded entry: what a fold continuing the tree above the
+    /// store appends onto. `None` as `history_epoch`.
+    fn history_peaks(
+        &self,
+        height: Height,
+    ) -> impl Future<Output = Result<Option<HistoryPeaks>, ChainStoreError>> + Send;
 
     /// The encoded MMR entries at `positions` of the epoch in force after
     /// `height`, in the order asked (ZIP 221 entry encoding); `None` for a

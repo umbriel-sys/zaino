@@ -59,6 +59,8 @@
 pub mod metric_names;
 
 mod error;
+#[cfg(feature = "_extensions")]
+mod extension;
 mod graph;
 mod service;
 mod snapshot;
@@ -68,6 +70,8 @@ mod subscriber;
 mod tests;
 
 pub use error::{ChainHeadAdvanceError, ChainHeadInitError};
-pub use service::ChainHeadService;
+#[cfg(feature = "_extensions")]
+pub use service::ExtensionBuilder;
+pub use service::{ChainHeadBuilder, ChainHeadService};
 pub use snapshot::PersistentSnapshot;
 pub use subscriber::ChainHeadSubscriber;

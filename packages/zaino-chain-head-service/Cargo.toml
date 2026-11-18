@@ -14,11 +14,15 @@ version = "0.2.0"
 [features]
 default = []
 
-# Forwards the domain crate's declaration-only transparent capability, so a
-# consumer enabling it here gets the same types and port.
-transparent_address_history_experimental = [
-    "zaino-chain-head/transparent_address_history_experimental",
-]
+# Extensions (D-50): one `zaino-indexes` fold each, run over the window and
+# enabled through the builder. Each is its own feature so a head that serves
+# none pulls in neither the indexes nor the persistence port.
+_extensions = ["dep:zaino-indexes", "dep:zaino-persistence"]
+transactions = ["_extensions"]
+txout_set = ["transactions"]
+address_history = ["transactions"]
+tree_state = ["_extensions"]
+history_tree = ["_extensions"]
 
 # TEST-ONLY: exposes `spawn_without_writer` and `advance_once`, so a downstream
 # test crate can step the chain head deterministically instead of racing its
@@ -43,12 +47,24 @@ tracing = { workspace = true }
 
 metrics = { workspace = true }
 imbl.workspace = true
+zaino-indexes = { version = "0.1.0", path = "../zaino-indexes", optional = true }
+zaino-persistence = { version = "0.1.0", path = "../zaino-persistence", optional = true }
 
 [dev-dependencies]
 proptest.workspace = true
 tokio = { workspace = true, features = ["macros", "test-util"] }
 zaino-consensus = { workspace = true }
 zaino-source-mock.workspace = true
+# The in-memory backend folds the oracles the extension tests compare against.
+zaino-persistence = { version = "0.1.0", path = "../zaino-persistence", features = ["testing"] }
+# The crate's own tests run with every extension on.
+zaino-chain-head-service = { path = ".", features = [
+    "transactions",
+    "txout_set",
+    "address_history",
+    "tree_state",
+    "history_tree",
+] }
 
 [lints.rust]
 unsafe_code = "forbid"

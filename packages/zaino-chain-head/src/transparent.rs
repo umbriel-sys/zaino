@@ -1,9 +1,8 @@
 //! Transparent-address effects inside the ChainHead window.
 //!
-//! **Declared, not implemented.** Nothing here has an implementation and no
-//! consumer is wired to it. The module exists to state the boundary while the
-//! capability is built: ChainHead contributes the *effects* it can see within
-//! its window, and never constructs complete address history.
+//! Implemented by the head service's `address_history` extension (I-10 folded
+//! over the window). The boundary: ChainHead contributes the *effects* it can
+//! see within its window, and never constructs complete address history.
 //!
 //! The distinction matters because the two are easy to conflate. A complete
 //! answer for an address needs the finalised state's indexes; ChainHead holds
@@ -61,7 +60,6 @@ pub struct TransparentHistoryQuery {
 
 /// An output created for a queried address, and where it was created.
 #[derive(Debug, Clone, PartialEq, Eq)]
-#[non_exhaustive]
 pub struct LocatedTransparentOutput {
     /// The address the output pays, as an index keys it.
     pub address: TransparentAddressKey,
@@ -84,7 +82,6 @@ pub struct LocatedTransparentOutput {
 /// address or value being spent, because it does not hold the output that
 /// carries them.
 #[derive(Debug, Clone, PartialEq, Eq)]
-#[non_exhaustive]
 pub struct LocatedTransparentSpend {
     /// The address whose output was spent, as an index keys it.
     pub address: TransparentAddressKey,
@@ -106,7 +103,6 @@ pub struct LocatedTransparentSpend {
 /// answers, and this is a contribution to one. The consumer combines it with
 /// the finalised state's indexes to produce the complete answer.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
-#[non_exhaustive]
 pub struct ChainHeadAddressEffects {
     /// Outputs created for the queried addresses inside the window.
     pub outputs: Vec<LocatedTransparentOutput>,
