@@ -34,16 +34,13 @@
 
 use std::{
     fmt,
-    sync::{Arc, Mutex},
+    sync::{Arc, Mutex, PoisonError},
     time::Duration,
 };
 
 use arc_swap::ArcSwap;
 use futures::StreamExt as _;
-use tokio::{
-    sync::{broadcast, watch},
-    task::JoinHandle,
-};
+use tokio::{sync::watch, task::JoinHandle};
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, info, instrument, warn};
 use zaino_chain_head::{
@@ -98,14 +95,6 @@ pub(crate) enum TipSelection {
     HeaviestRetained,
 }
 
-/// How many frozen blocks the handoff channel buffers before a slow consumer
-/// starts missing them.
-///
-/// A consumer keeping up needs one slot; this leaves room for a store that
-/// pauses briefly without it having to rebuild the gap. Beyond that it learns
-/// it lagged and rebuilds, which it can always do.
-const FROZEN_CHANNEL_CAPACITY: usize = 256;
-
 /// The bounded non-finalised head of the chain, kept current with a validator.
 ///
 /// Owns exactly one writer task. Everything else holds a
@@ -119,7 +108,6 @@ pub struct ChainHeadService<S: ChainHeadBlockSource> {
     /// readers, who will hold a stale copy.
     current: Arc<ArcSwap<MapBackedSnapshot>>,
     updates: watch::Sender<ChainStateEpoch>,
-    frozen: broadcast::Sender<ChainHeadBlock>,
     status: NamedAtomicStatus,
     cancel: CancellationToken,
     task: Mutex<Option<JoinHandle<()>>>,
@@ -169,7 +157,7 @@ impl<S: ChainHeadBlockSource> ChainHeadService<S> {
 
         let worker = Arc::clone(&service);
         let handle = tokio::spawn(async move { worker.run().await });
-        *service.task.lock().expect("chain head task mutex poisoned") = Some(handle);
+        *service.task.lock().unwrap_or_else(PoisonError::into_inner) = Some(handle);
 
         Ok(service)
     }
@@ -235,13 +223,10 @@ impl<S: ChainHeadBlockSource> ChainHeadService<S> {
             generation: 0,
             best_tip: snapshot.best_tip(),
         });
-        let (frozen, _) = broadcast::channel(FROZEN_CHANNEL_CAPACITY);
-
         let service = Arc::new(Self {
             source,
             current: Arc::new(ArcSwap::from_pointee(snapshot)),
             updates,
-            frozen,
             status,
             cancel,
             task: Mutex::new(None),
@@ -264,7 +249,6 @@ impl<S: ChainHeadBlockSource> ChainHeadService<S> {
         ChainHeadSubscriber::new(
             Arc::clone(&self.current),
             self.updates.subscribe(),
-            self.frozen.clone(),
             self.status.clone(),
         )
     }
@@ -290,10 +274,11 @@ impl<S: ChainHeadBlockSource> ChainHeadService<S> {
     pub fn shutdown(&self) {
         self.status.store(StatusType::Closing);
         self.cancel.cancel();
+        // a poisoned lock still holds the handle: abort it all the same
         if let Some(handle) = self
             .task
             .lock()
-            .expect("chain head task mutex poisoned")
+            .unwrap_or_else(PoisonError::into_inner)
             .take()
         {
             handle.abort();
@@ -333,7 +318,7 @@ impl<S: ChainHeadBlockSource> ChainHeadService<S> {
                     }
                 }
                 Err(error) => {
-                    consecutive_failures += 1;
+                    consecutive_failures = consecutive_failures.saturating_add(1);
                     record_sync_failures(consecutive_failures, backoff);
                     if consecutive_failures >= self.config.max_consecutive_failures() {
                         warn!(
@@ -349,7 +334,7 @@ impl<S: ChainHeadBlockSource> ChainHeadService<S> {
                     if sleep_or_cancel(backoff, &self.cancel).await.is_break() {
                         break;
                     }
-                    backoff = (backoff * 2).min(self.config.max_backoff());
+                    backoff = backoff.saturating_mul(2).min(self.config.max_backoff());
                 }
             }
         }
@@ -629,7 +614,9 @@ impl<S: ChainHeadBlockSource> ChainHeadService<S> {
                 return Ok(());
             }
             target_height = height_below(target_height, 1);
-            if u32::from(target_height) + self.max_retained_depth() < u32::from(tip.height) {
+            if u32::from(target_height).saturating_add(self.max_retained_depth())
+                < u32::from(tip.height)
+            {
                 return Err(ChainHeadAdvanceError::ReorgFailure(
                     "reorg detection stepped below the retained window".to_string(),
                 ));
@@ -646,23 +633,6 @@ impl<S: ChainHeadBlockSource> ChainHeadService<S> {
         let (stale_tip, new_tip) = (previous.best_tip(), next.best_tip());
         let tip_changed = new_tip != stale_tip;
 
-        // Blocks that crossed the consensus seam during this iteration are now
-        // beyond the reach of any reorg, so they can be handed to a store. The
-        // seam sits at the configured depth; the retention floor is lower, so
-        // a frozen block is still retained for a while after it is emitted.
-        let frozen: Vec<ChainHeadBlock> = if self.frozen.receiver_count() > 0 {
-            let was_frozen_below = height_below(stale_tip.height, self.config.max_depth());
-            let now_frozen_below = height_below(new_tip.height, self.config.max_depth());
-            next.best_chain()
-                .filter(|block| {
-                    block.height() > was_frozen_below && block.height() <= now_frozen_below
-                })
-                .cloned()
-                .collect()
-        } else {
-            Vec::new()
-        };
-
         // Read from the snapshot being installed: the fork point is the first
         // ancestor of the old tip that the *new* chain still calls canonical.
         // Before the trim below: the lookup needs the old tip still in the graph
@@ -672,11 +642,8 @@ impl<S: ChainHeadBlockSource> ChainHeadService<S> {
         // Read beside the fork point, so both describe the same pre-trim graph
         let retained_floor = next.lowest_retained_height();
 
-        // Trim only now. The handoff above reads the blocks it emits out of the
-        // graph, so a block has to still be there to be handed off: trimming
-        // first bounds one iteration's handoff by the gap between the seam and
-        // the retention floor, and silently settles the rest without emitting
-        // them. The order is the guarantee, not the size of that gap.
+        // Trim after the fork point and floor are read: both describe the
+        // pre-trim graph.
         next.remove_finalized_blocks(height_below(
             next.best_tip().height,
             self.max_retained_depth(),
@@ -706,12 +673,6 @@ impl<S: ChainHeadBlockSource> ChainHeadService<S> {
                 generation,
                 best_tip: new_tip,
             });
-        }
-
-        for block in frozen {
-            // A full channel drops the oldest; the consumer sees `Lagged` and
-            // rebuilds the gap from its own source, which it can always do.
-            let _ = self.frozen.send(block);
         }
     }
 
@@ -820,7 +781,7 @@ impl<S: ChainHeadBlockSource> Drop for ChainHeadService<S> {
         if let Some(handle) = self
             .task
             .lock()
-            .expect("chain head task mutex poisoned")
+            .unwrap_or_else(PoisonError::into_inner)
             .take()
         {
             handle.abort();
@@ -972,7 +933,7 @@ async fn anchor_with_retry<S: ChainHeadBlockSource>(
         match anchor(source, config).await {
             Ok(snapshot) => return Ok(snapshot),
             Err(error) => {
-                failures += 1;
+                failures = failures.saturating_add(1);
                 if failures >= config.max_consecutive_failures() {
                     return Err(ChainHeadInitError::SourceUnavailable {
                         attempts: failures,
@@ -983,7 +944,7 @@ async fn anchor_with_retry<S: ChainHeadBlockSource>(
                 if sleep_or_cancel(backoff, cancel).await.is_break() {
                     return Err(ChainHeadInitError::Cancelled);
                 }
-                backoff = (backoff * 2).min(config.max_backoff());
+                backoff = backoff.saturating_mul(2).min(config.max_backoff());
             }
         }
     }

@@ -89,6 +89,18 @@ impl Fs for RealFs {
         std::fs::remove_file(path)
     }
 
+    fn remove_dir(&self, path: &Path) -> io::Result<()> {
+        std::fs::remove_dir(path)
+    }
+
+    fn is_dir(&self, path: &Path) -> io::Result<bool> {
+        match std::fs::symlink_metadata(path) {
+            Ok(metadata) => Ok(metadata.is_dir()),
+            Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(false),
+            Err(error) => Err(error),
+        }
+    }
+
     fn set_read_only(&self, path: &Path) -> io::Result<()> {
         use std::os::unix::fs::PermissionsExt as _;
 
@@ -129,6 +141,33 @@ impl Fs for RealFs {
                 io::ErrorKind::WouldBlock,
                 format!("{} is held by another process", path.display()),
             )),
+            Err(std::fs::TryLockError::Error(error)) => Err(error),
+        }
+    }
+
+    fn lock_waiting(&self, path: &Path) -> io::Result<LockGuard> {
+        let file = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .open(path)?;
+        file.lock()?;
+        Ok(LockGuard {
+            _held: Box::new(file),
+        })
+    }
+
+    fn is_locked(&self, path: &Path) -> io::Result<bool> {
+        let file = match File::open(path) {
+            Ok(file) => file,
+            Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(false),
+            Err(error) => return Err(error),
+        };
+        // released when `file` drops
+        match file.try_lock_shared() {
+            Ok(()) => Ok(false),
+            Err(std::fs::TryLockError::WouldBlock) => Ok(true),
             Err(std::fs::TryLockError::Error(error)) => Err(error),
         }
     }

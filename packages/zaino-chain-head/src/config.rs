@@ -41,22 +41,19 @@ pub struct ChainHeadConfig {
     fetch_concurrency: NonZeroUsize,
 }
 
-/// The consensus reorg bound, as a `NonZeroU32`.
-///
-/// `expect` rather than a fallible path: this reads a compile-time constant
-/// that is a reorg bound, and a reorg bound of zero would mean the chain never
-/// reorganises. If that ever became true, the whole crate would be pointless.
+// a reorg bound of zero would mean the chain never reorganises
+const _: () = assert!(zaino_consensus::MAX_NONFINALISED_DEPTH > 0);
+
+/// The consensus reorg bound, as a `NonZeroU32` (non-zero, asserted above at
+/// compile time, so the fallback is never taken).
 fn default_max_depth() -> NonZeroU32 {
-    NonZeroU32::new(zaino_consensus::MAX_NONFINALISED_DEPTH)
-        .expect("the consensus reorg bound is not zero")
+    NonZeroU32::new(zaino_consensus::MAX_NONFINALISED_DEPTH).unwrap_or(NonZeroU32::MIN)
 }
 
-/// Milliseconds as a `NonZeroU64`, for the literal defaults below.
-///
-/// Private and only ever called with a literal, so the `expect` asserts
-/// something the reader can check at the call site.
+/// Milliseconds as a `NonZeroU64`, for the literal defaults below (never
+/// zero, so the fallback is never taken).
 fn ms(millis: u64) -> NonZeroU64 {
-    NonZeroU64::new(millis).expect("a literal default interval is not zero")
+    NonZeroU64::new(millis).unwrap_or(NonZeroU64::MIN)
 }
 
 impl Default for ChainHeadConfig {
@@ -66,7 +63,7 @@ impl Default for ChainHeadConfig {
             poll_interval_ms: ms(1_000),
             initial_backoff_ms: ms(500),
             max_backoff_ms: ms(30_000),
-            max_consecutive_failures: NonZeroU32::new(10).expect("10 is not zero"),
+            max_consecutive_failures: NonZeroU32::new(10).unwrap_or(NonZeroU32::MIN),
             fetch_concurrency: zaino_component::CpuBudget::detect()
                 .concurrency(zaino_component::Share::ChainHead),
         }

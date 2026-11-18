@@ -1,39 +1,33 @@
 //! A block as a chain view reports it.
 
-use zaino_chain_store::FrozenBlock;
-use zaino_chain_store::StoredBlock;
-use zaino_chain_store::StoredTx;
-use zaino_primitives::types::{AbsoluteChainWork, BlockHeader, BlockRef, TreeRoots};
-use zaino_primitives::types::{Block, PreIndexCompactTx};
+use zaino_primitives::types::{
+    AbsoluteChainWork, Block, BlockHeader, BlockRef, PreIndexCompactTx, TreeRoots,
+};
 
-/// A block, from whichever provider held it.
+/// A block, from whichever provider held it: the header, every transaction in
+/// compact form, the tree roots after it, and its cumulative work where known.
 ///
-/// **Seperate from [`StoredBlock`]**:
+/// A projection, not the block: the fields the indexes hold, never the
+/// consensus bytes, which the validator serves. The store half is composed
+/// from three index reads (headers, compact transactions, tree roots); the
+/// chain head and the validator supply parsed blocks that are projected the
+/// same way, so every provider yields one shape.
 ///
-/// [`StoredBlock::chainwork`] is a plain [`AbsoluteChainWork`], because a store always
-/// knows it: the store's coverage runs from genesis, so the cumulative sum is
-/// available for every block it holds. A chain view has no such guarantee — it
-/// answers from providers that individually cannot know it — so here the field
-/// is an [`Option`].
-///
-/// Reusing `StoredBlock` would have meant either changing the store's type to
-/// accommodate a consumer's limitation, or encoding "unknown" as a magic value
-/// inside a field typed as if it were always known. The field types are shared,
-/// so this is a different assembly of the same vocabulary rather than a second
-/// copy of it.
+/// `chainwork` is an [`Option`] because a chain view has no guarantee of
+/// knowing it: chainwork is *cumulative*, the total work of every block from
+/// genesis to this one, so knowing it requires an unbroken chain below the
+/// block. Only the store has that; a chain-head block is rebased onto the
+/// store's value for the window's anchor, and a validator-answered block
+/// carries none. See the crate documentation.
 #[derive(Debug, Clone)]
 pub struct ChainBlock {
     /// The block's header.
     pub header: BlockHeader,
-    /// Per-transaction indexed data, in block order.
-    pub transactions: Vec<StoredTx>,
+    /// Every transaction, in block order, in compact form.
+    pub transactions: Vec<PreIndexCompactTx>,
     /// Commitment tree roots and sizes after this block is applied.
     pub tree_roots: TreeRoots,
     /// Cumulative work from genesis to this block, when it can be known.
-    ///
-    /// Chainwork is *cumulative*: it is the total work of every block from
-    /// genesis to this one. Knowing it therefore requires an unbroken chain
-    /// below this block, not merely this block.
     pub chainwork: Option<AbsoluteChainWork>,
 }
 
@@ -46,16 +40,6 @@ impl ChainBlock {
         }
     }
 
-    /// A block the finalised store answered for.
-    pub(crate) fn from_stored(block: StoredBlock) -> Self {
-        Self {
-            header: block.header,
-            transactions: block.transactions,
-            tree_roots: block.tree_roots,
-            chainwork: Some(block.chainwork),
-        }
-    }
-
     /// A block the chain head or the validator answered for.
     pub(crate) fn from_parsed(
         block: &Block,
@@ -64,34 +48,13 @@ impl ChainBlock {
     ) -> Self {
         Self {
             header: block.header.clone(),
-            transactions: stored_txs(block),
+            transactions: block
+                .transactions()
+                .iter()
+                .map(PreIndexCompactTx::from)
+                .collect(),
             tree_roots,
             chainwork,
         }
-    }
-}
-
-/// A block on its way into the finalised store.
-pub(crate) fn frozen_block(block: &Block, tree_roots: TreeRoots) -> FrozenBlock {
-    FrozenBlock {
-        header: block.header.clone(),
-        transactions: stored_txs(block),
-        tree_roots,
-    }
-}
-
-/// Every transaction in a block, as an index holds it.
-fn stored_txs(block: &Block) -> Vec<StoredTx> {
-    block.transactions().iter().map(stored_tx).collect()
-}
-
-/// The indexed projection of a parsed transaction.
-fn stored_tx(tx: &zaino_primitives::types::Transaction) -> StoredTx {
-    let balances = tx.pool_balances();
-    StoredTx {
-        compact: PreIndexCompactTx::from(tx),
-        sapling_value: balances.sapling,
-        orchard_value: balances.orchard,
-        ironwood_value: balances.ironwood,
     }
 }

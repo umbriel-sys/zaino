@@ -1,0 +1,10 @@
+[[changes]]
+crate = "zaino-source-mock"
+kind = "feature"
+description = """
+Built chains have real note commitment trees: roots, treestates (zcashd's \
+legacy encoding) and completed subtree roots are hashed from the notes \
+(Sapling: Pedersen; Orchard and Ironwood: Sinsemilla), and Orchard-shaped \
+bundles anchor to their tree's root after the parent. A block without notes \
+reuses its parent's tree. A completed subtree costs ~3–4 s of CPU to build.
+"""

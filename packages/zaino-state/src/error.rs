@@ -558,15 +558,10 @@ impl From<zaino_chain_store::ChainStoreError> for ChainIndexError {
             // The store is healthy and the request well-formed; this
             // deployment does not build that index. Not a fault, and not
             // something a later attempt fixes.
-            Error::Unavailable(_) => ChainIndexErrorKind::Unimplemented,
+            Error::Unavailable(_) | Error::Unsupported(_) => ChainIndexErrorKind::Unimplemented,
 
             // ChainIndex's own routing mistake, as the note above explains.
             Error::AboveWatermark { .. } => ChainIndexErrorKind::InternalServerError,
-
-            // A freeze outcome, on a path that only ever reads. It is the
-            // composer's to repair — build to `first_frozen - 1` and freeze
-            // again — so a caller seeing it means the repair did not happen.
-            Error::FreezeGap { .. } => ChainIndexErrorKind::InternalServerError,
 
             // A broken store. Neither is the caller's to fix.
             Error::MissingRow(_) | Error::CorruptRow { .. } | Error::Backend { .. } => {

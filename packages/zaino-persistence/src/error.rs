@@ -235,6 +235,21 @@ pub enum FootprintError {
     },
 }
 
+/// Error when moving a read-only backend to its writer's announced state.
+#[derive(Debug, thiserror::Error)]
+pub enum RefreshError {
+    /// The writer has moved past the announced state: refresh at its newer
+    /// announcement.
+    #[error("the writer moved past the announced state")]
+    Superseded,
+    /// No index at the directory (not yet created, or removed).
+    #[error("no index at the directory")]
+    Absent,
+    /// Another index's directory, lost or corrupted data, or I/O failed.
+    #[error(transparent)]
+    Open(#[from] OpenError),
+}
+
 /// Which part of a write op a width applies to.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Part {

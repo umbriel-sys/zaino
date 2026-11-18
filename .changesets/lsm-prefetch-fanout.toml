@@ -1,0 +1,9 @@
+[[changes]]
+crate = "zaino-persistence-lsm-tree"
+kind = "fix"
+description = """
+A batched point lookup's readahead runs one rayon task per candidate segment \
+instead of one per key × segment (the filter is consulted once, not per \
+round), and its probes split in batches of 64: the scheduling around the \
+insert-once key checks was 70 % of a block's commit on the address-history \
+index."""

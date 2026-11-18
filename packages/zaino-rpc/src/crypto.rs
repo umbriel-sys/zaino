@@ -31,6 +31,11 @@ pub fn ensure_default_crypto_provider() {
     if rustls::crypto::CryptoProvider::get_default().is_none() {
         // A racing concurrent install is the only error case; either
         // provider serves.
-        let _ = rustls::crypto::aws_lc_rs::default_provider().install_default();
+        if rustls::crypto::aws_lc_rs::default_provider()
+            .install_default()
+            .is_err()
+        {
+            // another provider was installed first: it serves
+        }
     }
 }

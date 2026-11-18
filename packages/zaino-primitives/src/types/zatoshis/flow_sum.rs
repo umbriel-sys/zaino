@@ -54,7 +54,7 @@ impl ZatoshisFlowSum {
         let difference = if self.0 >= spent.0 {
             magnitude
         } else {
-            -magnitude
+            magnitude.checked_neg()?
         };
         SignedZatoshis::try_new(difference).ok()
     }

@@ -1,0 +1,16 @@
+[[changes]]
+crate = "zaino-source-zebra"
+kind = "fix"
+description = """
+The read-state adapter answers no tree root for a pool whose upgrade is not \
+active at the block (D-68: absent before activation, never an empty tree), \
+the gate its treestate already applied. The store's chain-metadata index \
+recorded the seeded empty trees as size 0, so `pool_frontier` answered \
+`Empty` below Sapling, NU5 and NU6.3 where the validator answers absent."""
+
+[[changes]]
+crate = "zaino-source-mock"
+kind = "fix"
+description = """
+The source contract's `tree_roots` check asserts a pool has a root exactly \
+from its activation."""

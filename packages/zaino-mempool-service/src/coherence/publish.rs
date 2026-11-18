@@ -12,6 +12,8 @@ use zaino_mempool::snapshot::MempoolSnapshot;
 use zaino_mempool::tip::{CoherentSnapshot, FreezeReason, MempoolMode, ObservedTips};
 use zaino_primitives::types::ChainStateEpoch;
 
+use crate::notify;
+
 impl<M: Mempool, N: NfsEpochObserver> super::CoherenceService<M, N> {
     pub(super) fn publish_live(
         &self,
@@ -22,7 +24,10 @@ impl<M: Mempool, N: NfsEpochObserver> super::CoherenceService<M, N> {
     ) {
         // Serving live: the freeze clock (if any) stops here.
         let was_frozen = matches!(prev.mode, MempoolMode::Frozen { .. });
-        *self.frozen_since.lock().expect("frozen_since poisoned") = None;
+        *self
+            .frozen_since
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = None;
 
         if was_frozen {
             // The matching edge to the freeze above, so a `frozen` line is
@@ -59,18 +64,24 @@ impl<M: Mempool, N: NfsEpochObserver> super::CoherenceService<M, N> {
         if steady_update {
             for entry in core.entries_in_order().iter() {
                 if !prev.set.by_txid().contains_key(&entry.txid) {
-                    let _ = self.events.send(Arc::new(MempoolEvent::Added {
-                        sequence: next_sequence,
-                        valid_for: epoch,
-                        entry: Arc::clone(entry),
-                    }));
+                    notify(
+                        &self.events,
+                        Arc::new(MempoolEvent::Added {
+                            sequence: next_sequence,
+                            valid_for: epoch,
+                            entry: Arc::clone(entry),
+                        }),
+                    );
                 }
             }
         }
-        let _ = self.events.send(Arc::new(MempoolEvent::Live {
-            sequence: next_sequence,
-            valid_for: epoch,
-        }));
+        notify(
+            &self.events,
+            Arc::new(MempoolEvent::Live {
+                sequence: next_sequence,
+                valid_for: epoch,
+            }),
+        );
 
         self.status.store(StatusType::Ready);
     }
@@ -87,7 +98,10 @@ impl<M: Mempool, N: NfsEpochObserver> super::CoherenceService<M, N> {
         // across repeated freezes (a reason/tip change while still frozen keeps
         // the original start). Cleared only on thaw in `publish_live`.
         if !was_frozen {
-            *self.frozen_since.lock().expect("frozen_since poisoned") = Some(Instant::now());
+            *self
+                .frozen_since
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(Instant::now());
 
             // The edge where tip-coherent reads stop being served. `FreezeReason`
             // is otherwise only a broadcast event, so without this an operator
@@ -132,10 +146,13 @@ impl<M: Mempool, N: NfsEpochObserver> super::CoherenceService<M, N> {
             event_sequence: next_sequence,
         });
         self.coherent.store(snapshot);
-        let _ = self.events.send(Arc::new(MempoolEvent::Frozen {
-            sequence: next_sequence,
-            reason,
-        }));
+        notify(
+            &self.events,
+            Arc::new(MempoolEvent::Frozen {
+                sequence: next_sequence,
+                reason,
+            }),
+        );
         self.status.store(StatusType::Syncing);
     }
 
@@ -150,9 +167,12 @@ impl<M: Mempool, N: NfsEpochObserver> super::CoherenceService<M, N> {
             event_sequence: next_sequence,
         });
         self.coherent.store(closing);
-        let _ = self.events.send(Arc::new(MempoolEvent::Closing {
-            sequence: next_sequence,
-        }));
+        notify(
+            &self.events,
+            Arc::new(MempoolEvent::Closing {
+                sequence: next_sequence,
+            }),
+        );
         self.status.store(StatusType::Closing);
     }
 }

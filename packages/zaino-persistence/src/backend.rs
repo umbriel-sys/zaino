@@ -19,7 +19,9 @@ use core::ops::{Bound, Range};
 
 use zaino_primitives::types::BlockRef;
 
-use crate::error::{CommitError, FlushError, FootprintError, OpenError, ReadError, VerifyError};
+use crate::error::{
+    CommitError, FlushError, FootprintError, OpenError, ReadError, RefreshError, VerifyError,
+};
 use crate::verify::{NamespaceFootprint, Verification};
 
 /// A namespace identifier — names an independent keyspace within the backend.
@@ -81,6 +83,11 @@ pub enum NamespaceKind {
         value: NonZeroU32,
         /// Keys removable, each at most once and never re-inserted.
         deletes: bool,
+        /// The writer guarantees distinct keys: a backend may skip its
+        /// durable `KeyExists` check for a `Put` (a repeat within its buffer
+        /// is still refused) and report a breach later as `Corrupted`.
+        /// Never with `deletes`.
+        unique: bool,
     },
 }
 
@@ -115,6 +122,21 @@ impl NamespaceSpec {
                 key,
                 value,
                 deletes,
+                unique: false,
+            },
+        }
+    }
+
+    /// A map whose keys the writer guarantees distinct (see
+    /// [`NamespaceKind::Map::unique`]); no deletes.
+    pub const fn unique_map(namespace: Namespace, key: NonZeroU32, value: NonZeroU32) -> Self {
+        Self {
+            namespace,
+            kind: NamespaceKind::Map {
+                key,
+                value,
+                deletes: false,
+                unique: true,
             },
         }
     }
@@ -255,6 +277,24 @@ pub trait Backend: Send + Sync {
     fn footprint(&self) -> Result<Vec<NamespaceFootprint>, FootprintError>;
 }
 
+/// An index directory another process writes, read-only (§5.2a): no writer.
+///
+/// It serves only what the writer announced as durable: [`refresh`](Self::refresh)
+/// moves it to the committed state at that announcement.
+pub trait ReadOnlyBackend: Send + Sync {
+    /// Reader handle type.
+    type Reader: BackendReader;
+
+    /// A snapshot of the last refreshed state; refused before the first
+    /// refresh.
+    fn reader(&self) -> Result<Self::Reader, OpenError>;
+
+    /// Moves to the committed state whose tip is `durable`, the writer's
+    /// announced durable tip (`None` = nothing committed). Readers already
+    /// taken keep their snapshot.
+    fn refresh(&self, durable: Option<BlockRef>) -> Result<(), RefreshError>;
+}
+
 /// Write handle. The engine sends batches of [`WriteOp`]s through this.
 pub trait BackendWriter: Send {
     /// Commit a batch of write operations atomically, as of block `tip`.
@@ -290,6 +330,18 @@ pub trait BackendReader: Send {
     ///
     /// A key not of the namespace's key width is [`ReadError::WidthMismatch`].
     fn get(&self, namespace: Namespace, key: &[u8]) -> Result<Option<RawValue>, ReadError>;
+
+    /// `read` over one value's bytes in place: the same answer as
+    /// [`get`](Self::get), without copying the value out where the backend
+    /// can lend it. `Ok(None)` for an absent key.
+    fn with_value<T>(
+        &self,
+        namespace: Namespace,
+        key: &[u8],
+        read: impl FnOnce(&[u8]) -> T,
+    ) -> Result<Option<T>, ReadError> {
+        Ok(self.get(namespace, key)?.map(|value| read(&value)))
+    }
 
     /// Read `range` of one value's bytes: the same answer as slicing
     /// [`get`](Self::get)'s value, without copying the rest of it.

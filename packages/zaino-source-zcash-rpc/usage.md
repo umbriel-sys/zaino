@@ -26,9 +26,37 @@ adapter is an optional accelerator, not an alternative.
   marks optional and some nodes omit (`chainwork`, `finalRoot`) are tolerated;
   nothing else is.
 - `adapter.rs` — the port impls, and the error classification below, which is
-  the part most likely to be got wrong. Raw block bytes are deserialized with
-  `zebra-chain`, the spec steward's parser, and converted through
-  `zaino_primitives::zebra`.
+  the part most likely to be got wrong.
+- `raw_block.rs` — raw block bytes → domain `Block`, with no curve
+  arithmetic. It enforces the structure `zcash_primitives` and `zebra-chain`
+  check when parsing: lengths, canonical CompactSizes, versions and version
+  groups, known branch ids and pool activation, reserved flag bits, value
+  ranges, BIP 34 coinbase heights. It does not check that curve points or
+  field elements are valid: the validator has already verified the block.
+  Txids are computed here (SHA-256d up to v4, ZIP 244 / ZIP 229 from v5). On
+  every block zebra accepts, the result matches `zebra-chain` +
+  `zaino_primitives::zebra`; the tests check this against zebra's block
+  vectors and arbitrary blocks for every upgrade, including v6.
+
+### Block verification
+
+`ZcashRpcAdapter::with_block_verification` sets how much more each raw block
+is checked, for use against a validator you don't fully trust or while
+diagnosing one:
+
+| `BlockVerification` | Checks | Cost (zebra's shielded vectors) |
+|---|---|---|
+| `Off` (default) | structure only | 1× |
+| `Light` | + the header's merkle root over the txids; anchors, note commitments and Orchard-shaped nullifiers as canonical field elements | ~1.13× |
+| `Full` | + zebra's own parse, curve points included, which must give the same block | ~24× |
+
+Neither level checks proofs, signatures or consensus rules.
+
+The parser is public for other crates reading consensus bytes:
+`parse_block(bytes, verification)` and
+`GENESIS_COINBASE_SCRIPT_SIG` (the one coinbase without a BIP 34 height).
+The merkle root it checks is `zaino_primitives`' `MerkleRoot::of(txids)`.
+`zaino-source-mock` builds its blocks through it.
 
 ## Error classification: the part that matters
 
@@ -46,6 +74,7 @@ per class rather than once per method:
 | `submission_rejection` | `sendrawtransaction` | `-22`, `-25..=-27` → the rejection reason |
 | `spent_info_rejection` | `getspentinfo` | `-5` → `NotSpent`, `-32601` → `Unsupported` |
 | `method_missing_or_fetch` | `getrawmempool`, `getstandardfee` | `-32601` → the port's "unavailable"/`Unsupported` |
+| `pool_unavailable_or_fetch` | `z_getsubtreesbyindex` | `-8` → `PoolUnavailable` (zcashd lacks Ironwood; the pool is the only parameter it checks with `-8`) |
 
 The remaining whole-node-state queries (`getblockchaininfo`, `getmininginfo`, …)
 deliberately use plain `call_parsed`: their only domain error is "validator not
@@ -72,12 +101,15 @@ validator.
 
 ## The quirk table
 
-`Quirks` holds the readings the spec leaves to the node, one function per
+`Quirks` holds the readings the spec leaves to the node, one field per
 reading; `Quirks::default()` has none, so a reply the spec does not define is a
 failure, never a guess. The crate that knows which node answers fills the
 table: `zaino-source-zebra::rpc_adapter` builds this adapter with zebrad's
-(its `-8 more than {cap} … match` result cap). A new node-specific reading
-goes in the table, not in a `match` here, so this crate's name stays true.
+(its `-8 more than {cap} … match` result cap, and
+`unchecked_address_network`: zebrad answers another network's address empty,
+so the adapter refuses it as `InvalidAddress` itself, reading the node's
+network once from `getblockchaininfo`). A new node-specific reading goes in
+the table, not in a `match` here, so this crate's name stays true.
 
 ## Byte order at this boundary
 

@@ -8,7 +8,7 @@ use std::{
 };
 
 use zaino_persistence::{
-    conformance::{Subject, SCANNED, SPECS},
+    conformance::{LinkedSubject, Subject, SCANNED, SPECS},
     Backend, BackendWriter, CommitError, Namespace, WriteOp,
 };
 use zaino_primitives::types::BlockRef;
@@ -16,7 +16,7 @@ use zaino_primitives::types::BlockRef;
 use crate::{
     fs::SimFs,
     lsm::{LsmConfig, Tuning},
-    LsmTreeBackend, LsmTreeConfig,
+    LsmTreeBackend, LsmTreeConfig, LsmTreeReadOnly,
 };
 
 pub(crate) const ROOT: &str = "/idx";
@@ -151,5 +151,22 @@ impl Subject for SimDisk {
             let verified = backend.verify().expect("verify");
             assert!(verified.is_clean(), "{label}: {verified:?}");
         }
+    }
+}
+
+impl LinkedSubject for SimDisk {
+    type ReadOnly = LsmTreeReadOnly;
+
+    fn open_read_only(&self) -> LsmTreeReadOnly {
+        LsmTreeReadOnly::open(
+            self.fs.clone(),
+            Path::new(ROOT),
+            "conformance",
+            CHAIN,
+            1,
+            SCHEMA,
+            &SPECS,
+        )
+        .expect("linked")
     }
 }

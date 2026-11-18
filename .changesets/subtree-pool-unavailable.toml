@@ -1,0 +1,25 @@
+[[changes]]
+crate = "zaino-source"
+kind = "fix"
+description = """
+`GetSubtreeRootsError::PoolUnavailable` documents what validators do: the node \
+does not support the pool (zcashd: Ironwood). An inactive pool is answered \
+empty, never refused.
+"""
+
+[[changes]]
+crate = "zaino-source-zcash-rpc"
+kind = "fix"
+description = """
+`z_getsubtreesbyindex`'s `-8` (zcashd refusing a pool it lacks) is \
+`PoolUnavailable`, not a fault.
+"""
+
+[[changes]]
+crate = "zaino-source-mock"
+kind = "feature"
+description = """
+`NodeFacts::subtree_pools` (default all three, as zebra): a pool left out is \
+refused as `PoolUnavailable`, as zcashd refuses Ironwood. \
+`contract::subtrees` checks all three pools, Ironwood answered or refused.
+"""

@@ -37,11 +37,13 @@ pub struct BlockHeader {
     pub solution: EquihashSolution,
 }
 
-/// A complete block: header + transactions + chain metadata.
+/// A complete block as the validator holds it: header + transactions.
 ///
-/// This is the domain-level block — not a wire format. Adapters
-/// parse from their wire format (hex RPC, ReadState, etc.) into
-/// this type. Indexes extract from it via `ProvideContext`.
+/// This is the domain-level block — not a wire format. Adapters parse from
+/// their wire format (hex RPC, ReadState, etc.) into this type. It carries
+/// nothing the block's bytes do not: cumulative tree sizes are indexed
+/// state, answered by the tree-roots ports and the chain-metadata index, and
+/// a compact block gets its [`ChainMetadata`] from there.
 ///
 /// Transaction position is the block's to know, not the transaction's: a
 /// transaction's slot — and so whether it is the coinbase — is read from the
@@ -50,14 +52,12 @@ pub struct BlockHeader {
 /// struct literal: it rejects an empty transaction list, the one whole-block
 /// invariant that outlives the removal of the per-transaction index (a block
 /// always contains at least its coinbase).
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Block {
     /// Block header.
     pub header: BlockHeader,
     /// Transactions in block order, fixed at construction.
     transactions: Vec<Transaction>,
-    /// Commitment tree metadata after this block.
-    pub chain_metadata: ChainMetadata,
 }
 
 /// A [`Block`] could not be constructed from the given parts.
@@ -79,7 +79,6 @@ impl Block {
     pub fn try_new(
         header: BlockHeader,
         transactions: Vec<Transaction>,
-        chain_metadata: ChainMetadata,
     ) -> Result<Self, BlockError> {
         if transactions.is_empty() {
             return Err(BlockError::NoTransactions);
@@ -87,13 +86,18 @@ impl Block {
         Ok(Self {
             header,
             transactions,
-            chain_metadata,
         })
     }
 
     /// The transactions in block order.
     pub fn transactions(&self) -> &[Transaction] {
         &self.transactions
+    }
+
+    /// Whether the header's merkle root commits to these transactions.
+    pub fn merkle_root_matches(&self) -> bool {
+        let txids = self.transactions.iter().map(|tx| <[u8; 32]>::from(tx.txid));
+        MerkleRoot::of(txids) == self.header.merkle_root
     }
 
     /// The coinbase transaction — the first in block order.
@@ -166,18 +170,11 @@ mod tests {
         }
     }
 
-    fn chain_metadata() -> ChainMetadata {
-        ChainMetadata {
-            sapling_tree_size: TreeSize::ZERO,
-            orchard_tree_size: TreeSize::ZERO,
-            ironwood_tree_size: TreeSize::ZERO,
-        }
-    }
-
     fn tx(tag: u8) -> Transaction {
         Transaction {
             txid: TransactionId::from([tag; 32]),
             transparent: Default::default(),
+            sprout: Default::default(),
             sapling: Default::default(),
             orchard: Default::default(),
             ironwood: Default::default(),
@@ -186,15 +183,15 @@ mod tests {
 
     #[test]
     fn try_new_rejects_an_empty_transaction_list() {
-        let result = Block::try_new(header(), Vec::new(), chain_metadata());
+        let result = Block::try_new(header(), Vec::new());
 
         assert_eq!(result.unwrap_err(), BlockError::NoTransactions);
     }
 
     #[test]
     fn try_new_accepts_a_block_with_a_coinbase() {
-        let block = Block::try_new(header(), vec![tx(0), tx(1)], chain_metadata())
-            .expect("a non-empty block is valid");
+        let block =
+            Block::try_new(header(), vec![tx(0), tx(1)]).expect("a non-empty block is valid");
 
         assert_eq!(block.transactions.len(), 2);
     }
@@ -209,8 +206,8 @@ mod tests {
         let coinbase = tx(0xcb);
         let coinbase_txid = coinbase.txid;
 
-        let block = Block::try_new(header(), vec![coinbase, tx(0x11)], chain_metadata())
-            .expect("a non-empty block is valid");
+        let block =
+            Block::try_new(header(), vec![coinbase, tx(0x11)]).expect("a non-empty block is valid");
 
         assert_eq!(
             block

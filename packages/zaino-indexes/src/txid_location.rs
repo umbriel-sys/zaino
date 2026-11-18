@@ -27,7 +27,8 @@ declared! {
     );
 }
 declared! {
-    const BY_TXID: NamespaceLayout = NamespaceLayout::map(LOCATIONS, &TXID, &POSITION, false);
+    /// Unique: txids are distinct (coinbases carry their height, BIP 34).
+    const BY_TXID: NamespaceLayout = NamespaceLayout::unique_map(LOCATIONS, &TXID, &POSITION);
 }
 
 /// The schema: one map, txid → position.
@@ -45,7 +46,8 @@ pub struct State {
 
 impl Index for TxidLocation {
     const SCHEMA: Schema = SCHEMA;
-    const DEPENDENCIES: &'static [&'static str] = &[crate::txids::NAME];
+    const READS: &'static [&'static str] = &[crate::txids::NAME];
+    const BUILDS_FROM: &'static [&'static str] = &[];
     type State = State;
 
     fn resume<R: BackendReader>(backend: &R) -> Result<Option<State>, FoldError> {
@@ -87,10 +89,11 @@ impl<'a, R: BackendReader> Reader<'a, R> {
 
     /// Where `txid` was mined; `None` if this index never folded it.
     pub fn position(&self, txid: TransactionId) -> Result<Option<BlockTxPosition>, FoldError> {
-        let Some(bytes) = self.backend.get(LOCATIONS, &<[u8; 32]>::from(txid))? else {
-            return Ok(None);
-        };
-        codec::position(NAME, &bytes).map(Some)
+        self.backend
+            .with_value(LOCATIONS, &<[u8; 32]>::from(txid), |bytes| {
+                codec::position(NAME, bytes)
+            })?
+            .transpose()
     }
 
     /// [`position`](Self::position) for each txid, in order, one batch read.

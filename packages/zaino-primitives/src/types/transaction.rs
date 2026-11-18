@@ -13,7 +13,7 @@ use super::{
 /// [`Block::transactions`](super::Block::transactions), never restated here.
 /// A `Transaction` outside a block (a mempool transaction) has no position at
 /// all, so there is no value to invent for one.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Transaction {
     /// Transaction id.
     ///
@@ -23,6 +23,8 @@ pub struct Transaction {
     pub txid: TransactionId,
     /// Transparent pool data.
     pub transparent: TransparentData,
+    /// Sprout pool data: its JoinSplits' net value only, which the fee needs.
+    pub sprout: SproutData,
     /// Sapling pool data.
     pub sapling: SaplingData,
     /// Orchard pool data.
@@ -43,6 +45,7 @@ impl Transaction {
     pub fn pool_balances(&self) -> PoolBalances {
         let used = |unused: bool, balance: SignedZatoshis| (!unused).then_some(balance);
         PoolBalances {
+            sprout: used(self.sprout.joinsplits == 0, self.sprout.value_balance),
             sapling: used(
                 self.sapling.spends.is_empty() && self.sapling.outputs.is_empty(),
                 self.sapling.value_balance,
@@ -59,6 +62,8 @@ impl Transaction {
 /// A transaction's per-pool value balances; `None` = pool not used.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct PoolBalances {
+    /// Sprout.
+    pub sprout: Option<SignedZatoshis>,
     /// Sapling.
     pub sapling: Option<SignedZatoshis>,
     /// Orchard.
@@ -68,7 +73,7 @@ pub struct PoolBalances {
 }
 
 /// Transparent pool data within a transaction.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct TransparentData {
     /// Transparent inputs (spent outpoints).
     pub inputs: Vec<TransparentInput>,
@@ -94,8 +99,22 @@ pub struct TransparentOutput {
     pub script: Script,
 }
 
+/// Sprout pool data within a transaction.
+///
+/// No notes or nullifiers: nothing Zaino serves scans Sprout. What remains is
+/// the value its JoinSplits move, without which a transaction's fee cannot be
+/// computed (a Sprout unshielding pays transparent outputs from the pool).
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct SproutData {
+    /// JoinSplit descriptions in the transaction.
+    pub joinsplits: u32,
+    /// Net value balance (positive = value flows out of the pool), summed over
+    /// the JoinSplits as `vpub_new - vpub_old`.
+    pub value_balance: SignedZatoshis,
+}
+
 /// Sapling pool data within a transaction.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct SaplingData {
     /// Sapling spends (nullifiers).
     pub spends: Vec<SaplingSpend>,
@@ -124,7 +143,7 @@ pub struct SaplingOutput {
 }
 
 /// Orchard pool data within a transaction.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct OrchardData {
     /// Orchard actions (each is both a spend and an output).
     pub actions: Vec<OrchardAction>,

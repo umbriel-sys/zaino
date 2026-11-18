@@ -16,12 +16,12 @@ description = "Driven port traits for index persistence (read/write)."
 zaino-primitives = { path = "../zaino-primitives" }
 thiserror.workspace = true
 proptest = { workspace = true, optional = true }
-imbl = { workspace = true, optional = true }
+imbl.workspace = true
 serde = { workspace = true, features = ["derive"], optional = true }
 
 [features]
 # `in_memory` backend + `conformance` (the suite every backend runs)
-testing = ["dep:proptest", "dep:imbl"]
+testing = ["dep:proptest"]
 # `Serialize` on the verify and footprint reports (`zainod verify` output)
 serde = ["dep:serde"]
 

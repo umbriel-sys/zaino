@@ -1,0 +1,76 @@
+[[changes]]
+crate = "zaino-chain-store"
+kind = "breaking"
+description = """
+The store serves no whole blocks and takes none (D-72, D-81): \
+`StoredBlock`, `StoredTx`, `StoredBlockRead`, `StoredBlocks`, \
+`FrozenBlock`, `ChainStoreFreezeSink` and `ChainStoreError::FreezeGap` are \
+removed. `ChainStoreReader` gains `headers_chunk` (each header with its \
+absolute chainwork, `StoredHeader`) and `chainwork(height)`. New port \
+`TreeRootsIndex::tree_roots_chunk` with capability `TreeRoots`, over the \
+chain-metadata index alone. An indexed block is composed from the three. \
+`build_to` is the only write path.
+"""
+
+[[changes]]
+crate = "zaino-chain-head"
+kind = "breaking"
+description = """
+`ChainHeadFreezeEvents` is removed: the chain head hands off no blocks. A \
+consumer following the seam watches `subscribe_updates` and reads the \
+window's floor from the snapshot.
+"""
+
+[[changes]]
+crate = "zaino-chain-head-service"
+kind = "internal"
+description = "The freeze broadcast and its per-publication collection are removed."
+
+[[changes]]
+crate = "zaino-chain"
+kind = "breaking"
+description = """
+`ChainBlock.transactions` is `Vec<PreIndexCompactTx>`. For a store-covered \
+height the composer joins the store's headers, compact transactions and tree \
+roots (checking they agree), so `ChainView` requires `Store::Reader: \
+TreeRootsIndex + CompactBlockRead + TransactionIndex`; `block_header` reads \
+only the headers index; the anchor chainwork is read with `chainwork`. The \
+`Blocks` capability needs the store's `CompactBlocks` and `TreeRoots`. \
+`spawn_sync` keeps the store built to the chain head's floor with `build_to` \
+on every head update; it exists where `Store: ChainStoreIngest`. The fakes \
+follow (`FakeHead::freeze` removed).
+"""
+
+[[changes]]
+crate = "zaino-chain-store-service"
+kind = "feature"
+description = """
+`StoreReader` answers `headers_chunk`, `chainwork` and `TreeRootsIndex`. \
+Each capability's index set is derived from its ports' indexes and their \
+declared reads (D-83) instead of a hand-written table.
+"""
+
+[[changes]]
+crate = "zaino-indexes"
+kind = "fix"
+description = """
+Address history declares the indexes its read joins: txids and transparent \
+(the spent input's prevout), not spent.
+"""
+
+[[changes]]
+crate = "zaino-chain-store-zainodb"
+kind = "internal"
+description = """
+Implements the new header, chainwork and tree-root reads by projecting its \
+block rows; its freeze sink and stored-block port are removed. `StoredBlock` \
+and `StoredTx` live here now, for the legacy `IndexedBlock` conversion.
+"""
+
+[[changes]]
+crate = "zaino-state"
+kind = "internal"
+description = """
+The legacy `IndexedBlock` is built from the chain view's block with per-pool \
+value balances `None`; the indexes no longer hold them (D-97).
+"""

@@ -35,7 +35,11 @@ shapes ([`NamespaceKind`]):
   variable). A record's key is [`sequence_key`]`(position)`, big-endian, so key
   order is position order. Append-only.
 - **Map** — fixed-width keys to fixed-width values. Each key is inserted at most
-  once; with `deletes`, removed at most once and never re-inserted.
+  once; with `deletes`, removed at most once and never re-inserted. A map
+  declared `unique` (`NamespaceSpec::unique_map`) carries the writer's promise
+  that its keys are distinct by construction: the backend refuses a repeat it
+  can see in its buffer, may skip the durable lookup, and reports a repeat it
+  finds later (merge, scan) as `Corrupted`.
 
 ```rust,ignore
 use std::num::NonZeroU32;
@@ -67,9 +71,10 @@ nothing.
 - Sequence: `Put` at the next position only (`NotNextPosition`), records of the
   declared width (`WidthMismatch`), no `Delete` (`DeleteNotAllowed`).
 - Map: keys and values of the declared widths (`WidthMismatch`); each key once
-  per batch (`DuplicateInBatch`); `Put` of an absent key (`KeyExists`); `Delete`
-  of a present key (`KeyAbsent`) in a namespace declared with `deletes`
-  (`DeleteNotAllowed`).
+  per batch (`DuplicateInBatch`); `Put` of an absent key (`KeyExists`; for a
+  `unique` map checked against the buffer, the durable state at the backend's
+  discretion); `Delete` of a present key (`KeyAbsent`) in a namespace declared
+  with `deletes` (`DeleteNotAllowed`).
 - Re-inserting or re-deleting a removed key is a caller error, refused with
   `KeyRemoved` while the backend still records the removal. A backend may forget
   a removal once nothing of the key is stored (the LSM tree does, after a merge).
@@ -113,6 +118,66 @@ end is `ReadError::RangeOutOfBounds`, not a shorter answer, so a read against
 the wrong layout fails instead of decoding a neighbour. The default
 implementation slices `get`; a backend overrides it where it can avoid the
 copy. `ranged` is the shared check every backend slices through.
+
+`with_value` hands one value's bytes to a closure and returns what it returns:
+the same answer as decoding `get`'s value, without copying it out where the
+backend holds it in memory. Decode in the closure and return an owned result;
+don't read the backend again from inside it.
+
+## Storage: index directories and store files
+
+A store that keeps one directory per index touches disk only through
+[`Storage`]:
+
+- `open(dir, identity, namespaces)` creates `dir` if absent and refuses one
+  stamped with another [`Identity`] (name, chain, format, schema digest) or
+  other namespaces as `OpenError::Mismatch`;
+- `remove(dir)` deletes a directory, refused while a backend holds it where
+  the storage can tell; `children(dir)` lists the directories under `dir`;
+- `lock(root)` holds the store exclusively, as its primary, until the guard
+  drops;
+- `read_meta(root, name)` / `write_meta(root, name, bytes)` read and replace
+  a store file atomically and durably (old bytes or new, whole). The bytes
+  are the caller's format;
+- `open_read_only(dir, identity, namespaces)`, `primary_running(root)`,
+  `write_record(lock, bytes)` / `read_record(root)`: the linked side, below.
+
+`in_memory::InMemoryStorage` (feature `testing`) keeps all of it in maps.
+
+## Linked: reading a store another process writes
+
+One process, the primary, holds the store and writes it. Others link to it
+read-only (D-95), and see only what the primary has made durable:
+
+- the primary keeps a record (`write_record`, its own bytes) naming each
+  index's durable tip, rewritten after each write and on each change of
+  state; a reader sees the old record or the new, whole. It is not synced: a
+  crash may keep an older one;
+- `primary_running(root)` tells whether a primary holds the store now; it
+  releases it however it ends, crash included;
+- `open_read_only` returns a [`ReadOnlyBackend`]: no writer, nothing created,
+  locked or removed. `refresh(durable)` moves it to the committed state whose
+  tip is the announced one; readers already taken keep their snapshot.
+  `Superseded` means the writer has moved past that state (refresh at its
+  newer announcement), `Absent` that no index is there.
+
+Nothing in the port polls: the caller decides when to read the record and
+refresh. The conformance suite (`linked_history`, `linked_beside_a_writer`)
+checks a read-only backend after every step of a history and beside a writer
+on another thread.
+
+## Overlay
+
+[`Overlay`] holds the commits above a durable root (`None` = genesis) in memory
+and reads them through `BackendReader`. `with(block, ops)` checks the commit and
+returns a new overlay that shares all unchanged data with its parent, which
+keeps its own version; `rebase(root)` drops the blocks at or below a new root.
+`tip` is the last block applied, `durable_tip` the root.
+
+Over genesis it is a complete store and enforces every commit rule. Above a
+block it sees only its own writes: a key below the root reads as absent, a
+sequence starts at its first append, and a delete of a key it has not seen is
+taken as a key below the root. Reading through both tiers is the caller's job.
 
 ## Schema digest
 

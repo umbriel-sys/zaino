@@ -8,6 +8,24 @@
 
 #![warn(missing_docs)]
 #![forbid(unsafe_code)]
+// production code never panics: no indexing, unchecked arithmetic or panicking calls
+#![cfg_attr(
+    not(test),
+    deny(
+        clippy::unwrap_used,
+        clippy::expect_used,
+        clippy::panic,
+        clippy::unreachable,
+        clippy::todo,
+        clippy::unimplemented,
+        clippy::indexing_slicing,
+        clippy::arithmetic_side_effects,
+        clippy::string_slice,
+        clippy::get_unwrap,
+        clippy::let_underscore_must_use,
+        let_underscore_drop
+    )
+)]
 
 use std::future::Future;
 
@@ -95,7 +113,7 @@ pub use zaino_primitives::types::MempoolInfo;
 /// instead. The rest of this list shrinks the same way.
 pub(crate) use chain_index::types::{BlockHash, IndexedBlock};
 #[cfg(test)]
-pub(crate) use chain_index::types::{Height, Outpoint, TransactionHash};
+pub(crate) use chain_index::types::{Height, Outpoint};
 
 #[cfg(feature = "test_dependencies")]
 /// allow public access to additional APIs, for testing

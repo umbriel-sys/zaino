@@ -57,12 +57,12 @@ impl<'de> Deserialize<'de> for MaybeHeight {
 pub struct UnixTime(pub i64);
 
 impl UnixTime {
-    /// Converts to a [`SystemTime`].
-    pub fn as_system_time(self) -> SystemTime {
-        if self.0 >= 0 {
-            UNIX_EPOCH + Duration::from_secs(self.0 as u64)
-        } else {
-            UNIX_EPOCH - Duration::from_secs(self.0.unsigned_abs())
+    /// Converts to a [`SystemTime`]; `None` past what the platform holds.
+    pub fn as_system_time(self) -> Option<SystemTime> {
+        let offset = Duration::from_secs(self.0.unsigned_abs());
+        match self.0 >= 0 {
+            true => UNIX_EPOCH.checked_add(offset),
+            false => UNIX_EPOCH.checked_sub(offset),
         }
     }
 }

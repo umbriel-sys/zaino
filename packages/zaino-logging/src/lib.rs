@@ -1,6 +1,24 @@
 #![doc = include_str!("../usage.md")]
 #![forbid(unsafe_code)]
 #![deny(clippy::wildcard_enum_match_arm)]
+// production code never panics: no indexing, unchecked arithmetic or panicking calls
+#![cfg_attr(
+    not(test),
+    deny(
+        clippy::unwrap_used,
+        clippy::expect_used,
+        clippy::panic,
+        clippy::unreachable,
+        clippy::todo,
+        clippy::unimplemented,
+        clippy::indexing_slicing,
+        clippy::arithmetic_side_effects,
+        clippy::string_slice,
+        clippy::get_unwrap,
+        clippy::let_underscore_must_use,
+        let_underscore_drop
+    )
+)]
 
 //! Entry points: [`init`] for binaries, [`try_init`] for tests.
 
@@ -101,20 +119,20 @@ impl Default for LogConfig {
 }
 
 /// Initialise logging, configured from the environment (see the [crate
-/// docs](crate)). Installs the global subscriber and the panic hook.
-///
-/// # Panics
-///
-/// Panics if a global tracing subscriber has already been set.
-pub fn init() {
-    try_install(LogConfig::default()).expect("global tracing subscriber already set");
+/// docs](crate)). Installs the global subscriber and the panic hook; fails
+/// if a global tracing subscriber has already been set.
+pub fn init() -> Result<(), TryInitError> {
+    try_install(LogConfig::default())?;
     install_panic_logger();
+    Ok(())
 }
 
 /// Idempotent variant of [`init`] for tests, where several test functions may
-/// each try to initialise. Does not panic if a subscriber is already set.
+/// each try to initialise: a subscriber already set is kept.
 pub fn try_init() {
-    let _ = try_install(LogConfig::default());
+    if try_install(LogConfig::default()).is_err() {
+        // already initialised: the first subscriber stays
+    }
     install_panic_logger();
 }
 
@@ -170,11 +188,11 @@ fn try_install(config: LogConfig) -> Result<(), TryInitError> {
     // the default hook's raw stderr backtrace, and absent from the JSON sink).
     // Ensure the `panic` target is enabled at ERROR so panic visibility is
     // structural, not contingent on the operator's filter.
-    let env_filter = env_filter.add_directive(
-        "panic=error"
-            .parse()
-            .expect("static `panic=error` directive is valid"),
-    );
+    let env_filter = match "panic=error".parse() {
+        Ok(directive) => env_filter.add_directive(directive),
+        // a static directive: never refused
+        Err(_) => env_filter,
+    };
     let registry = tracing_subscriber::registry().with(env_filter);
 
     match config.format {

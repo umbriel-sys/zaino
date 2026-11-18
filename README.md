@@ -81,6 +81,8 @@ live-tests/                        Live-test suite — standalone workspace over
 docs/                              Architecture diagrams, specs, and usage guides
 tools/                             Development tools
   workbench/                         Repo guards run by `makers lint`
+  zaino-bench/                       Chain-store benchmarks and checks over the store ports (standalone workspace)
+bench-results/                     zaino-bench's run records (working notes, not published figures)
   relman/                            Release manager
 .github/                           CI workflows and issue templates
 .githooks/                         Git hooks (pre-push)
@@ -208,6 +210,7 @@ mistakes its design is trying to prevent.
 - [`zaino-persistence-lsm-tree`](./packages/zaino-persistence-lsm-tree/usage.md): the on-disk backend, how to open and tune it, and what a failed write or merge leaves behind.
 - [`zaino-indexes`](./packages/zaino-indexes/usage.md): per-field record layouts, index schemas and the digest a directory is stamped with.
 - [`zaino-source`](./packages/zaino-source/usage.md): the ports, the domain/fetch error split, and `Resilient`.
+- [`zaino-source-mock`](./packages/zaino-source-mock/usage.md): the one fake validator every crate tests against, and the contract that keeps it honest.
 - [`zaino-rpc`](./packages/zaino-rpc/usage.md): JSON-RPC transport, and what it does not do.
 - [`zaino-source-zcash-rpc`](./packages/zaino-source-zcash-rpc/usage.md): the JSON-RPC adapter, its error classification, and the quirk table that keeps it validator-agnostic.
 - [`zaino-source-zebra`](./packages/zaino-source-zebra/usage.md): the composite and its three routing rules, the read-state adapter and what it cannot answer, and zebrad's quirks.
@@ -216,6 +219,7 @@ mistakes its design is trying to prevent.
 - [`zaino-mempool-service`](./packages/zaino-mempool-service/usage.md): spawning and consuming the mempool.
 - [`zaino-chain-head`](./packages/zaino-chain-head/usage.md): the chain head's ports, why reads live on the snapshot, and why there is no way to make it synchronise.
 - [`zaino-chain-head-service`](./packages/zaino-chain-head-service/usage.md): the chain head runtime, its two testing styles, and the properties to keep when editing the advance path.
+- [`zaino-chain-store-service`](./packages/zaino-chain-store-service/usage.md): the chain store runtime: configuring the index set, what boot checks and repairs, and `build_to`.
 - [`zaino-encoding`](./packages/zaino-encoding/usage.md): the versioned record format, and why nested fields must have their version pinned.
 - [`zaino-chain-store`](./packages/zaino-chain-store/usage.md): the finalised state's ports, why the chunk is the block-read primitive, and why a read past the watermark is not a miss.
 - [`zaino-chain-store-zainodb`](./packages/zaino-chain-store-zainodb/usage.md): the LMDB store, its on-disk compatibility contract, and why its checksums are load-bearing.

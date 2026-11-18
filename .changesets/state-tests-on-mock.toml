@@ -1,0 +1,26 @@
+[[changes]]
+crate = "zaino-source-mock"
+kind = "feature"
+description = """
+`Activations::activation_heights()`: the schedule as a regtest node is \
+configured with it, so code under test takes the chain's own network.
+"""
+
+[[changes]]
+crate = "zaino-state"
+kind = "internal"
+description = """
+Tests run on the shared mock validator (`zaino-source-mock`): \
+`MockchainSource`, `ProptestMockchain` and the regtest vector files are \
+gone, the index syncs its finalised state through the real ingest path, and \
+the era walks build their chains per network-upgrade schedule.
+"""
+
+[[changes]]
+crate = "zaino-chain-store-zainodb"
+kind = "internal"
+description = """
+The domain-block conversion tests against the vector chain moved here from \
+`zaino-state`; `fill_store_with_blockdata`, whose only user that was, is \
+removed.
+"""

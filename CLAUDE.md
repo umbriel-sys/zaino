@@ -190,3 +190,14 @@ one if none fits. If the crate has no guide yet, create it and add it to the
 README index. This mirrors the CHANGELOG discipline: the CHANGELOG records *what
 changed*, the guide records *how to use it*, and neither substitutes for the
 other. Purely internal refactors need no guide edit.
+
+## No placeholder data
+
+A field in a production type carries the real value from its authoritative
+source or does not exist. `ZERO` / `Default` / always-`None` stand-ins for
+documented data are defects — in new code and in code being touched — and a
+comment saying "placeholder", "not a measurement" or "for now" marks one.
+Mocks never fill what the adapters leave empty; the contract suite asserts
+every field a mock fills against its authoritative port. When a change
+touches such a field, fix it or remove the field in that change, and report
+it as a defect.

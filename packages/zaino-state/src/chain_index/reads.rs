@@ -18,8 +18,8 @@ use super::node_backed::NodeBackedChainIndexSubscriber;
 use super::source::{BlockchainSource, BlockchainSourceError, PoolTreestate};
 use super::types::{
     self, block_index, chain_locations, checked_addresses, domain_hash, domain_height,
-    domain_scope, domain_txid, indexed_block, local_hash, local_height, local_txid,
-    BestChainLocation, BlockIndex, NonBestChainLocation,
+    domain_scope, domain_txid, indexed_block, local_hash, local_height, local_height_after,
+    local_txid, BestChainLocation, BlockIndex, NonBestChainLocation,
 };
 use super::{ChainIndex, ShieldedPool};
 use crate::error::{ChainIndexError, ChainIndexErrorKind};
@@ -209,9 +209,9 @@ impl<
                         source: None,
                     });
                 }
-                best = Some(BestChainLocation::Mempool(
-                    local_height(snapshot.best_tip().height) + 1,
-                ));
+                best = Some(BestChainLocation::Mempool(local_height_after(
+                    snapshot.best_tip().height,
+                )));
             } else {
                 // The height it would be mined at under the mempool's tip, if
                 // this index still holds that block.
@@ -221,7 +221,7 @@ impl<
                         .snapshot()
                         .block_height(epoch.best_tip.hash)
                         .await?
-                        .map(|height| local_height(height) + 1),
+                        .map(local_height_after),
                     None => None,
                 };
                 non_best.insert(NonBestChainLocation::Mempool(target_height));

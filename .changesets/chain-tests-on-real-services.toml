@@ -1,0 +1,22 @@
+[[changes]]
+crate = "zaino-chain"
+kind = "breaking"
+description = """
+The `testing` feature and its fakes (`FakeStore`, `FakeHead`, `FakeSource`, \
+`MinimalStore`) are removed (D-90). The suite runs the real composer over \
+`zaino-source-mock`, `zaino-chain-store-service` on in-memory storage and \
+`zaino-chain-head-service`, mostly at the fast seam depth on a 300-block \
+chain, with `tests/real_seam.rs` at the chain head's default depth on a \
+1 200-block chain. New coverage: `raw_transaction`, `transaction_locations` \
+(store, head, competing branch), `chain_tips`, spend status across the seam, \
+successful address and subtree-root passthroughs, `block_header`, and the \
+same indexed block from every provider.
+"""
+
+[[changes]]
+crate = "zaino-source-mock"
+kind = "feature"
+description = """
+`MockChain::forget(hash)`: a side-chain block the validator no longer serves, \
+as once it leaves the non-finalized state.
+"""

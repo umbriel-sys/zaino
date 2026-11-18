@@ -86,7 +86,9 @@ impl JsonRpcServer {
         };
 
         // Set up Zebra HTTP request compatibility middleware (handles auth and content-type issues)
-        let max_request_body_size = (MAX_BLOCK_BYTES as usize) * 2 + 1024;
+        let max_request_body_size = (MAX_BLOCK_BYTES as usize)
+            .saturating_mul(2)
+            .saturating_add(1024);
         let http_middleware_layer = HttpRequestMiddlewareLayer::new(cookie, max_request_body_size);
 
         // Before the middleware stack: the metrics layer interns call labels
@@ -141,7 +143,9 @@ impl JsonRpcServer {
 
                 tokio::select! {
                     _ = shutdown_signal => {
-                        let _ = server_handle_clone.stop();
+                        if server_handle_clone.stop().is_err() {
+                            // already stopped
+                        }
                     }
                     _ = server_handle.stopped() => {},
                 }
@@ -169,7 +173,11 @@ impl JsonRpcServer {
         }
 
         if let Some(handle) = self.server_handle.take() {
-            let _ = handle.await;
+            match handle.await {
+                Ok(Ok(())) => {}
+                Ok(Err(error)) => warn!(%error, "JSON-RPC server ended with an error"),
+                Err(error) => warn!(%error, "JSON-RPC server task did not finish"),
+            }
         }
     }
 

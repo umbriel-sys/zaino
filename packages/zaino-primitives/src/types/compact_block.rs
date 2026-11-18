@@ -45,7 +45,7 @@ pub struct PreIndexCompactBlock {
 /// A compact transaction in the pre-index representation.
 ///
 /// Reuses existing primitives types for sub-components.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PreIndexCompactTx {
     /// Transaction hash.
     pub txid: TransactionId,
@@ -105,7 +105,7 @@ impl From<&super::transaction::Transaction> for PreIndexCompactTx {
 /// state — not available from the raw block data.
 ///
 /// Constructed by reading from the indexed DB after sync completes.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CompactBlock {
     /// Block hash.
     pub hash: BlockHash,
@@ -145,6 +145,7 @@ mod tests {
         let tx = Transaction {
             txid: [0; 32].into(),
             transparent: Default::default(),
+            sprout: Default::default(),
             sapling: Default::default(),
             orchard: OrchardData {
                 actions: vec![action(1)],

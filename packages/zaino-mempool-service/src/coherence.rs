@@ -49,7 +49,7 @@ struct SynthesizedEpochState {
 fn frozen_for(frozen_since: &std::sync::Mutex<Option<Instant>>) -> Option<std::time::Duration> {
     frozen_since
         .lock()
-        .expect("frozen_since poisoned")
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
         .map(|since| since.elapsed())
 }
 
@@ -136,7 +136,10 @@ impl<M: Mempool, N: NfsEpochObserver> CoherenceService<M, N> {
             task_service.run().await;
         });
 
-        *service.task.lock().expect("coherence task lock poisoned") = Some(handle);
+        *service
+            .task
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(handle);
 
         service
     }
@@ -163,7 +166,7 @@ impl<M: Mempool, N: NfsEpochObserver> CoherenceService<M, N> {
         if let Some(handle) = self
             .task
             .lock()
-            .expect("coherence task lock poisoned")
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .take()
         {
             handle.abort();

@@ -1,0 +1,20 @@
+[[changes]]
+crate = "zaino-source-mock"
+kind = "feature"
+description = """
+Every built block is real consensus bytes, in the format its height's upgrade \
+requires (v1, v3, v4, v5, v6), with its domain block parsed from them: txids, \
+merkle roots and hashes are real. `Activations` is now one network-upgrade \
+schedule (`Upgrade`, `through`, `at`) setting formats, branch ids, active \
+pools and `NodeFacts.upgrades`; the default is every upgrade through NU6.2 at \
+height 1. `ChainBuilder::notes` spreads notes across blocks; a spec over a \
+block's bytes or before its pool activates panics.
+"""
+
+[[changes]]
+crate = "zaino-source-zcash-rpc"
+kind = "feature"
+description = """
+The raw block parser is public: `parse_block`, `RawBlockError`, \
+`merkle_root` and `GENESIS_COINBASE_SCRIPT_SIG`.
+"""

@@ -187,14 +187,9 @@ let delta = snapshot.txout_delta(store_top.checked_add(1)?)?;
 // delta.created: apply to the set; delta.spent_below: resolve, then remove.
 ```
 
-## Freeze events are best-effort
+## The chain head hands off no blocks
 
-`ChainHeadFreezeEvents` carries blocks that have fallen below the consensus seam,
-whole and with their tree roots, so a chain store can ingest without re-fetching.
-
-Treat gaps as normal. It is a broadcast channel — the chain head follows the tip
-and will not stall on a slow consumer — so a lagging subscriber gets
-`RecvError::Lagged(n)`, and a chain head re-anchoring after an outage never
-emits what it skipped. A store must be able to build from source regardless;
-this only spares it the fetch in steady state. Building a consumer that assumes
-contiguity is the mistake this section exists to prevent.
+There is no freeze stream. A store builds from its own validator through
+`ChainStoreIngest::build_to`, and the party that wants it to follow the seam
+(ChainView's sync loop) watches `subscribe_updates` and reads the window's
+floor from each snapshot (`best_chain().next()`), building the store to it.

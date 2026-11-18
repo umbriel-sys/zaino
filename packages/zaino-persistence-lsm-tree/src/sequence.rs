@@ -16,7 +16,7 @@ use zaino_persistence::Width;
 
 use crate::{
     error::StoreError,
-    fs::Fs,
+    fs::{Access, Fs},
     manifest::{BodyReader, ManifestError},
     pages::{FileKind, PagedFile, Pages, Sealed},
 };
@@ -228,6 +228,40 @@ enum Layout {
 }
 
 impl SequencePages {
+    /// Sequence `name`'s files under `dir` mapped read-only at `sealed`, nothing truncated
+    /// (another process writes them); `previous`'s checked pages kept where unchanged
+    pub(crate) fn open(
+        fs: &dyn Fs,
+        dir: &Path,
+        name: &str,
+        width: Width,
+        sealed: Seals,
+        previous: Option<&SequencePages>,
+    ) -> Result<Self, StoreError> {
+        if let Some(previous) = previous.filter(|old| old.sealed == sealed) {
+            return Ok(previous.clone());
+        }
+        let file = |path: String, seal, old: Option<&Pages>| {
+            Pages::open_after(fs, &dir.join(path), seal, Access::Normal, old)
+        };
+        let data = file(data_name(name), sealed.data, previous.map(|old| &old.data))?;
+        let layout = match width {
+            Width::Fixed(n) => Layout::Fixed(fixed(n)?),
+            Width::Variable => {
+                let old = previous.and_then(|old| match &old.layout {
+                    Layout::Variable(ends) => Some(ends),
+                    Layout::Fixed(_) => None,
+                });
+                Layout::Variable(file(ends_name(name), sealed.ends, old)?)
+            }
+        };
+        Ok(Self {
+            sealed,
+            data,
+            layout,
+        })
+    }
+
     /// Its files (data + ends when variable)
     pub(crate) fn pages(&self) -> impl Iterator<Item = &Pages> {
         let ends = match &self.layout {

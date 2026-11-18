@@ -89,6 +89,17 @@ impl TransparentAddress {
         self.network
     }
 
+    /// Whether a node on `network` accepts this address, as zcashd decodes
+    /// it: mainnet addresses on mainnet, testnet-encoded ones on testnet and
+    /// regtest (which share the encoding).
+    pub fn is_for(&self, network: crate::types::Network) -> bool {
+        use crate::types::Network;
+        match network {
+            Network::Mainnet => self.network == NetworkType::Main,
+            Network::PubTestnet | Network::Regtest => self.network != NetworkType::Main,
+        }
+    }
+
     /// The transparent script form this address pays to — [`ScriptType::P2PKH`]
     /// or [`ScriptType::P2SH`].
     pub fn script_type(&self) -> ScriptType {
@@ -166,6 +177,19 @@ mod tests {
     const UNIFIED: &str = "uregtest1njwg60x0jarhyuuxrcdvw854p68cgdfe85822lmclc7z9vy9xqr7t49n3d97k2dwlee82skwwe0ens0rc06p4vr04tvd3j9ckl3qry83ckay4l4ngdq9atg7vuj9z58tfjs0mnsgyrnprtqfv8almu564z498zy6tp2aa569tk8fyhdazyhytel2m32awe4kuy6qq996um3ljaajj36";
     const SPROUT: &str = "ztfhKyLouqi8sSwjRm4YMQdWPjTmrJ4QgtziVQ1Kd1e9EsRHYKofjoJdF438FwcUQnix8yrbSrzPpJJNABewgNffs5d4YZJ";
     const TEX: &str = "textest1qyqszqgpqyqszqgpqyqszqgpqyqszqgpfcjgfy";
+
+    /// A node accepts its own network's addresses; testnet and regtest share
+    /// theirs.
+    #[test]
+    fn an_address_is_for_its_network() {
+        use crate::types::Network;
+        let main = TransparentAddress::try_new(MAINNET_P2PKH).expect("valid");
+        let test = TransparentAddress::try_new(TESTNET_P2SH).expect("valid");
+        assert!(main.is_for(Network::Mainnet));
+        assert!(!main.is_for(Network::PubTestnet) && !main.is_for(Network::Regtest));
+        assert!(test.is_for(Network::PubTestnet) && test.is_for(Network::Regtest));
+        assert!(!test.is_for(Network::Mainnet));
+    }
 
     #[test]
     fn mainnet_p2pkh_accepted() {

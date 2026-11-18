@@ -94,6 +94,7 @@ pub fn check_shape(
                     key: key_width,
                     value: value_width,
                     deletes,
+                    ..
                 },
                 op,
             ) => {

@@ -42,7 +42,7 @@ use crate::{
 };
 
 /// Names the directory reserves for itself (never a namespace path component)
-const RESERVED: [&str; 4] = [MANIFEST, LOCK, CREATING, TAILS];
+const RESERVED: [&str; 5] = [MANIFEST, LOCK, CREATING, TAILS, crate::remove::REMOVING];
 
 /// Windows device names, which no file there may take (parts carry no extension: `.` is not a
 /// name character)
@@ -67,7 +67,7 @@ pub(crate) fn position(specs: &[NamespaceSpec], namespace: Namespace) -> Option<
 /// - `/`-separated parts of `[A-Za-z0-9_-]`, at most 255 bytes, none reserved
 /// - compared ignoring case (case-insensitive filesystems: `Blocks` = `blocks`)
 /// - a map owns its directory: no namespace's path inside it
-fn check_names(specs: &[NamespaceSpec]) -> Result<(), StoreError> {
+pub(crate) fn check_names(specs: &[NamespaceSpec]) -> Result<(), StoreError> {
     let refused = |spec: &NamespaceSpec, reason| StoreError::Declared {
         name: spec.namespace.to_string(),
         reason,
@@ -219,9 +219,10 @@ impl Body {
     fn decode(bytes: &[u8], specs: &[NamespaceSpec]) -> Result<Self, StoreError> {
         let mut body = BodyReader::new(bytes);
         let stored = decode_specs(&mut body)?;
+        // `unique` is a writer's promise, not stored: compared without it
         let declared: Vec<(&str, NamespaceKind)> = specs
             .iter()
-            .map(|spec| (spec.namespace.as_str(), spec.kind))
+            .map(|spec| (spec.namespace.as_str(), stored_kind(spec.kind)))
             .collect();
         let same = stored.len() == declared.len()
             && stored
@@ -271,6 +272,24 @@ impl Body {
     }
 }
 
+/// `kind` as the manifest holds it: `unique` cleared (not stored)
+fn stored_kind(kind: NamespaceKind) -> NamespaceKind {
+    match kind {
+        NamespaceKind::Map {
+            key,
+            value,
+            deletes,
+            unique: _,
+        } => NamespaceKind::Map {
+            key,
+            value,
+            deletes,
+            unique: false,
+        },
+        sequence @ NamespaceKind::Sequence { .. } => sequence,
+    }
+}
+
 /// `count u32 ‖ (name_len u8 ‖ name ‖ kind)*`: sequence `0 ‖ width u32` (0 = variable), map
 /// `1 ‖ key u32 ‖ value u32 ‖ deletes u8`
 fn encode_specs(specs: &[NamespaceSpec], out: &mut Vec<u8>) -> Result<(), StoreError> {
@@ -297,6 +316,7 @@ fn encode_specs(specs: &[NamespaceSpec], out: &mut Vec<u8>) -> Result<(), StoreE
                 key,
                 value,
                 deletes,
+                ..
             } => {
                 out.push(1);
                 out.extend_from_slice(&key.get().to_le_bytes());
@@ -333,6 +353,7 @@ fn decode_specs(body: &mut BodyReader<'_>) -> Result<Vec<(String, NamespaceKind)
                     [1] => true,
                     _ => return Err(malformed()),
                 },
+                unique: false,
             },
             _ => return Err(malformed()),
         };
@@ -438,6 +459,7 @@ impl Engine {
                         key,
                         value,
                         deletes,
+                        ..
                     },
                     Stored::Map(list),
                 ) => {
@@ -745,6 +767,137 @@ impl DiskView {
             })
             .collect()
     }
+}
+
+/// Another process's directory, as a read-only reader finds it at its writer's announcement
+#[derive(Debug)]
+pub(crate) enum Linked {
+    /// The committed state at the announced tip, mapped
+    View(DiskView),
+    /// The manifest no longer holds the announced state: the writer moved on
+    Superseded,
+    /// No manifest: no index here
+    Absent,
+}
+
+/// The committed state whose tip is `durable` in another process's directory, mapped read-only
+/// (`previous`'s mappings shared where unchanged): nothing created, truncated or removed
+///
+/// - a listed file missing once mapped: retired by a newer commit's merge (`Superseded`), or,
+///   with the announced state still the newest, lost
+pub(crate) fn linked(
+    fs: &dyn Fs,
+    path: &Path,
+    identity: &Identity,
+    specs: &[NamespaceSpec],
+    durable: Option<BlockRef>,
+    previous: Option<&DiskView>,
+) -> Result<Linked, StoreError> {
+    let body = match announced(fs, path, identity, specs, durable)? {
+        None => return Ok(Linked::Absent),
+        Some(Announced::Held { body, .. }) => body,
+        Some(Announced::Gone) => return Ok(Linked::Superseded),
+    };
+    match map_linked(fs, path, specs, &body, previous) {
+        Ok(view) => Ok(Linked::View(view)),
+        Err(error) if error.lost() => match announced(fs, path, identity, specs, durable)? {
+            Some(Announced::Held { newest: true, .. }) => Err(error),
+            Some(Announced::Held { newest: false, .. } | Announced::Gone) => Ok(Linked::Superseded),
+            None => Ok(Linked::Absent),
+        },
+        Err(error) => Err(error),
+    }
+}
+
+/// Whether the manifest holds the state at an announced tip
+enum Announced {
+    /// In a slot (`newest` = no later commit beside it)
+    Held { body: Body, newest: bool },
+    /// In neither slot
+    Gone,
+}
+
+/// The state at `durable` in `path`'s manifest; `None` = no manifest (nothing committed and
+/// `durable` none = the empty state)
+fn announced(
+    fs: &dyn Fs,
+    path: &Path,
+    identity: &Identity,
+    specs: &[NamespaceSpec],
+    durable: Option<BlockRef>,
+) -> Result<Option<Announced>, StoreError> {
+    let Some(slots) = manifest::read_slots(fs, &path.join(MANIFEST), identity)? else {
+        return Ok(None);
+    };
+    if slots.is_empty() && durable.is_none() {
+        return Ok(Some(Announced::Held {
+            body: Body::empty(specs),
+            newest: true,
+        }));
+    }
+    let mut decoded = Vec::with_capacity(slots.len());
+    for (seq, bytes) in &slots {
+        decoded.push((*seq, Body::decode(bytes, specs)?));
+    }
+    let latest = decoded.iter().map(|(seq, _)| *seq).max();
+    Ok(Some(
+        match decoded
+            .into_iter()
+            .find(|(_, body)| body.committed.tip == durable)
+        {
+            Some((seq, body)) => Announced::Held {
+                body,
+                newest: Some(seq) == latest,
+            },
+            None => Announced::Gone,
+        },
+    ))
+}
+
+/// `body`'s files mapped read-only
+fn map_linked(
+    fs: &dyn Fs,
+    path: &Path,
+    specs: &[NamespaceSpec],
+    body: &Body,
+    previous: Option<&DiskView>,
+) -> Result<DiskView, StoreError> {
+    let spill = LsmConfig::default().spill_bytes;
+    let mut held = Vec::with_capacity(specs.len());
+    for (index, (spec, stored)) in specs.iter().zip(&body.stored).enumerate() {
+        let name = spec.namespace.as_str();
+        let old = previous.and_then(|view| view.held(index));
+        held.push(match (spec.kind, stored) {
+            (NamespaceKind::Sequence { record }, Stored::Sequence(seals)) => {
+                let old = match old {
+                    Some(Durable::Sequence(pages)) => Some(pages),
+                    _ => None,
+                };
+                Durable::Sequence(SequencePages::open(fs, path, name, record, *seals, old)?)
+            }
+            (
+                NamespaceKind::Map {
+                    key,
+                    value,
+                    deletes,
+                    ..
+                },
+                Stored::Map(list),
+            ) => {
+                let shape = Shape::of(name, key, value, deletes, Tuning::default(), spill)?;
+                let next = match old {
+                    Some(Durable::Map(snapshot)) => snapshot.next(fs, &path.join(name), list)?,
+                    _ => Snapshot::empty(shape).next(fs, &path.join(name), list)?,
+                };
+                Durable::Map(Arc::new(next))
+            }
+            _ => return Err(StoreError::Internal("a body entry of another kind")),
+        });
+    }
+    Ok(DiskView {
+        tip: body.committed.tip,
+        held,
+    })
 }
 
 /// Every file the directory's committed manifest names, scrubbed (read only, no lock: safe beside

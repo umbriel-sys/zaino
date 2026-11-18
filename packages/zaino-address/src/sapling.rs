@@ -23,12 +23,15 @@
 /// `PaymentAddress::to_bytes()` returns 43 bytes: `diversifier (11) || pk_d (32)`.
 pub fn sapling_key_bytes(address: &sapling_crypto::PaymentAddress) -> ([u8; 11], [u8; 32]) {
     let bytes = address.to_bytes();
-    let diversifier: [u8; 11] = bytes[..11]
-        .try_into()
-        .expect("PaymentAddress::to_bytes always returns 43 bytes: diversifier is the first 11");
-    let mut pk_d: [u8; 32] = bytes[11..]
-        .try_into()
-        .expect("PaymentAddress::to_bytes always returns 43 bytes: pk_d is the last 32");
+    let (mut diversifier, mut pk_d) = ([0u8; 11], [0u8; 32]);
+    let (head, tail) = (bytes.iter(), bytes.iter().skip(diversifier.len()));
+    for (to, from) in diversifier
+        .iter_mut()
+        .zip(head)
+        .chain(pk_d.iter_mut().zip(tail))
+    {
+        *to = *from;
+    }
     pk_d.reverse();
     (diversifier, pk_d)
 }

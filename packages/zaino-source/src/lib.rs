@@ -2,12 +2,31 @@
 //!
 //! One trait per question a consumer can ask about the chain.
 //! Implementations (adapters) bridge to a specific transport
-//! (JSON-RPC, Zebra ReadState, mock).
+//! (JSON-RPC, Zebra ReadState).
 //!
 //! Consumers compose traits via bounds:
 //! ```ignore
 //! fn sync<V: GetBlock + GetChainTip>(validator: &V) { ... }
 //! ```
+
+// production code never panics: no indexing, unchecked arithmetic or panicking calls
+#![cfg_attr(
+    not(test),
+    deny(
+        clippy::unwrap_used,
+        clippy::expect_used,
+        clippy::panic,
+        clippy::unreachable,
+        clippy::todo,
+        clippy::unimplemented,
+        clippy::indexing_slicing,
+        clippy::arithmetic_side_effects,
+        clippy::string_slice,
+        clippy::get_unwrap,
+        clippy::let_underscore_must_use,
+        let_underscore_drop
+    )
+)]
 
 /// Most rows an address query answers before it is rejected as too broad.
 ///
@@ -165,11 +184,5 @@ pub trait ValidatorSource: Send + Sync {
     type NonDomain: std::error::Error + Send + Sync + 'static + Into<NonDomainError>;
 }
 
-// `cfg(test)` as well as the feature: without it this crate's own tests never
-// compile the mock, so neither its tests nor `ValidatorClient`'s integration tests
-// run in a bare `cargo test` — nothing in the workspace enables `testing`, and
-// the gap is invisible because a module that is not compiled reports no
-// failures. The feature stays so downstream crates can opt in; `cfg(test)`
-// makes the mock's own coverage unconditional.
-#[cfg(any(test, feature = "testing"))]
-pub mod mock;
+#[cfg(test)]
+mod scripted;

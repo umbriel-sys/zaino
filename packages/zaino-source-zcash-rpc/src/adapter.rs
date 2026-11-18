@@ -1,23 +1,26 @@
 //! Trait implementations: zaino-source query traits on [`ZcashRpcAdapter`].
 
-use zaino_primitives::types::{Block, BlockHash, ChainMetadata, Height, TransactionId, Treestate};
+use zaino_primitives::types::{Block, BlockHash, Height, TransactionId, Treestate};
 use zaino_rpc::RpcClient;
 use zaino_source::{
     FailureMode, GetBlockError, GetChainTipError, GetTreestateError, NonDomainError, QueryError,
 };
-use zebra_chain::serialization::ZcashDeserializeInto;
 
 use crate::parse;
+use crate::raw_block::{self, BlockVerification};
 
 /// Zcash JSON-RPC adapter.
 ///
 /// Implements zaino-source query traits by delegating to an [`RpcClient`],
-/// parsing replies as the zcash RPC spec defines them (raw blocks are
-/// deserialized with `zebra-chain`), and converting to domain types.
+/// parsing replies as the zcash RPC spec defines them (raw blocks by zaino's
+/// own non-validating parser), and converting to domain types.
 /// Single-attempt — wrap with [`zaino_source::ValidatorClient`] for retries.
 pub struct ZcashRpcAdapter {
     rpc: RpcClient,
     quirks: Quirks,
+    verification: BlockVerification,
+    /// The node's network, read once when a quirk needs it.
+    network: std::sync::OnceLock<zaino_primitives::types::Network>,
 }
 
 impl ZcashRpcAdapter {
@@ -29,7 +32,56 @@ impl ZcashRpcAdapter {
     /// Wrap an existing [`RpcClient`], reading the replies the spec leaves to
     /// the node through `quirks`.
     pub fn with_quirks(rpc: RpcClient, quirks: Quirks) -> Self {
-        Self { rpc, quirks }
+        Self {
+            rpc,
+            quirks,
+            verification: BlockVerification::default(),
+            network: std::sync::OnceLock::new(),
+        }
+    }
+
+    /// The node's network, from `getblockchaininfo`'s `chain`, read once.
+    async fn network<E>(&self) -> Result<zaino_primitives::types::Network, QueryError<E>>
+    where
+        E: std::fmt::Debug + std::fmt::Display,
+    {
+        if let Some(network) = self.network.get() {
+            return Ok(*network);
+        }
+        let network = self
+            .call_parsed("getblockchaininfo", vec![], parse::parse_network)
+            .await?;
+        Ok(*self.network.get_or_init(|| network))
+    }
+
+    /// The first of `addresses` not for the node's network, checked only under
+    /// [`Quirks::unchecked_address_network`]; otherwise the node checks.
+    async fn foreign_address<'a, E>(
+        &self,
+        addresses: &'a [String],
+    ) -> Result<Option<&'a str>, QueryError<E>>
+    where
+        E: std::fmt::Debug + std::fmt::Display,
+    {
+        if !self.quirks.unchecked_address_network {
+            return Ok(None);
+        }
+        let network = self.network().await?;
+        Ok(addresses
+            .iter()
+            .find(|address| {
+                !zaino_primitives::types::TransparentAddress::try_new(address.as_str())
+                    .is_ok_and(|parsed| parsed.is_for(network))
+            })
+            .map(String::as_str))
+    }
+
+    /// Check raw blocks to `verification` (default [`BlockVerification::Off`]).
+    pub fn with_block_verification(self, verification: BlockVerification) -> Self {
+        Self {
+            verification,
+            ..self
+        }
     }
 }
 
@@ -42,6 +94,9 @@ pub struct Quirks {
     /// rows, answering the cap. The spec has no such refusal: without this,
     /// every such reply is a failure.
     pub result_cap: Option<fn(&NonDomainError) -> Option<usize>>,
+    /// The node answers another network's address empty where zcashd refuses
+    /// it; the adapter then checks each address's network itself.
+    pub unchecked_address_network: bool,
 }
 
 impl zaino_source::ValidatorSource for ZcashRpcAdapter {
@@ -237,20 +292,7 @@ impl zaino_source::OneShotGetBlock for ZcashRpcAdapter {
 
         // Hex decode.
         let raw_bytes = parse::parse_raw_block(&value).map_err(from_parse)?;
-
-        // Deserialize via zebra-chain.
-        let zebra_block: zebra_chain::block::Block = raw_bytes
-            .zcash_deserialize_into()
-            .map_err(|e| from_parse(parse::ParseError::Deserialize(e.to_string())))?;
-
-        // Cumulative tree sizes are indexed state, not present in the block
-        // bytes, so they are zero here and populated by the caller that tracks
-        // them (via `GetTreestate` or its own index). Zero is a placeholder,
-        // not a measurement: a consumer that needs real sizes must not read
-        // them off this block.
-        let chain_metadata = ChainMetadata::ZERO;
-
-        zaino_primitives::zebra::block_from_zebra(&zebra_block, chain_metadata)
+        raw_block::parse_block(&raw_bytes, self.verification)
             .map_err(|e| NonDomainError::from_cause(FailureMode::Parse, e).into())
     }
 }
@@ -332,7 +374,7 @@ fn txid_to_display_hex(txid: TransactionId) -> String {
     hex::encode(bytes)
 }
 
-fn addresses_param(addresses: Vec<String>) -> serde_json::Value {
+fn addresses_param(addresses: &[String]) -> serde_json::Value {
     serde_json::json!({ "addresses": addresses })
 }
 
@@ -407,6 +449,7 @@ impl ZcashRpcAdapter {
     async fn call_parsed_or_invalid_address<T, E>(
         &self,
         method: &'static str,
+        addresses: &[String],
         params: Vec<serde_json::Value>,
         parse: impl FnOnce(&serde_json::Value) -> Result<T, parse::ParseError>,
         invalid: impl FnOnce(String) -> E,
@@ -415,6 +458,11 @@ impl ZcashRpcAdapter {
     where
         E: std::fmt::Debug + std::fmt::Display,
     {
+        if let Some(address) = self.foreign_address(addresses).await? {
+            return Err(QueryError::Domain(invalid(format!(
+                "an address for another network: {address}"
+            ))));
+        }
         self.call_parsed_classified(method, params, None, parse, |error| {
             invalid_address_or_fetch(&self.quirks, error, invalid, too_many)
         })
@@ -470,13 +518,7 @@ impl zaino_source::OneShotGetBlockByHash for ZcashRpcAdapter {
             })
             .await?;
 
-        let zebra_block: zebra_chain::block::Block = raw_bytes
-            .zcash_deserialize_into()
-            .map_err(|e| from_parse(parse::ParseError::Deserialize(e.to_string())))?;
-
-        // Tree sizes are indexed state, not block data — see `GetBlock`.
-        let chain_metadata = ChainMetadata::ZERO;
-        zaino_primitives::zebra::block_from_zebra(&zebra_block, chain_metadata)
+        raw_block::parse_block(&raw_bytes, self.verification)
             .map_err(|e| NonDomainError::from_cause(FailureMode::Parse, e).into())
     }
 }
@@ -707,7 +749,8 @@ impl zaino_source::OneShotGetAddressBalance for ZcashRpcAdapter {
     > {
         self.call_parsed_or_invalid_address(
             "getaddressbalance",
-            vec![addresses_param(addresses)],
+            &addresses,
+            vec![addresses_param(&addresses)],
             parse::parse_address_balance,
             zaino_source::GetAddressBalanceError::InvalidAddress,
             |_| None,
@@ -733,6 +776,7 @@ impl zaino_source::OneShotGetAddressDeltas for ZcashRpcAdapter {
         })];
         self.call_parsed_or_invalid_address(
             "getaddressdeltas",
+            &addresses,
             params,
             parse::parse_address_deltas,
             zaino_source::GetAddressDeltasError::InvalidAddress,
@@ -756,6 +800,7 @@ impl zaino_source::OneShotGetAddressTxids for ZcashRpcAdapter {
         })];
         self.call_parsed_or_invalid_address(
             "getaddresstxids",
+            &addresses,
             params,
             parse::parse_txids,
             zaino_source::GetAddressTxidsError::InvalidAddress,
@@ -773,7 +818,8 @@ impl zaino_source::OneShotGetAddressUtxos for ZcashRpcAdapter {
     {
         self.call_parsed_or_invalid_address(
             "getaddressutxos",
-            vec![addresses_param(addresses)],
+            &addresses,
+            vec![addresses_param(&addresses)],
             parse::parse_address_utxos,
             zaino_source::GetAddressUtxosError::InvalidAddress,
             |limit| Some(zaino_source::GetAddressUtxosError::TooManyResults { limit }),
@@ -888,8 +934,29 @@ impl zaino_source::OneShotGetSubtreeRoots for ZcashRpcAdapter {
         if let Some(limit) = limit {
             params.push(serde_json::Value::Number(limit.into()));
         }
-        self.call_parsed("z_getsubtreesbyindex", params, parse::parse_subtree_roots)
-            .await
+        self.call_parsed_classified(
+            "z_getsubtreesbyindex",
+            params,
+            None,
+            parse::parse_subtree_roots,
+            |error| pool_unavailable_or_fetch(error, pool),
+        )
+        .await
+    }
+}
+
+/// zcashd refuses a pool it lacks with `-8`, its only `-8` on this method;
+/// zebrad answers every pool it names.
+fn pool_unavailable_or_fetch(
+    error: zaino_rpc::RpcError,
+    pool: zaino_primitives::types::ShieldedPool,
+) -> QueryError<zaino_source::GetSubtreeRootsError> {
+    let error: NonDomainError = error.into();
+    match error.mode {
+        FailureMode::RpcError(-8) => {
+            QueryError::Domain(zaino_source::GetSubtreeRootsError::PoolUnavailable(pool))
+        }
+        _ => QueryError::NonDomain(error),
     }
 }
 
@@ -1256,6 +1323,7 @@ mod classification_tests {
         };
         let quirks = Quirks {
             result_cap: Some(cap),
+            ..Quirks::default()
         };
 
         assert!(matches!(
@@ -1363,6 +1431,34 @@ mod classification_tests {
             classified,
             QueryError::Domain(GetStandardFeeError::Unsupported)
         ));
+    }
+
+    /// zcashd's `-8` for a pool it lacks is the port's `PoolUnavailable`; its
+    /// `-1` (method disabled) and transport failures stay faults.
+    #[test]
+    fn an_unsupported_pool_is_pool_unavailable() {
+        use zaino_primitives::types::ShieldedPool;
+        use zaino_source::GetSubtreeRootsError;
+
+        let lacking = pool_unavailable_or_fetch(
+            rpc(-8, "Requested pool must be \"sapling\" or \"orchard\""),
+            ShieldedPool::Ironwood,
+        );
+        assert!(matches!(
+            lacking,
+            QueryError::Domain(GetSubtreeRootsError::PoolUnavailable(
+                ShieldedPool::Ironwood
+            ))
+        ));
+        for code in [-1, -28, -32603] {
+            assert!(
+                matches!(
+                    pool_unavailable_or_fetch(rpc(code, "other"), ShieldedPool::Sapling),
+                    QueryError::NonDomain(_)
+                ),
+                "code {code} says nothing about the pool"
+            );
+        }
     }
 
     /// Everything else is a failure to reach or be served by the node. In

@@ -65,7 +65,7 @@ pub struct LsmTreeConfig<'a> {
     pub threads: Option<NonZeroUsize>,
     /// Refuse to open where the manifest can only be read through the page cache (the
     /// filesystem refuses direct I/O); off = open with a warning, reported by
-    /// [`LsmTreeBackend::manifest_read`] and `zaino.store.manifest_read_cached`
+    /// [`LsmTreeBackend::manifest_read`] and `zaino.lsm.manifest_read_cached`
     pub strict_manifest_read: bool,
 }
 
@@ -176,6 +176,10 @@ impl LsmTreeBackend {
         path: &Path,
         config: &LsmTreeConfig<'_>,
     ) -> Result<Self, StoreError> {
+        // a removal a crash interrupted is finished, never opened as an index (D-84)
+        if crate::remove::interrupted(fs.as_ref(), path)? {
+            crate::remove::remove_dir_all(fs.as_ref(), path)?;
+        }
         let specs: Arc<[NamespaceSpec]> = config.namespaces.into();
         let tunings = tunings(&specs, config.tuning)?;
         let identity = Identity::new(config.name, config.chain, config.format, config.schema)?;
@@ -299,6 +303,7 @@ impl Shared {
         ops: &[WriteOp],
     ) -> Result<(), CommitError> {
         let next = {
+            let started = std::time::Instant::now();
             let mut state = Pending::new(&self.specs, writing.engine.view(), &writing.buffer);
             check_shape(&self.specs, &state, tip, ops)?;
             writing
@@ -307,10 +312,17 @@ impl Shared {
                 .install(|| state.prefetch(ops))
                 .map_err(|error| CommitError::from_check(error.into_read("commit check")))?;
             check_keys(&self.specs, &state, ops)?;
-            writing
+            let checked = std::time::Instant::now();
+            let next = writing
                 .buffer
                 .with(&self.specs, tip, ops)
-                .map_err(|error| error.into_commit("buffer"))?
+                .map_err(|error| error.into_commit("buffer"))?;
+            emit::commit_phases(
+                self.identity.name(),
+                checked.duration_since(started),
+                checked.elapsed(),
+            );
+            next
         };
         match next.heap() >= self.write_buffer.get() {
             true => self
@@ -453,7 +465,7 @@ impl<'a> Pending<'a> {
     }
 
     /// Durable states of `ops`' unbuffered map keys, one batch per map (after `check_shape`:
-    /// every key declared and of its width)
+    /// every key declared and of its width); a `Put` into a `unique` map asks nothing
     fn prefetch(&mut self, ops: &'a [WriteOp]) -> Result<(), StoreError> {
         let mut asked: HashMap<usize, Vec<&'a [u8]>> = HashMap::new();
         for op in ops {
@@ -465,6 +477,9 @@ impl<'a> Pending<'a> {
             let Some(index) = position(self.specs, namespace) else {
                 continue;
             };
+            if matches!(op, WriteOp::Put { .. }) && self.unique(index) {
+                continue;
+            }
             let unbuffered = self
                 .buffer
                 .entries(index)
@@ -487,6 +502,14 @@ impl<'a> Pending<'a> {
     fn index(&self, namespace: Namespace) -> Result<usize, ReadError> {
         position(self.specs, namespace)
             .ok_or_else(|| ReadError::NamespaceNotFound(namespace.to_string()))
+    }
+
+    /// Whether the map at `index` is declared `unique`: its puts are checked against the
+    /// buffer only, the durable state trusted to the writer's promise
+    fn unique(&self, index: usize) -> bool {
+        self.specs
+            .get(index)
+            .is_some_and(|spec| matches!(spec.kind, NamespaceKind::Map { unique: true, .. }))
     }
 }
 
@@ -518,6 +541,9 @@ impl CommitState for Pending<'_> {
             Some(Entry::Value(_)) => return Ok(KeyState::Present),
             Some(Entry::Removed | Entry::Cancelled(_)) => return Ok(KeyState::Removed),
             None => {}
+        }
+        if self.unique(index) {
+            return Ok(KeyState::Absent);
         }
         let prefetched = self.durable.get(&index).and_then(|keys| keys.get(key));
         let lookup = match prefetched {
@@ -567,6 +593,19 @@ impl BackendReader for LsmTreeReader {
         guarded(|| self.state.with_value(namespace, key, <[u8]>::to_vec))
             .and_then(|value| value)
             .map_err(|error| error.into_read("get"))
+    }
+
+    /// `read` on the mapped or buffered bytes, in place: nothing is copied.
+    fn with_value<T>(
+        &self,
+        namespace: Namespace,
+        key: &[u8],
+        read: impl FnOnce(&[u8]) -> T,
+    ) -> Result<Option<T>, ReadError> {
+        check_key(&self.state.specs, namespace, key)?;
+        guarded(|| self.state.with_value(namespace, key, read))
+            .and_then(|value| value)
+            .map_err(|error| error.into_read("with_value"))
     }
 
     fn get_bytes(
@@ -1059,6 +1098,9 @@ fn ceil(key: &[u8]) -> (u128, bool) {
         std::cmp::Ordering::Greater => (at.saturating_add(1), false),
     }
 }
+
+mod read_only;
+pub use read_only::LsmTreeReadOnly;
 
 #[cfg(test)]
 mod tests;

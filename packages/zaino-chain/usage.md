@@ -66,6 +66,14 @@ Anything addressed by a block takes a [`BlockId`] — `Height` or `Hash` — rat
 than appearing twice. That is how the chain is addressed (zebra takes a
 `HashOrHeight`), and it halves the surface without removing anything.
 
+A `ChainBlock` is an indexed block: the header, every transaction in compact
+form, the tree roots after it, and the chainwork where known. For a
+store-covered height it is composed from three store reads, each over one index
+(headers with chainwork, compact transactions with every pool, tree roots), so a
+store answers it with the `CompactBlocks` and `TreeRoots` capabilities; `block_header`
+needs only the headers index. The chain head and the validator supply parsed
+blocks, projected to the same shape.
+
 Every read answers for the snapshot's chain, even when the validator serves the
 bytes. A raw block wanted by height is fetched by the hash the snapshot pins at
 that height, so a reorg since the snapshot was taken cannot substitute a block
@@ -219,13 +227,10 @@ Implement those traits and the composer works unchanged. A different finalised
 store, a different chain head, Zebra's read state in an ephemeral mode: none of
 them requires writing a composition.
 
-The suite is the standing proof rather than a claim. `FakeStore`, `FakeHead` and
-`FakeSource` are an independent implementation of all three tiers — none of them
-is a Zaino production adapter — and every composition test runs the real
-composer over them. `MinimalStore` goes further: it implements `ChainStoreReader`
-and the block ports but deliberately *not* `SpentOutputIndex` or `TxOutSetIndex`,
-so a store that builds only some indexes is a case the compiler checks rather
-than a case someone remembered.
+The composer names only the ports, so a store, head or validator satisfying them
+composes unchanged; the suite runs it over Zaino's own services (below), and a
+store that builds only some indexes is covered there by configuring the real
+store without them.
 
 Writing your own `ChainView` is possible too — that is why the ports are
 separate from the composer — but it is for a consumer who wants different
@@ -269,26 +274,20 @@ manifest report `NotAnswerable` while the store is still building.
 ## Driving the store: `spawn_sync`
 
 Everything above reads. One method writes: `spawn_sync` starts a background task
-that feeds the finalised store from the chain head's freeze stream, so the seam
-between the two tiers closes itself.
+that keeps the finalised store built to the chain head's floor, so the seam
+between the two tiers closes itself (D-72).
 
 ```rust
 let view = Arc::new(ChainViewComposer::new(store, head, source, config));
 let sync = view.spawn_sync(cancel.clone());
 ```
 
-**On launch it builds, then follows.** The loop first builds the store up to the
-chain head's floor — its lowest canonical block — so a store comes up even on a
-chain that is not moving, where no freeze would ever arrive. Freezes sent during
-the build wait in the stream, and those the build already covered are skipped.
-After that the chain head emits a block once it falls below the consensus seam,
-and the store accepts one only at `tip + 1`. A block that does not follow the
-store answers `ChainStoreError::FreezeGap`, which carries the height to build
-to, so a chain head that re-anchored after an outage is repaired the same way.
-
-The repair runs once per batch, not until it succeeds. A second gap means the
-chain moved while the build was running; the next batch reports it again with a
-nearer target, and looping in place would block on a chain that is still moving.
+**The floor is the target.** The chain head's floor is its lowest retained
+canonical block, below the consensus seam, so everything up to it is settled.
+On launch, and again on every chain-head update, the loop asks the store to
+`build_to(floor)`; the store fetches those blocks from its own validator, which
+is the store's only write path. A floor the store already holds is not asked
+for again; a failed build is retried on the next update.
 
 **It is asked for, never assumed.** A deployment that drives its own store —
 building it from a validator on its own schedule — must not also get this, or two
@@ -297,55 +296,45 @@ the store stays caller-driven and this call is the caller.
 
 It is deliberately not a cargo feature. The bounds already do what a flag would,
 and do it per deployment rather than per build: `spawn_sync` exists only where
-`Store: ChainStoreIngest + ChainStoreFreezeSink` and `Head: ChainHeadFreezeEvents`,
-so a composer whose providers cannot freeze does not have the method. A feature
-would be worse on both counts — features are additive across a workspace, so one
-crate enabling it turns it on for every other consumer.
+`Store: ChainStoreIngest`, so a composer over a store that cannot be built (a
+linked, read-only one) does not have the method. A feature would be worse on
+both counts — features are additive across a workspace, so one crate enabling it
+turns it on for every other consumer.
 
-**Losing blocks costs a fetch, not correctness.** The freeze stream is
-best-effort by contract: it is a `broadcast`, so a slow consumer is told it
-lagged rather than blocking the chain head, and a chain head that re-anchors
-never emits what it skipped. Neither is handled specially, because a missed block
-becomes a gap on the next freeze and the gap repairs itself.
-
-`ChainViewSync::status()` reports `Syncing` until the store holds the floor and
-while a gap is open, `Ready` once it holds the floor or freezes are landing, and
-`Offline` once the loop has stopped. This is separate
-from the store's own status, which says whether the *database* is healthy;
-this says whether anything is still feeding it. Cancelling the token stops the
-loop, and so does dropping the handle — `shutdown()` additionally publishes
-`Closing`, so the stop is observable rather than merely effective.
+`ChainViewSync::status()` reports `Syncing` until the store holds the floor,
+`Ready` once it does, `Recoverable` while a build fails, and `Offline` once the
+loop has stopped. This is separate from the store's own status, which says
+whether the *database* is healthy; this says whether anything is still feeding
+it. Cancelling the token stops the loop, and so does dropping the handle —
+`shutdown()` additionally publishes `Closing`, so the stop is observable rather
+than merely effective.
 
 ## Testing
 
-The `testing` feature provides one `Chain` and three views of it, so coverage
-shapes are explicit at the call site:
+The suite runs the real composer over the real services (D-90): the shared fake
+validator (`zaino-source-mock`, real consensus bytes), `zaino-chain-store-service`
+over in-memory storage, and `zaino-chain-head-service` stepped through its
+`testing` feature. There are no fakes of the ports; the one fake is the
+validator. `tests/common/mod.rs` assembles one coverage shape per test:
 
 ```rust,ignore
-let chain = Chain::of_length(1201);
-ChainViewComposer::new(
-    FakeStore::covering(&chain, 100),        // built to 100
-    FakeHead::covering(&chain, 1100, 1200),  // window near the tip
-    Arc::new(FakeSource::over(&chain)),      // knows everything
-    ChainViewConfig::default(),
-);                                           // -> a hole at 101..=1099
+let rig = rig(chain())        // 301 real blocks, served to the tip
+    .store_to(100)            // the store built through 100
+    .window(200, 300)         // the head's window: depth 100 below the tip
+    .build()
+    .await;                   // -> a hole at 101..=199
+let view = rig.view();
 ```
 
-`FakeSource` records every question, which is how the by-height/by-hash
-assertions work — the returned value is identical either way, and only the call
-log distinguishes them.
+The validator's call log is what the by-height/by-hash assertions read — the
+returned value is identical either way — and a second validator over the same
+blocks (`rig.view_over(chain(), ..)`) isolates the composer's own fetches from
+the store's and the head's. Reorgs and competing branches come from the mock
+(`reorg`, `know`, `forget`) followed by stepping the head.
 
-`tests/vectors.rs` additionally drives the composition with the checked-in
-regtest chain from `zaino-chain-store-zainodb/testing` (dev-dependency only, so
-`zebra-chain` never reaches the shipped `testing` feature). The programmatic
-`Chain` proves coverage *shapes*; the vectors prove the stitched output is
-*correct* — it caught fakes that were silently serving synthetic blocks.
-
-These fakes are also the *second implementation* of the ports;
-`zaino-chain-store-zainodb` and `zaino-chain-head-service` are the first. A port
-with only one implementation is that implementation's surface with extra steps.
-When a fake here becomes awkward to write, that is a signal about the port — the
-branch-retention split in `FakeHeadSnapshot` came from exactly that.
+Most tests use the fast seam depth (`FAST_TEST_MAX_NONFINALISED_DEPTH`, 100) on a
+300-block chain; `tests/real_seam.rs` runs a 1 200-block chain under the chain
+head's default depth, so the production seam is exercised end to end.
 
 ## What a chain view is not
 

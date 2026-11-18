@@ -5,8 +5,12 @@ use std::{num::NonZeroUsize, path::PathBuf};
 
 use proptest::prelude::*;
 use tempfile::TempDir;
-use zaino_persistence::conformance::{self, Subject, SCANNED, SPECS};
-use zaino_persistence_lsm_tree::{LsmConfig, LsmTreeBackend, LsmTreeConfig, Tuning};
+use zaino_persistence::conformance::{
+    self, linked_beside_a_writer, linked_history, LinkedSubject, Subject, SCANNED, SPECS,
+};
+use zaino_persistence_lsm_tree::{
+    fs::RealFs, LsmConfig, LsmTreeBackend, LsmTreeConfig, LsmTreeReadOnly, Tuning,
+};
 
 /// A temporary directory reopened as the conformance index, merging every two segments; written
 /// only by `flush`, or also whenever the buffer reaches `write_buffer`
@@ -68,6 +72,33 @@ impl Subject for RealDir {
     }
 }
 
+impl LinkedSubject for RealDir {
+    type ReadOnly = LsmTreeReadOnly;
+
+    fn open_read_only(&self) -> LsmTreeReadOnly {
+        LsmTreeReadOnly::open(
+            RealFs::shared(),
+            &self.path,
+            "conformance",
+            "regtest",
+            1,
+            zaino_persistence::SchemaDigest::new([0; 32]),
+            &SPECS,
+        )
+        .expect("linked")
+    }
+}
+
+/// Real mappings: a merge unlinks segments a read-only reader still maps
+#[test]
+fn a_read_only_backend_reads_each_announced_state_beside_a_writer_on_a_real_filesystem() {
+    linked_beside_a_writer(RealDir::new(), 200);
+    linked_beside_a_writer(
+        RealDir::writing_at(NonZeroUsize::new(2048).expect("non-zero")),
+        200,
+    );
+}
+
 #[test]
 fn the_backend_keeps_the_port_contract_on_a_real_filesystem() {
     conformance::contract(RealDir::new());
@@ -85,5 +116,12 @@ proptest! {
         steps in conformance::steps(),
     ) {
         conformance::history(RealDir::new(), &steps);
+    }
+
+    #[test]
+    fn random_histories_read_read_only_at_each_durable_tip_on_a_real_filesystem(
+        steps in conformance::steps(),
+    ) {
+        linked_history(RealDir::new(), &steps);
     }
 }

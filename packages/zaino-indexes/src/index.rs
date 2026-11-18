@@ -20,9 +20,13 @@ pub trait Index {
     /// The disk schema: name, format, namespaces.
     const SCHEMA: Schema;
 
-    /// Names of the indexes enabled with this one: those its readers
-    /// compose answers from.
-    const DEPENDENCIES: &'static [&'static str];
+    /// Names of the indexes its answers join (enabled with it; an answer is
+    /// served up to the lowest of their heights and its own).
+    const READS: &'static [&'static str];
+
+    /// Names of the indexes the ingest reads to build it (enabled with it
+    /// and built ahead of it): I-03 and I-04 where the fold needs prevouts.
+    const BUILDS_FROM: &'static [&'static str];
 
     /// What the fold carries from one block to the next (the last block's
     /// hash and height at least; a running total where the index keeps one).
@@ -69,6 +73,13 @@ pub enum FoldError {
     /// A UTXO-set total left its range: a double spend or a misread value.
     #[error("txout set: {0}")]
     TxOutSet(#[from] zaino_primitives::txout_commitment::TxOutSetError),
+    /// The fold reads prevouts the block was built without (the index is
+    /// built only beside its `BUILDS_FROM`).
+    #[error("{index}: prevouts not resolved")]
+    Unresolved {
+        /// The index that needed them.
+        index: &'static str,
+    },
 }
 
 impl FoldError {

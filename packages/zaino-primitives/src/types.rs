@@ -17,6 +17,7 @@ mod compact_difficulty;
 mod confirmations;
 mod ephemeral_key;
 mod equihash_solution;
+mod frontier;
 mod height;
 mod index_id;
 mod mempool_info;
@@ -60,6 +61,7 @@ pub use compact_difficulty::{CompactDifficulty, CompactDifficultyError};
 pub use confirmations::{BlockConfirmations, ConfirmationsCodecError, TxConfirmations};
 pub use ephemeral_key::EphemeralKey;
 pub use equihash_solution::EquihashSolution;
+pub use frontier::{NoteFrontier, PoolFrontier};
 pub use height::{Height, HeightOverflow};
 pub use index_id::IndexId;
 pub use mempool_info::MempoolInfo;
@@ -75,7 +77,7 @@ pub use script::{classify_script, Script, ScriptType, TransparentAddressKey};
 pub use shielded_pool::ShieldedPool;
 pub use subtree_root::SubtreeRoot;
 pub use transaction::{
-    OrchardAction, OrchardData, PoolBalances, SaplingData, SaplingOutput, SaplingSpend,
+    OrchardAction, OrchardData, PoolBalances, SaplingData, SaplingOutput, SaplingSpend, SproutData,
     Transaction, TransparentData, TransparentInput, TransparentOutput,
 };
 pub use transaction_hash::TransactionId;

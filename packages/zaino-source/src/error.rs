@@ -18,6 +18,9 @@ pub enum FailureMode {
     RpcError(i64),
     /// Response couldn't be deserialized.
     Parse,
+    /// The source's data decoded but broke its own contract (an in-process
+    /// state answering off-shape); asking again returns the same data.
+    InvalidSourceData,
     /// Authentication rejected.
     Auth,
 }

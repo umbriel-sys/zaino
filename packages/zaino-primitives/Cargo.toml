@@ -16,6 +16,7 @@ categories.workspace = true
 blake2 = { workspace = true, optional = true }
 orchard = { workspace = true, optional = true }
 serde = { workspace = true, features = ["derive"], optional = true }
+sha2.workspace = true
 thiserror = { workspace = true }
 zcash_address.workspace = true
 zcash_protocol.workspace = true

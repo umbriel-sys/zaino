@@ -131,7 +131,9 @@ impl Buffer {
                     records = records.saturating_add(1);
                 }
                 (Held::Map(held), WriteOp::Put { .. }) => {
-                    held.insert(key, Entry::Value(value));
+                    if held.insert(key, Entry::Value(value)).is_some() {
+                        return Err(StoreError::Internal("a map key buffered twice"));
+                    }
                     entries = entries.saturating_add(1);
                 }
                 (Held::Map(held), WriteOp::Delete { .. }) => {

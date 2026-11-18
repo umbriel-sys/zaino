@@ -36,8 +36,8 @@ pub enum StoreCapability {
     /// Heights, hashes, and the watermark. Always present: a store that
     /// cannot answer these is not a store.
     Core,
-    /// Indexed blocks, as the store's own projection of them.
-    StoredBlocks,
+    /// Commitment tree roots and sizes after each block.
+    TreeRoots,
     /// Compact blocks, for wallet sync.
     CompactBlocks,
     /// Where a transaction was mined, and what is at a position.
@@ -48,6 +48,10 @@ pub enum StoreCapability {
     TxOutSet,
     /// Transparent address history within the finalised range.
     TransparentHistory,
+    /// Note commitment tree frontiers and completed subtree roots.
+    TreeState,
+    /// The ZIP 221 chain history tree.
+    HistoryTree,
 }
 
 impl StoreCapability {
@@ -56,26 +60,30 @@ impl StoreCapability {
     /// The set is closed — one variant per index the finalised state maintains
     /// — so it can be enumerated. A store's advertised set is a subset of this,
     /// and a coherence check over the ports needs something to iterate.
-    pub const ALL: [Self; 7] = [
+    pub const ALL: [Self; 9] = [
         Self::Core,
-        Self::StoredBlocks,
+        Self::TreeRoots,
         Self::CompactBlocks,
         Self::Transactions,
         Self::SpentOutputs,
         Self::TxOutSet,
         Self::TransparentHistory,
+        Self::TreeState,
+        Self::HistoryTree,
     ];
 
     /// This capability's bit in a [`StoreCapabilities`] set.
-    const fn bit(self) -> u8 {
+    const fn bit(self) -> u16 {
         match self {
             Self::Core => 1 << 0,
-            Self::StoredBlocks => 1 << 1,
+            Self::TreeRoots => 1 << 1,
             Self::CompactBlocks => 1 << 2,
             Self::Transactions => 1 << 3,
             Self::SpentOutputs => 1 << 4,
             Self::TxOutSet => 1 << 5,
             Self::TransparentHistory => 1 << 6,
+            Self::TreeState => 1 << 7,
+            Self::HistoryTree => 1 << 8,
         }
     }
 }
@@ -84,12 +92,14 @@ impl fmt::Display for StoreCapability {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let name = match self {
             StoreCapability::Core => "core reads",
-            StoreCapability::StoredBlocks => "stored blocks",
+            StoreCapability::TreeRoots => "commitment tree roots",
             StoreCapability::CompactBlocks => "compact blocks",
             StoreCapability::Transactions => "the transaction index",
             StoreCapability::SpentOutputs => "the spent-output index",
             StoreCapability::TxOutSet => "the txout-set accumulator",
             StoreCapability::TransparentHistory => "transparent address history",
+            StoreCapability::TreeState => "note commitment tree state",
+            StoreCapability::HistoryTree => "the chain history tree",
         };
         f.write_str(name)
     }
@@ -103,10 +113,10 @@ impl fmt::Display for StoreCapability {
 /// at open will be wrong later.
 /// A bit set rather than a sorted `Vec`. The capability set is closed and
 /// small, so membership is a mask test; sorting, deduplicating and binary
-/// searching a seven-element vector was more machinery — and an allocation —
-/// for an answer a `u8` holds.
+/// searching a short vector was more machinery — and an allocation — for an
+/// answer a `u16` holds.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-pub struct StoreCapabilities(u8);
+pub struct StoreCapabilities(u16);
 
 impl StoreCapabilities {
     /// The set offering exactly these capabilities.

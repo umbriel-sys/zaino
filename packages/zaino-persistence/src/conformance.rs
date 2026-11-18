@@ -20,8 +20,8 @@ use zaino_primitives::types::{BlockHash, BlockRef, Height};
 
 use crate::{
     raw_entry, sequence_key, Backend, BackendReader, BackendWriter, CommitError, MaintenanceReader,
-    Namespace, NamespaceSpec, Part, RawKey, RawValue, ReadError, ScanDirection, ScanRange, Width,
-    WriteOp,
+    Namespace, NamespaceSpec, Part, RawKey, RawValue, ReadError, ReadOnlyBackend, RefreshError,
+    ScanDirection, ScanRange, Width, WriteOp,
 };
 
 /// Variable-width sequence (empty records included)
@@ -32,7 +32,8 @@ pub const HEIGHTS: Namespace = Namespace::new("heights");
 const NODES: Namespace = Namespace::new("pool/nodes");
 /// `account ‖ seq` → 8 bytes, removable, read per account
 pub const SCANNED: Namespace = Namespace::new("scanned");
-/// Hash-like 16-byte ids → 4 bytes, insert-only point lookups
+/// Hash-like 16-byte ids → 4 bytes, insert-only point lookups; the ids are
+/// distinct by construction, so the map is declared `unique`
 pub const PROBED: Namespace = Namespace::new("probed");
 
 /// `n` > 0 as a width
@@ -46,7 +47,7 @@ pub const SPECS: [NamespaceSpec; 5] = [
     NamespaceSpec::sequence(HEIGHTS, Width::Fixed(width(8))),
     NamespaceSpec::sequence(NODES, Width::Fixed(width(4))),
     NamespaceSpec::map(SCANNED, width(12), width(8), true),
-    NamespaceSpec::map(PROBED, width(16), width(4), false),
+    NamespaceSpec::unique_map(PROBED, width(16), width(4)),
 ];
 
 /// Backend under test, over storage the suite can reopen (and, if it can, crash)
@@ -299,10 +300,23 @@ impl Model {
             assert_eq!(past, None, "{label}: {namespace} past the end");
             let keys: Vec<Vec<u8>> = (0..=len).map(sequence_key).collect();
             let keys: Vec<&[u8]> = keys.iter().map(Vec::as_slice).collect();
+            let lent: Vec<_> = keys
+                .iter()
+                .map(|key| {
+                    reader
+                        .with_value(namespace, key, <[u8]>::to_vec)
+                        .expect("with_value")
+                })
+                .collect();
             assert_eq!(
                 reader.get_batch(namespace, &keys).expect("get_batch"),
                 [one_by_one, vec![None]].concat(),
                 "{label}: {namespace} get_batch = get, in order"
+            );
+            assert_eq!(
+                lent,
+                reader.get_batch(namespace, &keys).expect("get_batch"),
+                "{label}: {namespace} with_value = get"
             );
             let whole = sequence_entries(model);
             let scanned = reader.scan(namespace).expect("scan");
@@ -364,6 +378,15 @@ impl Model {
             one_by_one,
             "{label}: {SCANNED} get_batch = get, in order"
         );
+        let lent: Vec<_> = batch
+            .iter()
+            .map(|key| {
+                reader
+                    .with_value(SCANNED, key, <[u8]>::to_vec)
+                    .expect("with_value")
+            })
+            .collect();
+        assert_eq!(lent, one_by_one, "{label}: {SCANNED} with_value = get");
 
         for n in 0..2 * self.ids + 2 {
             let id = probed_key(n);
@@ -668,6 +691,13 @@ impl Oracle {
             .map_or(&self.durable, |at| &self.nodes[at].model)
     }
 
+    /// Contents at committed tip `tip`: durable, or an applied node's
+    fn at(&self, tip: Option<BlockRef>) -> Option<&Model> {
+        std::iter::once(&self.durable)
+            .chain(self.nodes[..self.applied].iter().map(|node| &node.model))
+            .find(|model| model.tip == tip)
+    }
+
     /// Contents through the newest node
     fn newest(&self) -> &Model {
         self.nodes.last().map_or(&self.durable, |node| &node.model)
@@ -833,7 +863,125 @@ pub fn steps() -> impl Strategy<Value = Vec<Step>> {
 /// - reopen or crash = exactly the durable nodes (plus the committed ones, for a subject that
 ///   keeps unflushed commits; a prefix of the committed ones, for one that writes on its own);
 ///   [`Subject::check`] holds
-pub fn history<S: Subject>(mut subject: S, steps: &[Step]) {
+pub fn history<S: Subject>(subject: S, steps: &[Step]) {
+    history_with(subject, steps, |_, _, _, _, _| {});
+}
+
+/// A [`Subject`] another process can link to read-only (§5.2a)
+pub trait LinkedSubject: Subject {
+    /// The read-only backend type.
+    type ReadOnly: ReadOnlyBackend<Reader: MaintenanceReader>;
+
+    /// The subject's storage linked read-only as it stands now
+    fn open_read_only(&self) -> Self::ReadOnly;
+}
+
+/// [`history`] with a read-only backend beside the writer, after every step:
+///
+/// - refreshed to the writer's durable tip, it reads exactly the state durable there
+/// - a reader taken from it at a [`Step::Pin`] keeps its snapshot
+/// - an announced tip the storage never held is `Superseded`, the last state kept
+pub fn linked_history<S: LinkedSubject>(subject: S, steps: &[Step]) {
+    let mut linked = subject.open_read_only();
+    assert!(linked.reader().is_err(), "a reader before any refresh");
+    let mut pinned: Option<(usize, Model, <S::ReadOnly as ReadOnlyBackend>::Reader)> = None;
+    history_with(subject, steps, |subject, backend, oracle, at, crashed| {
+        let label = format!("step {at} {:?} (linked)", steps[at]);
+        if crashed {
+            linked = subject.open_read_only();
+        }
+        let durable = backend
+            .reader()
+            .expect("reader")
+            .durable_tip()
+            .expect("durable tip");
+        linked.refresh(durable).expect("refresh at the durable tip");
+        let model = oracle
+            .at(durable)
+            .unwrap_or_else(|| panic!("{label}: durable {durable:?} ends no prefix"));
+        model.assert_view(&linked.reader().expect("reader"), &label);
+        assert!(
+            matches!(
+                linked.refresh(Some(block_ref(usize::from(u16::MAX)))),
+                Err(RefreshError::Superseded)
+            ),
+            "{label}: a tip never held"
+        );
+        model.assert_view(&linked.reader().expect("reader"), &label);
+        if matches!(steps[at], Step::Pin) {
+            pinned = Some((at, model.clone(), linked.reader().expect("reader")));
+        }
+        if let Some((pinned_at, model, reader)) = &pinned {
+            model.assert_view(reader, &format!("{label}: pinned at step {pinned_at}"));
+        }
+    });
+}
+
+/// A writer committing and flushing `advances` blocks on one thread while a read-only backend
+/// refreshes to each announced durable tip on another: every refresh that lands reads exactly
+/// the announced state; the last one, after the writer stops, lands
+pub fn linked_beside_a_writer<S: LinkedSubject>(subject: S, advances: usize)
+where
+    S::Backend: Send,
+    S::ReadOnly: Send,
+{
+    let mut model = Model::default();
+    let mut blocks = vec![(None, Model::default())];
+    let mut commits = Vec::with_capacity(advances);
+    for n in 0..advances {
+        let removals = [u16::try_from(n).unwrap_or(u16::MAX)];
+        let (tip, ops) = model.advance(3, &[1, 2], 2, &removals);
+        commits.push((tip, ops));
+        blocks.push((Some(tip), model.clone()));
+    }
+    let backend = subject.open();
+    let linked = subject.open_read_only();
+    let announced = std::sync::Mutex::new(None::<BlockRef>);
+    let done = std::sync::atomic::AtomicBool::new(false);
+    let model_at = |tip: Option<BlockRef>| {
+        blocks
+            .iter()
+            .find(|(held, _)| *held == tip)
+            .map(|(_, model)| model)
+            .expect("an announced tip is a committed one")
+    };
+    std::thread::scope(|scope| {
+        scope.spawn(|| {
+            for (tip, ops) in commits {
+                commit(&backend, tip, ops).expect("commit");
+                backend.flush().expect("flush");
+                let durable = backend
+                    .reader()
+                    .expect("reader")
+                    .durable_tip()
+                    .expect("tip");
+                *announced.lock().expect("announcement") = durable;
+            }
+            done.store(true, std::sync::atomic::Ordering::Release);
+        });
+        while !done.load(std::sync::atomic::Ordering::Acquire) {
+            let tip = *announced.lock().expect("announcement");
+            match linked.refresh(tip) {
+                Ok(()) => model_at(tip).assert_view(&linked.reader().expect("reader"), "beside"),
+                Err(RefreshError::Superseded) => {}
+                Err(error) => panic!("refresh at {tip:?}: {error}"),
+            }
+        }
+    });
+    let tip = *announced.lock().expect("announcement");
+    linked
+        .refresh(tip)
+        .expect("the writer stopped: its last state");
+    model_at(tip).assert_view(&linked.reader().expect("reader"), "after the writer");
+}
+
+/// [`history`], `after` run once each step is checked: `(subject, backend, oracle, step, the
+/// step crashed the storage)`
+fn history_with<S: Subject>(
+    mut subject: S,
+    steps: &[Step],
+    mut after: impl FnMut(&S, &S::Backend, &Oracle, usize, bool),
+) {
     let mut backend = subject.open();
     let mut oracle = Oracle::default();
     let mut pinned: Option<(usize, Model, <S::Backend as Backend>::Reader)> = None;
@@ -841,6 +989,7 @@ pub fn history<S: Subject>(mut subject: S, steps: &[Step]) {
     for (at, step) in steps.iter().enumerate() {
         let label = format!("step {at} {step:?}");
         let mut reopened = false;
+        let mut crashed = false;
         match step {
             Step::Grow {
                 records,
@@ -876,7 +1025,7 @@ pub fn history<S: Subject>(mut subject: S, steps: &[Step]) {
             Step::Settle => subject.settle(&backend),
             // crash image taken while background work may still be writing: flushed = durable
             Step::Reopen | Step::PowerLoss => {
-                let crashed = matches!(step, Step::PowerLoss) && subject.power_loss();
+                crashed = matches!(step, Step::PowerLoss) && subject.power_loss();
                 drop(backend);
                 backend = subject.open();
                 if !crashed && subject.keeps_unflushed() {
@@ -907,6 +1056,7 @@ pub fn history<S: Subject>(mut subject: S, steps: &[Step]) {
         if let Some((pinned_at, model, reader)) = &pinned {
             model.assert_view(reader, &format!("{label}: pinned at step {pinned_at}"));
         }
+        after(&subject, &backend, &oracle, at, crashed);
     }
 }
 
@@ -1295,9 +1445,9 @@ pub fn contract<S: Subject>(subject: S) {
         (
             "a key already present, after a valid append",
             next(),
-            vec![ok_append(), put(PROBED, probed_key(0), vec![0; 4])],
+            vec![ok_append(), put(SCANNED, held.clone(), vec![0; 8])],
             Box::new(
-                move |e| matches!(e, CommitError::KeyExists { namespace } if ns(namespace, PROBED)),
+                move |e| matches!(e, CommitError::KeyExists { namespace } if ns(namespace, SCANNED)),
             ),
         ),
         (
@@ -1367,4 +1517,42 @@ pub fn contract<S: Subject>(subject: S) {
     commit(&backend, jump, Vec::new()).expect("a tip several heights above");
     model.tip = Some(jump);
     model.assert_view(&reader(), "a tip several heights above");
+
+    // a unique map: a key repeated while buffered is refused; one repeated past a flush is
+    // refused, or committed and found by the next scan (the backend may trust the declaration
+    // past its buffer). Last: the backend may hold a breach afterwards.
+    let repeated = probed_key(model.ids);
+    let first = block_ref(model.advances + 6);
+    commit(
+        &backend,
+        first,
+        vec![put(PROBED, repeated.clone(), vec![0; 4])],
+    )
+    .expect("a fresh unique key");
+    let is_exists = |e: &CommitError| matches!(e, CommitError::KeyExists { .. });
+    let above = block_ref(model.advances + 7);
+    refused(
+        "a unique key repeated while buffered",
+        commit(
+            &backend,
+            above,
+            vec![put(PROBED, repeated.clone(), vec![0; 4])],
+        ),
+        is_exists,
+    );
+    backend.flush().expect("flush");
+    match commit(&backend, above, vec![put(PROBED, repeated, vec![0; 4])]) {
+        Err(error) => assert!(
+            is_exists(&error),
+            "a unique key repeated past a flush: {error:?}"
+        ),
+        Ok(()) => {
+            backend.flush().expect("flush");
+            let scan = reader().scan(PROBED);
+            assert!(
+                matches!(scan, Err(ReadError::Corrupted { .. })),
+                "a unique key repeated past a flush: committed, so the next scan reports it: {scan:?}"
+            );
+        }
+    }
 }

@@ -17,14 +17,14 @@
 
 use futures::StreamExt as _;
 use zaino_chain_store::{
-    ChainStoreReader, CompactBlockRead, PoolFilter, SpentOutputIndex, StoredBlockRead,
-    TransactionIndex, TxOutSetIndex,
+    ChainStoreReader, CompactBlockRead, PoolFilter, SpentOutputIndex, TransactionIndex,
+    TreeRootsIndex, TxOutSetIndex,
 };
 use zaino_primitives::types::{BlockTxPosition, Height as DomainHeight, TxIndex};
 use zaino_proto::proto::utils::PoolTypeFilter;
 
 use super::v1::load_vectors_v1db_and_reader;
-use crate::adapter::{domain_outpoint, indexed_block_from_stored, stored_tx_out};
+use crate::adapter::{domain_outpoint, stored_tx_out};
 use crate::conversion::{compact_block_to_wire, pool_filter_from_wire};
 use crate::tests::fixtures::indexed_block_chain;
 use crate::types::{Height, Outpoint, TxLocation};
@@ -35,88 +35,49 @@ fn domain(height: Height) -> DomainHeight {
     DomainHeight::try_from(height.0).expect("vector heights are within the protocol maximum")
 }
 
-/// Blocks read through [`StoredBlockRead`] are the blocks the inherent read
-/// returns.
-///
-/// The conversion runs twice here — out of the stored shape and back into it —
-/// so the assertion covers both directions at once. Both matter: ChainIndex
-/// reads through the first, and the freeze sink writes through the second, and
-/// a field that survived one but not the other would make a block change shape
-/// depending on which way it crossed the seam.
+/// Headers, chainwork and tree roots read through the ports are those of the
+/// blocks the inherent read returns, over the whole range, ascending.
 #[tokio::test(flavor = "multi_thread")]
-async fn stored_blocks_match_the_inherent_read() {
+async fn headers_and_roots_match_the_inherent_read() {
     let (data, _dir, _db, reader) = load_vectors_v1db_and_reader().await;
+    let expected: Vec<_> = indexed_block_chain(&data.blocks).collect();
+    let last = expected.last().expect("the vectors hold blocks");
 
-    for expected in indexed_block_chain(&data.blocks) {
-        let height = expected.context.index.height;
-
-        let mut chunk = StoredBlockRead::blocks_chunk(&reader, domain(height), domain(height))
+    let headers =
+        ChainStoreReader::headers_chunk(&reader, domain(Height(0)), domain(last.height()))
             .await
-            .expect("the store holds every vector height");
-        assert_eq!(chunk.len(), 1, "a one-height chunk holds one block");
-
-        let through_ports = indexed_block_from_stored(&chunk.pop().expect("checked above"))
-            .expect("a block that came out of the store goes back into it");
-
-        assert_eq!(
-            through_ports, expected,
-            "block at height {height} differs between the port and the oracle"
-        );
-    }
-}
-
-/// A multi-height chunk holds exactly the blocks in the range, ascending.
-///
-/// Separate from the single-block case because the chunked walk is a different
-/// code path — one read transaction over a cursor rather than one per block —
-/// and its ordering is a contract the port states.
-#[tokio::test(flavor = "multi_thread")]
-async fn a_block_chunk_covers_its_range_in_ascending_order() {
-    let (data, _dir, _db, reader) = load_vectors_v1db_and_reader().await;
-    let expected: Vec<_> = indexed_block_chain(&data.blocks).collect();
-    let last = expected.last().expect("the vectors hold blocks");
-
-    let chunk = StoredBlockRead::blocks_chunk(&reader, domain(Height(0)), domain(last.height()))
+            .expect("the whole vector range is below the watermark");
+    let roots = TreeRootsIndex::tree_roots_chunk(&reader, domain(Height(0)), domain(last.height()))
         .await
         .expect("the whole vector range is below the watermark");
+    assert_eq!(headers.len(), expected.len());
+    assert_eq!(roots.len(), expected.len());
 
-    assert_eq!(chunk.len(), expected.len());
-    for (block, oracle) in chunk.iter().zip(&expected) {
+    for ((header, roots), oracle) in headers.iter().zip(&roots).zip(&expected) {
+        let height = oracle.context.index.height;
+        assert_eq!(u32::from(header.header.height), height.0, "not ascending");
         assert_eq!(
-            u32::from(block.header.height),
-            oracle.height().0,
-            "chunk is not ascending, or skips a height"
+            header.header.hash,
+            zaino_primitives::types::BlockHash::from(oracle.context.hash().0),
+            "hash at {height}"
+        );
+        assert_eq!(
+            header.chainwork,
+            oracle.chainwork(),
+            "chainwork at {height}"
+        );
+        assert_eq!(
+            ChainStoreReader::chainwork(&reader, domain(height))
+                .await
+                .expect("held"),
+            Some(oracle.chainwork())
+        );
+        assert_eq!(
+            crate::conversion::commitment_tree_data(roots),
+            oracle.commitment_tree_data,
+            "roots at {height}"
         );
     }
-}
-
-/// The chunked stream yields every block in the range, once, ascending.
-///
-/// Chunk boundaries carry no meaning, so the assertion is over the flattened
-/// sequence rather than over how it was divided.
-#[tokio::test(flavor = "multi_thread")]
-async fn the_block_stream_yields_the_whole_range_once() {
-    let (data, _dir, _db, reader) = load_vectors_v1db_and_reader().await;
-    let expected: Vec<_> = indexed_block_chain(&data.blocks).collect();
-    let last = expected.last().expect("the vectors hold blocks");
-
-    // `pin!` rather than `Box::pin`: the port hands back an opaque, `!Unpin`
-    // stream, and pinning it to the stack is what a consumer does instead of
-    // paying for an allocation.
-    let stream = StoredBlockRead::blocks_stream(&reader, domain(Height(0)), domain(last.height()))
-        .await
-        .expect("the whole vector range is below the watermark");
-    let mut stream = std::pin::pin!(stream);
-
-    let mut heights = Vec::new();
-    while let Some(chunk) = stream.next().await {
-        for block in chunk.expect("no chunk fails over the vector range") {
-            heights.push(u32::from(block.header.height));
-        }
-    }
-
-    let oracle: Vec<u32> = expected.iter().map(|block| block.height().0).collect();
-    assert_eq!(heights, oracle);
 }
 
 /// Compact blocks read through the port, converted to the wire, are the wire
@@ -509,7 +470,7 @@ async fn a_descending_range_is_refused() {
     let (_data, _dir, _db, reader) = load_vectors_v1db_and_reader().await;
 
     assert!(matches!(
-        StoredBlockRead::blocks_chunk(&reader, domain(Height(2)), domain(Height(1))).await,
+        ChainStoreReader::headers_chunk(&reader, domain(Height(2)), domain(Height(1))).await,
         Err(zaino_chain_store::ChainStoreError::InvalidRange { .. })
     ));
 }
@@ -517,76 +478,6 @@ async fn a_descending_range_is_refused() {
 // ---------------------------------------------------------------------------
 // The write path
 // ---------------------------------------------------------------------------
-
-/// A block read out of one store and frozen into another produces identical
-/// rows.
-///
-/// The strongest check available on the port pair, because it closes the loop
-/// the two halves form: [`StoredBlockRead`] must express everything the writer
-/// needs, and [`ChainStoreFreezeSink`] must put all of it back. A field the
-/// read drops is invisible in a read-only test — the value simply never
-/// appears — and shows up only when something writes the result down, which is
-/// exactly what a composer freezing beyond the reorg bound does.
-///
-/// It has already earned its place twice: it is what caught non-standard
-/// address keys round-tripping to zeroes, and the per-pool value balances
-/// round-tripping to `None`.
-#[tokio::test(flavor = "multi_thread")]
-async fn a_block_frozen_from_a_read_writes_identical_rows() {
-    use zaino_chain_store::ChainStoreFreezeSink;
-
-    let (data, _dir, source_db, reader) = load_vectors_v1db_and_reader().await;
-
-    let last = indexed_block_chain(&data.blocks)
-        .last()
-        .expect("the vectors hold blocks")
-        .height();
-    let blocks = StoredBlockRead::blocks_chunk(&reader, domain(Height(0)), domain(last))
-        .await
-        .expect("the whole vector range is below the watermark");
-
-    // A second, empty store, fed only through the freeze port.
-    let (_target_dir, target) = super::v1::spawn_v1_zaino_db(
-        crate::tests::fixtures::fake_validator_from_vectors(&data.blocks),
-    )
-    .await
-    .expect("a second store spawns");
-    let target = std::sync::Arc::new(target);
-    target.wait_until_ready().await;
-
-    // The chainwork is dropped on the way in, because a frozen block carries
-    // none — so the target derives its own, and the comparison below is between
-    // a store that built itself from a validator and one that did not. Nothing
-    // else checks that those two derivations agree.
-    let frozen: Vec<zaino_chain_store::FrozenBlock> = blocks
-        .into_iter()
-        .map(|block| zaino_chain_store::FrozenBlock {
-            header: block.header,
-            transactions: block.transactions,
-            tree_roots: block.tree_roots,
-        })
-        .collect();
-
-    ChainStoreFreezeSink::freeze(target.as_ref(), &frozen)
-        .await
-        .expect("every block frozen in order is accepted");
-
-    let target_reader = target.to_reader();
-    for expected in indexed_block_chain(&data.blocks) {
-        let height = expected.context.index.height;
-        let written = target_reader
-            .get_chain_block_by_height(height)
-            .await
-            .expect("the frozen store holds every height");
-        assert_eq!(
-            written,
-            Some(expected.map_chainwork(Some)),
-            "block at height {height} was not written back as it was read"
-        );
-    }
-
-    let _ = source_db;
-}
 
 /// The watermark advances as the store builds itself.
 ///

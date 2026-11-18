@@ -61,8 +61,9 @@ declared! {
     pub const HEIGHT: Layout = Layout::new("height", 1, &[Field::fixed("height", 4)]);
 }
 declared! {
+    /// Unique: a block hash names one block.
     const HEIGHTS_BY_HASH: NamespaceLayout =
-        NamespaceLayout::map(HEIGHTS, &BLOCK_HASH, &HEIGHT, false);
+        NamespaceLayout::unique_map(HEIGHTS, &BLOCK_HASH, &HEIGHT);
 }
 
 /// The schema: `headers` by height, `heights` by hash.
@@ -86,7 +87,8 @@ pub struct State {
 
 impl Index for Headers {
     const SCHEMA: Schema = SCHEMA;
-    const DEPENDENCIES: &'static [&'static str] = &[];
+    const READS: &'static [&'static str] = &[];
+    const BUILDS_FROM: &'static [&'static str] = &[];
     type State = State;
 
     fn resume<R: BackendReader>(backend: &R) -> Result<Option<State>, FoldError> {
@@ -159,13 +161,11 @@ impl<'a, R: BackendReader> Reader<'a, R> {
 
     /// The header at `height`.
     pub fn header(&self, height: Height) -> Result<Option<BlockHeader>, FoldError> {
-        let Some(record) = self
-            .backend
-            .get(HEADERS, &sequence_key(u64::from(height)))?
-        else {
-            return Ok(None);
-        };
-        Ok(Some(decode_header(&record, height)?))
+        self.backend
+            .with_value(HEADERS, &sequence_key(u64::from(height)), |record| {
+                decode_header(record, height)
+            })?
+            .transpose()
     }
 
     /// The hash at `height`: one field, not the record.
@@ -194,10 +194,11 @@ impl<'a, R: BackendReader> Reader<'a, R> {
 
     /// The height of the block with `hash`.
     pub fn height(&self, hash: BlockHash) -> Result<Option<Height>, FoldError> {
-        let Some(bytes) = self.backend.get(HEIGHTS, &<[u8; 32]>::from(hash))? else {
-            return Ok(None);
-        };
-        Ok(Some(codec::height(NAME, le_u32(&bytes, "height")?)?))
+        self.backend
+            .with_value(HEIGHTS, &<[u8; 32]>::from(hash), |bytes| {
+                codec::height(NAME, le_u32(bytes, "height")?)
+            })?
+            .transpose()
     }
 }
 

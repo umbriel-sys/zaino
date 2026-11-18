@@ -56,24 +56,58 @@ recovery, failure policy), [lsm-deletes.md](./docs/lsm-deletes.md) and
   next `flush` or the write that crosses it.
 
 - `threads`: the size of the thread pool each backend builds at open for its
-  writes and commit checks (`None` = the machine's available parallelism).
-  Merges run on their own threads. A process opening several indexes can cap
-  each one so their pools don't oversubscribe the cores. An open whose pool
-  cannot start is refused.
+  writes and commit checks. `None` = the machine's parallelism shared out over
+  the backends the opener announced through `Storage::shared_by` (a store:
+  its index count), at least [`MIN_SHARED_THREADS`] (2) each; the whole
+  machine when nothing was announced. Measured (5a step 6): the pool size does
+  not move the build rate, and idle pools burn CPU, so a process opening many
+  indexes should let the store share them. Merges run on their own threads.
+  An open whose pool cannot start is refused.
 - `strict_manifest_read`: the manifest is read past the page cache at open
   (`O_DIRECT`), so a page the device never received after an unreported
   writeback failure cannot pass as committed. A filesystem that refuses direct
   I/O (FUSE, virtiofs, some ZFS settings) is read through the cache instead,
   with a warning naming that one guard as lost (torn and partial manifests are
   still detected), reported by [`LsmTreeBackend::manifest_read`]
-  ([`ManifestRead::Cached`]) and `zaino.store.manifest_read_cached`; tmpfs,
+  ([`ManifestRead::Cached`]) and `zaino.lsm.manifest_read_cached`; tmpfs,
   whose cache is its storage, counts as direct. With `strict_manifest_read`
   the open is refused instead.
 
 Namespace names are `/`-separated parts of `[A-Za-z0-9_-]`, unique ignoring
 case. A map owns its directory, so no namespace may sit inside a map's path.
-`MANIFEST`, `LOCK`, `MANIFEST.creating` and `TAILS` are reserved, as are the Windows device
-names (`CON`, `PRN`, `AUX`, `NUL`, `COM0`–`COM9`, `LPT0`–`LPT9`), all ignoring case.
+`MANIFEST`, `LOCK`, `MANIFEST.creating`, `TAILS` and `REMOVING` are reserved, as are the
+Windows device names (`CON`, `PRN`, `AUX`, `NUL`, `COM0`–`COM9`, `LPT0`–`LPT9`), all ignoring
+case.
+
+[`LsmTreeStorage`] implements the port's `Storage` on an [`fs::Fs`]: index directories opened
+with one engine configuration (default tuning), the store `LOCK`, and store files written to
+`<name>.tmp`, synced and renamed in (every new directory level durable in its parent).
+
+## Removing a directory
+
+[`remove_dir_all`] deletes an index directory, refused (`WouldBlock`) while a backend holds its
+`LOCK`. It first makes a `REMOVING` marker durable, then removes and syncs every other entry,
+then the marker and the directory. A crash before the marker leaves the directory whole; after
+it, the next `remove_dir_all` or open finishes the removal, so a half-deleted directory is never
+opened as an index. Every crash point is checked in the simulated filesystem.
+
+## Opening read-only
+
+[`LsmTreeReadOnly`] (or `LsmTreeStorage::open_read_only`) reads a directory another process
+writes, taking no lock. Each refresh reads the manifest slots through the page cache, up to their
+end, and maps the files of the slot whose tip is the announced one. Files already mapped are
+shared, and checked pages are carried over where their checksums match. It never truncates or
+removes anything. A listed file missing once mapped was retired by a newer commit's merge
+(`Superseded`), unless that slot is still the newest (lost: an error).
+
+The store root holds the primary's record and running marker:
+
+```text
+<root>/
+  LOCK                the primary's exclusive lock
+  PRIMARY.lock        held by the primary alone; probed with a shared lock that is released at once
+  PRIMARY             two 64 KiB slots, rewritten in place, never synced: the primary's record
+```
 
 ## On disk
 
@@ -117,10 +151,16 @@ Every metric is labelled `index` (the index name); `zaino.lsm.*` metrics also
 carry `set` (the map namespace), and the per-tier ones (`segments`, `merging`,
 `merge_duration_seconds`) `tier`:
 
-- `zaino.store.commit_seconds`, `commit_bytes_total`: durable writes.
-- `zaino.store.snapshots_live`, `snapshot_heap_bytes`: memory held by
+- `zaino.lsm.commit_seconds`, `commit_bytes_total`: durable writes (a full
+  buffer written and synced).
+- `zaino.lsm.commit_check_seconds`, `commit_buffer_seconds`: each buffered
+  commit's two phases, the checks (shapes, then every new key of a checked map
+  looked up on disk; a `unique` map's puts are checked against the buffer
+  only) and the rows entered into the buffer; what a build's per-row cost is
+  made of.
+- `zaino.lsm.snapshots_live`, `snapshot_heap_bytes`: memory held by
   snapshots (below).
-- `zaino.store.manifest_read_cached`: 1 where the manifest could only be read
+- `zaino.lsm.manifest_read_cached`: 1 where the manifest could only be read
   through the page cache at open (above).
 - `zaino.lsm.segments`, `merging`, `stall_at`, `live_rows`: each map's size
   tiers, the segment count at which a write waits on a merge, and the keys it
@@ -146,9 +186,9 @@ long-lived readers and scans finish.
 
 Two gauges, labelled by index, show it:
 
-- `zaino.store.snapshots_live`: published states alive (the current one plus
+- `zaino.lsm.snapshots_live`: published states alive (the current one plus
   those still held)
-- `zaino.store.snapshot_heap_bytes`: their buffers' estimated heap, an upper
+- `zaino.lsm.snapshot_heap_bytes`: their buffers' estimated heap, an upper
   bound (states share most nodes)
 
 ## Disk space held by readers
@@ -210,6 +250,13 @@ The cost is one failure mode that cannot be turned into an error:
   read-only (`0o444`), and the directory's `LOCK` keeps other Zaino processes
   out. A process running as root, or one that changes the permissions back, can
   still truncate them.
+
+A read-only backend in another process maps only bytes a durable manifest
+seals, and the writer never truncates below those. The writer may unlink a
+retired segment, or a whole directory it rebuilds, while a reader maps it:
+Linux and macOS keep an unlinked file's pages mapped. Both processes must
+share one machine, because mappings of one file stay coherent only through
+one page cache. Network filesystems and VM file sharing are not supported.
 
 Operate accordingly: keep the data directory on a dedicated, healthy disk, and
 never modify, copy over or truncate its files while a backend has it open.

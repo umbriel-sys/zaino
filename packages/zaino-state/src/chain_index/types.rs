@@ -35,6 +35,11 @@ pub(crate) fn local_height(height: domain::Height) -> Height {
     Height(u32::from(height))
 }
 
+/// The height after `height` (domain heights end far below `u32::MAX`).
+pub(crate) fn local_height_after(height: domain::Height) -> Height {
+    Height(u32::from(height).saturating_add(1))
+}
+
 pub(crate) fn domain_txid(txid: &TransactionHash) -> domain::TransactionId {
     domain::TransactionId::from(txid.0)
 }
@@ -101,12 +106,18 @@ pub(crate) fn chain_locations(
 ///
 /// The store's conversion takes a chainwork, so a placeholder stands in for it
 /// and is replaced by the view's own: the real value, or `None` where the view
-/// cannot know it.
+/// cannot know it. The legacy shape carries per-pool value balances the new
+/// indexes no longer hold (D-97), so they are `None`.
 pub(crate) fn indexed_block(block: ChainBlock) -> Result<IndexedBlock, ChainIndexError> {
+    use zaino_chain_store_zainodb::adapter::{StoredBlock, StoredTx};
     let chainwork = block.chainwork;
-    let stored = zaino_chain_store::StoredBlock {
+    let stored = StoredBlock {
         header: block.header,
-        transactions: block.transactions,
+        transactions: block
+            .transactions
+            .into_iter()
+            .map(StoredTx::transparent_only)
+            .collect(),
         tree_roots: block.tree_roots,
         chainwork: chainwork.unwrap_or(domain::AbsoluteChainWork::new(NonZeroU128::MIN)),
     };
@@ -285,87 +296,5 @@ mod tests {
             error.kind(),
             crate::error::ChainIndexErrorKind::InvalidArgument
         );
-    }
-
-    /// A vector's `u64` tree size, as the domain carries it.
-    fn vector_tree_size(size: u64) -> domain::TreeSize {
-        domain::TreeSize::try_from(size).expect("vector tree sizes fit u32")
-    }
-
-    /// The store's domain-block conversion agrees with the `zebra_chain` path
-    /// the golden vectors pin, except for chain work, which it is not given.
-    #[test]
-    fn domain_block_conversion_agrees_with_the_zebra_path() {
-        use crate::chain_index::tests::vectors::{indexed_block_chain, load_test_vectors};
-
-        let vectors = load_test_vectors().expect("test vectors load");
-        for (vector, expected) in vectors
-            .blocks
-            .iter()
-            .zip(indexed_block_chain(&vectors.blocks))
-        {
-            let block = zaino_primitives::zebra::block_from_zebra(
-                &vector.zebra_block,
-                domain::ChainMetadata::new(
-                    vector_tree_size(vector.sapling_tree_size),
-                    vector_tree_size(vector.orchard_tree_size),
-                    domain::TreeSize::ZERO,
-                ),
-            )
-            .expect("vector block converts to the domain shape");
-            let tree_roots = domain::TreeRoots {
-                sapling: Some(domain::TreeRootInfo {
-                    root: <[u8; 32]>::from(vector.sapling_root).into(),
-                    size: vector_tree_size(vector.sapling_tree_size),
-                }),
-                orchard: Some(domain::TreeRootInfo {
-                    root: <[u8; 32]>::from(vector.orchard_root).into(),
-                    size: vector_tree_size(vector.orchard_tree_size),
-                }),
-                ironwood: None,
-            };
-
-            let actual: IndexedBlock =
-                zaino_chain_store_zainodb::conversion::indexed_block(&block, &tree_roots, None)
-                    .expect("conversion succeeds");
-
-            assert_eq!(actual.context.index, expected.context.index, "block index");
-            assert_eq!(actual.context.parent_hash, expected.context.parent_hash);
-            assert_eq!(actual.context.chainwork, None);
-            assert_eq!(actual.data, expected.data, "block header data");
-            assert_eq!(actual.commitment_tree_data, expected.commitment_tree_data);
-            assert_eq!(actual.transactions.len(), expected.transactions.len());
-            for (actual_tx, expected_tx) in actual.transactions.iter().zip(expected.transactions())
-            {
-                assert_eq!(actual_tx.transparent(), expected_tx.transparent());
-                assert_eq!(actual_tx.index(), expected_tx.index(), "transaction index");
-                assert_eq!(actual_tx.txid(), expected_tx.txid(), "txid");
-                assert_eq!(
-                    actual_tx.balances(),
-                    expected_tx.balances(),
-                    "pool balances"
-                );
-            }
-        }
-    }
-
-    /// Every coinbase carries the null prevout the stored form keeps, exactly
-    /// once, and no other transaction carries one.
-    #[test]
-    fn the_coinbase_null_prevout_is_present_exactly_once() {
-        use crate::chain_index::tests::vectors::{indexed_block_chain, load_test_vectors};
-
-        let vectors = load_test_vectors().expect("test vectors load");
-        for expected in indexed_block_chain(&vectors.blocks) {
-            for transaction in expected.transactions() {
-                let nulls = transaction
-                    .transparent()
-                    .inputs()
-                    .iter()
-                    .filter(|input| **input == TxInCompact::null_prevout())
-                    .count();
-                assert_eq!(nulls, usize::from(transaction.index() == 0));
-            }
-        }
     }
 }

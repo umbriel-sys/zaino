@@ -192,6 +192,36 @@ impl OneShotGetCommitmentTreeRoots for FakeValidator {
     }
 }
 
+/// The zainodb store never asks: no treestate is held.
+impl zaino_source::OneShotGetTreestate for FakeValidator {
+    async fn get_treestate(
+        &self,
+        height: Height,
+    ) -> Result<zaino_primitives::types::Treestate, QueryError<zaino_source::GetTreestateError>>
+    {
+        Err(QueryError::Domain(
+            zaino_source::GetTreestateError::HeightNotFound(height),
+        ))
+    }
+}
+
+/// The zainodb store never asks: no pool's subtrees are held.
+impl zaino_source::OneShotGetSubtreeRoots for FakeValidator {
+    async fn get_subtree_roots(
+        &self,
+        pool: zaino_primitives::types::ShieldedPool,
+        _start_index: u16,
+        _limit: Option<u16>,
+    ) -> Result<
+        Vec<zaino_primitives::types::SubtreeRoot>,
+        QueryError<zaino_source::GetSubtreeRootsError>,
+    > {
+        Err(QueryError::Domain(
+            zaino_source::GetSubtreeRootsError::PoolUnavailable(pool),
+        ))
+    }
+}
+
 impl OneShotGetTransaction for FakeValidator {
     /// Where a transaction is, and nothing useful in `bytes`.
     ///
@@ -249,15 +279,8 @@ fn fake_blocks_from_vectors(blocks: &[super::vectors::VectorBlock]) -> Vec<FakeB
     blocks
         .iter()
         .map(|vector| {
-            let block = zaino_primitives::zebra::block_from_zebra(
-                &vector.zebra_block,
-                zaino_primitives::types::ChainMetadata::new(
-                    vector_tree_size(vector.sapling_tree_size),
-                    vector_tree_size(vector.orchard_tree_size),
-                    zaino_primitives::types::TreeSize::ZERO,
-                ),
-            )
-            .expect("vector blocks convert to the domain shape");
+            let block = zaino_primitives::zebra::block_from_zebra(&vector.zebra_block)
+                .expect("vector blocks convert to the domain shape");
 
             FakeBlock {
                 block,

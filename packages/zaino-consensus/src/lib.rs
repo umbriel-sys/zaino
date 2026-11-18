@@ -22,6 +22,25 @@
 //! becomes a test failure rather than a silent behaviour change, without
 //! anything having to depend on zebra to obtain a number.
 
+// production code never panics: no indexing, unchecked arithmetic or panicking calls
+#![cfg_attr(
+    not(test),
+    deny(
+        clippy::unwrap_used,
+        clippy::expect_used,
+        clippy::panic,
+        clippy::unreachable,
+        clippy::todo,
+        clippy::unimplemented,
+        clippy::indexing_slicing,
+        clippy::arithmetic_side_effects,
+        clippy::string_slice,
+        clippy::get_unwrap,
+        clippy::let_underscore_must_use,
+        let_underscore_drop
+    )
+)]
+
 /// Number of confirmations before a coinbase output becomes spendable.
 ///
 /// Zcash protocol specification §3.10: a coinbase output cannot be spent until

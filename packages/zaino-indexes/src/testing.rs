@@ -53,7 +53,7 @@ pub(crate) fn tx(n: u32) -> FoldTx {
         orchard_actions: Vec::new(),
         ironwood_actions: Vec::new(),
     };
-    FoldTx::try_new(compact, PoolBalances::default(), Vec::new()).expect("no inputs")
+    FoldTx::try_new(compact, PoolBalances::default(), Some(Vec::new())).expect("no inputs")
 }
 
 /// The parts of a pre-Overwinter block of `header` with no pools, holding

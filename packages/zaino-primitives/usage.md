@@ -66,7 +66,10 @@ use zaino_primitives::types::rpc::{BlockDeltas, MiningInfo, NodeInfo, PeerInfo};
   transparent-script family `Script` / `ScriptType` / `classify_script` /
   `TransparentAddressKey` / `TransparentAddress` (all four families below);
   `Transaction::pool_balances` gives each shielded pool's value balance as a
-  `PoolBalances`.
+  `PoolBalances`. `MerkleRoot::of(txids)` is the transaction merkle root
+  (SHA-256d pairs, an odd level's last node paired with itself), and
+  `Block::merkle_root_matches` checks a block's header against its
+  transactions: the one check a fetched block gets whatever its source.
 - `types::rpc` — the response shapes for passthrough RPCs, in domain
   vocabulary rather than any interface's: `BlockDeltas`, `BlockchainInfo`,
   `ChainTip`, `MiningInfo`, `NodeInfo`, `PeerInfo`, `SpentInfo`, `TxOut`,
@@ -89,7 +92,7 @@ Types enforce what they claim:
 ```rust
 let h = Height::try_from(800_000u32)?;   // rejects above 2^31 - 1
 let z = Zatoshis::new(21_000_000)?;      // rejects out-of-range amounts
-let b = Block::try_new(header, txs, chain_metadata)?; // rejects an empty tx list
+let b = Block::try_new(header, txs)?;    // rejects an empty tx list
 let c = CompactCiphertext::try_new(&bytes)?; // rejects anything but exactly 52 bytes
 let a = TransparentAddress::try_new(s)?; // rejects non-transparent / undecodable
 ```

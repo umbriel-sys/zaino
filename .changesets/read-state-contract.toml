@@ -1,0 +1,10 @@
+[[changes]]
+crate = "zaino-source-zebra"
+kind = "fix"
+description = """
+The read-state adapter keeps the source contract the RPC adapter keeps: \
+`get_commitment_tree_roots` answers a side-chain block's roots (any-chain \
+reads) and refuses an unknown hash as `BlockNotFound` rather than empty \
+roots; an invalid or TEX address is the port's `InvalidAddress` rather than a \
+fault.
+"""

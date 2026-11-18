@@ -1,0 +1,10 @@
+[[changes]]
+crate = "zaino-source-mock"
+kind = "feature"
+description = """
+`MockChain::call_log` records every call with its arguments (`Call`, \
+`CallArg`), and `calls` counts from it (now `usize`). `peak_in_flight` reports \
+the most concurrent calls; each call yields once so concurrent calls overlap. \
+`know(block)` adds a side block. `NodeFacts::chainwork` (default true) set \
+false answers no chain work, as zebra does.
+"""

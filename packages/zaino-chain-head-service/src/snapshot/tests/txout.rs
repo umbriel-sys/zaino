@@ -2,8 +2,8 @@
 
 use zaino_chain_head::{ChainHeadBlock, ChainHeadError, ChainHeadTxOutSetService as _};
 use zaino_primitives::types::{
-    Block, BlockRef, ChainMetadata, Outpoint, RelativeChainWork, Script, Transaction,
-    TransactionId, TransparentData, TransparentInput, TransparentOutput, TreeRoots, Zatoshis,
+    Block, BlockRef, Outpoint, RelativeChainWork, Script, Transaction, TransactionId,
+    TransparentData, TransparentInput, TransparentOutput, TreeRoots, Zatoshis,
 };
 
 use crate::{
@@ -43,6 +43,7 @@ fn transaction(id: u8, spends: &[Outpoint], values: &[u64]) -> Transaction {
                 .collect(),
             outputs: values.iter().copied().map(output).collect(),
         },
+        sprout: Default::default(),
         sapling: Default::default(),
         orchard: Default::default(),
         ironwood: Default::default(),
@@ -52,8 +53,7 @@ fn transaction(id: u8, spends: &[Outpoint], values: &[u64]) -> Transaction {
 fn head_block(h: u32, transactions: Vec<Transaction>) -> ChainHeadBlock {
     let id = u16::try_from(h).expect("test height fits an id");
     let header = block(h, id, id - 1).header;
-    let block =
-        Block::try_new(header, transactions, ChainMetadata::ZERO).expect("a test block has a tx");
+    let block = Block::try_new(header, transactions).expect("a test block has a tx");
     ChainHeadBlock {
         reference: BlockRef {
             hash: block.header.hash,

@@ -1,0 +1,10 @@
+[[changes]]
+crate = "zaino-source"
+kind = "breaking"
+description = """
+The `testing` feature and `mock::MockChain` are removed: `zaino-source-mock` \
+is the one fake validator. This crate's tests run on a scripted test-only \
+source: every generated resilient port is tested through `ValidatorClient`, \
+and `PolledChainTip`'s tests, which a feature gate had kept from ever \
+running, run deterministically on paused time.
+"""

@@ -97,16 +97,9 @@ zaino-component.workspace = true
 zaino-chain = { workspace = true }
 
 [dev-dependencies]
-zaino-chain-store-zainodb = { workspace = true, features = ["testing"] }
 tempfile = { workspace = true }
 tracing-subscriber = { workspace = true }
-primitive-types = { workspace = true }
-zebra-chain = { workspace = true, features = ["proptest-impl"] }
-proptest.workspace = true
-incrementalmerkletree = { workspace = true }
-rand = "0.10.1"
-zaino-consensus = { workspace = true }
-orchard.workspace = true
+zaino-source-mock.workspace = true
 
 [build-dependencies]
 whoami = { workspace = true }

@@ -33,10 +33,10 @@ use zaino_primitives::types::{
     },
     AddressBalance, AddressDelta, BlockCommitments, BlockConfirmations, BlockHash, BlockTreeSizes,
     BlockVerbose, BlockchainInfo, CompactDifficulty, ConsensusBranchId, ConsensusBranchIds, Height,
-    MerkleRoot, NetworkUpgradeInfo, NetworkUpgradeStatus, Script, SignedZatoshis, SubtreeRoot,
-    TransactionId, TransactionLocation, TransparentAddress, TransparentAddressError, TreeRoot,
-    TreeRootInfo, TreeRoots, TreeSize, TreeSizeOutOfRange, Treestate, TxConfirmations, Utxo,
-    ValuePoolBalance, Zatoshis, ZatoshisFlowSum,
+    MerkleRoot, Network, NetworkUpgradeInfo, NetworkUpgradeStatus, Script, SignedZatoshis,
+    SubtreeRoot, TransactionId, TransactionLocation, TransparentAddress, TransparentAddressError,
+    TreeRoot, TreeRootInfo, TreeRoots, TreeSize, TreeSizeOutOfRange, Treestate, TxConfirmations,
+    Utxo, ValuePoolBalance, Zatoshis, ZatoshisFlowSum,
 };
 use zaino_source::{MempoolTxMeta, TransactionResponse};
 
@@ -947,6 +947,19 @@ where
         .map_err(|e| ParseError::Deserialize(format!("note commitment tree: {e}")))
 }
 
+/// The network named by a `getblockchaininfo` response's BIP70 `chain`.
+pub(crate) fn parse_network(value: &serde_json::Value) -> Result<Network, ParseError> {
+    match as_str(field(value, "chain")?)? {
+        "main" => Ok(Network::Mainnet),
+        "test" => Ok(Network::PubTestnet),
+        "regtest" => Ok(Network::Regtest),
+        other => Err(ParseError::UnexpectedType {
+            expected: "chain main, test or regtest",
+            got: other.to_owned(),
+        }),
+    }
+}
+
 /// Parse a `getblockchaininfo` response.
 ///
 /// Zaino adopts [`BlockchainInfo::upgrades`] as its activation schedule, so a
@@ -1535,6 +1548,17 @@ mod tests {
             ]
         );
         assert_eq!(u64::from(info.chain_supply.chain_value), 1_000);
+    }
+
+    /// The three BIP70 chain names, and nothing else, name a network.
+    #[test]
+    fn chain_names_are_the_three_networks() {
+        let network = |chain: &str| parse_network(&serde_json::json!({ "chain": chain }));
+        assert!(matches!(network("main"), Ok(Network::Mainnet)));
+        assert!(matches!(network("test"), Ok(Network::PubTestnet)));
+        assert!(matches!(network("regtest"), Ok(Network::Regtest)));
+        assert!(network("testnet").is_err());
+        assert!(parse_network(&serde_json::json!({})).is_err());
     }
 
     /// The NU7 entry as zebrad 7 serves it on the public Testnet reaches the

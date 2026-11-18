@@ -14,9 +14,10 @@ use super::error_map::{corrupt_row, corrupt_row_because};
 use zaino_chain_store::{
     ChainStoreError, ChainStoreReaderCapability, CompactBlockReadCapability, MigrationState,
     SchemaVersion, SpentOutputIndexCapability, StoreCapabilities, StoreCapability, StoreSchema,
-    StoredBlock, StoredBlockReadCapability, StoredTx, StoredTxOut, TransactionIndexCapability,
-    TxOutSetIndexCapability,
+    StoredTxOut, TransactionIndexCapability, TreeRootsIndexCapability, TxOutSetIndexCapability,
 };
+
+use super::{StoredBlock, StoredTx};
 use zaino_primitives::types::{
     BlockHash as DomainBlockHash, BlockHeader, BlockRef, BlockTxPosition, CompactCiphertext,
     Height as DomainHeight, Nullifier, OrchardAction, Outpoint as DomainOutpoint,
@@ -376,7 +377,7 @@ pub(super) fn tree_roots(data: &CommitmentTreeData) -> TreeRoots {
 pub(super) fn store_capabilities<R>(capability: Capability) -> StoreCapabilities
 where
     R: ChainStoreReaderCapability
-        + StoredBlockReadCapability
+        + TreeRootsIndexCapability
         + CompactBlockReadCapability
         + TransactionIndexCapability
         + SpentOutputIndexCapability
@@ -384,15 +385,15 @@ where
 {
     let mut capabilities = vec![<R as ChainStoreReaderCapability>::CAPABILITY];
 
-    // Stored blocks need the header, the txids and every per-pool surface: a
-    // block missing one of them is not a block this store can hand over.
+    // Tree roots are projected from the whole-block rows, so they need every
+    // surface a stored block did.
     if capability.has(
         Capability::CHAIN_BLOCK_EXT
             .union(Capability::BLOCK_CORE_EXT)
             .union(Capability::BLOCK_TRANSPARENT_EXT)
             .union(Capability::BLOCK_SHIELDED_EXT),
     ) {
-        capabilities.push(<R as StoredBlockReadCapability>::CAPABILITY);
+        capabilities.push(<R as TreeRootsIndexCapability>::CAPABILITY);
     }
     if capability.has(Capability::COMPACT_BLOCK_EXT) {
         capabilities.push(<R as CompactBlockReadCapability>::CAPABILITY);
@@ -456,7 +457,7 @@ mod tests {
     use crate::store::reader::DbReader;
     use zaino_chain_store::{
         ChainStoreReaderCapability, CompactBlockReadCapability, SpentOutputIndexCapability,
-        StoredBlockReadCapability, TransactionIndexCapability, TxOutSetIndexCapability,
+        TransactionIndexCapability, TreeRootsIndexCapability, TxOutSetIndexCapability,
     };
 
     /// The concrete reader whose ports the capability mapping is read from.
@@ -557,7 +558,7 @@ mod tests {
 
         let ports = [
             <Reader as ChainStoreReaderCapability>::CAPABILITY,
-            <Reader as StoredBlockReadCapability>::CAPABILITY,
+            <Reader as TreeRootsIndexCapability>::CAPABILITY,
             <Reader as CompactBlockReadCapability>::CAPABILITY,
             <Reader as TransactionIndexCapability>::CAPABILITY,
             <Reader as SpentOutputIndexCapability>::CAPABILITY,

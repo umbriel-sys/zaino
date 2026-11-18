@@ -7,7 +7,9 @@
 //!
 //! The opposite direction is `to_domain`.
 
-use zaino_chain_store::{ChainStoreError, StoredBlock, StoredTx};
+use zaino_chain_store::ChainStoreError;
+
+use super::{StoredBlock, StoredTx};
 use zaino_primitives::types::{
     BlockHash as DomainBlockHash, BlockTxPosition, Height as DomainHeight, OrchardAction,
     Outpoint as DomainOutpoint, ScriptType, SignedZatoshis,

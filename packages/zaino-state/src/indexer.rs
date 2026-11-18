@@ -680,7 +680,7 @@ where
 {
     let (sender, receiver) = mpsc::channel(channel_size as usize);
     let work = body(sender.clone());
-    let limit = std::time::Duration::from_secs(u64::from(timeout_secs) * multiple);
+    let limit = std::time::Duration::from_secs(u64::from(timeout_secs).saturating_mul(multiple));
     tokio::spawn(async move {
         if timeout(limit, work).await.is_err() {
             sender.send(Err(on_timeout)).await.ok();

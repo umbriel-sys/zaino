@@ -135,8 +135,8 @@ pub struct State {
 
 impl Index for HistoryTree {
     const SCHEMA: Schema = SCHEMA;
-    const DEPENDENCIES: &'static [&'static str] =
-        &[crate::headers::NAME, crate::chain_metadata::NAME];
+    const READS: &'static [&'static str] = &[];
+    const BUILDS_FROM: &'static [&'static str] = &[];
     type State = State;
 
     fn resume<R: BackendReader>(backend: &R) -> Result<Option<State>, FoldError> {
@@ -527,11 +527,12 @@ impl<'a, R: BackendReader> Reader<'a, R> {
         let key = start
             .checked_add(u64::from(position))
             .ok_or(LayoutError::Overflow)?;
-        let record = self
-            .backend
-            .get(NODES, &sequence_key(key))?
-            .ok_or_else(|| FoldError::continuity(NAME, format!("node {key} missing")))?;
-        Ok(ENTRY.field(&record, 0)?.to_vec())
+        self.backend
+            .with_value(NODES, &sequence_key(key), |record| {
+                ENTRY.field(record, 0).map(<[u8]>::to_vec)
+            })?
+            .ok_or_else(|| FoldError::continuity(NAME, format!("node {key} missing")))?
+            .map_err(FoldError::from)
     }
 }
 
@@ -565,7 +566,7 @@ mod tests {
             enc_ciphertext: [4; 52].into(),
         };
         compact.orchard_actions = vec![action; orchard];
-        FoldTx::try_new(compact, Default::default(), Vec::new()).expect("no inputs")
+        FoldTx::try_new(compact, Default::default(), Some(Vec::new())).expect("no inputs")
     }
 
     /// Block `n` under `branch`, every pool active, committing to `commits`.

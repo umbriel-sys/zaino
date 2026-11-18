@@ -1,0 +1,133 @@
+[[changes]]
+crate = "zainod"
+kind = "fix"
+description = """
+A JSON-RPC or gRPC server that fails to start (say, its port in use) is a \
+startup error, not a panic. A failed ctrl-c listener and a failed admin \
+connection are logged rather than ignored. The crate denies panicking code \
+in production.
+"""
+
+[[changes]]
+crate = "zaino-mempool-service"
+kind = "fix"
+description = """
+A block or epoch wake whose sender is gone no longer spins its loop (a \
+closed watch fires at once forever): the loop falls back to its interval. \
+Poisoned locks keep their value instead of panicking. The crate denies \
+panicking code in production.
+"""
+
+[[changes]]
+crate = "zaino-logging"
+kind = "breaking"
+description = """
+`init()` returns `Result<(), TryInitError>` instead of panicking when a \
+global subscriber is already set. The crate denies panicking code in \
+production.
+"""
+
+[[changes]]
+crate = "zaino-serve"
+kind = "breaking"
+description = """
+`UnixTime::as_system_time` returns `Option<SystemTime>`, `None` past what \
+the platform holds. A server task ending with an error or panic is logged \
+on close. The crate denies panicking code in production.
+"""
+
+[[changes]]
+crate = "zaino-chain-head-service"
+kind = "internal"
+description = """
+Denies panicking code in production: poisoned task locks keep their handle, \
+and backoff and counters saturate.
+"""
+
+[[changes]]
+crate = "zaino-source-zebra"
+kind = "internal"
+description = """
+Denies panicking code in production: the median block time of no blocks is \
+an error, and the next block hash at the maximum height is none. Arithmetic \
+is checked or saturating.
+"""
+
+[[changes]]
+crate = "zaino-rpc"
+kind = "internal"
+description = """
+Denies panicking code in production: address validation splits strings \
+instead of indexing them, and counters saturate.
+"""
+
+[[changes]]
+crate = "zaino-state"
+kind = "internal"
+description = """
+Denies panicking code in production (feature `test_dependencies` helpers \
+excepted). A failed shutdown is logged rather than ignored.
+"""
+
+[[changes]]
+crate = "zaino-chain"
+kind = "internal"
+description = """
+Denies panicking code in production (the feature `testing` module \
+excepted).
+"""
+
+[[changes]]
+crate = "zaino-address"
+kind = "internal"
+description = "Denies panicking code in production."
+
+[[changes]]
+crate = "zaino-mempool"
+kind = "internal"
+description = "Denies panicking code in production."
+
+[[changes]]
+crate = "zaino-chain-head"
+kind = "internal"
+description = "Denies panicking code in production."
+
+[[changes]]
+crate = "zaino-chain-store"
+kind = "internal"
+description = "Denies panicking code in production."
+
+[[changes]]
+crate = "zaino-component"
+kind = "internal"
+description = "Denies panicking code in production."
+
+[[changes]]
+crate = "zaino-async"
+kind = "internal"
+description = "Denies panicking code in production."
+
+[[changes]]
+crate = "zaino-consensus"
+kind = "internal"
+description = "Denies panicking code in production."
+
+[[changes]]
+crate = "zaino-source"
+kind = "internal"
+description = "Denies panicking code in production."
+
+[[changes]]
+crate = "zaino-source-macros"
+kind = "internal"
+description = "Denies panicking code in production."
+
+[[changes]]
+crate = "zaino-source-zcash-rpc"
+kind = "internal"
+description = "Denies panicking code in production."
+
+[[changes]]
+crate = "zaino-proto"
+kind = "internal"
+description = "Denies panicking code in production."

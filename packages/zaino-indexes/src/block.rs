@@ -1,10 +1,14 @@
-//! The fold input: a block with every transparent input's prevout resolved,
-//! its consensus branch, and the note commitment frontiers it produced.
+//! The fold input: a block with its transparent inputs' prevouts (where
+//! resolved), its consensus branch, and the note commitment frontiers it
+//! produced.
 
+pub use zaino_primitives::types::NoteFrontier;
 use zaino_primitives::types::{
     BlockHeader, BlockRef, ConsensusBranchId, PoolBalances, PreIndexCompactTx, ShieldedPool,
     Transaction, TransparentOutput, TreeRootInfo, TreeRoots,
 };
+
+use crate::index::FoldError;
 
 /// A block as every index folds it.
 ///
@@ -39,18 +43,6 @@ pub struct FoldBlockParts {
     pub frontiers: PoolFrontiers,
     /// The 2¹⁶-leaf subtrees the block completed.
     pub subtrees: Vec<CompletedSubtree>,
-}
-
-/// A note commitment tree's frontier: its rightmost leaf and the left
-/// siblings on its path, lowest level first, one per 1 bit of `position`.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct NoteFrontier {
-    /// The rightmost leaf's position; the tree holds `position + 1` notes.
-    pub position: u64,
-    /// The rightmost leaf.
-    pub leaf: [u8; 32],
-    /// The left siblings.
-    pub ommers: Vec<[u8; 32]>,
 }
 
 /// Per pool, the frontier after a block that changed that pool's tree.
@@ -89,13 +81,13 @@ pub struct CompletedSubtree {
 /// Leaves in one completed subtree.
 const SUBTREE_LEAVES: u64 = 1 << 16;
 
-/// A transaction in a [`FoldBlock`]: its compact form, pool balances and the
-/// outputs its transparent inputs spend, in input order.
+/// A transaction in a [`FoldBlock`]: its compact form, pool balances and,
+/// where resolved, the outputs its transparent inputs spend, in input order.
 #[derive(Debug, Clone)]
 pub struct FoldTx {
     compact: PreIndexCompactTx,
     balances: PoolBalances,
-    prevouts: Vec<TransparentOutput>,
+    prevouts: Option<Vec<TransparentOutput>>,
 }
 
 /// Why parts do not make a [`FoldBlock`].
@@ -146,7 +138,7 @@ impl FoldBlock {
             subtrees,
         } = parts;
         let coinbase = transactions.first().ok_or(FoldBlockError::NoTransactions)?;
-        let inputs = coinbase.prevouts.len();
+        let inputs = coinbase.compact.transparent_inputs.len();
         if inputs != 0 {
             return Err(FoldBlockError::CoinbaseSpends { inputs });
         }
@@ -245,19 +237,21 @@ pub(crate) fn is_genesis(block: &FoldBlock) -> bool {
 }
 
 impl FoldTx {
-    /// A transaction from its parts; `prevouts` pairs with the compact
-    /// form's transparent inputs.
+    /// A transaction from its parts; `prevouts`, `None` where not resolved,
+    /// pairs with the compact form's transparent inputs.
     pub fn try_new(
         compact: PreIndexCompactTx,
         balances: PoolBalances,
-        prevouts: Vec<TransparentOutput>,
+        prevouts: Option<Vec<TransparentOutput>>,
     ) -> Result<Self, FoldBlockError> {
         let inputs = compact.transparent_inputs.len();
-        if prevouts.len() != inputs {
-            return Err(FoldBlockError::Prevouts {
-                inputs,
-                prevouts: prevouts.len(),
-            });
+        if let Some(prevouts) = &prevouts {
+            if prevouts.len() != inputs {
+                return Err(FoldBlockError::Prevouts {
+                    inputs,
+                    prevouts: prevouts.len(),
+                });
+            }
         }
         Ok(Self {
             compact,
@@ -266,10 +260,15 @@ impl FoldTx {
         })
     }
 
-    /// A parsed transaction with its prevouts.
+    /// This transaction with `prevouts` resolved, paired with its inputs.
+    pub fn with_prevouts(self, prevouts: Vec<TransparentOutput>) -> Result<Self, FoldBlockError> {
+        Self::try_new(self.compact, self.balances, Some(prevouts))
+    }
+
+    /// A parsed transaction with its prevouts, `None` where not resolved.
     pub fn from_transaction(
         tx: &Transaction,
-        prevouts: Vec<TransparentOutput>,
+        prevouts: Option<Vec<TransparentOutput>>,
     ) -> Result<Self, FoldBlockError> {
         Self::try_new(PreIndexCompactTx::from(tx), tx.pool_balances(), prevouts)
     }
@@ -285,9 +284,18 @@ impl FoldTx {
         self.balances
     }
 
-    /// What each transparent input spends, in input order.
-    pub fn prevouts(&self) -> &[TransparentOutput] {
-        &self.prevouts
+    /// What each transparent input spends, in input order; `None` where not
+    /// resolved.
+    pub fn prevouts(&self) -> Option<&[TransparentOutput]> {
+        self.prevouts.as_deref()
+    }
+
+    /// The prevouts `index`'s fold reads, or [`FoldError::Unresolved`].
+    pub(crate) fn resolved_prevouts(
+        &self,
+        index: &'static str,
+    ) -> Result<&[TransparentOutput], FoldError> {
+        self.prevouts().ok_or(FoldError::Unresolved { index })
     }
 }
 
@@ -321,14 +329,17 @@ mod tests {
         let mut spending = tx(1).compact;
         spending.transparent_inputs.push(input());
         assert_eq!(
-            FoldTx::try_new(spending.clone(), PoolBalances::default(), Vec::new()).err(),
+            FoldTx::try_new(spending.clone(), PoolBalances::default(), Some(Vec::new())).err(),
             Some(FoldBlockError::Prevouts {
                 inputs: 1,
                 prevouts: 0
             })
         );
-        let spender =
-            FoldTx::try_new(spending, PoolBalances::default(), vec![output()]).expect("paired");
+        let unresolved = FoldTx::try_new(spending.clone(), PoolBalances::default(), None)
+            .expect("unresolved prevouts are not checked");
+        assert_eq!(unresolved.prevouts(), None);
+        let spender = FoldTx::try_new(spending, PoolBalances::default(), Some(vec![output()]))
+            .expect("paired");
 
         let header = block(1).header().clone();
         assert_eq!(
@@ -340,7 +351,7 @@ mod tests {
             Some(FoldBlockError::CoinbaseSpends { inputs: 1 })
         );
         let ok = FoldBlock::try_new(parts(header, vec![tx(0), spender])).expect("valid");
-        assert_eq!(ok.transactions()[1].prevouts(), &[output()]);
+        assert_eq!(ok.transactions()[1].prevouts(), Some(&[output()][..]));
     }
 
     /// A frontier must match its pool's tree size and carry one ommer per 1

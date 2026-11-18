@@ -1,0 +1,78 @@
+[[changes]]
+crate = "zaino-chain-store-service"
+kind = "breaking"
+description = """
+`build_to` runs a staged pipeline (D-67, D-96). Heights are fetched \
+concurrently, each block checked against its merkle root. Prevouts are \
+resolved in height order: from the block itself, from the outputs of \
+blocks in flight, or from I-03 and I-04 in one sorted batch. One writer \
+per index runs behind a byte-bounded queue. Sets needing prevouts (I-05, \
+I-10, I-11) now build, so `BootError::PrevoutsUnsupported` is removed. \
+New `[ingest]` config (`IngestConfig`): `fetch_concurrency`, \
+`queue_bytes`, `writers` (default: the store's CpuBudget share).
+"""
+
+[[changes]]
+crate = "zaino-chain-store-service"
+kind = "feature"
+description = """
+A panic in the build pipeline is caught, logged, returned as an error \
+naming the stage or index, and recorded as `Failed`. An index whose writer \
+panicked is reopened from disk; until that succeeds it stays enabled but \
+not served, and is retried at every build.
+"""
+
+[[changes]]
+crate = "zaino-primitives"
+kind = "feature"
+description = """
+`MerkleRoot::of(txids)` and `Block::merkle_root_matches`: the transaction \
+merkle root, and a block's header checked against it.
+"""
+
+[[changes]]
+crate = "zaino-primitives"
+kind = "fix"
+description = """
+The crate denies panicking code in production, as the other crates do. Its \
+11 remaining panic sites are fixed: unchecked arithmetic in the difficulty \
+and 256-bit code, the zatoshi flow negation, a slice in the zebra \
+conversion, and two `expect`s in chain-work decoding.
+"""
+
+[[changes]]
+crate = "zaino-source-zcash-rpc"
+kind = "breaking"
+description = """
+`merkle_root` is removed: use `zaino_primitives::types::MerkleRoot::of`.
+"""
+
+[[changes]]
+crate = "zaino-indexes"
+kind = "feature"
+description = """
+`FoldTx::with_prevouts`: a transaction's prevouts resolved after it was \
+built. `transparent::Reader::outputs`: many outputs in one batch, each \
+height's records read once, in place, in height order.
+"""
+
+[[changes]]
+crate = "zaino-source-mock"
+kind = "breaking"
+description = """
+Spends follow consensus: a block spends its parent's ordinary outputs, \
+then the coinbase maturing at its height (`COINBASE_MATURITY`, 100), and \
+never the genesis coinbase, so no block spends before height 101. \
+`ChainBuilder::matured()` fills blocks through height 100. \
+`BlockSpec::chained(n)` spends outputs from earlier in the same block. \
+Coinbase output `n` pays `COINBASE_OUTPUT + n`, so every output is \
+distinct. `MockBlock` gains `spendable`.
+"""
+
+[[changes]]
+crate = "zaino-state"
+kind = "internal"
+description = """
+The test chain is 300 blocks, so the mock's spends (from height 101) fall \
+on both sides of the finalised seam.
+"""

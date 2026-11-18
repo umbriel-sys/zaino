@@ -211,8 +211,9 @@ impl ChainHeadEpochAdapter {
                             // epochs to relay.
                             break;
                         }
-                        // A lost send costs latency, never correctness.
-                        let _ = epoch_signal.send(());
+                        if epoch_signal.send(()).is_err() {
+                            // A lost send costs latency, never correctness.
+                        }
                     }
                 }
             }

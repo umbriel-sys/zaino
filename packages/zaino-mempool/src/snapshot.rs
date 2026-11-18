@@ -215,7 +215,7 @@ impl MempoolSnapshot {
 
         let entries_in_order: Vec<_> = txids_sorted
             .iter()
-            .map(|txid| Arc::clone(&by_txid[txid]))
+            .filter_map(|txid| by_txid.get(txid).map(Arc::clone))
             .collect();
 
         let raw_bytes = entries_in_order.iter().map(|entry| entry.raw_len).sum();

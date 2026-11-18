@@ -36,7 +36,8 @@ declared! {
     );
 }
 declared! {
-    const BY_OUTPOINT: NamespaceLayout = NamespaceLayout::map(SPENT, &OUTPOINT, &SPENDER, false);
+    /// Unique: consensus spends an outpoint once.
+    const BY_OUTPOINT: NamespaceLayout = NamespaceLayout::unique_map(SPENT, &OUTPOINT, &SPENDER);
 }
 const _: () = assert!(OUTPOINT.fixed_len() == OUTPOINT_BYTES);
 const _: () = assert!(SPENDER.fixed_len() == POSITION_BYTES + 2);
@@ -65,7 +66,8 @@ pub struct State {
 
 impl Index for Spent {
     const SCHEMA: Schema = SCHEMA;
-    const DEPENDENCIES: &'static [&'static str] = &[crate::txids::NAME];
+    const READS: &'static [&'static str] = &[crate::txids::NAME];
+    const BUILDS_FROM: &'static [&'static str] = &[];
     type State = State;
 
     fn resume<R: BackendReader>(backend: &R) -> Result<Option<State>, FoldError> {
@@ -115,10 +117,7 @@ impl<'a, R: BackendReader> Reader<'a, R> {
     /// The input that spent `outpoint`; `None` if unspent as of the tip.
     pub fn spender(&self, outpoint: Outpoint) -> Result<Option<Spender>, FoldError> {
         let key = outpoint_bytes(outpoint);
-        self.backend
-            .get(SPENT, &key)?
-            .map(|bytes| spender(&bytes))
-            .transpose()
+        self.backend.with_value(SPENT, &key, spender)?.transpose()
     }
 
     /// [`spender`](Self::spender) for each outpoint, in order, one batch read.
@@ -177,7 +176,7 @@ mod tests {
                 script: Script::from(vec![]),
             })
             .collect();
-        FoldTx::try_new(compact, PoolBalances::default(), prevouts).expect("paired")
+        FoldTx::try_new(compact, PoolBalances::default(), Some(prevouts)).expect("paired")
     }
 
     fn outpoint(txid: u8, index: u32) -> Outpoint {

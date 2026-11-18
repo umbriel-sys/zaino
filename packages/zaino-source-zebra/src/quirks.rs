@@ -9,9 +9,11 @@ pub fn rpc_adapter(client: RpcClient) -> ZcashRpcAdapter {
     ZcashRpcAdapter::with_quirks(client, ZEBRAD)
 }
 
-/// zebrad's departures from the spec.
+/// zebrad's departures from the spec. Its address RPCs parse any network's
+/// addresses (zebra-rpc `valid_addresses`), answering another network's empty.
 const ZEBRAD: Quirks = Quirks {
     result_cap: Some(result_cap_exceeded),
+    unchecked_address_network: true,
 };
 
 /// The cap zebrad 7 reports when an address query matches too much.

@@ -1,9 +1,7 @@
 //! Building a store, and the chain to build it from, out of the vectors.
 //!
 //! Shared by this crate's finalised-state and migration suites, and by
-//! `zaino-state`'s remaining suites through the `testing` feature — the block
-//! chain these produce is the oracle both sides compare against, so a second
-//! copy of it would be a second oracle.
+//! `zaino-chain`'s suites through the `testing` feature.
 
 use std::collections::HashMap;
 
@@ -176,20 +174,6 @@ pub fn load_test_vectors() -> corez::io::Result<TestVectorData> {
     })
 }
 
-/// The vector chain truncated at `height_limit`, if one is given.
-///
-/// The shared half of the two writers below: they differ only in what they
-/// hand each block to, and a second `break`-on-limit loop would be a second
-/// place for the bound to drift.
-fn vector_chain_up_to(
-    blocks: &[VectorBlock],
-    height_limit: Option<u32>,
-) -> impl Iterator<Item = IndexedBlock<AbsoluteChainWork>> + '_ {
-    indexed_block_chain(blocks).take_while(move |block| {
-        height_limit.is_none_or(|limit| block.context.index.height.0 <= limit)
-    })
-}
-
 /// Writes the vector chain into `db`, up to `height_limit` if given.
 ///
 /// Writes through the backend's own writer rather than the store's sync path,
@@ -200,28 +184,11 @@ pub async fn sync_db_with_blockdata(
     blocks: &[VectorBlock],
     height_limit: Option<u32>,
 ) {
-    for block in vector_chain_up_to(blocks, height_limit) {
+    let chain = indexed_block_chain(blocks)
+        .take_while(|block| height_limit.is_none_or(|limit| block.context.index.height.0 <= limit));
+    for block in chain {
         db.write_block(block).await.expect("vector block writes");
     }
-}
-
-/// Fills `store` with the vector chain, up to `height_limit` if given.
-///
-/// The dependant-facing counterpart to [`sync_db_with_blockdata`], which is
-/// this crate's own because its backend-writer bound is crate-private. Both
-/// deliberately bypass [`FinalisedState::build_to`]: a caller that only needs a
-/// database *at* a height should not pay for the store's ingest machinery —
-/// the batch write path spins the background validator hard enough to dominate
-/// a seed build under a parallel test runner.
-pub async fn fill_store_with_blockdata<T: zaino_chain_store::ChainStoreSource>(
-    store: &crate::store::FinalisedState<T>,
-    blocks: &[VectorBlock],
-    height_limit: Option<u32>,
-) {
-    for block in vector_chain_up_to(blocks, height_limit) {
-        store.write_block(block).await.expect("vector block writes");
-    }
-    store.refresh_watermark().await;
 }
 
 /// The two configs a test spawns a persistent store from, for a database at

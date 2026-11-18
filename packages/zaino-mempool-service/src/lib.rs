@@ -16,6 +16,25 @@
 //! Dependencies point inward: this crate depends on `zaino-mempool` (the ports +
 //! foundational types); `zaino-mempool` never names anything here.
 
+// production code never panics: no indexing, unchecked arithmetic or panicking calls
+#![cfg_attr(
+    not(test),
+    deny(
+        clippy::unwrap_used,
+        clippy::expect_used,
+        clippy::panic,
+        clippy::unreachable,
+        clippy::todo,
+        clippy::unimplemented,
+        clippy::indexing_slicing,
+        clippy::arithmetic_side_effects,
+        clippy::string_slice,
+        clippy::get_unwrap,
+        clippy::let_underscore_must_use,
+        let_underscore_drop
+    )
+)]
+
 /// Prometheus metric names emitted by this crate, with the `# HELP` `zainod` registers
 #[allow(missing_docs)] // the `# HELP` in the tables below is the description
 pub mod metric_names {
@@ -58,3 +77,10 @@ pub use subscriber::{MempoolFilterError, MempoolInfo, MempoolSubscriber, TxIdExc
 
 #[cfg(feature = "tip_aware_mempool")]
 pub use coherence::{CoherenceService, CoherentSubscriber};
+
+/// `event` to every subscriber of `sender`; none subscribed is no failure.
+pub(crate) fn notify<T>(sender: &tokio::sync::broadcast::Sender<T>, event: T) {
+    if sender.send(event).is_err() {
+        // no subscriber: nobody to tell
+    }
+}

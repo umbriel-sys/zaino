@@ -369,7 +369,7 @@ impl Default for ZainodConfig {
             metrics_endpoint: None,
             json_server_settings: None,
             grpc_settings: GrpcServerConfig {
-                listen_address: "127.0.0.1:8137".parse().unwrap(),
+                listen_address: SocketAddr::from(([127, 0, 0, 1], 8137)),
                 tls: None,
             },
             validator_settings: ValidatorConfig {

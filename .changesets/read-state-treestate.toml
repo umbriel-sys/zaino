@@ -1,0 +1,9 @@
+[[changes]]
+crate = "zaino-source-zebra"
+kind = "fix"
+description = """
+Read-state treestates keep the source contract: by hash, a side-chain block's \
+treestate is answered (any-chain reads; best-chain blocks still read only \
+their header) and an unknown hash is `BlockNotFound`; by height, a height \
+past the tip is `HeightNotFound`. Both were faults before.
+"""

@@ -53,7 +53,8 @@ declared! {
     pub const EVENT_VALUE: Layout = Layout::new("address_event_value", 1, &[Field::fixed("value", 8)]);
 }
 declared! {
-    const BY_ADDRESS: NamespaceLayout = NamespaceLayout::map(EVENTS, &EVENT_KEY, &EVENT_VALUE, false);
+    /// Unique: the key carries the event's height, transaction, io index and kind.
+    const BY_ADDRESS: NamespaceLayout = NamespaceLayout::unique_map(EVENTS, &EVENT_KEY, &EVENT_VALUE);
 }
 /// Bytes naming an address: hash then script type.
 const ADDRESS_BYTES: usize = 21;
@@ -97,12 +98,11 @@ pub struct State {
 
 impl Index for AddressHistory {
     const SCHEMA: Schema = SCHEMA;
-    const DEPENDENCIES: &'static [&'static str] = &[
-        crate::txids::NAME,
-        crate::txid_location::NAME,
-        crate::transparent::NAME,
-        crate::spent::NAME,
-    ];
+    // Serving joins the txid at each event's position and, for a spend, the
+    // input's prevout; spent status is the caller's join with I-09.
+    const READS: &'static [&'static str] = &[crate::txids::NAME, crate::transparent::NAME];
+    const BUILDS_FROM: &'static [&'static str] =
+        &[crate::txid_location::NAME, crate::transparent::NAME];
     type State = State;
 
     fn resume<R: BackendReader>(backend: &R) -> Result<Option<State>, FoldError> {
@@ -122,7 +122,7 @@ impl Index for AddressHistory {
         for (tx_index, tx) in (0u32..).zip(txs) {
             let position = BlockTxPosition::new(reference.height, tx_index);
             let received = (0u32..).zip(&tx.compact().transparent_outputs);
-            let spent = (0u32..).zip(tx.prevouts());
+            let spent = (0u32..).zip(tx.resolved_prevouts(NAME)?);
             let events = received
                 .map(|(index, output)| (index, EventKind::Received, output))
                 .chain(spent.map(|(index, prevout)| (index, EventKind::Spent, prevout)));
@@ -285,7 +285,7 @@ mod tests {
             })
             .collect();
         compact.transparent_outputs = outputs;
-        FoldTx::try_new(compact, PoolBalances::default(), spends).expect("paired")
+        FoldTx::try_new(compact, PoolBalances::default(), Some(spends)).expect("paired")
     }
 
     fn key_of(hash: u8) -> TransparentAddressKey {

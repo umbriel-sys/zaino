@@ -74,9 +74,6 @@ use zaino_primitives::types::rpc::{
 use zebra_rpc::client::{GetAddressBalanceRequest, GetAddressTxIdsRequest};
 use zebra_state::HashOrHeight;
 
-#[cfg(test)]
-pub(crate) mod mockchain_source;
-
 /// One pool's treestate for a block.
 ///
 /// Re-exported from the domain vocabulary so the scaffolding port and the
