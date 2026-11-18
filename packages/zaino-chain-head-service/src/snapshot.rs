@@ -77,7 +77,11 @@ pub struct PersistentSnapshot {
     branches: Vec<Branch>,
     directory: Directory,
     /// The extensions' views over this graph (D-50).
-    #[cfg(feature = "_extensions")]
+    #[cfg(any(
+        feature = "transactions",
+        feature = "tree_state",
+        feature = "history_tree"
+    ))]
     extensions: crate::extension::Slots,
     /// The block this graph's work is measured from, recorded at anchoring because retention prunes that block while every surviving block's work still counts from it.
     work_anchor: BlockRef,
@@ -292,7 +296,11 @@ impl PersistentSnapshot {
     }
 
     /// The canonical block at `height`, shared.
-    #[cfg(feature = "_extensions")]
+    #[cfg(any(
+        feature = "transactions",
+        feature = "tree_state",
+        feature = "history_tree"
+    ))]
     pub(crate) fn trunk_block(&self, height: Height) -> Option<&Arc<ChainHeadBlock>> {
         self.trunk.get(height)
     }
@@ -304,13 +312,21 @@ impl PersistentSnapshot {
     }
 
     /// Whether `block` is a retained canonical block.
-    #[cfg(feature = "_extensions")]
+    #[cfg(any(
+        feature = "transactions",
+        feature = "tree_state",
+        feature = "history_tree"
+    ))]
     pub(crate) fn is_trunk_block(&self, block: BlockRef) -> bool {
         self.trunk.holds(block)
     }
 
     /// Whether `hash` is retained, on the trunk or a branch.
-    #[cfg(feature = "_extensions")]
+    #[cfg(any(
+        feature = "transactions",
+        feature = "tree_state",
+        feature = "history_tree"
+    ))]
     pub(crate) fn retained(&self, hash: &BlockHash) -> bool {
         self.directory.contains_key(hash)
     }
@@ -323,7 +339,11 @@ impl PersistentSnapshot {
 
     /// Retained blocks above `height`, parents before children: the trunk
     /// ascending, then each branch ascending.
-    #[cfg(feature = "_extensions")]
+    #[cfg(any(
+        feature = "transactions",
+        feature = "tree_state",
+        feature = "history_tree"
+    ))]
     pub(crate) fn above(&self, height: Height) -> impl Iterator<Item = &Arc<ChainHeadBlock>> {
         self.trunk
             .iter()
@@ -356,7 +376,11 @@ impl PersistentSnapshot {
     }
 
     /// The extensions' views.
-    #[cfg(feature = "_extensions")]
+    #[cfg(any(
+        feature = "transactions",
+        feature = "tree_state",
+        feature = "history_tree"
+    ))]
     pub(crate) fn extensions(&self) -> &crate::extension::Slots {
         &self.extensions
     }
@@ -364,18 +388,30 @@ impl PersistentSnapshot {
     /// The extensions that failed on this snapshot, each with its reason;
     /// they answer nothing until rebuilt at a later tick (D-52).
     pub fn extension_failures(&self) -> Vec<(zaino_chain_head::HeadCapability, String)> {
-        #[cfg(feature = "_extensions")]
+        #[cfg(any(
+            feature = "transactions",
+            feature = "tree_state",
+            feature = "history_tree"
+        ))]
         {
             self.extensions.failures()
         }
-        #[cfg(not(feature = "_extensions"))]
+        #[cfg(not(any(
+            feature = "transactions",
+            feature = "tree_state",
+            feature = "history_tree"
+        )))]
         {
             Vec::new()
         }
     }
 
     /// Installs the extensions' views after a build.
-    #[cfg(feature = "_extensions")]
+    #[cfg(any(
+        feature = "transactions",
+        feature = "tree_state",
+        feature = "history_tree"
+    ))]
     pub(crate) fn set_extensions(&mut self, extensions: crate::extension::Slots) {
         self.extensions = extensions;
     }
@@ -404,7 +440,11 @@ impl ChainGraph for PersistentSnapshot {
             },
             branches: Vec::new(),
             directory,
-            #[cfg(feature = "_extensions")]
+            #[cfg(any(
+                feature = "transactions",
+                feature = "tree_state",
+                feature = "history_tree"
+            ))]
             extensions: crate::extension::Slots::default(),
             generation: 0,
         }
@@ -474,7 +514,11 @@ impl ChainGraph for PersistentSnapshot {
         for hash in dropped {
             self.directory.remove(&hash);
         }
-        #[cfg(feature = "_extensions")]
+        #[cfg(any(
+            feature = "transactions",
+            feature = "tree_state",
+            feature = "history_tree"
+        ))]
         {
             let mut extensions = std::mem::take(&mut self.extensions);
             extensions.retain(self);
@@ -493,11 +537,19 @@ impl ChainGraph for PersistentSnapshot {
 
 impl ChainHeadSnapshot for PersistentSnapshot {
     fn capabilities(&self) -> HeadCapabilities {
-        #[cfg(feature = "_extensions")]
+        #[cfg(any(
+            feature = "transactions",
+            feature = "tree_state",
+            feature = "history_tree"
+        ))]
         {
             self.extensions.capabilities()
         }
-        #[cfg(not(feature = "_extensions"))]
+        #[cfg(not(any(
+            feature = "transactions",
+            feature = "tree_state",
+            feature = "history_tree"
+        )))]
         {
             HeadCapabilities::NONE
         }
@@ -610,8 +662,9 @@ impl ChainHeadTxOutSetService for PersistentSnapshot {
     ) -> Result<zaino_primitives::txout_commitment::TxOutSetAccumulator, ChainHeadError> {
         crate::extension::built(&self.extensions.txout_set, "the txout set")?
             .txout_set(self)
-            .ok_or(ChainHeadError::NotBuilt {
+            .ok_or_else(|| ChainHeadError::ReadFailed {
                 capability: "the txout set",
+                reason: "a built set holds no view of the tip".to_owned(),
             })
     }
 }
@@ -625,8 +678,9 @@ impl ChainHeadTransparentHistoryService for PersistentSnapshot {
     ) -> Result<zaino_chain_head::transparent::ChainHeadAddressEffects, ChainHeadError> {
         crate::extension::built(&self.extensions.address_history, "transparent history")?
             .address_effects(self, query)
-            .map_err(|_| ChainHeadError::NotBuilt {
+            .map_err(|failure| ChainHeadError::ReadFailed {
                 capability: "transparent history",
+                reason: failure.to_string(),
             })
     }
 }

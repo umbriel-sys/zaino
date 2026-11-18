@@ -99,5 +99,5 @@ pub struct ChainHeadAddressEffects {
     /// Outputs created for the queried addresses inside the window.
     pub outputs: Vec<LocatedTransparentOutput>,
     /// Spends inside the window of outputs paying the queried addresses.
-    pub local_spends: Vec<LocatedTransparentSpend>,
+    pub spends: Vec<LocatedTransparentSpend>,
 }

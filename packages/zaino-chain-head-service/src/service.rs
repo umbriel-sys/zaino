@@ -114,7 +114,11 @@ pub struct ChainHeadService<S: ChainHeadBlockSource> {
     config: ChainHeadConfig,
     tip_selection: TipSelection,
     /// The extensions the builder enabled (D-50), with their ports.
-    #[cfg(feature = "_extensions")]
+    #[cfg(any(
+        feature = "transactions",
+        feature = "tree_state",
+        feature = "history_tree"
+    ))]
     extensions: Option<crate::extension::Enabled>,
 }
 
@@ -171,7 +175,11 @@ impl<S: ChainHeadBlockSource> ChainHeadService<S> {
             config,
             cancel,
             tip_selection: TipSelection::Source,
-            #[cfg(feature = "_extensions")]
+            #[cfg(any(
+                feature = "transactions",
+                feature = "tree_state",
+                feature = "history_tree"
+            ))]
             extensions: None,
         }
     }
@@ -239,7 +247,11 @@ impl<S: ChainHeadBlockSource> ChainHeadService<S> {
             config,
             cancel,
             tip_selection,
-            #[cfg(feature = "_extensions")]
+            #[cfg(any(
+                feature = "transactions",
+                feature = "tree_state",
+                feature = "history_tree"
+            ))]
             extensions,
         } = builder;
         let status = NamedAtomicStatus::new(COMPONENT, StatusType::Syncing);
@@ -264,7 +276,11 @@ impl<S: ChainHeadBlockSource> ChainHeadService<S> {
             task: Mutex::new(None),
             config,
             tip_selection,
-            #[cfg(feature = "_extensions")]
+            #[cfg(any(
+                feature = "transactions",
+                feature = "tree_state",
+                feature = "history_tree"
+            ))]
             extensions,
         });
         // Still `Syncing`: the anchor is the window's floor, not its tip, so a
@@ -425,7 +441,11 @@ impl<S: ChainHeadBlockSource> ChainHeadService<S> {
         // answer that cannot have changed.
         if tip == previous.best_tip() {
             // the store moved under an unchanged head: the extensions catch up
-            #[cfg(feature = "_extensions")]
+            #[cfg(any(
+                feature = "transactions",
+                feature = "tree_state",
+                feature = "history_tree"
+            ))]
             if let Some(enabled) = &self.extensions {
                 if crate::extension::store_moved(enabled, previous.extensions()) {
                     let mut next = (*previous).clone();
@@ -442,7 +462,11 @@ impl<S: ChainHeadBlockSource> ChainHeadService<S> {
         }
 
         let next = self.next_graph(&previous, tip.height).await?;
-        #[cfg(feature = "_extensions")]
+        #[cfg(any(
+            feature = "transactions",
+            feature = "tree_state",
+            feature = "history_tree"
+        ))]
         let next = match &self.extensions {
             Some(enabled) => {
                 let mut next = next;
@@ -905,7 +929,11 @@ pub struct ChainHeadBuilder<S: ChainHeadBlockSource> {
     config: ChainHeadConfig,
     cancel: CancellationToken,
     tip_selection: TipSelection,
-    #[cfg(feature = "_extensions")]
+    #[cfg(any(
+        feature = "transactions",
+        feature = "tree_state",
+        feature = "history_tree"
+    ))]
     extensions: Option<crate::extension::Enabled>,
 }
 
@@ -927,7 +955,11 @@ impl<S: ChainHeadBlockSource> ChainHeadBuilder<S> {
     /// Enables the extensions (D-50): folds of `zaino-indexes` over the
     /// window, rooted on the store's tip (`None` = no store: the window's
     /// floor), under the validator's upgrade `schedule`.
-    #[cfg(feature = "_extensions")]
+    #[cfg(any(
+        feature = "transactions",
+        feature = "tree_state",
+        feature = "history_tree"
+    ))]
     pub fn extensions(
         self,
         schedule: Arc<[zaino_primitives::types::NetworkUpgradeInfo]>,
@@ -959,13 +991,21 @@ impl<S: ChainHeadBlockSource> ChainHeadBuilder<S> {
 
 /// A [`ChainHeadBuilder`] with extensions: each `with_*` enables one and
 /// takes the ports it drives below the root.
-#[cfg(feature = "_extensions")]
+#[cfg(any(
+    feature = "transactions",
+    feature = "tree_state",
+    feature = "history_tree"
+))]
 pub struct ExtensionBuilder<S: ChainHeadBlockSource> {
     inner: ChainHeadBuilder<S>,
     enabled: crate::extension::Enabled,
 }
 
-#[cfg(feature = "_extensions")]
+#[cfg(any(
+    feature = "transactions",
+    feature = "tree_state",
+    feature = "history_tree"
+))]
 impl<S: ChainHeadBlockSource> ExtensionBuilder<S> {
     /// Transaction positions and outpoint spenders inside the window (I-03,
     /// I-09). Needs nothing below the root.

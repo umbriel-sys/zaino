@@ -401,7 +401,7 @@ async fn agree(rig: &Rig, reference: &common::Store, root: u32, tip: u32) {
         outputs.sort_unstable_by_key(|o| (<[u8; 32]>::from(o.txid), o.index));
         expected.sort_unstable_by_key(|o| (<[u8; 32]>::from(o.txid), o.index));
         assert_eq!(outputs, expected, "outputs of {address:?}");
-        let mut spends: Vec<Outpoint> = effects.local_spends.iter().map(|s| s.outpoint).collect();
+        let mut spends: Vec<Outpoint> = effects.spends.iter().map(|s| s.outpoint).collect();
         let mut expected: Vec<Outpoint> = stored.spends.iter().map(|s| s.outpoint).collect();
         spends.sort_unstable_by_key(|o| (<[u8; 32]>::from(o.txid), o.index));
         expected.sort_unstable_by_key(|o| (<[u8; 32]>::from(o.txid), o.index));

@@ -59,7 +59,11 @@
 pub mod metric_names;
 
 mod error;
-#[cfg(feature = "_extensions")]
+#[cfg(any(
+    feature = "transactions",
+    feature = "tree_state",
+    feature = "history_tree"
+))]
 mod extension;
 mod graph;
 mod service;
@@ -70,7 +74,11 @@ mod subscriber;
 mod tests;
 
 pub use error::{ChainHeadAdvanceError, ChainHeadInitError};
-#[cfg(feature = "_extensions")]
+#[cfg(any(
+    feature = "transactions",
+    feature = "tree_state",
+    feature = "history_tree"
+))]
 pub use service::ExtensionBuilder;
 pub use service::{ChainHeadBuilder, ChainHeadService};
 pub use snapshot::PersistentSnapshot;

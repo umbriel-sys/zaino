@@ -1506,3 +1506,27 @@ fn encoded(addresses: &[TransparentAddress]) -> Vec<String> {
         .map(|address| address.as_str().to_owned())
         .collect()
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A capability the head does not build is not serviceable; a built one
+    /// that fails to read is a fault, never a reason to fall back.
+    #[test]
+    fn head_errors_keep_not_built_apart_from_faults() {
+        assert!(matches!(
+            head_err(ChainHeadError::NotBuilt {
+                capability: "tree state"
+            }),
+            ChainViewError::NotServiceable(_)
+        ));
+        assert!(matches!(
+            head_err(ChainHeadError::ReadFailed {
+                capability: "transparent history",
+                reason: "overlay".to_owned(),
+            }),
+            ChainViewError::Fatal(_)
+        ));
+    }
+}

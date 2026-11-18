@@ -104,7 +104,7 @@ impl AddressHistory {
                             let Some(input) = tx.transparent.inputs.get(index) else {
                                 continue;
                             };
-                            effects.local_spends.push(LocatedTransparentSpend {
+                            effects.spends.push(LocatedTransparentSpend {
                                 address: *address,
                                 outpoint: Outpoint {
                                     txid: input.prev_txid,

@@ -683,16 +683,12 @@ async fn answers_match_independent_computations() {
             assert_eq!(created[&output.outpoint].value, output.value);
             assert_eq!(created[&output.outpoint].script, output.script);
         }
-        let mut spends: Vec<Outpoint> = effects
-            .local_spends
-            .iter()
-            .map(|spend| spend.outpoint)
-            .collect();
+        let mut spends: Vec<Outpoint> = effects.spends.iter().map(|spend| spend.outpoint).collect();
         let mut expected = expected_spends.remove(&address).unwrap_or_default();
         spends.sort_unstable_by_key(|outpoint| (<[u8; 32]>::from(outpoint.txid), outpoint.index));
         expected.sort_unstable_by_key(|outpoint| (<[u8; 32]>::from(outpoint.txid), outpoint.index));
         assert_eq!(spends, expected, "spends of {address:?}");
-        for spend in &effects.local_spends {
+        for spend in &effects.spends {
             assert_eq!(spend.address, address);
             assert_eq!(created[&spend.outpoint].value, spend.value);
         }

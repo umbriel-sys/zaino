@@ -12,7 +12,11 @@
 //!   the test is the only thing advancing the graph, so what it observes is
 //!   exactly what it caused.
 
-#[cfg(feature = "_extensions")]
+#[cfg(any(
+    feature = "transactions",
+    feature = "tree_state",
+    feature = "history_tree"
+))]
 mod extensions;
 mod reorg_depth;
 

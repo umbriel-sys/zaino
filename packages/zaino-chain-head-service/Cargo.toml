@@ -16,13 +16,13 @@ default = []
 
 # Extensions (D-50): one `zaino-indexes` fold each, run over the window and
 # enabled through the builder. Each is its own feature so a head that serves
-# none pulls in neither the indexes nor the persistence port.
-_extensions = ["dep:zaino-indexes", "dep:zaino-persistence"]
-transactions = ["_extensions"]
+# none pulls in neither the indexes nor the persistence port. `txout_set` and
+# `address_history` resolve in-window spends through `transactions`.
+transactions = ["dep:zaino-indexes", "dep:zaino-persistence"]
 txout_set = ["transactions"]
 address_history = ["transactions"]
-tree_state = ["_extensions"]
-history_tree = ["_extensions"]
+tree_state = ["dep:zaino-indexes", "dep:zaino-persistence"]
+history_tree = ["dep:zaino-indexes", "dep:zaino-persistence"]
 
 # TEST-ONLY: exposes `spawn_without_writer` and `advance_once`, so a downstream
 # test crate can step the chain head deterministically instead of racing its

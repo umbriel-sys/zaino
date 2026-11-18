@@ -33,4 +33,13 @@ pub enum ChainHeadError {
         /// The capability asked for.
         capability: &'static str,
     },
+    /// The capability is built but reading it failed: a fault, not a reason
+    /// to fall back.
+    #[error("the chain head failed to read {capability}: {reason}")]
+    ReadFailed {
+        /// The capability asked for.
+        capability: &'static str,
+        /// Why.
+        reason: String,
+    },
 }
