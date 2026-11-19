@@ -318,6 +318,71 @@ mod consensus_agreement {
         );
     }
 
+    /// The proof-of-work limits as zebra states them, per network.
+    #[test]
+    fn pow_limits_agree() {
+        use zebra_chain::parameters::Network;
+        use zebra_chain::work::difficulty::ParameterDifficulty as _;
+        let compact = |network: Network| network.target_difficulty_limit().to_compact();
+        let bits = |compact: zebra_chain::work::difficulty::CompactDifficulty| {
+            u32::from_be_bytes(compact.bytes_in_display_order())
+        };
+        assert_eq!(
+            bits(compact(Network::Mainnet)),
+            zaino_consensus::POW_LIMIT_BITS
+        );
+        assert_eq!(
+            bits(compact(Network::new_default_testnet())),
+            zaino_consensus::TESTNET_POW_LIMIT_BITS
+        );
+        assert_eq!(
+            bits(compact(Network::new_regtest(Default::default()))),
+            zaino_consensus::REGTEST_POW_LIMIT_BITS
+        );
+    }
+
+    /// A header's difficulty as zebrad reports it, across exponents and
+    /// mantissas, on every network.
+    #[test]
+    fn difficulty_agrees() {
+        use zebra_chain::parameters::Network;
+        for (network, limit) in [
+            (Network::Mainnet, zaino_consensus::POW_LIMIT_BITS),
+            (
+                Network::new_default_testnet(),
+                zaino_consensus::TESTNET_POW_LIMIT_BITS,
+            ),
+            (
+                Network::new_regtest(Default::default()),
+                zaino_consensus::REGTEST_POW_LIMIT_BITS,
+            ),
+        ] {
+            for exponent in 0x03u32..=0x20 {
+                for mantissa in [
+                    0x00_0001u32,
+                    0x00_7fff,
+                    0x07_ffff,
+                    0x0f_0f0f,
+                    0x12_3456,
+                    0x7f_ffff,
+                ] {
+                    let bits = (exponent << 24) | mantissa;
+                    let zebra =
+                        zebra_chain::work::difficulty::CompactDifficulty::from_bytes_in_display_order(
+                            &bits.to_be_bytes(),
+                        )
+                        .expect("a valid encoding")
+                        .relative_to_network(&network);
+                    assert_eq!(
+                        zaino_consensus::difficulty(bits, limit).to_bits(),
+                        zebra.to_bits(),
+                        "{bits:#010x}"
+                    );
+                }
+            }
+        }
+    }
+
     #[test]
     fn max_block_bytes_agrees() {
         assert_eq!(

@@ -370,11 +370,34 @@ where
         balance.received == zaino_primitives::types::ZatoshisFlowSum::from_summed(received),
         || "received is not the credits' sum".to_owned(),
     )?;
-    let utxos = answered("utxos", source.get_address_utxos(wanted.clone()).await)?;
+    let utxos = answered(
+        "utxos",
+        source
+            .get_address_utxos(wanted.clone(), zaino_source::UtxoPage::default())
+            .await,
+    )?;
     let unspent: u64 = utxos.iter().map(|u| u64::from(u.satoshis)).sum();
     ensure(unspent == u64::from(balance.balance), || {
         "UTXOs do not sum to the balance".to_owned()
     })?;
+    // a page: from the last output's height, at most one entry
+    if let Some(last) = utxos.last() {
+        let page = zaino_source::UtxoPage::new(last.height, 1)
+            .map_err(|error| format!("a one-entry page: {error}"))?;
+        let paged = answered(
+            "a utxo page",
+            source.get_address_utxos(wanted.clone(), page).await,
+        )?;
+        let expected: Vec<_> = utxos
+            .iter()
+            .filter(|utxo| utxo.height >= last.height)
+            .take(1)
+            .cloned()
+            .collect();
+        ensure(paged == expected, || {
+            format!("the page from {:?}: {paged:?}", last.height)
+        })?;
+    }
     let txids = answered(
         "txids",
         source
@@ -459,7 +482,9 @@ where
         )?;
         ensure(
             matches!(
-                source.get_address_utxos(invalid.clone()).await,
+                source
+                    .get_address_utxos(invalid.clone(), zaino_source::UtxoPage::default())
+                    .await,
                 Err(QueryError::Domain(GetAddressUtxosError::InvalidAddress(_)))
             ),
             || format!("utxos {invalid:?}: InvalidAddress"),

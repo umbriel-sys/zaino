@@ -1,6 +1,6 @@
 //! Transparent Zcash address.
 
-use zcash_address::{ConversionError, TryFromAddress, ZcashAddress};
+use zcash_address::{ConversionError, ToAddress as _, TryFromAddress, ZcashAddress};
 use zcash_protocol::consensus::NetworkType;
 
 use crate::types::{ScriptType, TransparentAddressKey};
@@ -113,6 +113,26 @@ impl TransparentAddress {
     /// The canonical encoded address string.
     pub fn as_str(&self) -> &str {
         &self.encoded
+    }
+
+    /// The address a standard (P2PKH or P2SH) script pays, encoded for
+    /// `network`; `None` for any other script.
+    pub fn from_standard_script(script: &[u8], network: crate::types::Network) -> Option<Self> {
+        use crate::types::Network;
+        let key = TransparentAddressKey::from_standard_script(script)?;
+        let network = match network {
+            Network::Mainnet => NetworkType::Main,
+            Network::PubTestnet => NetworkType::Test,
+            Network::Regtest => NetworkType::Regtest,
+        };
+        let address = match key.script_type {
+            ScriptType::P2PKH => ZcashAddress::from_transparent_p2pkh(network, key.hash),
+            ScriptType::P2SH => ZcashAddress::from_transparent_p2sh(network, key.hash),
+            ScriptType::NonStandard => return None,
+        };
+        // parsed back, so the network is the one the encoding names (Regtest
+        // and Testnet share it), as for any parsed address
+        Self::try_new(address.encode()).ok()
     }
 }
 

@@ -46,15 +46,11 @@ pub enum GetSpentInfoError {
 /// would force every consumer to invent a code on the way out, which is exactly
 /// how this method came to report `-8` for a condition the legacy full node reports as `-5`.
 ///
-/// # Served by the validator only
+/// # The fallback behind Zaino's own index
 ///
-/// `getspentinfo` is a passthrough to this port; zebrad does not implement the
-/// method, so today only the legacy full node answers it. Zaino holds the
-/// answer: I-09 (`spent`) stores the spending block, transaction index and
-/// input index, but the store port `SpenderRef` exposes position and txid
-/// only, and the chain view's `SpendStatus` only the txid. The method leaves
-/// this port when `SpenderRef` carries the input index and the chain view
-/// serves it (Stage 7, after 5b's head transparent history).
+/// `zaino-service` answers `getspentinfo` from I-09 (`spent`) and the chain
+/// head where they are built, and asks this port only otherwise. zebrad does
+/// not implement the method, so there only the legacy full node answers it.
 #[zaino_source_macros::resilient_port]
 pub trait OneShotGetSpentInfo: ValidatorSource + Send + Sync {
     /// Locate an output's spender.

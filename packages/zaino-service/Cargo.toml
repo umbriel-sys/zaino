@@ -12,6 +12,7 @@ categories = { workspace = true }
 version = "0.1.0"
 
 [dependencies]
+hex.workspace = true
 thiserror.workspace = true
 tokio = { workspace = true, features = ["rt", "sync"] }
 tokio-util.workspace = true
@@ -22,6 +23,7 @@ zaino-chain-head-service = { workspace = true, features = ["address_history", "c
 zaino-chain-store.workspace = true
 zaino-chain-store-service.workspace = true
 zaino-component.workspace = true
+zaino-consensus.workspace = true
 zaino-indexes = { version = "0.1.0", path = "../zaino-indexes" }
 zaino-mempool = { workspace = true, features = ["tip_aware_mempool"] }
 zaino-mempool-service = { workspace = true, features = ["tip_aware_mempool"] }

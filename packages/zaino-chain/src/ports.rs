@@ -36,6 +36,7 @@ use zaino_primitives::types::{
     CompactBlock, Height, Outpoint, ShieldedPool, SubtreeIndex, SubtreeRoot, TransactionId,
     TransparentAddress, TransparentOutput, Treestate, Utxo,
 };
+use zaino_source::UtxoPage;
 
 use crate::block::ChainBlock;
 use crate::capability::{ServiceabilityManifest, ServiceableRange};
@@ -273,10 +274,12 @@ pub trait AddressRead: Send + Sync {
         addresses: &[TransparentAddress],
     ) -> impl Future<Output = Result<AddressBalance>> + Send;
 
-    /// Every unspent transparent output of these addresses.
+    /// The `page` of these addresses' unspent transparent outputs, in chain
+    /// order.
     fn address_utxos(
         &self,
         addresses: &[TransparentAddress],
+        page: UtxoPage,
     ) -> impl Future<Output = Result<Vec<Utxo>>> + Send;
 
     /// The transactions touching these addresses within `start..=end`.

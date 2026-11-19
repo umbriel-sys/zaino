@@ -782,7 +782,9 @@ async fn an_invalid_request_is_rejected() {
         Err(ChainViewError::Rejected(_))
     ));
     assert!(matches!(
-        snapshot.address_utxos(&addresses).await,
+        snapshot
+            .address_utxos(&addresses, zaino_source::UtxoPage::default())
+            .await,
         Err(ChainViewError::Rejected(_))
     ));
     assert!(matches!(

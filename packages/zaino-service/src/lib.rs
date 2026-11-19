@@ -26,10 +26,12 @@ mod capability;
 mod config;
 mod engine;
 mod error;
+mod reads;
 mod source;
 
 pub use capability::{Capability, Provision, ServiceManifest};
 pub use config::{DiskStore, Mode, ServiceConfig, Store};
 pub use engine::{Service, SpawnError};
 pub use error::ServiceError;
+pub use reads::{ChainSnapshot, ServiceSnapshot};
 pub use source::ServiceSource;

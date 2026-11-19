@@ -228,7 +228,8 @@ mod generated {
             end: Height = height(9)
         ) -> Vec<TransactionId>, crate::GetAddressTxidsError;
         GetAddressUtxos / OneShotGetAddressUtxos :: get_address_utxos(
-            addresses: Vec<String> = vec!["t-addr".to_owned()]
+            addresses: Vec<String> = vec!["t-addr".to_owned()],
+            page: crate::UtxoPage = crate::UtxoPage::default()
         ) -> Vec<Utxo>, crate::GetAddressUtxosError;
         GetBestBlockHeight / OneShotGetBestBlockHeight :: get_best_block_height()
             -> Height, crate::GetBestBlockHeightError;

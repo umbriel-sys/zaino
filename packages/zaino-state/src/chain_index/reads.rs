@@ -364,7 +364,11 @@ impl<
         address_strings: GetAddressBalanceRequest,
     ) -> Result<Vec<zaino_primitives::types::Utxo>, Self::Error> {
         let addresses = checked_addresses(&address_strings)?;
-        Ok(self.composer.snapshot().address_utxos(&addresses).await?)
+        Ok(self
+            .composer
+            .snapshot()
+            .address_utxos(&addresses, zaino_source::UtxoPage::default())
+            .await?)
     }
 
     async fn get_outpoint_spenders(

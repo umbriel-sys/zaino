@@ -59,6 +59,10 @@ use zaino_consensus::{
   `MEDIAN_TIME_SPAN` (11) of `times`, oldest first. A block's `mediantime`
   is it over the block's time and its ten predecessors'. Every median-time
   answer in zaino takes it from here.
+- `difficulty(bits, pow_limit_bits)` is a block's difficulty as zcashd's
+  `GetDifficulty` and zebrad's headers report it, against `POW_LIMIT_BITS`
+  (Mainnet), `TESTNET_POW_LIMIT_BITS` or `REGTEST_POW_LIMIT_BITS`. All of these
+  are checked against zebra in `zaino-primitives`' agreement tests.
 - `validate_raw_transaction_hex` runs before the validator round trip, so a
   malformed or oversized submission is rejected locally. It distinguishes bad
   hex from an oversized transaction — a client that sent a truncated string

@@ -509,6 +509,7 @@ impl zaino_source::OneShotGetAddressUtxos for ZebraReadStateAdapter {
     async fn get_address_utxos(
         &self,
         addresses: Vec<String>,
+        page: zaino_source::UtxoPage,
     ) -> Result<
         Vec<zaino_primitives::types::Utxo>,
         QueryError<zaino_source::GetAddressUtxosError, ReadStateError>,
@@ -525,8 +526,12 @@ impl zaino_source::OneShotGetAddressUtxos for ZebraReadStateAdapter {
             &self.state,
             ReadRequest::UtxosByAddresses {
                 addresses: valid,
-                height_range: zebra_chain::block::Height(0)..=zebra_chain::block::Height::MAX,
-                max_entries: ADDRESS_QUERY_PROBE,
+                height_range: zebra_chain::block::Height(u32::from(page.start()))
+                    ..=zebra_chain::block::Height::MAX,
+                max_entries: page
+                    .max_entries()
+                    .map(std::num::NonZeroUsize::get)
+                    .or(ADDRESS_QUERY_PROBE),
             },
         )
         .await?;
@@ -534,9 +539,6 @@ impl zaino_source::OneShotGetAddressUtxos for ZebraReadStateAdapter {
             ReadResponse::AddressUtxos(utxos) => utxos,
             _ => return Err(unexpected_response("UtxosByAddresses").into()),
         };
-        within_result_cap(utxos.utxos().count(), |limit| {
-            QueryError::Domain(zaino_source::GetAddressUtxosError::TooManyResults { limit })
-        })?;
 
         // Zebra documents this index as ordered by output location, and Zaino
         // relies on that rather than sorting. Verify it, but as a check that
@@ -571,7 +573,9 @@ impl zaino_source::OneShotGetAddressUtxos for ZebraReadStateAdapter {
             });
         }
 
-        Ok(result)
+        page.select(result, |utxo| utxo.height).map_err(|limit| {
+            QueryError::Domain(zaino_source::GetAddressUtxosError::TooManyResults { limit })
+        })
     }
 }
 
@@ -1434,43 +1438,6 @@ impl zaino_source::OneShotGetRawBlockByHash for ZebraReadStateAdapter {
     }
 }
 
-/// The block's difficulty as a multiple of the network's minimum.
-///
-/// The same calculation zebra serves on `getdifficulty` and on a verbose
-/// block: divide the network's proof-of-work limit by the block's expanded
-/// target, using the high 128 bits of each. Both are 256-bit values whose low
-/// half is insignificant once converted to an `f64` mantissa, so the shift
-/// costs nothing and keeps the division in range.
-///
-/// A target that does not expand is reported as `0.0`, matching zebra. That
-/// branch is unreachable in practice — zebra's `CompactDifficulty` rejects an
-/// unexpandable threshold at construction, so no such value can be built or
-/// deserialized — but `to_expanded` is fallible in the type system and a
-/// division by a zero target is not an option.
-fn block_difficulty(
-    threshold: zebra_chain::work::difficulty::CompactDifficulty,
-    network: &Network,
-) -> f64 {
-    // Zebra's own `U256`, not `primitive_types`': the difficulty types convert
-    // into this one, and mixing the two would need a byte round trip.
-    use zebra_chain::work::difficulty::ParameterDifficulty as _;
-    use zebra_chain::work::difficulty::U256;
-
-    let Some(expanded) = threshold.to_expanded() else {
-        return 0.0;
-    };
-
-    // the high 128 bits (little-endian words), as zcashd's double does
-    let high_half = |value: U256| {
-        let [_, _, low, high] = value.0;
-        ((u128::from(high) << 64) | u128::from(low)) as f64
-    };
-    let limit = high_half(network.target_difficulty_limit().into());
-    let target = high_half(U256::from(expanded));
-
-    limit / target
-}
-
 impl ZebraReadStateAdapter {
     /// The median time past at `block`: the median timestamp of it and up to
     /// the ten blocks before it.
@@ -1685,7 +1652,11 @@ impl zaino_source::OneShotGetBlockDeltas for ZebraReadStateAdapter {
                 block.header.difficulty_threshold.bytes_in_display_order(),
             )
             .map_err(ReadStateError::invalid_data)?,
-            difficulty: block_difficulty(block.header.difficulty_threshold, &self.network),
+            // zcashd's `GetDifficulty`, as zebrad reports a header's
+            difficulty: block
+                .header
+                .difficulty_threshold
+                .relative_to_network(&self.network),
             previous_block_hash: Some(BlockHash::from(block.header.previous_block_hash.0)),
             next_block_hash,
         })
@@ -1882,41 +1853,6 @@ mod tree_root_info_tests {
         assert_eq!(
             NonDomainError::from(full).mode,
             FailureMode::InvalidSourceData
-        );
-    }
-}
-
-#[cfg(test)]
-mod block_difficulty_tests {
-    use super::block_difficulty;
-    use zebra_chain::parameters::Network;
-    use zebra_chain::work::difficulty::ParameterDifficulty as _;
-
-    /// A block mined at exactly the network minimum is difficulty 1.0 — the
-    /// unit the whole figure is expressed in, so getting it wrong rescales
-    /// every other block's reported difficulty.
-    #[test]
-    fn the_network_minimum_is_difficulty_one() {
-        let network = Network::new_regtest(Default::default());
-        let minimum = network.target_difficulty_limit().to_compact();
-
-        assert_eq!(block_difficulty(minimum, &network), 1.0);
-    }
-
-    /// Difficulty is inverse to the target: a harder block has a smaller
-    /// target and a larger difficulty. An inverted division would still return
-    /// plausible positive numbers, so the direction is pinned explicitly.
-    #[test]
-    fn a_harder_target_reports_a_higher_difficulty() {
-        let network = Network::new_regtest(Default::default());
-        let limit = network.target_difficulty_limit();
-        let harder = (limit / 4).to_compact();
-
-        let difficulty = block_difficulty(harder, &network);
-
-        assert!(
-            difficulty > 1.0,
-            "a target below the network minimum must report difficulty above 1.0, got {difficulty}"
         );
     }
 }

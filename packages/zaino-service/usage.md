@@ -57,6 +57,29 @@ so it never disagrees with what the reads do. `require(&[Capability])` is the
 embedder's check: it returns `ServiceError::NotServed`, naming the index, for
 the first capability that is unavailable.
 
+## Reads
+
+`Service::snapshot()` pins one chain state. `chain()` is ChainView's reads
+(blocks, compact blocks and frames, transactions, treestates, subtrees, chain
+tips, address history, spends, the txout set, the history tree), each routed
+by ChainView. Built on top:
+
+| Read | Path |
+| --- | --- |
+| `block_header(at)` | composed from the indexed block (header, Sapling root, chainwork); the validator fills holes through ChainView |
+| `block_deltas(hash)` | composed from the indexed block and `previous_outputs`; the validator's `getblockdeltas` where prevouts are not local |
+| `spent_info(outpoint)` | the spend index (I-09 and the head); the validator otherwise, `NotServed` if it lacks the method |
+| `txout_set_info()` | I-11 and the head; `NotServed` without them |
+| `raw_transaction(txid, block)` | ChainView's, only from `block` when given |
+| `address_utxos(addresses, page)` | ChainView's page and the tip it describes |
+| `raw_block_header`, `block_verbose` | the validator, by the hash the snapshot holds |
+| `block_subsidy(height)` | the validator, at the tip when `None` |
+| `blockchain_info`, `node_info`, `peer_info`, `mining_info`, `difficulty_at_tip`, `network_sol_ps`, `standard_fee`, `tx_out`, `send_raw_transaction` | the validator |
+
+A difficulty is computed as zcashd's `GetDifficulty` computes it, against the
+network's proof-of-work limit. A transaction larger than a block is refused
+before the validator is asked.
+
 ## Errors
 
 `ServiceError` is the one error type (D6-02). A domain miss is `Ok(None)`.

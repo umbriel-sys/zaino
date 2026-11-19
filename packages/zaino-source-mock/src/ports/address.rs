@@ -105,10 +105,12 @@ impl zaino_source::OneShotGetAddressBalance for MockChain {
 }
 
 impl zaino_source::OneShotGetAddressUtxos for MockChain {
-    /// Unspent outputs paying the addresses, by (height, position, index).
+    /// Unspent outputs paying the addresses, by (height, position, index),
+    /// paged as zebrad pages them.
     async fn get_address_utxos(
         &self,
         addresses: Vec<String>,
+        page: zaino_source::UtxoPage,
     ) -> Result<Vec<Utxo>, QueryError<GetAddressUtxosError>> {
         let served = self
             .enter("get_address_utxos", addresses_arg(&addresses, None))
@@ -129,11 +131,9 @@ impl zaino_source::OneShotGetAddressUtxos for MockChain {
                     .then_some((outpoint, created, encoded))
             })
             .collect();
-        capped(rows.len(), |limit| GetAddressUtxosError::TooManyResults {
-            limit,
-        })?;
         rows.sort_by_key(|((_, index), created, _)| (created.height, created.position, *index));
-        rows.into_iter()
+        let utxos = rows
+            .into_iter()
             .map(|((txid, index), created, encoded)| {
                 Ok(Utxo {
                     address: address(encoded)?,
@@ -144,7 +144,9 @@ impl zaino_source::OneShotGetAddressUtxos for MockChain {
                     height: created.height,
                 })
             })
-            .collect()
+            .collect::<Result<Vec<_>, QueryError<GetAddressUtxosError>>>()?;
+        page.select(utxos, |utxo| utxo.height)
+            .map_err(|limit| QueryError::Domain(GetAddressUtxosError::TooManyResults { limit }))
     }
 }
 

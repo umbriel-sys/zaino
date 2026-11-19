@@ -92,7 +92,11 @@ GetAddressTxidsError::TooManyResults { limit } // over MAX_ADDRESS_QUERY_RESULTS
 
 `MAX_ADDRESS_QUERY_RESULTS` (100,000) is zebrad 7's address-query row cap; an
 adapter reading the index directly enforces it, and the RPC adapter maps
-zebrad's own refusal to the same `TooManyResults`.
+zebrad's own refusal to the same `TooManyResults`. `get_address_utxos` takes
+a `UtxoPage` (zebrad's `startHeight` and `maxEntries`): outputs created at or
+above the start, at most `maxEntries` of them, else refused past the cap.
+`UtxoPage::new` refuses a `maxEntries` above the cap, and every implementor
+applies `UtxoPage::select`, so the page is the same from any source.
 
 Write the variant that says what happened. A generic `NotFound` on every port
 throws away the thing the caller needs to act on — and, at the serving

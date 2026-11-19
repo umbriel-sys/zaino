@@ -106,7 +106,9 @@ an address for the store's other network, an inverted range, txids past the
 tip, more than `MAX_ADDRESS_QUERY_RESULTS`). The scan itself is bounded: the
 store and the head share one budget of `max_address_scan_rows` rows of history
 (default 400,000), and a query past it is refused (`Rejected`) before more is
-held, never truncated (K-01).
+held, never truncated (K-01). `address_utxos` takes a `UtxoPage`: the start
+height filter runs before the cap, so a client pages through a large address
+as zebrad allows.
 
 `PrevoutRead::previous_outputs` answers the output each outpoint names (value
 and script) from Zaino's own indexes: the window's blocks, else the store's

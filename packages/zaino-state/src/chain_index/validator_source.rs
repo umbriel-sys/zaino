@@ -621,7 +621,10 @@ impl<V: ChainIndexSourcePorts> BlockchainSource for ValidatorSource<V> {
         address_strings: zebra_rpc::client::GetAddressBalanceRequest,
     ) -> BlockchainSourceResult<Vec<zaino_primitives::types::Utxo>> {
         self.validator
-            .get_address_utxos(address_strings_to_vec(&address_strings)?)
+            .get_address_utxos(
+                address_strings_to_vec(&address_strings)?,
+                zaino_source::UtxoPage::default(),
+            )
             .await
             .map_err(request_err)
     }

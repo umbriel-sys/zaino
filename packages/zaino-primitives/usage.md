@@ -34,7 +34,9 @@ A plain protocol enum may appear where it names the protocol concept directly:
 `TransparentAddress::network()` returns `zcash_protocol`'s `NetworkType` rather
 than a Zaino copy of it. `zcash_address` is the first such dependency, used by
 [`TransparentAddress`](src/types/transparent_address.rs) to decide whether a
-string is a valid transparent address. The alternative was to hand-roll
+string is a valid transparent address, and by
+`TransparentAddress::from_standard_script` to encode the address a P2PKH or
+P2SH script pays. The alternative was to hand-roll
 Base58Check and SHA-256 here, which buys risk, not ownership: the address
 encoding *is* the protocol, and the spec-steward's parser is the spec artifact,
 so re-implementing it would mean maintaining a second, drift-prone copy of a

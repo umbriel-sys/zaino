@@ -50,6 +50,8 @@ use zaino_primitives::types::{
     TransparentOutput, Treestate, Utxo, Zatoshis, ZatoshisFlowSum,
 };
 
+use zaino_source::UtxoPage;
+
 use crate::block::ChainBlock;
 use crate::capability::{
     Answerable, ChainCapability, ServedCapabilities, ServiceabilityManifest, ServiceableRange,
@@ -1911,15 +1913,22 @@ where
         })
     }
 
-    async fn address_utxos(&self, addresses: &[TransparentAddress]) -> Result<Vec<Utxo>> {
+    async fn address_utxos(
+        &self,
+        addresses: &[TransparentAddress],
+        page: UtxoPage,
+    ) -> Result<Vec<Utxo>> {
         let Some(effects) = self.local_effects(addresses, None).await? else {
             return self
-                .address_query(self.fetch.source().get_address_utxos(encoded(addresses)))
+                .address_query(
+                    self.fetch
+                        .source()
+                        .get_address_utxos(encoded(addresses), page),
+                )
                 .await;
         };
-        let unspent = effects.unspent();
-        capped(unspent.len())?;
-        Ok(unspent
+        let utxos = effects
+            .unspent()
             .into_iter()
             .filter_map(|effect| {
                 let script = effect.credit.clone()?;
@@ -1932,7 +1941,12 @@ where
                     height: effect.height,
                 })
             })
-            .collect())
+            .collect();
+        page.select(utxos, |utxo| utxo.height).map_err(|limit| {
+            ChainViewError::Rejected(format!(
+                "more than {limit} unspent outputs match; page with startHeight and maxEntries"
+            ))
+        })
     }
 
     async fn address_txids(

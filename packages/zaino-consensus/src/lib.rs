@@ -66,6 +66,35 @@ pub const MAX_NONFINALISED_DEPTH: u32 = MAX_BLOCK_REORG_HEIGHT + 1;
 /// rather than a literal of its own.
 pub const FAST_TEST_MAX_NONFINALISED_DEPTH: u32 = MAX_NONFINALISED_DEPTH / 10;
 
+/// Mainnet's proof-of-work limit (protocol §5.3, `PoWLimit`, `2^243 - 1`) in
+/// compact form.
+pub const POW_LIMIT_BITS: u32 = 0x1f07_ffff;
+
+/// The public Testnet's proof-of-work limit (`2^251 - 1`) in compact form.
+pub const TESTNET_POW_LIMIT_BITS: u32 = 0x2007_ffff;
+
+/// Regtest's proof-of-work limit in compact form (zcashd's `0x0f0f…0f`).
+pub const REGTEST_POW_LIMIT_BITS: u32 = 0x200f_0f0f;
+
+/// A block's difficulty (`bits`) as a multiple of the network's minimum
+/// (`pow_limit_bits`), as zcashd's `GetDifficulty` and zebrad's headers
+/// compute it: the ratio of the compact mantissas, shifted a byte per
+/// exponent difference.
+pub fn difficulty(bits: u32, pow_limit_bits: u32) -> f64 {
+    let [mut exponent, ..] = bits.to_be_bytes();
+    let [limit_exponent, ..] = pow_limit_bits.to_be_bytes();
+    let mut ratio = f64::from(pow_limit_bits << 8) / f64::from(bits << 8);
+    while exponent < limit_exponent {
+        ratio *= 256.0;
+        exponent = exponent.saturating_add(1);
+    }
+    while exponent > limit_exponent {
+        ratio /= 256.0;
+        exponent = exponent.saturating_sub(1);
+    }
+    ratio
+}
+
 /// Blocks a median time is taken over: protocol §7.7.3, `PoWMedianBlockSpan`.
 ///
 /// No zebra agreement test: zebra-state keeps its `POW_MEDIAN_BLOCK_SPAN`

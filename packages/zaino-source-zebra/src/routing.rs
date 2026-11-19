@@ -318,10 +318,14 @@ impl OneShotGetAddressUtxos for ZebraValidator {
     async fn get_address_utxos(
         &self,
         addresses: Vec<String>,
+        page: zaino_source::UtxoPage,
     ) -> Result<Vec<Utxo>, QueryError<GetAddressUtxosError>> {
         match self.fast() {
-            Some(fast) => fast.get_address_utxos(addresses).await.map_err(to_seam),
-            None => self.rpc.get_address_utxos(addresses).await,
+            Some(fast) => fast
+                .get_address_utxos(addresses, page)
+                .await
+                .map_err(to_seam),
+            None => self.rpc.get_address_utxos(addresses, page).await,
         }
     }
 }

@@ -6369,6 +6369,7 @@ dependencies = [
 name = "zaino-service"
 version = "0.1.0"
 dependencies = [
+ "hex",
  "thiserror 2.0.20",
  "tokio",
  "tokio-util",

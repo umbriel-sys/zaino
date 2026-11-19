@@ -814,17 +814,28 @@ impl zaino_source::OneShotGetAddressUtxos for ZcashRpcAdapter {
     async fn get_address_utxos(
         &self,
         addresses: Vec<String>,
+        page: zaino_source::UtxoPage,
     ) -> Result<Vec<zaino_primitives::types::Utxo>, QueryError<zaino_source::GetAddressUtxosError>>
     {
-        self.call_parsed_or_invalid_address(
-            "getaddressutxos",
-            &addresses,
-            vec![addresses_param(&addresses)],
-            parse::parse_address_utxos,
-            zaino_source::GetAddressUtxosError::InvalidAddress,
-            |limit| Some(zaino_source::GetAddressUtxosError::TooManyResults { limit }),
-        )
-        .await
+        let params = serde_json::json!({
+            "addresses": addresses,
+            "startHeight": u32::from(page.start()),
+            "maxEntries": page.max_entries().map_or(0, |max| max.get()),
+        });
+        let utxos = self
+            .call_parsed_or_invalid_address(
+                "getaddressutxos",
+                &addresses,
+                vec![params],
+                parse::parse_address_utxos,
+                zaino_source::GetAddressUtxosError::InvalidAddress,
+                |limit| Some(zaino_source::GetAddressUtxosError::TooManyResults { limit }),
+            )
+            .await?;
+        // the page again, for a validator that ignores the fields
+        page.select(utxos, |utxo| utxo.height).map_err(|limit| {
+            QueryError::Domain(zaino_source::GetAddressUtxosError::TooManyResults { limit })
+        })
     }
 }
 

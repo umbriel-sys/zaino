@@ -7,6 +7,7 @@ mod common;
 use common::{chain, height, rig, TIP};
 use zaino_chain::{AddressRead as _, ChainView as _, ChainViewConfig, ChainViewError};
 use zaino_primitives::types::{Network, TransparentAddress};
+use zaino_source::UtxoPage;
 use zaino_source_mock::{address_of, MockChain, MINER_SCRIPT, RECIPIENT_SCRIPT};
 
 /// The store's tip: below it the store answers, above it the head.
@@ -75,11 +76,28 @@ async fn address_reads_match_the_validator() {
             expected.address_balance(addresses).await.expect("answered"),
             "balance of {addresses:?}"
         );
-        assert_eq!(
-            snapshot.address_utxos(addresses).await.expect("answered"),
-            expected.address_utxos(addresses).await.expect("answered"),
-            "UTXOs of {addresses:?}"
-        );
+        for page in [
+            UtxoPage::default(),
+            UtxoPage::new(height(150), 2).expect("in range"),
+            UtxoPage::new(height(290), 0).expect("in range"),
+        ] {
+            let local = snapshot
+                .address_utxos(addresses, page)
+                .await
+                .expect("answered");
+            assert_eq!(
+                local,
+                expected
+                    .address_utxos(addresses, page)
+                    .await
+                    .expect("answered"),
+                "UTXOs of {addresses:?} {page:?}"
+            );
+            assert!(local.iter().all(|utxo| utxo.height >= page.start()));
+            assert!(page
+                .max_entries()
+                .is_none_or(|max| local.len() <= max.get()));
+        }
         for (start, end) in ranges {
             let (start, end) = (height(start), height(end));
             let deltas = snapshot
@@ -142,7 +160,9 @@ async fn address_reads_refuse_as_the_validator_does() {
     }
     assert!(rejected(&snapshot.address_balance(&foreign).await));
     assert!(rejected(&expected.address_balance(&foreign).await));
-    assert!(rejected(&snapshot.address_utxos(&foreign).await));
+    assert!(rejected(
+        &snapshot.address_utxos(&foreign, UtxoPage::default()).await
+    ));
     assert!(rejected(
         &snapshot
             .address_deltas(&foreign, height(0), height(TIP))
@@ -235,7 +255,7 @@ async fn a_query_past_the_row_budget_is_refused() {
             ChainViewConfig::default().with_max_address_scan_rows(rows),
         )
         .snapshot()
-        .address_utxos(&miner)
+        .address_utxos(&miner, UtxoPage::default())
         .await;
     assert!(within.is_ok(), "{within:?}");
 
@@ -245,7 +265,7 @@ async fn a_query_past_the_row_budget_is_refused() {
             ChainViewConfig::default().with_max_address_scan_rows(rows - 1),
         )
         .snapshot()
-        .address_utxos(&miner)
+        .address_utxos(&miner, UtxoPage::default())
         .await;
     assert!(rejected(&past), "{past:?}");
     assert!(!asked(&source), "the validator is never asked");

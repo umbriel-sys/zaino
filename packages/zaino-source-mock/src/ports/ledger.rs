@@ -4,10 +4,8 @@
 use std::collections::HashMap;
 
 use zaino_primitives::types::{
-    Height, Network, ScriptType, TransactionId, TransparentAddressKey, TransparentOutput,
+    Height, Network, TransactionId, TransparentAddress, TransparentOutput,
 };
-use zcash_address::{ToAddress as _, ZcashAddress};
-use zcash_protocol::consensus::NetworkType;
 
 use crate::chain::Served;
 
@@ -117,23 +115,7 @@ pub(crate) fn pool_values(
     Ok((chain, delta))
 }
 
-/// The network type addresses are encoded for.
-pub(crate) fn network_type(network: Network) -> NetworkType {
-    match network {
-        Network::Mainnet => NetworkType::Main,
-        Network::PubTestnet => NetworkType::Test,
-        Network::Regtest => NetworkType::Regtest,
-    }
-}
-
 /// The address a standard script pays, encoded for `network`.
 pub(crate) fn address_of(script: &[u8], network: Network) -> Option<String> {
-    let key = TransparentAddressKey::from_standard_script(script)?;
-    let network = network_type(network);
-    let address = match key.script_type {
-        ScriptType::P2PKH => ZcashAddress::from_transparent_p2pkh(network, key.hash),
-        ScriptType::P2SH => ZcashAddress::from_transparent_p2sh(network, key.hash),
-        ScriptType::NonStandard => return None,
-    };
-    Some(address.encode())
+    TransparentAddress::from_standard_script(script, network).map(String::from)
 }

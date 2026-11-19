@@ -82,7 +82,9 @@ pub use error::{FailureMode, NonDomainError, QueryError, SourceError, Unavailabl
 pub use get_address_balance::{GetAddressBalanceError, OneShotGetAddressBalance};
 pub use get_address_deltas::{GetAddressDeltasError, OneShotGetAddressDeltas};
 pub use get_address_txids::{GetAddressTxidsError, OneShotGetAddressTxids};
-pub use get_address_utxos::{GetAddressUtxosError, OneShotGetAddressUtxos};
+pub use get_address_utxos::{
+    GetAddressUtxosError, OneShotGetAddressUtxos, UtxoPage, UtxoPageError,
+};
 pub use get_best_block_height::{GetBestBlockHeightError, OneShotGetBestBlockHeight};
 pub use get_block::{GetBlock, GetBlockError, OneShotGetBlock};
 pub use get_block_by_hash::{GetBlockByHashError, OneShotGetBlockByHash};

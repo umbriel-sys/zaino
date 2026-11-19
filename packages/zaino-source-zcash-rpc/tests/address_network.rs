@@ -7,7 +7,7 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpListener;
 
 use zaino_rpc::{RpcClient, RpcClientConfig};
-use zaino_source::{GetAddressUtxosError, OneShotGetAddressUtxos, QueryError};
+use zaino_source::{GetAddressUtxosError, OneShotGetAddressUtxos, QueryError, UtxoPage};
 use zaino_source_zcash_rpc::{Quirks, ZcashRpcAdapter};
 
 const MAINNET: &str = "t1Hsc1LR8yKnbbe3twRp88p6vFfC5t7DLbs";
@@ -73,7 +73,7 @@ async fn another_networks_address_is_invalid_under_the_quirk() {
     let (adapter, calls) = adapter(unchecked()).await;
     for _ in 0..2 {
         let answer = adapter
-            .get_address_utxos(vec![TESTNET.into(), MAINNET.into()])
+            .get_address_utxos(vec![TESTNET.into(), MAINNET.into()], UtxoPage::default())
             .await;
         assert!(
             matches!(
@@ -90,7 +90,9 @@ async fn another_networks_address_is_invalid_under_the_quirk() {
 #[tokio::test]
 async fn the_nodes_network_is_asked() {
     let (adapter, calls) = adapter(unchecked()).await;
-    let answer = adapter.get_address_utxos(vec![TESTNET.into()]).await;
+    let answer = adapter
+        .get_address_utxos(vec![TESTNET.into()], UtxoPage::default())
+        .await;
     assert!(
         matches!(answer, Ok(ref utxos) if utxos.is_empty()),
         "{answer:?}"
@@ -105,7 +107,9 @@ async fn the_nodes_network_is_asked() {
 #[tokio::test]
 async fn without_the_quirk_the_node_checks() {
     let (adapter, calls) = adapter(Quirks::default()).await;
-    let answer = adapter.get_address_utxos(vec![MAINNET.into()]).await;
+    let answer = adapter
+        .get_address_utxos(vec![MAINNET.into()], UtxoPage::default())
+        .await;
     assert!(answer.is_ok(), "{answer:?}");
     assert_eq!(*calls.lock().expect("call log"), ["getaddressutxos"]);
 }

@@ -23,20 +23,15 @@ use super::{fault, refused};
 use crate::chain::Served;
 use crate::{CallArg, MockBlock, MockChain};
 
-/// zcashd's `GetDifficulty`: the network's minimum-difficulty target over
-/// `bits`'s, both from their compact forms (zebra divides by its exact
-/// 256-bit limit instead, which differs in the eighth significant digit).
+/// The difficulty as zebrad's headers and zcashd's `GetDifficulty` report it,
+/// against the network's own proof-of-work limit.
 pub(crate) fn difficulty(bits: u32, network: Network) -> Difficulty {
     let limit = match network {
-        Network::Mainnet | Network::PubTestnet => 0x1f07_ffff,
-        Network::Regtest => 0x200f_0f0f,
+        Network::Mainnet => zaino_consensus::POW_LIMIT_BITS,
+        Network::PubTestnet => zaino_consensus::TESTNET_POW_LIMIT_BITS,
+        Network::Regtest => zaino_consensus::REGTEST_POW_LIMIT_BITS,
     };
-    let target = |bits: u32| {
-        let mantissa = f64::from(bits & 0x00ff_ffff);
-        let exponent = i32::try_from(bits >> 24).unwrap_or(0);
-        mantissa * 256f64.powi(exponent - 3)
-    };
-    target(limit) / target(bits)
+    zaino_consensus::difficulty(bits, limit)
 }
 
 fn confirmations(served: &Served<'_>, block: &MockBlock) -> BlockConfirmations {
