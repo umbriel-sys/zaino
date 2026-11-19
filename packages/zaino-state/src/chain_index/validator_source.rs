@@ -859,11 +859,7 @@ impl<V: ChainIndexSourcePorts> BlockchainSource for ValidatorSource<V> {
     ) -> BlockchainSourceResult<Vec<([u8; 32], u32)>> {
         let roots = self
             .validator
-            .get_subtree_roots(
-                zaino_chain_store_zainodb::pool::ShieldedPool::to_domain(pool),
-                start_index,
-                max_entries,
-            )
+            .get_subtree_roots(pool.to_domain(), start_index, max_entries)
             .await
             .map_err(err)?;
 
@@ -1343,18 +1339,9 @@ mod tests {
         use crate::chain_index::ShieldedPool as Ours;
         use zaino_primitives::types::ShieldedPool as Theirs;
 
-        assert_eq!(
-            zaino_chain_store_zainodb::pool::ShieldedPool::to_domain(Ours::Sapling),
-            Theirs::Sapling
-        );
-        assert_eq!(
-            zaino_chain_store_zainodb::pool::ShieldedPool::to_domain(Ours::Orchard),
-            Theirs::Orchard
-        );
-        assert_eq!(
-            zaino_chain_store_zainodb::pool::ShieldedPool::to_domain(Ours::Ironwood),
-            Theirs::Ironwood
-        );
+        assert_eq!(Ours::Sapling.to_domain(), Theirs::Sapling);
+        assert_eq!(Ours::Orchard.to_domain(), Theirs::Orchard);
+        assert_eq!(Ours::Ironwood.to_domain(), Theirs::Ironwood);
     }
 
     /// Block identifiers arrive from the interface in display order. This is

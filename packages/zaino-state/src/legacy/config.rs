@@ -2,12 +2,44 @@
 
 use std::path::PathBuf;
 
-pub use zaino_chain_store_zainodb::{
-    AccumulatorRebuildMemorySize, DatabaseSize, SyncWriteBatchSize,
-    DEFAULT_SYNC_CHECKPOINT_INTERVAL_SECS,
-};
-
 use crate::legacy::xdg::resolve_path_with_xdg_cache_defaults;
+
+/// The old store's checkpoint interval default, in seconds (deprecated).
+pub const DEFAULT_SYNC_CHECKPOINT_INTERVAL_SECS: u64 = 120;
+
+/// The old store's size limit, in gigabytes (deprecated: not read).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Deserialize, serde::Serialize)]
+#[serde(transparent)]
+pub struct DatabaseSize(pub usize);
+
+impl Default for DatabaseSize {
+    fn default() -> Self {
+        Self(384)
+    }
+}
+
+/// The old store's bulk-sync write batch, in gibibytes (deprecated: not read).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Deserialize, serde::Serialize)]
+#[serde(transparent)]
+pub struct SyncWriteBatchSize(pub usize);
+
+impl Default for SyncWriteBatchSize {
+    fn default() -> Self {
+        Self(8)
+    }
+}
+
+/// The old store's accumulator rebuild budget, in gibibytes (deprecated: not
+/// read).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Deserialize, serde::Serialize)]
+#[serde(transparent)]
+pub struct AccumulatorRebuildMemorySize(pub usize);
+
+impl Default for AccumulatorRebuildMemorySize {
+    fn default() -> Self {
+        Self(8)
+    }
+}
 
 /// Service-level configuration for timeouts and channels.
 #[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]

@@ -1,23 +1,30 @@
 //! The chain index's legacy type vocabulary, and its conversions to and from
 //! the domain types ChainView and the mempool speak.
 //!
-//! The legacy shapes live in `zaino-chain-store-zainodb` and are re-exported
-//! because the public `ChainIndex` traits are written against them. Every
-//! conversion between them and the domain is here, so both services convert
-//! the same way.
+//! The legacy shapes live in [`crate::legacy::chain`]; every conversion
+//! between them and the domain is here.
 //!
 //! The wire conversions stay in [`super::wire_types`].
 
 use std::collections::HashSet;
-use std::num::NonZeroU128;
 
-use zaino_chain::{ChainBlock, ChainTxPosition, SpendStatus};
+use zaino_chain::{ChainTxPosition, SpendStatus};
 use zaino_primitives::types as domain;
 use zaino_service::Placement;
 
 use crate::error::ChainIndexError;
 
-pub use zaino_chain_store_zainodb::types::*;
+pub use crate::legacy::chain::{
+    BestChainLocation, BlockHash, BlockIndex, ChainScope, Height, NonBestChainLocation, Outpoint,
+    TransactionHash,
+};
+
+pub(crate) fn domain_outpoint(outpoint: &Outpoint) -> domain::Outpoint {
+    domain::Outpoint {
+        txid: domain::TransactionId::from(*outpoint.prev_txid()),
+        index: outpoint.prev_index(),
+    }
+}
 
 pub(crate) fn domain_hash(hash: BlockHash) -> domain::BlockHash {
     domain::BlockHash::from(hash.0)
@@ -109,31 +116,6 @@ pub(crate) fn chain_locations(
         })
         .collect();
     Ok((best, elsewhere))
-}
-
-/// A ChainView block, in the legacy shape.
-///
-/// The store's conversion takes a chainwork, so a placeholder stands in for it
-/// and is replaced by the view's own: the real value, or `None` where the view
-/// cannot know it. The legacy shape carries per-pool value balances the new
-/// indexes no longer hold (D-97), so they are `None`.
-pub(crate) fn indexed_block(block: ChainBlock) -> Result<IndexedBlock, ChainIndexError> {
-    use zaino_chain_store_zainodb::adapter::{StoredBlock, StoredTx};
-    let chainwork = block.chainwork;
-    let stored = StoredBlock {
-        header: block.header,
-        transactions: block
-            .transactions
-            .into_iter()
-            .map(StoredTx::transparent_only)
-            .collect(),
-        tree_roots: block.tree_roots,
-        chainwork: chainwork.unwrap_or(domain::AbsoluteChainWork::new(NonZeroU128::MIN)),
-    };
-    Ok(
-        zaino_chain_store_zainodb::adapter::indexed_block_from_stored(&stored)?
-            .map_chainwork(|_| chainwork),
-    )
 }
 
 /// The consensus branch a transaction at `height` is validated under.

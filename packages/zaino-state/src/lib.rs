@@ -68,7 +68,7 @@ pub use indexer::node_backed_indexer::{
 pub mod chain_index;
 pub mod legacy;
 
-pub use zaino_chain_store_zainodb::store::FinalisedStateMode;
+pub use legacy::chain::FinalisedStateMode;
 
 // Core ChainIndex trait and implementations
 pub use chain_index::{
@@ -81,36 +81,17 @@ pub use chain_index::chain_view::WithChainViewSource;
 pub use chain_index::source::BlockchainSource;
 pub use chain_index::source_ports::ChainIndexSourcePorts;
 pub use chain_index::validator_source::{ValidatorSource, ZebraValidatorSource};
-// Supporting types
-// Zaino's versioned encoding now lives in `zaino-encoding`, so a storage
-// backend and a wire codec can share it. Re-exported unchanged: every consumer
-// of these names is mid-migration and should not have to move at the same time.
-pub use zaino_encoding::*;
 // Mempool statistics for `getmempoolinfo`, now `zaino-primitives` vocabulary.
 // Re-exported so a consumer wiring a ChainIndex need not name that crate.
 // The chain view `ChainIndex` answers from, and the types its snapshot is made
 // of. Re-exported so a consumer need not name those crates directly.
-pub use error::{InitError, SyncError};
+pub use error::InitError;
 pub use zaino_chain::{ChainViewSnapshot, ComposerSnapshot};
 pub use zaino_chain_head::{ChainHeadBlock, ChainHeadSnapshot};
 pub use zaino_chain_head_service::PersistentSnapshot;
 pub use zaino_primitives::types::MempoolInfo;
 
-/// The finalised store's on-disk types, for this crate's own use only.
-///
-/// These were `pub`, with a note asking whether they should be. They should
-/// not: they are `zaino-chain-store-zainodb`'s persisted shapes, and a consumer
-/// written against them is written against one backend's disk layout. A
-/// consumer that genuinely needs them — the live-test legacy parser, which
-/// rebuilds a block independently and compares — names that crate directly.
-///
-/// `pub(crate)` rather than deleted because this crate still reads both halves
-/// of the chain through `IndexedBlock`. The re-export goes when it stops.
-///
-/// `TxOutCompact` has already gone: the finalised reads now come back as
-/// domain outputs through the ports. The rest of this list shrinks the same
-/// way.
-pub(crate) use chain_index::types::{BlockHash, IndexedBlock};
+pub(crate) use chain_index::types::BlockHash;
 #[cfg(test)]
 pub(crate) use chain_index::types::{Height, Outpoint};
 

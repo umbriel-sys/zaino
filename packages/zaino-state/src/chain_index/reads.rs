@@ -16,12 +16,11 @@ use super::node_backed::NodeBackedChainIndexSubscriber;
 use super::source::{BlockchainSource, BlockchainSourceError, PoolTreestate};
 use super::types::{
     self, block_index, chain_locations, checked_addresses, domain_hash, domain_height,
-    domain_scope, domain_txid, indexed_block, local_hash, local_height, local_txid,
-    BestChainLocation, BlockIndex, NonBestChainLocation,
+    domain_scope, domain_txid, local_hash, local_height, local_txid, BestChainLocation, BlockIndex,
+    NonBestChainLocation,
 };
 use super::{ChainIndex, ShieldedPool};
 use crate::error::{ChainIndexError, ChainIndexErrorKind};
-use crate::IndexedBlock;
 
 /// A chain view's chunked range, one item at a time.
 pub(super) fn flatten<T>(
@@ -73,33 +72,6 @@ impl<
             return Ok(None);
         };
         Ok(snapshot.block_hash(height).await?.map(local_hash))
-    }
-
-    async fn get_indexed_block_by_hash(
-        &self,
-        snapshot: &Self::Snapshot,
-        target_hash: &types::BlockHash,
-    ) -> Result<Option<IndexedBlock>, Self::Error> {
-        snapshot
-            .block(BlockId::Hash(domain_hash(*target_hash)))
-            .await?
-            .map(indexed_block)
-            .transpose()
-    }
-
-    async fn get_indexed_block_by_height(
-        &self,
-        snapshot: &Self::Snapshot,
-        target_height: &types::Height,
-    ) -> Result<Option<IndexedBlock>, Self::Error> {
-        let Some(height) = domain_height(*target_height) else {
-            return Ok(None);
-        };
-        snapshot
-            .block(BlockId::Height(height))
-            .await?
-            .map(indexed_block)
-            .transpose()
     }
 
     fn get_block_range(
@@ -304,10 +276,7 @@ impl<
         outpoints: Vec<types::Outpoint>,
         scope: types::ChainScope,
     ) -> Result<Vec<Option<types::TransactionHash>>, Self::Error> {
-        let outpoints: Vec<_> = outpoints
-            .iter()
-            .map(zaino_chain_store_zainodb::adapter::domain_outpoint)
-            .collect();
+        let outpoints: Vec<_> = outpoints.iter().map(types::domain_outpoint).collect();
         snapshot
             .outpoint_spenders(&outpoints, domain_scope(scope))
             .await?

@@ -4,11 +4,11 @@
 use std::str::FromStr as _;
 use std::sync::Arc;
 
+use crate::legacy::chain::FinalisedStateMode;
 use zaino_chain::{BlockRead as _, ForkReconcile as _, Locator};
 use zaino_chain_store_service::{
     ChainStoreServiceConfig, IndexesConfig, IngestConfig, NamedSet, OnCorruption,
 };
-use zaino_chain_store_zainodb::store::FinalisedStateMode;
 use zaino_component::{ComponentStatus, Health, Lifecycle};
 use zaino_persistence_lsm_tree::{fs::RealFs, LsmConfig, LsmTreeStorage};
 use zaino_service::{DiskStore, Mode, Provision, Service, ServiceConfig, Store};
@@ -499,7 +499,7 @@ mod tests {
     fn only_changed_legacy_knobs_are_warned() {
         assert!(legacy_knobs_set(&config(false, StorageConfig::default())).is_empty());
         let mut storage = StorageConfig::default();
-        storage.database.size = zaino_chain_store_zainodb::config::DatabaseSize(1);
+        storage.database.size = crate::legacy::config::DatabaseSize(1);
         storage.cache = CacheConfig {
             capacity: CacheConfig::default().capacity + 1,
             ..CacheConfig::default()

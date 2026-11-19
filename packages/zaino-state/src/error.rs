@@ -80,10 +80,6 @@ pub enum NodeBackedIndexerServiceError {
     #[error("Chain index error: {0}")]
     ChainIndexError(#[from] ChainIndexError),
 
-    /// Error from the block cache.
-    #[error("Mempool error: {0}")]
-    BlockCacheError(#[from] BlockCacheError),
-
     /// Error from the mempool.
     #[error("Mempool error: {0}")]
     MempoolError(#[from] MempoolError),
@@ -181,9 +177,6 @@ impl From<NodeBackedIndexerServiceError> for tonic::Status {
                 // one.
                 ChainIndexErrorKind::Unimplemented => tonic::Status::unimplemented(err.message),
             },
-            NodeBackedIndexerServiceError::BlockCacheError(err) => {
-                tonic::Status::internal(format!("BlockCache error: {err:?}"))
-            }
             NodeBackedIndexerServiceError::MempoolError(err) => {
                 tonic::Status::internal(format!("Mempool error: {err:?}"))
             }
@@ -236,52 +229,7 @@ pub enum MempoolError {
     /// Error from a Tokio Watch Receiver.
     #[error("Join error: {0}")]
     WatchRecvError(#[from] tokio::sync::watch::error::RecvError),
-
-    /// Unexpected status-related error.
-    #[error("Status error: {0:?}")]
-    StatusError(StatusError),
 }
-
-/// Errors related to the `BlockCache`.
-#[derive(Debug, thiserror::Error)]
-pub enum BlockCacheError {
-    /// Custom Errors. *Remove before production.
-    #[error("Custom error: {0}")]
-    Custom(String),
-
-    /// Critical Errors, Restart Zaino.
-    #[error("Critical error: {0}")]
-    Critical(String),
-
-    /// Errors from the FinalisedState.
-    #[error("FinalisedState Error: {0}")]
-    FinalisedStateError(#[from] FinalisedStateError),
-
-    /// Serialization error.
-    #[error("Serialization error: {0}")]
-    SerializationError(#[from] zebra_chain::serialization::SerializationError),
-
-    /// UTF-8 conversion error.
-    #[error("UTF-8 conversion error: {0}")]
-    Utf8Error(#[from] std::str::Utf8Error),
-
-    /// Integer parsing error.
-    #[error("Integer parsing error: {0}")]
-    ParseIntError(#[from] std::num::ParseIntError),
-
-    /// Integer conversion error.
-    #[error("Integer conversion error: {0}")]
-    TryFromIntError(#[from] std::num::TryFromIntError),
-}
-
-/// Errors from the finalised chain store.
-///
-/// Not defined here: it belongs to the backend that produces it, and is
-/// re-exported under its old name so this crate's callers do not have to be
-/// rewritten while they are being moved onto
-/// [`zaino_chain_store::ChainStoreError`], which is what the ports return and
-/// what a consumer should eventually see.
-pub use zaino_chain_store_zainodb::error::{StatusError, StoreError as FinalisedStateError};
 
 #[derive(Debug, thiserror::Error)]
 #[error("{kind}: {message}")]
@@ -463,71 +411,15 @@ impl From<zaino_chain_head::ChainHeadError> for ChainIndexError {
     }
 }
 
-/// An error occurred during a ChainIndex sync iteration.
-///
-/// One variant, because the loop now drives one thing: the finalised state.
-/// Whatever goes wrong — an unreachable validator, a database that will not
-/// advance — the worker's answer is the same, to back off and retry, and to
-/// escalate only after a run of them.
-#[derive(Debug, thiserror::Error)]
-pub enum SyncError {
-    /// The sync iteration failed. Retryable.
-    #[error("sync iteration failed: {0}")]
-    ErrorFromSource(Box<dyn std::error::Error + Send>),
-}
-
 /// An error occurred while constructing a ChainIndex.
 #[derive(Debug, thiserror::Error)]
 pub enum InitError {
     /// The connected node returned data that could not be used.
     #[error("validator returned invalid data: {0}")]
     InvalidNodeData(Box<dyn std::error::Error + Send + Sync + 'static>),
-    /// The mempool failed to initialise.
-    #[error(transparent)]
-    MempoolInitialzationError(#[from] crate::error::MempoolError),
-    /// The finalised state failed to initialise.
-    #[error(transparent)]
-    FinalisedStateInitialzationError(#[from] FinalisedStateError),
-    /// The chain head could not build its first window.
-    ///
-    /// Fatal by design: a chain head with no window has nothing to serve, and
-    /// it holds no persistent state to fall back on.
-    #[error(transparent)]
-    ChainHeadInitialisationError(#[from] zaino_chain_head_service::ChainHeadInitError),
-
     /// The service did not start.
     #[error(transparent)]
     ServiceInitialisationError(#[from] zaino_service::SpawnError),
-}
-
-impl From<FinalisedStateError> for ChainIndexError {
-    fn from(value: FinalisedStateError) -> Self {
-        let message = match &value {
-            FinalisedStateError::DataUnavailable(err) => format!("unhandled missing data: {err}"),
-            FinalisedStateError::FeatureUnavailable(err) => {
-                format!("unhandled missing feature: {err}")
-            }
-            FinalisedStateError::V1BackendUnavailable(handle) => {
-                format!("v1 backend unavailable: {handle}")
-            }
-            FinalisedStateError::InvalidBlock {
-                height,
-                hash: _,
-                reason,
-            } => format!("invalid block at height {height}: {reason}"),
-            FinalisedStateError::Custom(err) | FinalisedStateError::Critical(err) => err.clone(),
-            FinalisedStateError::LmdbError(error) => error.to_string(),
-            FinalisedStateError::SerdeJsonError(error) => error.to_string(),
-            FinalisedStateError::StatusError(status_error) => status_error.to_string(),
-            FinalisedStateError::IoError(error) => error.to_string(),
-            FinalisedStateError::Source(source_error) => source_error.to_string(),
-        };
-        ChainIndexError {
-            kind: ChainIndexErrorKind::InternalServerError,
-            message,
-            source: Some(Box::new(value)),
-        }
-    }
 }
 
 /// A chain-store query that could not be answered.
@@ -667,9 +559,6 @@ impl From<MempoolError> for ChainIndexError {
                 format!("mempool blockchain source error: {err}")
             }
             MempoolError::WatchRecvError(err) => format!("mempool watch receiver error: {err}"),
-            MempoolError::StatusError(status_err) => {
-                format!("mempool status error: {status_err:?}")
-            }
         };
 
         ChainIndexError {

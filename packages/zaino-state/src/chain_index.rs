@@ -9,7 +9,6 @@
 use crate::chain_index::types::BlockIndex;
 use crate::chain_index::types::{BestChainLocation, NonBestChainLocation};
 use crate::CompactBlockStream;
-use crate::IndexedBlock;
 use std::collections::HashSet;
 use zaino_primitives::types::rpc::{
     AddressDeltas, AddressDeltasRequest, BlockDeltas, BlockHeaderVerbose, BlockSubsidy, MiningInfo,
@@ -188,24 +187,6 @@ pub trait ChainIndex {
         snapshot: &Self::Snapshot,
         hash: types::Height,
     ) -> impl std::future::Future<Output = Result<Option<types::BlockHash>, Self::Error>>;
-
-    /// Returns Some(IndexedBlock) for the given block hash.
-    ///
-    /// Returns None if the specified block is not found.
-    fn get_indexed_block_by_hash(
-        &self,
-        snapshot: &Self::Snapshot,
-        target_hash: &types::BlockHash,
-    ) -> impl std::future::Future<Output = Result<Option<IndexedBlock>, Self::Error>>;
-
-    /// Returns Some(IndexedBlock) for the given block height.in the best chain.
-    ///
-    /// Returns None if the specified block height is above the best chain tip.
-    fn get_indexed_block_by_height(
-        &self,
-        snapshot: &Self::Snapshot,
-        target_height: &types::Height,
-    ) -> impl std::future::Future<Output = Result<Option<IndexedBlock>, Self::Error>>;
 
     /// Given inclusive start and end heights, stream all blocks
     /// between the given heights, descending when `start` is above `end`.
@@ -557,4 +538,4 @@ pub trait ChainIndexRpcExt: ChainIndex {
 /// network upgrade that activates it, because that is what it needs to decide
 /// whether a block should have a commitment tree root. A second copy here drifts
 /// the moment a pool is added.
-pub use zaino_chain_store_zainodb::pool::ShieldedPool;
+pub use crate::legacy::chain::ShieldedPool;
