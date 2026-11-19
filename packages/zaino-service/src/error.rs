@@ -38,6 +38,10 @@ pub enum ServiceError {
     /// Two sources Zaino reads disagree about the chain.
     #[error("sources disagree: {0}")]
     Inconsistent(String),
+    /// The answer depends on state that has not caught up with this
+    /// snapshot; a fresh snapshot can answer.
+    #[error("retry with a fresh snapshot: {0}")]
+    Stale(&'static str),
 }
 
 impl ServiceError {

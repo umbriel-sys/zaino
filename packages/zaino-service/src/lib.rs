@@ -26,6 +26,7 @@ mod capability;
 mod config;
 mod engine;
 mod error;
+mod mempool_reads;
 mod reads;
 mod source;
 
@@ -33,5 +34,6 @@ pub use capability::{Capability, Provision, ServiceManifest};
 pub use config::{DiskStore, Mode, ServiceConfig, Store};
 pub use engine::{Service, SpawnError};
 pub use error::ServiceError;
+pub use mempool_reads::{Placement, ServedTransaction, TransactionStatus};
 pub use reads::{ChainSnapshot, ServiceSnapshot};
 pub use source::ServiceSource;

@@ -12,6 +12,8 @@ categories = { workspace = true }
 version = "0.1.0"
 
 [dependencies]
+bytes.workspace = true
+futures.workspace = true
 hex.workspace = true
 thiserror.workspace = true
 tokio = { workspace = true, features = ["rt", "sync"] }

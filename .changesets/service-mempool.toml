@@ -1,0 +1,8 @@
+[[changes]]
+crate = "zaino-service"
+kind = "feature"
+description = """
+Mempool reads on `ServiceSnapshot`: txids, info and filtered entries from the \
+tip-agnostic set; the coherent stream; `transaction` and \
+`transaction_status` placed against the snapshot through the coherent view, \
+`ServiceError::Stale` where it has not caught up."""

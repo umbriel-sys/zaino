@@ -41,6 +41,10 @@ pub struct ServiceSnapshot<S: ServiceSource> {
     chain: ChainSnapshot<S>,
     source: Arc<S>,
     network: Network,
+    /// The tip-agnostic mempool set.
+    pub(crate) mempool: zaino_mempool_service::MempoolSubscriber,
+    /// The mempool coherent with a chain tip.
+    pub(crate) coherence: zaino_mempool_service::CoherentSubscriber,
 }
 
 impl<S: ServiceSource> Service<S> {
@@ -50,6 +54,8 @@ impl<S: ServiceSource> Service<S> {
             chain: self.view.snapshot(),
             source: Arc::clone(&self.source),
             network: self.network(),
+            mempool: self.mempool.subscriber(),
+            coherence: self.coherence.subscriber(),
         }
     }
 }

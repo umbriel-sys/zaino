@@ -76,6 +76,15 @@ by ChainView. Built on top:
 | `block_subsidy(height)` | the validator, at the tip when `None` |
 | `blockchain_info`, `node_info`, `peer_info`, `mining_info`, `difficulty_at_tip`, `network_sol_ps`, `standard_fee`, `tx_out`, `send_raw_transaction` | the validator |
 
+The mempool reads (D6-02) never ask the validator:
+
+| Read | From |
+| --- | --- |
+| `mempool_txids`, `mempool_info`, `mempool_entries(exclude)` | the tip-agnostic set; a malformed exclude is `InvalidParameter`, never trimmed |
+| `mempool_stream(pinned)` | the coherent view until the tip moves; `pinned` asks for one coherent with this snapshot (`None` otherwise); a lag ends it with `Stale` |
+| `transaction(txid)` | the coherent mempool (to be mined at the tip's successor), else the chain; a mempool not coherent with this snapshot that holds a txid the chain lacks is `Stale` |
+| `transaction_status(txid)` | its blocks, and the mempool: `best` when coherent with this snapshot, `elsewhere` (at the mempool tip's successor, if held) when not |
+
 A difficulty is computed as zcashd's `GetDifficulty` computes it, against the
 network's proof-of-work limit. A transaction larger than a block is refused
 before the validator is asked.
