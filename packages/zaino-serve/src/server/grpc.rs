@@ -1,5 +1,7 @@
 //! Zaino's gRPC Server Implementation.
 
+use std::time::Duration;
+
 use tokio::sync::watch;
 use tonic::{
     service::Routes,
@@ -100,7 +102,16 @@ impl TonicServer {
         let (shutdown, mut shutdown_signal) = watch::channel(());
         let routes = build_routes(shutdown.subscribe());
 
-        let mut server_builder = Server::builder();
+        let limits = server_config.limits;
+        let mut server_builder = Server::builder()
+            .concurrency_limit_per_connection(limits.concurrency_limit_per_connection.get())
+            .max_concurrent_streams(Some(limits.max_concurrent_streams.get()))
+            .http2_keepalive_interval(Some(Duration::from_secs(
+                limits.keepalive_interval_secs.get(),
+            )))
+            .http2_keepalive_timeout(Some(Duration::from_secs(
+                limits.keepalive_timeout_secs.get(),
+            )));
         if let Some(tls_config) = server_config.get_valid_tls().await? {
             // Building the TLS acceptor requires a process-level rustls
             // CryptoProvider (zingolabs/zaino#1360).

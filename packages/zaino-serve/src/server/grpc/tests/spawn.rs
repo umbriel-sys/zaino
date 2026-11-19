@@ -38,6 +38,7 @@ async fn returns_err_when_port_is_in_use() {
         GrpcServerConfig {
             listen_address: occupied_addr,
             tls: None,
+            limits: Default::default(),
         },
     )
     .await;

@@ -371,6 +371,7 @@ impl Default for ZainodConfig {
             grpc_settings: GrpcServerConfig {
                 listen_address: SocketAddr::from(([127, 0, 0, 1], 8137)),
                 tls: None,
+                limits: Default::default(),
             },
             validator_settings: ValidatorConfig {
                 validator_grpc_listen_address: Some("127.0.0.1:18230".to_string()),

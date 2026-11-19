@@ -3,6 +3,21 @@
 `zaino-serve` exposes the lightwalletd-compatible service and Zaino-owned
 extension services on the same tonic server.
 
+## Connection limits
+
+`GrpcServerConfig::limits` (`[grpc_settings.limits]`, every key optional)
+bounds what one client connection holds open (AP-02):
+
+| Key | Default | Effect |
+| --- | --- | --- |
+| `concurrency_limit_per_connection` | 32 | requests served at once; the rest wait |
+| `max_concurrent_streams` | 64 | HTTP/2 streams open at once; a further stream waits until one ends |
+| `keepalive_interval_secs` | 60 | how often an idle connection is pinged |
+| `keepalive_timeout_secs` | 20 | an unanswered ping closes the connection |
+
+An excess request queues on its connection rather than allocating, so a
+client opening many streams slows itself, not the server.
+
 ## Indexed-tip subscription
 
 `zaino.index.v1.IndexedTipService/SubscribeIndexedTips` is a server-streaming

@@ -155,6 +155,7 @@ where
         let grpc_config = GrpcServerConfig {
             listen_address: indexer_config.grpc_settings.listen_address,
             tls: indexer_config.grpc_settings.tls,
+            limits: indexer_config.grpc_settings.limits,
         };
         let grpc_server = match grpc_listener {
             #[cfg(feature = "test_dependencies")]

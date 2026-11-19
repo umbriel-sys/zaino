@@ -148,6 +148,7 @@ mod tests {
             GrpcServerConfig {
                 listen_address: address,
                 tls: None,
+                limits: Default::default(),
             },
             listener,
         )
@@ -166,6 +167,61 @@ mod tests {
 
         // Then
         assert!(stream.message().await?.is_none());
+        Ok(())
+    }
+
+    /// Past a connection's stream bound a new stream waits, rather than
+    /// being served beside the others, until one ends (AP-02).
+    #[tokio::test]
+    async fn a_stream_past_the_connection_bound_waits() -> Result<(), Box<dyn Error>> {
+        let (_sender, receiver) = tokio::sync::watch::channel(tip(10, 1));
+        let listener = TcpListener::bind("127.0.0.1:0")?;
+        let address = listener.local_addr()?;
+        let one = crate::server::config::GrpcLimits {
+            concurrency_limit_per_connection: std::num::NonZeroUsize::MIN,
+            max_concurrent_streams: std::num::NonZeroU32::MIN,
+            ..Default::default()
+        };
+        let mut server = TonicServer::spawn_from_listener_with_routes(
+            |shutdown| {
+                Routes::new(IndexedTipServiceServer::new(IndexedTipService::new(
+                    TestIndexer { updates: receiver },
+                    shutdown,
+                )))
+            },
+            GrpcServerConfig {
+                listen_address: address,
+                tls: None,
+                limits: one,
+            },
+            listener,
+        )
+        .await?;
+        let mut client = IndexedTipServiceClient::connect(format!("http://{address}")).await?;
+        let mut first = client
+            .subscribe_indexed_tips(SubscribeIndexedTipsRequest {})
+            .await?
+            .into_inner();
+        assert!(first.message().await?.is_some());
+
+        let mut second_client = client.clone();
+        let second = tokio::spawn(async move {
+            let mut stream = second_client
+                .subscribe_indexed_tips(SubscribeIndexedTipsRequest {})
+                .await?
+                .into_inner();
+            stream.message().await
+        });
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        assert!(
+            !second.is_finished(),
+            "the second stream waits for the first"
+        );
+
+        drop(first);
+        let served = tokio::time::timeout(Duration::from_secs(5), second).await??;
+        assert!(served?.is_some(), "served once the first ends");
+        tokio::time::timeout(Duration::from_secs(1), server.close()).await?;
         Ok(())
     }
 }

@@ -58,6 +58,7 @@ async fn tls_spawn_serves_a_handshake() {
                 cert_path: fixture_path("tls_test_cert.pem"),
                 key_path: fixture_path("tls_test_key.pem"),
             }),
+            limits: Default::default(),
         },
         TcpIncoming::from(listener),
     )
