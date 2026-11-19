@@ -165,7 +165,7 @@ impl<V> std::fmt::Debug for ValidatorSource<V> {
 ///
 /// [`NonDomainError`]: zaino_source::NonDomainError
 /// [`FailureMode::RpcError`]: zaino_source::FailureMode::RpcError
-fn err<E, N>(error: QueryError<E, N>) -> BlockchainSourceError
+pub(crate) fn err<E, N>(error: QueryError<E, N>) -> BlockchainSourceError
 where
     E: std::fmt::Debug + std::fmt::Display,
     N: std::error::Error + Send + Sync + 'static,
@@ -223,7 +223,7 @@ where
 /// which is what the client would have seen had it asked the validator
 /// directly — and is deliberately *not* `-5`: "this node cannot answer" must
 /// not be read as "the output is unspent".
-fn spent_info_err<N: std::error::Error + Send + Sync + 'static>(
+pub(crate) fn spent_info_err<N: std::error::Error + Send + Sync + 'static>(
     error: QueryError<zaino_source::GetSpentInfoError, N>,
 ) -> BlockchainSourceError {
     use zaino_source::GetSpentInfoError;
@@ -261,7 +261,7 @@ fn standard_fee_err<N: std::error::Error + Send + Sync + 'static>(
 
 /// A validator that does not implement the method, reported as the envelope's
 /// `-32601` — what the client would have seen asking the validator directly.
-fn method_missing(rejection: impl std::fmt::Display) -> BlockchainSourceError {
+pub(crate) fn method_missing(rejection: impl std::fmt::Display) -> BlockchainSourceError {
     BlockchainSourceError::unrecoverable_context(
         "validator rejected the query",
         crate::error::LegacyRpcError {
@@ -326,21 +326,6 @@ fn invalid(message: String) -> BlockchainSourceError {
     BlockchainSourceError::Unrecoverable(message)
 }
 
-impl<V: ChainIndexSourcePorts> ValidatorSource<V> {
-    /// Identify the block at a height, for the chaininfo delta form.
-    async fn block_info(
-        &self,
-        height: zaino_primitives::types::Height,
-    ) -> Result<zaino_primitives::types::BlockRef, BlockchainSourceError> {
-        let bytes = self.validator.get_raw_block(height).await.map_err(err)?;
-        let block = block_from_bytes(bytes)?;
-        Ok(zaino_primitives::types::BlockRef {
-            hash: zaino_primitives::types::BlockHash::from(block.hash().0),
-            height,
-        })
-    }
-}
-
 /// Parse a txid written in RPC display order.
 fn parse_display_txid(
     hex_str: &str,
@@ -378,7 +363,7 @@ fn orchard_root(
 }
 
 /// Parse a 32-byte identifier written in RPC display order.
-fn parse_display_hash32(hex_str: &str) -> Result<[u8; 32], BlockchainSourceError> {
+pub(crate) fn parse_display_hash32(hex_str: &str) -> Result<[u8; 32], BlockchainSourceError> {
     let bytes = hex::decode(hex_str).map_err(|e| invalid(format!("not hex: {e}")))?;
     let mut internal: [u8; 32] = bytes
         .try_into()
@@ -629,57 +614,6 @@ impl<V: ChainIndexSourcePorts> BlockchainSource for ValidatorSource<V> {
             .map_err(request_err)
     }
 
-    async fn get_address_deltas(
-        &self,
-        params: zaino_primitives::types::rpc::AddressDeltasRequest,
-    ) -> BlockchainSourceResult<zaino_primitives::types::rpc::AddressDeltas> {
-        use zaino_primitives::types::rpc::{AddressDeltas, AddressDeltasRequest};
-
-        let (addresses, start, end, chain_info) = match params {
-            AddressDeltasRequest::Filtered {
-                addresses,
-                start,
-                end,
-                chain_info,
-            } => (addresses, start, end, chain_info),
-            // The single-address form carries no range, which the interface
-            // reads as "the whole chain".
-            AddressDeltasRequest::Address(address) => (vec![address], 0, 0, false),
-        };
-        let addresses: Vec<String> = addresses.into_iter().map(String::from).collect();
-
-        // The interface's range is open-ended and unvalidated; the port's is
-        // neither, so the bounds are resolved against the tip here.
-        let tip = zaino_source::OneShotGetBestBlockHeight::get_best_block_height(&*self.validator)
-            .await
-            .map_err(err)?;
-        let (start, end) = clamp_deltas_range_to_tip(tip, start, end);
-
-        let deltas = self
-            .validator
-            .get_address_deltas(addresses, start, end)
-            .await
-            .map_err(request_err)?;
-
-        if !chain_info {
-            return Ok(AddressDeltas::Simple(deltas));
-        }
-
-        // The chaininfo form additionally names the range's bounding blocks.
-        //
-        // Both bounds name a real block by this point, genesis included. The
-        // connector this replaced also required `start > 0 && end > 0`, but
-        // that was standing in for "no range was given" — the single-address
-        // form arrived here as `0..=0` before anything clamped it. The clamp
-        // above resolves that case, so a zero bound now means genesis and
-        // nothing else, and genesis is as nameable as any other block.
-        Ok(AddressDeltas::WithChainInfo {
-            deltas,
-            start: self.block_info(start).await?,
-            end: self.block_info(end).await?,
-        })
-    }
-
     // ***** Transactions and verbose blocks *****
     //
     // The two methods that assemble a response rather than translate one. The
@@ -848,40 +782,7 @@ impl<V: ChainIndexSourcePorts> BlockchainSource for ValidatorSource<V> {
         )))
     }
 
-    // ***** Headers, deltas, chain info *****
-
-    async fn get_block_header(
-        &self,
-        hash: String,
-    ) -> BlockchainSourceResult<zaino_primitives::types::rpc::BlockHeaderVerbose> {
-        self.validator
-            .get_block_header(zaino_primitives::types::BlockHash::from(
-                parse_display_hash32(&hash)?,
-            ))
-            .await
-            .map_err(err)
-    }
-
-    async fn get_raw_block_header(&self, hash: String) -> BlockchainSourceResult<Vec<u8>> {
-        self.validator
-            .get_raw_block_header(zaino_primitives::types::BlockHash::from(
-                parse_display_hash32(&hash)?,
-            ))
-            .await
-            .map_err(err)
-    }
-
-    async fn get_block_deltas(
-        &self,
-        hash: String,
-    ) -> BlockchainSourceResult<zaino_primitives::types::rpc::BlockDeltas> {
-        self.validator
-            .get_block_deltas(zaino_primitives::types::BlockHash::from(
-                parse_display_hash32(&hash)?,
-            ))
-            .await
-            .map_err(err)
-    }
+    // ***** Chain info *****
 
     async fn get_blockchain_info(
         &self,
@@ -1066,19 +967,6 @@ impl<V: ChainIndexSourcePorts> BlockchainSource for ValidatorSource<V> {
             .send_raw_transaction(bytes)
             .await
             .map_err(err)
-    }
-
-    async fn get_spent_info(
-        &self,
-        outpoint: zaino_primitives::types::rpc::SpentOutpoint,
-    ) -> BlockchainSourceResult<zaino_primitives::types::rpc::SpentInfo> {
-        // Not `err`, which reports every domain rejection as `InvalidParameter`.
-        // `getspentinfo` has two rejections that mean different things, and
-        // the legacy full node gives one of them a specific code that clients key on.
-        self.validator
-            .get_spent_info(outpoint)
-            .await
-            .map_err(spent_info_err)
     }
 
     async fn get_tx_out(
@@ -1504,48 +1392,6 @@ mod tests {
     }
 }
 
-/// Clamps a `getaddressdeltas` height range to the current best tip.
-///
-/// The interface's range is open-ended in a way the port's is not: `end == 0`
-/// means "to the tip", and either bound may name a height the chain has not
-/// reached. Both clamp down to the tip, so a caller asking past the end of the
-/// chain gets the chain rather than an error — and, in particular, the
-/// single-address form (which carries no range at all, and so arrives as
-/// `0..=0`) means the whole chain rather than genesis alone.
-///
-/// Total, and the clamp is what makes it so. A bound only reaches
-/// [`Height::try_from`](zaino_primitives::types::Height) when it is at or below
-/// `tip`, and `tip` is already a `Height` — so the value is in range by
-/// construction and the conversion cannot fail. This used to return a `Result`
-/// whose `Err` was unreachable; a `Result` nobody can provoke is a test that
-/// can never be written, so the totality is expressed in the signature instead.
-fn clamp_deltas_range_to_tip(
-    tip: zaino_primitives::types::Height,
-    start_raw: u32,
-    end_raw: u32,
-) -> (
-    zaino_primitives::types::Height,
-    zaino_primitives::types::Height,
-) {
-    let end = if end_raw == 0 {
-        tip
-    } else {
-        clamp_to_tip(end_raw, tip)
-    };
-    (clamp_to_tip(start_raw, tip), end)
-}
-
-/// A raw height clamped to `tip`, hence always a valid
-/// [`Height`](zaino_primitives::types::Height).
-fn clamp_to_tip(raw: u32, tip: zaino_primitives::types::Height) -> zaino_primitives::types::Height {
-    match zaino_primitives::types::Height::try_from(raw) {
-        Ok(height) => height.min(tip),
-        // Above the protocol maximum is above any tip, so the clamp applies
-        // just as it does to a merely-too-large value. Not an error case.
-        Err(_) => tip,
-    }
-}
-
 /// Maps one pool's reported tree and root onto the interface's treestate slot.
 ///
 /// A pool is reported only when it has a tree at this block, so an absent
@@ -1837,64 +1683,6 @@ mod error_source_chain {
             reached,
             "the typed NonDomainError must stay reachable via the source() chain; \
              stringifying it strips the FailureMode the serve layer recovers"
-        );
-    }
-}
-
-#[cfg(test)]
-mod clamp_deltas_range_to_tip_tests {
-    use super::clamp_deltas_range_to_tip;
-    use zaino_primitives::types::Height;
-
-    fn height(h: u32) -> Height {
-        Height::try_from(h).expect("valid test height")
-    }
-
-    /// `end == 0` means "to the tip", and both bounds clamp down to it.
-    #[test]
-    fn bounds_clamp_to_tip() {
-        let tip = height(100);
-
-        assert_eq!(clamp_deltas_range_to_tip(tip, 5, 0), (height(5), tip));
-        assert_eq!(clamp_deltas_range_to_tip(tip, 5, 400), (height(5), tip));
-        assert_eq!(clamp_deltas_range_to_tip(tip, 300, 50), (tip, height(50)));
-    }
-
-    /// The clamp is what makes this total, so the value that would otherwise
-    /// fail conversion has to land on the tip like any other over-large bound.
-    ///
-    /// This replaces `absent_tip_is_a_typed_error`, which the port's move made
-    /// unrepresentable: `get_best_block_height` returns a `Height`, not an
-    /// `Option<Height>`, so a tip cannot be absent here any more. The failure
-    /// mode that remained worth pinning is the one at the other end.
-    #[test]
-    fn a_bound_past_the_protocol_maximum_clamps_rather_than_failing() {
-        let tip = height(100);
-
-        assert_eq!(
-            clamp_deltas_range_to_tip(tip, u32::MAX, u32::MAX),
-            (tip, tip)
-        );
-    }
-
-    /// The single-address form carries no range, so it arrives as `0..=0` and
-    /// must mean the whole chain. Forwarding it verbatim would report only
-    /// genesis — the regression this clamp exists to prevent.
-    #[test]
-    fn absent_range_covers_the_whole_chain() {
-        assert_eq!(
-            clamp_deltas_range_to_tip(height(100), 0, 0),
-            (height(0), height(100)),
-            "an absent range must span the chain, not genesis alone"
-        );
-    }
-
-    /// A range already inside the chain is untouched.
-    #[test]
-    fn in_range_bounds_pass_through() {
-        assert_eq!(
-            clamp_deltas_range_to_tip(height(100), 10, 20),
-            (height(10), height(20))
         );
     }
 }

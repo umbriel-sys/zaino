@@ -7,12 +7,14 @@ mod common;
 use common::{chain, local, remote, TIP};
 use zaino_chain::{BlockId, ChainCapability};
 use zaino_indexes::IndexId;
-use zaino_primitives::types::rpc::{BlockSubsidy, SpentOutpoint, StandardFee};
-use zaino_primitives::types::{BlockHash, Height, TransparentAddress, Zatoshis};
+use zaino_primitives::types::rpc::{
+    AddressDeltas, AddressDeltasRequest, BlockSubsidy, SpentOutpoint, StandardFee,
+};
+use zaino_primitives::types::{BlockHash, BlockRef, Height, TransparentAddress, Zatoshis};
 use zaino_service::{Capability, ServiceError};
 use zaino_source::{
-    OneShotGetBlockDeltas as _, OneShotGetBlockHeader as _, OneShotGetSpentInfo as _,
-    OneShotGetTxOut as _, UtxoPage,
+    OneShotGetAddressDeltas as _, OneShotGetBlockDeltas as _, OneShotGetBlockHeader as _,
+    OneShotGetSpentInfo as _, OneShotGetTxOut as _, UtxoPage,
 };
 use zaino_source_mock::{CallArg, MockChain, NodeFacts, MINER_SCRIPT};
 
@@ -261,6 +263,99 @@ async fn address_utxos_are_paged_with_the_tip() {
         .collect();
     assert_eq!(paged, expected);
     assert_eq!(paged.len(), 3);
+}
+
+/// Compact blocks carry every fee, from the store and the window alike.
+#[tokio::test]
+async fn compact_blocks_carry_every_fee() {
+    use zaino_chain::CompactBlockRead as _;
+    let chain = chain();
+    let service = local(&chain).await;
+    let snapshot = service.snapshot();
+    for at in 1..=TIP {
+        let block = snapshot
+            .chain()
+            .compact_block(height(at), zaino_primitives::types::PoolFilter::all())
+            .await
+            .expect("answers")
+            .expect("below the tip");
+        for (index, tx) in block.transactions.iter().enumerate() {
+            assert_eq!(tx.fee, chain.fee_at(at, index), "{at} tx {index}");
+        }
+    }
+}
+
+/// getaddressdeltas: local, equal to the validator's over the same range;
+/// the range clamped to the snapshot's tip, `end` 0 reading to it; with
+/// `chainInfo`, the range's bounding blocks.
+#[tokio::test]
+async fn address_deltas_are_local_and_clamped_to_the_tip() {
+    let chain = chain();
+    let service = local(&chain).await;
+    let snapshot = service.snapshot();
+    let miner = TransparentAddress::from_standard_script(
+        &MINER_SCRIPT,
+        zaino_primitives::types::Network::Regtest,
+    )
+    .expect("a standard script");
+    let expected = chain
+        .get_address_deltas(vec![miner.to_string()], height(100), height(TIP))
+        .await
+        .expect("the validator's");
+    assert!(!expected.is_empty());
+    let asked = chain.calls("get_address_deltas");
+    let request = |start, end, chain_info| AddressDeltasRequest::Filtered {
+        addresses: vec![miner.clone()],
+        start,
+        end,
+        chain_info,
+    };
+    for end in [0, TIP, TIP + 1_000, u32::MAX] {
+        assert_eq!(
+            snapshot
+                .address_deltas(request(100, end, false))
+                .await
+                .expect("answers"),
+            AddressDeltas::Simple(expected.clone()),
+            "end {end}"
+        );
+    }
+    assert_eq!(
+        snapshot
+            .address_deltas(request(100, 0, true))
+            .await
+            .expect("answers"),
+        AddressDeltas::WithChainInfo {
+            deltas: expected,
+            start: BlockRef {
+                hash: hash_at(&chain, 100),
+                height: height(100),
+            },
+            end: BlockRef {
+                hash: hash_at(&chain, TIP),
+                height: height(TIP),
+            },
+        }
+    );
+    let whole = chain
+        .get_address_deltas(vec![miner.to_string()], height(0), height(TIP))
+        .await
+        .expect("the validator's");
+    let asked_after_oracle = chain.calls("get_address_deltas");
+    assert_eq!(
+        snapshot
+            .address_deltas(AddressDeltasRequest::Address(miner))
+            .await
+            .expect("answers"),
+        AddressDeltas::Simple(whole),
+        "the single-address form reads the whole chain"
+    );
+    assert_eq!(
+        chain.calls("get_address_deltas"),
+        asked_after_oracle,
+        "local"
+    );
+    assert_eq!(asked_after_oracle, asked + 1, "only the oracle asked");
 }
 
 /// The validator's reads: by the hash this snapshot pins, at the tip where

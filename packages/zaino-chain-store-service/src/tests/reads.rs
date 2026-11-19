@@ -77,6 +77,10 @@ fn compact(
             let mut compact = PreIndexCompactTx::from(tx);
             compact.fee = chain.fee_at(u32::from(block.header.height), index);
             if !pools.includes_outputs() {
+                if pools.includes(ShieldedPool::Sapling) {
+                    compact.sapling_outputs_unread =
+                        u16::try_from(tx.sapling.outputs.len()).expect("few outputs");
+                }
                 compact.sapling_outputs.clear();
                 for action in compact
                     .orchard_actions

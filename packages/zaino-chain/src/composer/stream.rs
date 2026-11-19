@@ -230,6 +230,8 @@ pub(crate) fn filter_tx(mut tx: PreIndexCompactTx, pools: PoolFilter) -> PreInde
         tx.ironwood_actions.clear();
     }
     if !pools.includes_outputs() {
+        // a transaction's outputs fit its size cap many times over in a u16
+        tx.sapling_outputs_unread = u16::try_from(tx.sapling_outputs.len()).unwrap_or(u16::MAX);
         tx.sapling_outputs.clear();
         for action in tx
             .orchard_actions

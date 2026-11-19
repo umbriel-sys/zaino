@@ -341,6 +341,7 @@ impl<'a, R: BackendReader> Reader<'a, R> {
                 .sapling_nullifiers(layout.starts.sapling_spends, total(|tx| tx.sapling_spends))?,
             false => Vec::new(),
         };
+        let unread_outputs = wanted(ShieldedPool::Sapling) && !pools.includes_outputs();
         let sapling_outputs = match wanted(ShieldedPool::Sapling) && pools.includes_outputs() {
             true => self.sapling_outputs(
                 layout.starts.sapling_outputs,
@@ -398,6 +399,10 @@ impl<'a, R: BackendReader> Reader<'a, R> {
                         .take(take(tx.ironwood_actions))
                         .collect(),
                     fee: Some(tx.fee),
+                    sapling_outputs_unread: match unread_outputs {
+                        true => tx.sapling_outputs,
+                        false => 0,
+                    },
                 }
             })
             .collect())

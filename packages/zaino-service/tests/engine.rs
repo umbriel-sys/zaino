@@ -55,7 +55,8 @@ async fn a_validator_backed_service_serves_from_the_validator() {
             ..
         })
     ));
-    assert_eq!(service.statuses().len(), 2, "store and head");
+    assert_eq!(service.statuses().all().count(), 4, "no sync");
+    assert!(service.is_caught_up(), "no store to catch up");
     service.shutdown().await.expect("stops");
 }
 
@@ -68,7 +69,13 @@ async fn a_primary_store_builds_in_the_background_until_every_read_is_local() {
         .manifest()
         .require(&Capability::all().collect::<Vec<_>>())
         .is_ok());
-    assert_eq!(service.statuses().len(), 3, "store, head and sync");
+    assert!(service.statuses().sync.is_some(), "a primary store syncs");
+    service
+        .caught_up()
+        .await
+        .expect("the sync reaches the floor");
+    assert!(service.is_caught_up());
+    assert!(service.store_tip().is_some());
     service.shutdown().await.expect("stops");
 }
 
@@ -130,7 +137,7 @@ async fn a_linked_service_reads_the_primary_store() {
         "{:?}",
         linked.manifest()
     );
-    assert_eq!(linked.statuses().len(), 2, "store and head: no sync");
+    assert_eq!(linked.statuses().sync, None, "a linked store does not sync");
     linked.shutdown().await.expect("stops");
     primary.shutdown().await.expect("stops");
 }

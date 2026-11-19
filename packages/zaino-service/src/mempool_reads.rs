@@ -6,7 +6,7 @@ use std::sync::Arc;
 use futures::{Stream, StreamExt as _};
 use zaino_chain::{BlockRead as _, ChainTxPosition, ChainViewSnapshot as _, TransactionRead as _};
 use zaino_mempool::{CoherentSnapshot, MempoolEntry, TipAwareMempool as _};
-use zaino_mempool_service::MempoolInfo;
+use zaino_mempool_service::{CoherentSubscriber, MempoolInfo, MempoolSubscriber};
 use zaino_primitives::types::{ChainStateEpoch, Height, TransactionId, TransactionLocation};
 
 use crate::error::ServiceError;
@@ -60,11 +60,7 @@ impl<S: ServiceSource> ServiceSnapshot<S> {
     /// The mempool's entries but those whose txid ends in one of `exclude`;
     /// a malformed suffix is refused, never trimmed.
     pub fn mempool_entries(&self, exclude: &[Vec<u8>]) -> Result<Vec<Arc<MempoolEntry>>> {
-        let suffixes = self
-            .mempool
-            .validate_exclude_suffixes(exclude)
-            .map_err(|error| ServiceError::InvalidParameter(error.to_string()))?;
-        Ok(self.mempool.get_filtered_entries(&suffixes))
+        entries(&self.mempool, exclude)
     }
 
     /// The coherent mempool's transactions until the tip moves, and the new
@@ -75,16 +71,7 @@ impl<S: ServiceSource> ServiceSnapshot<S> {
         &self,
         pinned: bool,
     ) -> Option<impl Stream<Item = Result<bytes::Bytes>> + Send + '_> {
-        let expected = match pinned {
-            true => Some(self.coherent_epoch(&self.coherence.coherent_snapshot())?),
-            false => None,
-        };
-        let stream = self
-            .coherence
-            .stream_transactions_until_tip_change(expected)?;
-        Some(stream.map(|item| {
-            item.map_err(|_| ServiceError::Stale("the mempool stream lagged and ended early"))
-        }))
+        coherent_stream(&self.coherence, pinned.then(|| self.chain().epoch()))
     }
 
     /// A transaction's bytes: from the mempool when coherent with this
@@ -136,7 +123,8 @@ impl<S: ServiceSource> ServiceSnapshot<S> {
     }
 
     /// Where a transaction is: its blocks, and the mempool, placed against
-    /// this snapshot when coherent with it, else against the mempool's tip.
+    /// this snapshot when coherent with it, else at the successor of the
+    /// mempool's tip as the chain holds it now.
     pub async fn transaction_status(&self, txid: TransactionId) -> Result<TransactionStatus> {
         let locations = self.chain().transaction_locations(txid).await?;
         let mut status = TransactionStatus {
@@ -159,8 +147,14 @@ impl<S: ServiceSource> ServiceSnapshot<S> {
             }
             status.best = Some(Placement::Mempool(Some(successor(self.tip().height)?)));
         } else {
+            // the mempool tip's successor, if the chain holds that tip now
             let target = match coherent.valid_for {
-                Some(epoch) => match self.chain().block_height(epoch.best_tip.hash).await? {
+                Some(epoch) => match self
+                    .view
+                    .snapshot()
+                    .block_height(epoch.best_tip.hash)
+                    .await?
+                {
                     Some(height) => Some(successor(height)?),
                     None => None,
                 },
@@ -176,6 +170,34 @@ impl<S: ServiceSource> ServiceSnapshot<S> {
         let epoch = self.chain().epoch();
         coherent.is_valid_for_snapshot(epoch).then_some(epoch)
     }
+}
+
+/// The set's entries but those whose txid ends in one of `exclude`.
+pub(crate) fn entries(
+    mempool: &MempoolSubscriber,
+    exclude: &[Vec<u8>],
+) -> Result<Vec<Arc<MempoolEntry>>> {
+    let suffixes = mempool
+        .validate_exclude_suffixes(exclude)
+        .map_err(|error| ServiceError::InvalidParameter(error.to_string()))?;
+    Ok(mempool.get_filtered_entries(&suffixes))
+}
+
+/// The coherent mempool's stream until the tip moves; with `epoch`, only if
+/// coherent with it.
+pub(crate) fn coherent_stream(
+    coherence: &CoherentSubscriber,
+    epoch: Option<ChainStateEpoch>,
+) -> Option<impl Stream<Item = Result<bytes::Bytes>> + Send + '_> {
+    if let Some(epoch) = epoch {
+        if !coherence.coherent_snapshot().is_valid_for_snapshot(epoch) {
+            return None;
+        }
+    }
+    let stream = coherence.stream_transactions_until_tip_change(epoch)?;
+    Some(stream.map(|item| {
+        item.map_err(|_| ServiceError::Stale("the mempool stream lagged and ended early"))
+    }))
 }
 
 fn successor(height: Height) -> Result<Height> {

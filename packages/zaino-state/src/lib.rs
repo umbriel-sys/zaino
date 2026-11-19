@@ -41,7 +41,7 @@ impl<T, F: Future<Output = T> + Send> SendFut<T> for F {}
 /// - The store's are re-exported (one import site); its tables stay reachable as `store::*`
 #[allow(missing_docs)] // the `# HELP` in the table below is the description
 pub mod metric_names {
-    pub use zaino_chain_store_zainodb::metric_names::{self as store, *};
+    pub use zaino_chain_store_service::metric_names::{self as store, *};
 
     pub use zaino_chain_head_service::metric_names::{
         CHAIN_TIP_HEIGHT, SYNC_BACKOFF_SECONDS, SYNC_CONSECUTIVE_FAILURES,

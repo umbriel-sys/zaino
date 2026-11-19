@@ -55,19 +55,3 @@ pub(super) fn config() -> zaino_chain_head::ChainHeadConfig {
             .unwrap_or(std::num::NonZeroU32::MIN),
     )
 }
-
-/// Starts the chain head over `source`.
-///
-/// Builds a complete window before returning, so every snapshot taken after
-/// has one to answer from.
-pub(super) async fn spawn<S: WithChainHeadSource>(
-    source: &S,
-    config: zaino_chain_head::ChainHeadConfig,
-    cancel: tokio_util::sync::CancellationToken,
-) -> Result<
-    Arc<zaino_chain_head_service::ChainHeadService<S::Head>>,
-    zaino_chain_head_service::ChainHeadInitError,
-> {
-    zaino_chain_head_service::ChainHeadService::spawn(source.chain_head_source(), config, cancel)
-        .await
-}

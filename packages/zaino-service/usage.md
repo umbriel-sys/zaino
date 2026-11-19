@@ -72,6 +72,7 @@ by ChainView. Built on top:
 | `txout_set_info()` | I-11 and the head; `NotServed` without them |
 | `raw_transaction(txid, block)` | ChainView's, only from `block` when given |
 | `address_utxos(addresses, page)` | ChainView's page and the tip it describes |
+| `address_deltas(request)` | ChainView's, over the range clamped to the snapshot's tip (`end` 0, or the single-address form, reads to it); with `chain_info`, the range's bounding blocks |
 | `raw_block_header`, `block_verbose` | the validator, by the hash the snapshot holds |
 | `block_subsidy(height)` | the validator, at the tip when `None` |
 | `block_hash(index)` | Zaino's headers; `index` from genesis, or from the tip when negative (`-1` is the tip), as zebrad reads it |
@@ -85,7 +86,24 @@ The mempool reads (D6-02) never ask the validator:
 | `mempool_txids`, `mempool_info`, `mempool_entries(exclude)` | the tip-agnostic set; a malformed exclude is `InvalidParameter`, never trimmed |
 | `mempool_stream(pinned)` | the coherent view until the tip moves; `pinned` asks for one coherent with this snapshot (`None` otherwise); a lag ends it with `Stale` |
 | `transaction(txid)` | the coherent mempool (to be mined at the tip's successor), else the chain; a mempool not coherent with this snapshot that holds a txid the chain lacks is `Stale` |
-| `transaction_status(txid)` | its blocks, and the mempool: `best` when coherent with this snapshot, `elsewhere` (at the mempool tip's successor, if held) when not |
+| `transaction_status(txid)` | its blocks, and the mempool: `best` when coherent with this snapshot, `elsewhere` (at the successor of the mempool's tip as the chain holds it now) when not |
+
+The listings and the stream need no snapshot, so `Service` has them too:
+`mempool_txids`, `mempool_info`, `mempool_entries(exclude)` and
+`mempool_stream(chain)`, coherent with `chain` when given.
+
+Compact blocks read under `PoolFilter::nullifiers_only` carry each
+transaction's unread Sapling outputs as a count
+(`PreIndexCompactTx::sapling_outputs_unread`), so a transaction with only
+outputs is still served, empty, at its index (lightwalletd's
+`GetBlockNullifiers`).
+
+## The upgrade schedule
+
+`schedule_at(upgrades, tip)` reads a validator's schedule against a tip:
+Sapling's activation, the branch in force and the next upgrade, disabled
+upgrades skipped. `GetLightdInfo` reports them; an unscheduled one is absent,
+never a made-up height.
 
 A difficulty is computed as zcashd's `GetDifficulty` computes it, against the
 network's proof-of-work limit. A transaction larger than a block is refused
@@ -100,6 +118,14 @@ query's failure as refused or unreachable.
 
 ## Lifecycle
 
-`statuses()` lists each component's `ComponentStatus` (store, head, and the
-sync for a primary store). `shutdown().await` stops every task and flushes a
-primary store; dropping the service stops the tasks without the flush.
+`statuses()` gives each component's `ComponentStatus` (`Statuses`: store,
+head, mempool, coherence, and the sync for a primary store). `caught_up()`
+resolves once a primary store has caught up with the head's floor
+(`is_caught_up()` asks now); `store_tip()` is the store's committed tip and
+`mempool_frozen_for()` how long the coherent mempool has been frozen.
+`chain_snapshot()`, `with_chain(chain)` and `subscribe_tip()` give the chain
+view's snapshot, the service's reads over one, and the epochs as published.
+
+`shutdown().await` stops every task and flushes a primary store; `stop()`
+stops them without the flush, for synchronous teardown, and so does dropping
+the service.

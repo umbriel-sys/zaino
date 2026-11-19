@@ -156,7 +156,11 @@ async fn an_older_snapshot_places_the_mempool_elsewhere() {
     );
     let status = old.transaction_status(next).await.expect("answers");
     assert_eq!(status.best, None);
-    assert_eq!(status.elsewhere, vec![Placement::Mempool(None)]);
+    assert_eq!(
+        status.elsewhere,
+        vec![Placement::Mempool(Some(height(SERVED + 2)))],
+        "at the successor of the mempool's tip, which the chain holds now"
+    );
     assert!(matches!(
         old.transaction(next).await,
         Err(ServiceError::Stale(_))

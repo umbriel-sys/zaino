@@ -274,9 +274,11 @@ fn served(block: &CompactBlock) -> impl Iterator<Item = (usize, &PreIndexCompact
         .filter(|(_, tx)| has_pool_data(tx))
 }
 
-/// Whether a transaction has anything in a pool the block was read for.
+/// Whether a transaction has anything in a pool the block was read for,
+/// outputs a nullifiers-only read left out included (lightwalletd parity).
 fn has_pool_data(tx: &PreIndexCompactTx) -> bool {
-    !tx.transparent_inputs.is_empty()
+    tx.sapling_outputs_unread > 0
+        || !tx.transparent_inputs.is_empty()
         || !tx.transparent_outputs.is_empty()
         || !tx.sapling_nullifiers.is_empty()
         || !tx.sapling_outputs.is_empty()
@@ -402,10 +404,12 @@ mod tests {
             proptest::collection::vec(action(), few.clone()),
             proptest::collection::vec(action(), few),
             proptest::option::of(zatoshis()),
+            0u16..3,
         )
             .prop_map(
-                |(txid, inputs, outputs, nullifiers, sapling, orchard, ironwood, fee)| {
+                |(txid, inputs, outputs, nullifiers, sapling, orchard, ironwood, fee, unread)| {
                     PreIndexCompactTx {
+                        sapling_outputs_unread: unread,
                         txid: TransactionId::from(txid),
                         transparent_inputs: inputs
                             .into_iter()
@@ -522,6 +526,7 @@ mod tests {
             orchard_actions: Vec::new(),
             ironwood_actions: Vec::new(),
             fee: fee.map(|fee| Zatoshis::new(fee).expect("in range")),
+            sapling_outputs_unread: 0,
         }
     }
 
@@ -579,6 +584,25 @@ mod tests {
             .map(|tx| tx.index)
             .collect();
         assert_eq!(indexes, vec![1, 3]);
+    }
+
+    /// A transaction whose only data is outputs a nullifiers-only read left
+    /// out is served empty at its index (lightwalletd parity).
+    #[test]
+    fn a_transaction_with_unread_outputs_is_served_empty() {
+        let mut outputs_only = tx_with(Some(5), 0);
+        outputs_only.sapling_outputs_unread = 2;
+        let block = block_of(vec![tx_with(None, 0), outputs_only, tx_with(None, 0)]);
+        let vtx = decoded(&block, PoolFilter::all().nullifiers_only()).vtx;
+        assert_eq!(
+            vtx,
+            vec![proto::CompactTx {
+                index: 1,
+                txid: vec![7; 32],
+                fee: 5,
+                ..Default::default()
+            }]
+        );
     }
 
     /// Tree sizes are the block's, but zero under the nullifiers-only filter.
@@ -640,6 +664,7 @@ mod tests {
             orchard_actions: vec![action(1, true)],
             ironwood_actions: vec![action(2, true)],
             fee: Some(Zatoshis::new(1_000).expect("in range")),
+            sapling_outputs_unread: 0,
         }
     }
 

@@ -25,7 +25,9 @@ Pass the filter the block was read under. Both forms follow the same rules:
 
 - A transaction with nothing in a requested pool is dropped. `index` keeps
   each remaining transaction's position in the block, so the coinbase stays
-  `index == 0`.
+  `index == 0`. A nullifiers-only read's unread Sapling outputs count as
+  something (`sapling_outputs_unread`), so such a transaction is served
+  empty, as lightwalletd serves it.
 - `fee` is the domain fee, saturated to the wire's `u32` (D-60). An unknown
   fee is left unset (`0`).
 - Under `PoolFilter::nullifiers_only`, tree sizes are zero, because the

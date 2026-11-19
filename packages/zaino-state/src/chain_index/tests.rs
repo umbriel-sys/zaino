@@ -8,15 +8,19 @@ mod poll;
 mod sync_loop;
 
 pub(crate) fn init_tracing() {
-    tracing_subscriber::fmt()
-        .with_env_filter(
-            tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info")),
-        )
-        .with_timer(tracing_subscriber::fmt::time::UtcTime::rfc_3339())
-        .with_target(true)
-        .try_init()
-        .unwrap();
+    // once per process: a test may build several indexes
+    static INSTALLED: std::sync::Once = std::sync::Once::new();
+    INSTALLED.call_once(|| {
+        tracing_subscriber::fmt()
+            .with_env_filter(
+                tracing_subscriber::EnvFilter::try_from_default_env()
+                    .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info")),
+            )
+            .with_timer(tracing_subscriber::fmt::time::UtcTime::rfc_3339())
+            .with_target(true)
+            .try_init()
+            .expect("the first subscriber installs");
+    });
 }
 
 use crate::legacy::config::{DatabaseConfig, StorageConfig};
@@ -203,12 +207,13 @@ async fn wait_until_synced(
         Duration::from_millis(25),
         || async {
             let head = u32::from(reader.snapshot_nonfinalized_state().best_tip().height);
-            let finalised = indexer
-                .finalised_watermark()
-                .tip
-                .map(|tip| u32::from(tip.height));
+            let finalised = indexer.finalised_tip().map(u32::from);
             (head == tip && finalised.is_some_and(|height| height >= floor)).then_some(())
         },
     )
     .await;
+    indexer
+        .wait_until_local()
+        .await
+        .expect("every index answers locally");
 }

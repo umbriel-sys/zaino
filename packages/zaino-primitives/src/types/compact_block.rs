@@ -102,6 +102,9 @@ pub struct PreIndexCompactTx {
     /// The fee: zero for the coinbase; `None` where the provider cannot know
     /// it (a block parsed without the outputs its inputs spend).
     pub fee: Option<Zatoshis>,
+    /// Sapling outputs a nullifiers-only read of an included pool left out;
+    /// zero when outputs are read.
+    pub sapling_outputs_unread: u16,
 }
 
 impl From<&super::Block> for PreIndexCompactBlock {
@@ -138,6 +141,7 @@ impl From<&super::transaction::Transaction> for PreIndexCompactTx {
                 .collect(),
             // a parsed transaction does not hold the outputs its inputs spend
             fee: None,
+            sapling_outputs_unread: 0,
         }
     }
 }

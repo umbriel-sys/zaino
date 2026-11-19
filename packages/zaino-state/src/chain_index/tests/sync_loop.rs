@@ -240,9 +240,8 @@ async fn finalised_index_follows_a_burst_mine_past_the_seam() {
         Duration::from_millis(50),
         || async {
             indexer
-                .finalised_watermark()
-                .tip
-                .map(|tip| u32::from(tip.height))
+                .finalised_tip()
+                .map(u32::from)
                 .filter(|height| *height >= seam)
         },
     )

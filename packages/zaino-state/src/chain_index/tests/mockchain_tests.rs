@@ -673,7 +673,23 @@ async fn get_address_deltas() {
 
     let request =
         || filtered_deltas_request(vec![transparent_address.clone()], 0, active_height, true);
-    let expected_response = mockchain.get_address_deltas(request()).await.unwrap();
+    let chain = mockchain.source();
+    let bound = |height: u32| zaino_primitives::types::BlockRef {
+        hash: chain.block_at(height).expect("on the chain").hash(),
+        height: zaino_primitives::types::Height::try_from(height).expect("small"),
+    };
+    let expected_response = AddressDeltas::WithChainInfo {
+        deltas: zaino_source::OneShotGetAddressDeltas::get_address_deltas(
+            chain,
+            vec![transparent_address.clone()],
+            bound(0).height,
+            bound(active_height).height,
+        )
+        .await
+        .expect("the validator's"),
+        start: bound(0),
+        end: bound(active_height),
+    };
     let indexer_response = index.reader.get_address_deltas(request()).await.unwrap();
 
     assert_eq!(indexer_response, expected_response);
@@ -883,9 +899,8 @@ async fn get_outpoint_spenders_chain_scope() {
     let snapshot = index.reader.snapshot_nonfinalized_state();
     let finalised_tip = index
         .indexer
-        .finalised_watermark()
-        .tip
-        .map(|tip| u32::from(tip.height))
+        .finalised_tip()
+        .map(u32::from)
         .expect("the finalised state holds the chain below the seam");
 
     let (spends, created) = outpoint_spend_ground_truth(&index.blocks);
@@ -1041,7 +1056,12 @@ async fn get_block_header() {
         assert_eq!(raw, block.header.zcash_serialize_to_vec().unwrap());
 
         let via_index = index.reader.get_block_header(hash.clone()).await.unwrap();
-        let via_source = mockchain.get_block_header(hash.clone()).await.unwrap();
+        let via_source = zaino_source::OneShotGetBlockHeader::get_block_header(
+            mockchain.source(),
+            zaino_primitives::types::BlockHash::from(block.hash().0),
+        )
+        .await
+        .expect("the validator's");
         assert_eq!(via_index, via_source);
         assert_eq!(display_hex(via_index.hash), hash);
         assert_eq!(u32::from(via_index.height), height);
@@ -1063,7 +1083,12 @@ async fn get_block_deltas() {
         let hash = block.hash().to_string();
 
         let via_index = index.reader.get_block_deltas(hash.clone()).await.unwrap();
-        let via_source = mockchain.get_block_deltas(hash.clone()).await.unwrap();
+        let via_source = zaino_source::OneShotGetBlockDeltas::get_block_deltas(
+            mockchain.source(),
+            zaino_primitives::types::BlockHash::from(block.hash().0),
+        )
+        .await
+        .expect("the validator's");
         assert_eq!(via_index, via_source);
         assert_eq!(display_hex(via_index.hash), hash);
         assert_eq!(u32::from(via_index.height), height);
@@ -1248,4 +1273,181 @@ async fn send_raw_transaction_invalid_hex_keeps_legacy_error_code() {
         index.source.source().sent().is_empty(),
         "invalid hex never reaches the validator"
     );
+}
+
+/// GetLightdInfo reports Sapling's activation and the next pending upgrade
+/// (K-02), and none once every upgrade is active.
+#[tokio::test(flavor = "multi_thread")]
+async fn lightd_info_reports_the_schedule() {
+    use crate::indexer::node_backed_indexer::NodeBackedIndexerServiceSubscriber;
+    use crate::LightWalletIndexer as _;
+    use zaino_source_mock::{Activations, BlockSpec, ChainBuilder, NodeFacts};
+
+    const NU7_AT: u32 = CHAIN_TIP + 50;
+    let activations = Activations::default().at(Upgrade::Nu7, NU7_AT);
+    let blocks = (1..=CHAIN_TIP)
+        .fold(
+            ChainBuilder::with(NodeFacts::regtest(), activations.clone()),
+            |builder, _| builder.block(BlockSpec::spends(1)),
+        )
+        .into_blocks();
+    let index = super::synced_on(
+        &activations,
+        blocks,
+        None,
+        crate::chain_index::chain_head::config(),
+    )
+    .await;
+    let upgrades = activations.upgrades();
+    let sapling = upgrades
+        .iter()
+        .find(|upgrade| u32::from(upgrade.branch_id) == zaino_consensus::branch_id::SAPLING)
+        .expect("Sapling is scheduled");
+    let nu7 = upgrades
+        .iter()
+        .find(|upgrade| u32::from(upgrade.activation_height) == NU7_AT)
+        .expect("NU7 is scheduled");
+    let service = NodeBackedIndexerServiceSubscriber::new_for_test(index.reader.clone(), regtest());
+    let info = service.get_lightd_info().await.expect("answers");
+    assert_eq!(
+        info.sapling_activation_height,
+        u64::from(u32::from(sapling.activation_height))
+    );
+    assert_eq!(info.upgrade_name, nu7.name);
+    assert_eq!(info.upgrade_height, u64::from(NU7_AT));
+    assert_eq!(info.block_height, u64::from(CHAIN_TIP));
+
+    let index = synced(MockchainMode::Static).await;
+    let service = NodeBackedIndexerServiceSubscriber::new_for_test(index.reader, regtest());
+    let info = service.get_lightd_info().await.expect("answers");
+    assert_eq!((info.upgrade_name.as_str(), info.upgrade_height), ("", 0));
+}
+
+/// A legacy compact block reduced to nullifiers, as the RPCs served them
+/// before the nullifiers-only read: every transaction kept, Sapling outputs
+/// and transparent data emptied, actions to their nullifiers, tree sizes 0.
+fn legacy_nullifiers(
+    mut block: zaino_proto::proto::compact_formats::CompactBlock,
+) -> zaino_proto::proto::compact_formats::CompactBlock {
+    use zaino_proto::proto::compact_formats::{ChainMetadata, CompactOrchardAction};
+    let nullifier = |action: CompactOrchardAction| CompactOrchardAction {
+        nullifier: action.nullifier,
+        ..Default::default()
+    };
+    for tx in &mut block.vtx {
+        tx.outputs.clear();
+        tx.vin.clear();
+        tx.vout.clear();
+        tx.actions = std::mem::take(&mut tx.actions)
+            .into_iter()
+            .map(nullifier)
+            .collect();
+        tx.ironwood_actions = std::mem::take(&mut tx.ironwood_actions)
+            .into_iter()
+            .map(nullifier)
+            .collect();
+    }
+    block.chain_metadata = Some(ChainMetadata::default());
+    block
+}
+
+/// The shim's compact blocks carry every fee over the store and the window;
+/// the nullifier RPCs serve exactly what they served before.
+#[tokio::test(flavor = "multi_thread")]
+async fn compact_blocks_carry_fees_and_nullifier_blocks_keep_their_shape() {
+    use crate::indexer::node_backed_indexer::NodeBackedIndexerServiceSubscriber;
+    use crate::LightWalletIndexer as _;
+    use zaino_proto::proto::service::{BlockId, BlockRange};
+    use zaino_proto::proto::utils::PoolTypeFilter;
+
+    use zaino_primitives::types::ShieldedPool;
+    use zaino_source_mock::{Activations, BlockSpec, ChainBuilder};
+
+    // Sapling outputs alone every 10th block: transactions with no nullifier
+    let blocks = (1..=CHAIN_TIP)
+        .fold(ChainBuilder::new(), |builder, height| {
+            let spec = BlockSpec::spends(3);
+            builder.block(match height % 10 {
+                0 => spec.notes(ShieldedPool::Sapling, 2),
+                5 => spec
+                    .notes(ShieldedPool::Sapling, 1)
+                    .notes(ShieldedPool::Orchard, 2),
+                _ => spec,
+            })
+        })
+        .into_blocks();
+    let index = super::synced_on(
+        &Activations::default(),
+        blocks,
+        None,
+        crate::chain_index::chain_head::config(),
+    )
+    .await;
+    let chain = index.source.source().clone();
+    let snapshot = index.reader.snapshot_nonfinalized_state();
+    let service = NodeBackedIndexerServiceSubscriber::new_for_test(index.reader.clone(), regtest());
+    let read = |height: u32, filter: PoolTypeFilter| {
+        let (reader, snapshot) = (index.reader.clone(), snapshot.clone());
+        async move {
+            reader
+                .get_compact_block(&snapshot, crate::Height(height), filter)
+                .await
+                .expect("reads")
+                .expect("below the tip")
+        }
+    };
+    let mut expected = Vec::new();
+    let mut outputs_only = 0;
+    for height in 1..=CHAIN_TIP {
+        let full = read(height, PoolTypeFilter::includes_all()).await;
+        for tx in &full.vtx {
+            let fee = chain
+                .fee_at(height, usize::try_from(tx.index).expect("small"))
+                .expect("the mock knows every fee");
+            assert_eq!(
+                u64::from(tx.fee),
+                u64::from(fee),
+                "{height} tx {}",
+                tx.index
+            );
+        }
+        let legacy = legacy_nullifiers(read(height, PoolTypeFilter::default()).await);
+        outputs_only += legacy
+            .vtx
+            .iter()
+            .filter(|tx| {
+                tx.spends.is_empty() && tx.actions.is_empty() && tx.ironwood_actions.is_empty()
+            })
+            .count();
+        let id = BlockId {
+            height: u64::from(height),
+            hash: Vec::new(),
+        };
+        assert_eq!(
+            service.get_block_nullifiers(id).await.expect("serves"),
+            legacy,
+            "{height}"
+        );
+        expected.push(legacy);
+    }
+    assert!(outputs_only > 0, "the chain has outputs-only transactions");
+    let range = BlockRange {
+        start: Some(BlockId {
+            height: 1,
+            hash: Vec::new(),
+        }),
+        end: Some(BlockId {
+            height: u64::from(CHAIN_TIP),
+            hash: Vec::new(),
+        }),
+        pool_types: Vec::new(),
+    };
+    let streamed: Vec<_> = service
+        .get_block_range_nullifiers(range)
+        .await
+        .expect("streams")
+        .map(|block| block.expect("serves"))
+        .collect()
+        .await;
+    assert_eq!(streamed, expected);
 }

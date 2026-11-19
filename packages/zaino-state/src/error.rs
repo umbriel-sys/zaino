@@ -494,6 +494,10 @@ pub enum InitError {
     /// it holds no persistent state to fall back on.
     #[error(transparent)]
     ChainHeadInitialisationError(#[from] zaino_chain_head_service::ChainHeadInitError),
+
+    /// The service did not start.
+    #[error(transparent)]
+    ServiceInitialisationError(#[from] zaino_service::SpawnError),
 }
 
 impl From<FinalisedStateError> for ChainIndexError {
@@ -579,6 +583,36 @@ impl From<zaino_chain_store::ChainStoreError> for ChainIndexError {
             // needs, and the kind above says nothing about which LMDB failure
             // produced it.
             source: Some(Box::new(value)),
+        }
+    }
+}
+
+/// A service read that could not be answered, in the legacy shapes: a
+/// validator's refusal or unreachability as the legacy source reported it.
+impl From<zaino_service::ServiceError> for ChainIndexError {
+    fn from(value: zaino_service::ServiceError) -> Self {
+        use crate::chain_index::validator_source::err;
+        use zaino_service::ServiceError as Error;
+        match value {
+            Error::InvalidParameter(message) => ChainIndexError::invalid_argument(message),
+            Error::Chain(error) => error.into(),
+            Error::ValidatorUnreachable(error) => {
+                ChainIndexError::backing_validator(err(zaino_source::QueryError::<
+                    std::convert::Infallible,
+                    _,
+                >::NonDomain(error)))
+            }
+            Error::ValidatorRejected(error) => {
+                ChainIndexError::backing_validator(err(zaino_source::QueryError::<
+                    _,
+                    zaino_source::NonDomainError,
+                >::Domain(error)))
+            }
+            Error::Stale(message) => ChainIndexError::unavailable(message),
+            not_served @ Error::NotServed { .. } => {
+                ChainIndexError::unavailable(not_served.to_string())
+            }
+            Error::Inconsistent(message) => ChainIndexError::internal(message),
         }
     }
 }

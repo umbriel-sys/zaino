@@ -5,10 +5,8 @@ use std::collections::HashSet;
 use futures::{Stream, StreamExt as _};
 use zaino_chain::{
     AddressRead as _, BlockId, BlockRead as _, ForkReconcile as _, Locator, SpendRead as _,
-    TransactionRead as _, TreestateRead as _,
+    TreestateRead as _,
 };
-use zaino_mempool::ports::TipAwareMempool as _;
-use zaino_primitives::types::TransactionLocation;
 use zebra_rpc::client::{GetAddressBalanceRequest, GetAddressTxIdsRequest};
 
 use super::chain_head::WithChainHeadSource;
@@ -18,8 +16,8 @@ use super::node_backed::NodeBackedChainIndexSubscriber;
 use super::source::{BlockchainSource, BlockchainSourceError, PoolTreestate};
 use super::types::{
     self, block_index, chain_locations, checked_addresses, domain_hash, domain_height,
-    domain_scope, domain_txid, indexed_block, local_hash, local_height, local_height_after,
-    local_txid, BestChainLocation, BlockIndex, NonBestChainLocation,
+    domain_scope, domain_txid, indexed_block, local_hash, local_height, local_txid,
+    BestChainLocation, BlockIndex, NonBestChainLocation,
 };
 use super::{ChainIndex, ShieldedPool};
 use crate::error::{ChainIndexError, ChainIndexErrorKind};
@@ -52,7 +50,7 @@ impl<
     type Error = ChainIndexError;
 
     fn snapshot_nonfinalized_state(&self) -> Self::Snapshot {
-        self.composer.snapshot()
+        self.service.chain_snapshot()
     }
 
     async fn get_block_height(
@@ -137,56 +135,16 @@ impl<
         snapshot: &Self::Snapshot,
         txid: &types::TransactionHash,
     ) -> Result<Option<(Vec<u8>, Option<u32>)>, Self::Error> {
-        let txid = domain_txid(txid);
-
-        // The mempool, but only when it is coherent with this snapshot: an
-        // unmined transaction's branch id comes from the height it would be
-        // mined at, which a stale snapshot would get wrong.
-        let coherent = self.coherence.coherent_snapshot();
-        match Self::coherent_epoch(&coherent, snapshot) {
-            Some(epoch) => {
-                if let Some(entry) = coherent.get(&txid) {
-                    let branch_id = epoch
-                        .best_tip
-                        .height
-                        .checked_add(1)
-                        .and_then(|next| types::branch_id(&self.network, next));
-                    return Ok(Some((entry.wire_bytes().to_vec(), branch_id)));
-                }
-            }
-            // The core set can lag the chain view and still list a txid this
-            // snapshot has mined; the chain answers that case.
-            None if self.mempool.contains_txid(&txid)
-                && snapshot.transaction_locations(txid).await?.is_empty() =>
-            {
-                return Err(ChainIndexError::unavailable(
-                    "mempool is not coherent with the requested snapshot; retry with a fresh snapshot",
-                ));
-            }
-            None => {}
-        }
-
-        let Some(transaction) = snapshot.raw_transaction(txid).await? else {
-            return Ok(None);
-        };
-        let height = match transaction.location {
-            TransactionLocation::BestChain(height) => height,
-            TransactionLocation::NonBestChain => {
-                let locations = snapshot.transaction_locations(txid).await?;
-                match locations
-                    .best_chain
-                    .or_else(|| locations.non_best_chain.first().copied())
-                {
-                    Some(position) => position.block.height,
-                    None => return Ok(None),
-                }
-            }
-            TransactionLocation::Mempool => return Ok(None),
-        };
-        Ok(Some((
-            transaction.bytes,
-            types::branch_id(&self.network, height),
-        )))
+        // a mempool transaction's branch id is the one at the height it would
+        // be mined at
+        Ok(self
+            .reads(snapshot)
+            .transaction(domain_txid(txid))
+            .await?
+            .map(|served| {
+                let branch_id = types::branch_id(&self.network, served.height);
+                (served.bytes, branch_id)
+            }))
     }
 
     async fn get_transaction_status(
@@ -194,46 +152,28 @@ impl<
         snapshot: &Self::Snapshot,
         txid: &types::TransactionHash,
     ) -> Result<(Option<BestChainLocation>, HashSet<NonBestChainLocation>), ChainIndexError> {
-        let txid = domain_txid(txid);
-        let (mut best, mut non_best) = chain_locations(snapshot.transaction_locations(txid).await?);
-
-        if self.mempool.contains_txid(&txid) {
-            let coherent = self.coherence.coherent_snapshot();
-            if Self::coherent_epoch(&coherent, snapshot).is_some() {
-                if best.is_some() {
-                    return Err(ChainIndexError {
-                        kind: ChainIndexErrorKind::InvalidSnapshot,
-                        message:
-                            "Best chain and up-to-date mempool both contain the same transaction"
-                                .to_string(),
-                        source: None,
-                    });
-                }
-                best = Some(BestChainLocation::Mempool(local_height_after(
-                    snapshot.best_tip().height,
-                )));
-            } else {
-                // The height it would be mined at under the mempool's tip, if
-                // this index still holds that block.
-                let target_height = match coherent.valid_for {
-                    Some(epoch) => self
-                        .composer
-                        .snapshot()
-                        .block_height(epoch.best_tip.hash)
-                        .await?
-                        .map(local_height_after),
-                    None => None,
-                };
-                non_best.insert(NonBestChainLocation::Mempool(target_height));
+        let status = match self
+            .reads(snapshot)
+            .transaction_status(domain_txid(txid))
+            .await
+        {
+            Ok(status) => status,
+            Err(zaino_service::ServiceError::Inconsistent(message)) => {
+                return Err(ChainIndexError {
+                    kind: ChainIndexErrorKind::InvalidSnapshot,
+                    message,
+                    source: None,
+                })
             }
-        }
-        Ok((best, non_best))
+            Err(error) => return Err(error.into()),
+        };
+        chain_locations(status)
     }
 
     async fn get_mempool_txids(&self) -> Result<Vec<types::TransactionHash>, Self::Error> {
         Ok(self
-            .mempool
-            .get_txids()
+            .service
+            .mempool_txids()
             .iter()
             .copied()
             .map(local_txid)
@@ -244,32 +184,15 @@ impl<
         &self,
         exclude_list: Vec<Vec<u8>>,
     ) -> Result<Vec<std::sync::Arc<zaino_mempool::MempoolEntry>>, Self::Error> {
-        // Validated rather than clamped: silently truncating would serve
-        // transactions the caller believes it excluded.
-        let suffixes = self
-            .mempool
-            .validate_exclude_suffixes(&exclude_list)
-            .map_err(|e| ChainIndexError::invalid_argument(e.to_string()))?;
-        Ok(self.mempool.get_filtered_entries(&suffixes))
+        Ok(self.service.mempool_entries(&exclude_list)?)
     }
 
     fn get_mempool_stream(
         &self,
         snapshot: Option<&Self::Snapshot>,
     ) -> Option<impl Stream<Item = Result<bytes::Bytes, Self::Error>>> {
-        let expected = match snapshot {
-            None => None,
-            Some(snapshot) => Some(Self::coherent_epoch(
-                &self.coherence.coherent_snapshot(),
-                snapshot,
-            )?),
-        };
-        let stream = self
-            .coherence
-            .stream_transactions_until_tip_change(expected)?;
+        let stream = self.service.mempool_stream(snapshot)?;
         Some(stream.map(|item| {
-            // A lag is not a normal end: reporting it as one would have the
-            // client believe it had received the whole mempool.
             item.map_err(|e| {
                 ChainIndexError::unavailable(format!("mempool stream ended early: {e}"))
             })
@@ -302,7 +225,7 @@ impl<
         ),
         Self::Error,
     > {
-        let snapshot = self.composer.snapshot();
+        let snapshot = self.service.chain_snapshot();
         if !Self::block_hash_known(&snapshot, *hash).await? {
             return Err(ChainIndexError::internal(format!(
                 "block hash {hash} not found in local chain index"
@@ -326,8 +249,8 @@ impl<
         max_entries: Option<u16>,
     ) -> Result<Vec<([u8; 32], u32)>, Self::Error> {
         Ok(self
-            .composer
-            .snapshot()
+            .service
+            .chain_snapshot()
             .subtree_roots(ShieldedPool::to_domain(pool), start_index, max_entries)
             .await?
             .into_iter()
@@ -340,7 +263,11 @@ impl<
         address_strings: GetAddressBalanceRequest,
     ) -> Result<zaino_primitives::types::AddressBalance, Self::Error> {
         let addresses = checked_addresses(&address_strings)?;
-        Ok(self.composer.snapshot().address_balance(&addresses).await?)
+        Ok(self
+            .service
+            .chain_snapshot()
+            .address_balance(&addresses)
+            .await?)
     }
 
     async fn get_address_txids(
@@ -350,8 +277,8 @@ impl<
         let addresses = checked_addresses(&request)?;
         let (_, start, end) = request.into_parts();
         Ok(self
-            .composer
-            .snapshot()
+            .service
+            .chain_snapshot()
             .address_txids(&addresses, request_height(start)?, request_height(end)?)
             .await?
             .into_iter()
@@ -365,8 +292,8 @@ impl<
     ) -> Result<Vec<zaino_primitives::types::Utxo>, Self::Error> {
         let addresses = checked_addresses(&address_strings)?;
         Ok(self
-            .composer
-            .snapshot()
+            .service
+            .chain_snapshot()
             .address_utxos(&addresses, zaino_source::UtxoPage::default())
             .await?)
     }

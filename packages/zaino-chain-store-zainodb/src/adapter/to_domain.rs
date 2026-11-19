@@ -202,6 +202,7 @@ fn stored_compact_tx_body(tx: &CompactTxData) -> Result<PreIndexCompactTx, Chain
         orchard_actions: tx.orchard().actions().iter().map(orchard_action).collect(),
         ironwood_actions: tx.ironwood().actions().iter().map(orchard_action).collect(),
         fee: None,
+        sapling_outputs_unread: 0,
     })
 }
 

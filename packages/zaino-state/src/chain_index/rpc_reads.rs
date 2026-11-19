@@ -2,26 +2,29 @@
 //! node-only RPCs from the validator.
 
 use futures::StreamExt as _;
-use hex::ToHex as _;
-use zaino_chain::{CompactBlockRead as _, TxOutSetRead as _};
+use zaino_chain::{BlockId, BlockRead as _, CompactBlockRead as _};
 use zaino_consensus::validate_raw_transaction_hex;
 use zaino_primitives::types::rpc::{
     AddressDeltas, AddressDeltasRequest, BlockDeltas, BlockHeaderVerbose, BlockSubsidy, MiningInfo,
     NodeInfo, PeerInfo, StandardFee,
 };
+use zaino_primitives::types::PoolFilter;
 use zaino_primitives::types::{MempoolInfo, TxOutSetInfo};
 use zaino_proto::compact::{compact_block_to_wire, pool_filter_from_wire};
+use zaino_proto::proto::compact_formats::CompactBlock;
 use zaino_proto::proto::utils::PoolTypeFilter;
+use zaino_source::{GetBlockDeltasError, GetBlockHeaderError, GetSpentInfoError, QueryError};
 use zebra_rpc::methods::GetBlock;
 use zebra_state::HashOrHeight;
 
 use super::chain_head::WithChainHeadSource;
 use super::chain_store::WithChainStoreSource;
-use super::chain_view::{BestTip as _, WithChainViewSource};
+use super::chain_view::{BestTip as _, ChainIndexSnapshot, WithChainViewSource};
 use super::node_backed::NodeBackedChainIndexSubscriber;
 use super::reads::flatten;
 use super::source::{BlockchainSource, BlockchainSourceResult};
 use super::types::{self, domain_height};
+use super::validator_source::{err, parse_display_hash32, spent_info_err};
 use super::{ChainIndex, ChainIndexRpcExt};
 use crate::error::ChainIndexError;
 use crate::CompactBlockStream;
@@ -33,18 +36,18 @@ fn validator<T>(result: BlockchainSourceResult<T>) -> Result<T, ChainIndexError>
 
 impl<
         Source: BlockchainSource + WithChainHeadSource + WithChainStoreSource + WithChainViewSource,
-    > ChainIndexRpcExt for NodeBackedChainIndexSubscriber<Source>
+    > NodeBackedChainIndexSubscriber<Source>
 {
-    async fn get_compact_block(
+    /// The compact block at `height` under `pools`; `None` past the tip.
+    pub(crate) async fn compact_block(
         &self,
-        snapshot: &Self::Snapshot,
+        snapshot: &ChainIndexSnapshot<Source>,
         height: types::Height,
-        pool_types: PoolTypeFilter,
-    ) -> Result<Option<zaino_proto::proto::compact_formats::CompactBlock>, Self::Error> {
+        pools: PoolFilter,
+    ) -> Result<Option<CompactBlock>, ChainIndexError> {
         let Some(at) = domain_height(height).filter(|at| *at <= snapshot.best_tip().height) else {
             return Ok(None);
         };
-        let pools = pool_filter_from_wire(&pool_types);
         let block = snapshot
             .compact_block(at, pools)
             .await?
@@ -52,13 +55,14 @@ impl<
         Ok(Some(compact_block_to_wire(&block, pools)))
     }
 
-    async fn get_compact_block_stream(
+    /// The compact blocks from `start_height` to `end_height` under `pools`.
+    pub(crate) fn compact_block_stream(
         &self,
-        snapshot: &Self::Snapshot,
+        snapshot: &ChainIndexSnapshot<Source>,
         start_height: types::Height,
         end_height: types::Height,
-        pool_types: PoolTypeFilter,
-    ) -> Result<Option<CompactBlockStream>, Self::Error> {
+        pools: PoolFilter,
+    ) -> Result<Option<CompactBlockStream>, ChainIndexError> {
         let tip = u32::from(snapshot.best_tip().height);
         let ascending = start_height <= end_height;
         if !ascending && start_height.0 > tip {
@@ -71,7 +75,6 @@ impl<
         } else {
             end_height
         };
-        let pools = pool_filter_from_wire(&pool_types);
         let blocks = match (
             ascending && start_height.0 > tip,
             domain_height(start_height),
@@ -110,6 +113,36 @@ impl<
         });
         Ok(Some(CompactBlockStream::new(receiver)))
     }
+}
+
+impl<
+        Source: BlockchainSource + WithChainHeadSource + WithChainStoreSource + WithChainViewSource,
+    > ChainIndexRpcExt for NodeBackedChainIndexSubscriber<Source>
+{
+    async fn get_compact_block(
+        &self,
+        snapshot: &Self::Snapshot,
+        height: types::Height,
+        pool_types: PoolTypeFilter,
+    ) -> Result<Option<CompactBlock>, Self::Error> {
+        self.compact_block(snapshot, height, pool_filter_from_wire(&pool_types))
+            .await
+    }
+
+    async fn get_compact_block_stream(
+        &self,
+        snapshot: &Self::Snapshot,
+        start_height: types::Height,
+        end_height: types::Height,
+        pool_types: PoolTypeFilter,
+    ) -> Result<Option<CompactBlockStream>, Self::Error> {
+        self.compact_block_stream(
+            snapshot,
+            start_height,
+            end_height,
+            pool_filter_from_wire(&pool_types),
+        )
+    }
 
     async fn z_get_block(
         &self,
@@ -119,7 +152,8 @@ impl<
         // Tip-relative negative heights resolve against the best chaintip, as
         // zebra's `getblock` does (`-1` is the tip). A rejected identifier
         // carries the legacy `InvalidParameter` code for the serving layer.
-        let tip = self.snapshot_nonfinalized_state().best_tip().height;
+        let snapshot = self.snapshot_nonfinalized_state();
+        let tip = snapshot.best_tip().height;
         let id = HashOrHeight::new(
             &hash_or_height,
             Some(zebra_chain::block::Height(u32::from(tip))),
@@ -130,19 +164,46 @@ impl<
                 error,
             ))
         })?;
+        // a height this snapshot holds is asked by its hash (D6-20); one past
+        // it gets the validator's own answer
+        let id = match id {
+            HashOrHeight::Height(height) => match domain_height(types::Height(height.0)) {
+                Some(at) => match snapshot.block_hash(at).await? {
+                    Some(hash) => HashOrHeight::Hash(zebra_chain::block::Hash(hash.into())),
+                    None => id,
+                },
+                None => id,
+            },
+            HashOrHeight::Hash(_) => id,
+        };
         validator(self.source().get_block_verbose(id, verbosity).await)
     }
 
     async fn get_block_header(&self, hash: String) -> Result<BlockHeaderVerbose, Self::Error> {
-        validator(self.source().get_block_header(hash).await)
+        let hash = display_hash(&hash)?;
+        let snapshot = self.snapshot_nonfinalized_state();
+        self.reads(&snapshot)
+            .block_header(BlockId::Hash(hash))
+            .await?
+            .ok_or_else(|| rejected(GetBlockHeaderError::BlockNotFound(hash)))
     }
 
     async fn get_raw_block_header(&self, hash: String) -> Result<Vec<u8>, Self::Error> {
-        validator(self.source().get_raw_block_header(hash).await)
+        let hash = display_hash(&hash)?;
+        let snapshot = self.snapshot_nonfinalized_state();
+        self.reads(&snapshot)
+            .raw_block_header(BlockId::Hash(hash))
+            .await?
+            .ok_or_else(|| rejected(GetBlockHeaderError::BlockNotFound(hash)))
     }
 
     async fn get_block_deltas(&self, hash: String) -> Result<BlockDeltas, Self::Error> {
-        validator(self.source().get_block_deltas(hash).await)
+        let hash = display_hash(&hash)?;
+        let snapshot = self.snapshot_nonfinalized_state();
+        self.reads(&snapshot)
+            .block_deltas(hash)
+            .await?
+            .ok_or_else(|| rejected(GetBlockDeltasError::BlockNotFound(hash)))
     }
 
     async fn get_difficulty(&self) -> Result<f64, Self::Error> {
@@ -188,7 +249,16 @@ impl<
         &self,
         outpoint: zaino_primitives::types::rpc::SpentOutpoint,
     ) -> Result<zaino_primitives::types::rpc::SpentInfo, Self::Error> {
-        validator(self.source().get_spent_info(outpoint).await)
+        let snapshot = self.snapshot_nonfinalized_state();
+        let rejection = match self.reads(&snapshot).spent_info(outpoint).await {
+            Ok(Some(info)) => return Ok(info),
+            Ok(None) => GetSpentInfoError::NotSpent,
+            Err(zaino_service::ServiceError::NotServed { .. }) => GetSpentInfoError::Unsupported,
+            Err(error) => return Err(error.into()),
+        };
+        Err(ChainIndexError::backing_validator(spent_info_err(
+            QueryError::<_, zaino_source::NonDomainError>::Domain(rejection),
+        )))
     }
 
     async fn get_network_sol_ps(
@@ -236,13 +306,14 @@ impl<
             }
         };
         types::checked_addresses(&zebra_rpc::client::GetAddressBalanceRequest::new(addresses))?;
-        validator(self.source().get_address_deltas(params).await)
+        let snapshot = self.snapshot_nonfinalized_state();
+        Ok(self.reads(&snapshot).address_deltas(params).await?)
     }
 
     async fn get_mempool_info(&self) -> MempoolInfo {
         // The tip-agnostic set: this reports what is in the mempool, not where
         // the chain is, so it must not freeze.
-        let info = self.mempool.get_mempool_info();
+        let info = self.service.mempool_info();
         MempoolInfo {
             size: info.size,
             bytes: info.bytes,
@@ -252,21 +323,22 @@ impl<
 
     async fn get_tx_out_set_info(&self) -> Result<Option<TxOutSetInfo>, Self::Error> {
         let snapshot = self.snapshot_nonfinalized_state();
-        let set = match snapshot.txout_set().await {
-            Ok(set) => set,
-            Err(zaino_chain::ChainViewError::NotServiceable(_)) => return Ok(None),
-            Err(error) => return Err(error.into()),
-        };
-        let tip = snapshot.best_tip();
-        Ok(Some(TxOutSetInfo {
-            height: tip.height,
-            best_block: tip.hash,
-            transactions: set.transactions,
-            tx_outs: set.transaction_outputs,
-            bytes_serialized: set.bytes_serialized,
-            hash_serialized: set.hash_serialized.encode_hex(),
-            total_amount: zaino_primitives::types::Zatoshis::new(set.total_zatoshis)
-                .map_err(|e| ChainIndexError::internal(e.to_string()))?,
-        }))
+        match self.reads(&snapshot).txout_set_info().await {
+            Ok(info) => Ok(Some(info)),
+            Err(zaino_service::ServiceError::NotServed { .. }) => Ok(None),
+            Err(error) => Err(error.into()),
+        }
     }
+}
+
+/// A block hash in RPC display order.
+fn display_hash(hash: &str) -> Result<zaino_primitives::types::BlockHash, ChainIndexError> {
+    validator(parse_display_hash32(hash).map(zaino_primitives::types::BlockHash::from))
+}
+
+/// A refusal in the shape the validator's port reported it.
+fn rejected(rejection: impl std::fmt::Debug + std::fmt::Display) -> ChainIndexError {
+    ChainIndexError::backing_validator(err(QueryError::<_, zaino_source::NonDomainError>::Domain(
+        rejection,
+    )))
 }

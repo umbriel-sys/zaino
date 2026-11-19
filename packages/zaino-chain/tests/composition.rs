@@ -22,7 +22,7 @@ use zaino_chain::{
 use zaino_chain_head::ChainHeadBlockService as _;
 use zaino_chain_store::PoolFilter;
 use zaino_primitives::types::{
-    BlockRef, PreIndexCompactTx, ShieldedPool, TransactionId, TransparentAddress,
+    BlockRef, CompactBlock, PreIndexCompactTx, ShieldedPool, TransactionId, TransparentAddress,
 };
 use zaino_source_mock::{address_of, CallArg, NodeFacts, MINER_SCRIPT};
 
@@ -153,6 +153,23 @@ async fn a_stream_spanning_all_three_providers_is_contiguous() {
     assert_eq!(heights, (98..=210).collect::<Vec<_>>());
 }
 
+/// A full read with Sapling included, as a nullifiers-only read of it: outputs
+/// left out and counted.
+fn nullifiers_of(mut block: CompactBlock) -> CompactBlock {
+    for tx in &mut block.transactions {
+        tx.sapling_outputs_unread = u16::try_from(tx.sapling_outputs.len()).expect("few outputs");
+        tx.sapling_outputs.clear();
+        for action in tx
+            .orchard_actions
+            .iter_mut()
+            .chain(tx.ironwood_actions.iter_mut())
+        {
+            action.output = None;
+        }
+    }
+    block
+}
+
 /// A nullifiers-only read is the full read stripped to nullifiers, from every
 /// provider: the store, the validator (the hole) and the window.
 #[tokio::test]
@@ -176,23 +193,7 @@ async fn a_nullifiers_only_stream_is_the_full_stream_without_outputs() {
         .flatten()
         .collect();
 
-    let stripped: Vec<_> = full
-        .iter()
-        .cloned()
-        .map(|mut block| {
-            for tx in &mut block.transactions {
-                tx.sapling_outputs.clear();
-                for action in tx
-                    .orchard_actions
-                    .iter_mut()
-                    .chain(tx.ironwood_actions.iter_mut())
-                {
-                    action.output = None;
-                }
-            }
-            block
-        })
-        .collect();
+    let stripped: Vec<_> = full.iter().cloned().map(nullifiers_of).collect();
     assert_eq!(nullifiers, stripped);
     // the chain has shielded spends and outputs, so the test strips something
     assert!(full.iter().any(|block| block
@@ -1239,22 +1240,7 @@ async fn store_and_window_answer_the_same_fees() {
         .into_iter()
         .flatten()
         .collect();
-    let stripped: Vec<_> = full
-        .into_iter()
-        .map(|mut block| {
-            for tx in &mut block.transactions {
-                tx.sapling_outputs.clear();
-                for action in tx
-                    .orchard_actions
-                    .iter_mut()
-                    .chain(tx.ironwood_actions.iter_mut())
-                {
-                    action.output = None;
-                }
-            }
-            block
-        })
-        .collect();
+    let stripped: Vec<_> = full.into_iter().map(nullifiers_of).collect();
     assert_eq!(nullifiers, stripped);
 
     // a block the reorg orphans keeps its fees, read by hash from its branch

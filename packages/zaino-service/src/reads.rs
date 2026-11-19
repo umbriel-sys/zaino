@@ -13,8 +13,9 @@ use zaino_chain_store_service::StoreReader;
 use zaino_indexes::IndexId;
 use zaino_persistence_lsm_tree::LsmTreeReader;
 use zaino_primitives::types::rpc::{
-    BlockDelta, BlockDeltas, BlockHeaderVerbose, BlockSubsidy, InputDelta, MiningInfo, NetworkInfo,
-    NodeInfo, OutputDelta, PeerInfo, SpentInfo, SpentOutpoint, StandardFee, TxOut,
+    AddressDeltas, AddressDeltasRequest, BlockDelta, BlockDeltas, BlockHeaderVerbose, BlockSubsidy,
+    InputDelta, MiningInfo, NetworkInfo, NodeInfo, OutputDelta, PeerInfo, SpentInfo, SpentOutpoint,
+    StandardFee, TxOut,
 };
 use zaino_primitives::types::{
     BlockConfirmations, BlockHash, BlockRef, BlockVerbose, BlockchainInfo, Difficulty,
@@ -45,17 +46,25 @@ pub struct ServiceSnapshot<S: ServiceSource> {
     pub(crate) mempool: zaino_mempool_service::MempoolSubscriber,
     /// The mempool coherent with a chain tip.
     pub(crate) coherence: zaino_mempool_service::CoherentSubscriber,
+    /// The view, for what the chain holds now rather than at this snapshot.
+    pub(crate) view: Arc<crate::engine::View<S>>,
 }
 
 impl<S: ServiceSource> Service<S> {
     /// A snapshot every read in a request is answered from.
     pub fn snapshot(&self) -> ServiceSnapshot<S> {
+        self.with_chain(self.view.snapshot())
+    }
+
+    /// A snapshot answering from `chain`, a chain snapshot this service took.
+    pub fn with_chain(&self, chain: ChainSnapshot<S>) -> ServiceSnapshot<S> {
         ServiceSnapshot {
-            chain: self.view.snapshot(),
+            chain,
             source: Arc::clone(&self.source),
             network: self.network(),
             mempool: self.mempool.subscriber(),
             coherence: self.coherence.subscriber(),
+            view: Arc::clone(&self.view),
         }
     }
 }
@@ -324,6 +333,41 @@ impl<S: ServiceSource> ServiceSnapshot<S> {
         Ok((utxos, self.chain.tip()))
     }
 
+    /// The addresses' deltas over the request's range, clamped to this
+    /// snapshot's tip (`end` 0, or the single-address form, reads to it);
+    /// with `chain_info`, the range's bounding blocks too.
+    pub async fn address_deltas(&self, request: AddressDeltasRequest) -> Result<AddressDeltas> {
+        let (addresses, start, end, chain_info) = match request {
+            AddressDeltasRequest::Filtered {
+                addresses,
+                start,
+                end,
+                chain_info,
+            } => (addresses, start, end, chain_info),
+            AddressDeltasRequest::Address(address) => (vec![address], 0, 0, false),
+        };
+        let (start, end) = deltas_range(self.chain.tip().height, start, end);
+        let deltas = self.chain.address_deltas(&addresses, start, end).await?;
+        if !chain_info {
+            return Ok(AddressDeltas::Simple(deltas));
+        }
+        Ok(AddressDeltas::WithChainInfo {
+            deltas,
+            start: self.block_at(start).await?,
+            end: self.block_at(end).await?,
+        })
+    }
+
+    /// The block at a height at or below this snapshot's tip.
+    async fn block_at(&self, height: Height) -> Result<BlockRef> {
+        match self.chain.block_hash(height).await? {
+            Some(hash) => Ok(BlockRef { hash, height }),
+            None => Err(ServiceError::Inconsistent(format!(
+                "no block at {height}, at or below the tip"
+            ))),
+        }
+    }
+
     /// The block subsidy at `height`, the tip's when `None`.
     pub async fn block_subsidy(&self, height: Option<Height>) -> Result<BlockSubsidy> {
         let height = height.unwrap_or(self.chain.tip().height);
@@ -481,9 +525,53 @@ where
     }
 }
 
+/// A `getaddressdeltas` range clamped to `tip`: `end` 0 reads to it, and a
+/// bound past it (or past the protocol maximum) is the tip.
+fn deltas_range(tip: Height, start: u32, end: u32) -> (Height, Height) {
+    let clamp = |raw: u32| Height::try_from(raw).map_or(tip, |height| height.min(tip));
+    (clamp(start), if end == 0 { tip } else { clamp(end) })
+}
+
 fn passthrough<T, E>(answer: core::result::Result<T, QueryError<E>>) -> Result<T>
 where
     E: std::error::Error + Send + Sync + 'static,
 {
     answer.map_err(ServiceError::from_query)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{deltas_range, Height};
+
+    fn height(h: u32) -> Height {
+        Height::try_from(h).expect("valid test height")
+    }
+
+    /// `end` 0 reads to the tip, and both bounds clamp down to it.
+    #[test]
+    fn bounds_clamp_to_tip() {
+        let tip = height(100);
+        assert_eq!(deltas_range(tip, 5, 0), (height(5), tip));
+        assert_eq!(deltas_range(tip, 5, 400), (height(5), tip));
+        assert_eq!(deltas_range(tip, 300, 50), (tip, height(50)));
+    }
+
+    /// A bound past the protocol maximum is the tip, not a failure.
+    #[test]
+    fn a_bound_past_the_protocol_maximum_clamps() {
+        let tip = height(100);
+        assert_eq!(deltas_range(tip, u32::MAX, u32::MAX), (tip, tip));
+    }
+
+    /// The single-address form's `0..=0` is the whole chain, not genesis.
+    #[test]
+    fn absent_range_covers_the_whole_chain() {
+        assert_eq!(deltas_range(height(100), 0, 0), (height(0), height(100)));
+    }
+
+    /// A range inside the chain is untouched.
+    #[test]
+    fn in_range_bounds_pass_through() {
+        assert_eq!(deltas_range(height(100), 10, 20), (height(10), height(20)));
+    }
 }

@@ -95,6 +95,9 @@ zaino-chain-head = { workspace = true }
 zaino-chain-head-service = { workspace = true }
 zaino-component.workspace = true
 zaino-chain = { workspace = true }
+zaino-service = { version = "0.1.0", path = "../zaino-service" }
+zaino-chain-store-service.workspace = true
+zaino-persistence-lsm-tree = { version = "0.1.0", path = "../zaino-persistence-lsm-tree" }
 
 [dev-dependencies]
 tempfile = { workspace = true }

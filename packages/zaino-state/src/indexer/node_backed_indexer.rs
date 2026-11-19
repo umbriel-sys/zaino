@@ -31,10 +31,7 @@ use zaino_proto::proto::{
         PingResponse, RawTransaction, SendResponse, TransparentAddressBlockFilter, TreeState,
         TxFilter,
     },
-    utils::{
-        blockid_to_hashorheight, compact_block_to_nullifiers, PoolTypeFilter,
-        ValidatedBlockRangeRequest,
-    },
+    utils::{blockid_to_hashorheight, PoolTypeFilter, ValidatedBlockRangeRequest},
 };
 
 use crate::{
@@ -191,6 +188,11 @@ impl ZcashService for NodeBackedIndexerService<ZebraValidatorSource> {
                 }
             }
         }
+        service
+            .indexer
+            .wait_until_local()
+            .await
+            .map_err(|error| NodeBackedIndexerServiceError::Critical(error.to_string()))?;
 
         Ok(service)
     }
@@ -283,6 +285,24 @@ fn parse_txid(txid_hex: &str) -> Result<types::TransactionHash, NodeBackedIndexe
 
 /// The legacy RPC's answer for a transaction it cannot find.
 #[allow(deprecated)]
+/// The pools a compact-block read serves: the requested ones, or for a
+/// nullifier read only their shielded nullifiers (D6-18).
+fn served_pools(
+    requested: &PoolTypeFilter,
+    nullifiers_only: bool,
+) -> zaino_primitives::types::PoolFilter {
+    use zaino_primitives::types::{PoolFilter, ShieldedPool};
+    let pools = zaino_proto::compact::pool_filter_from_wire(requested);
+    match nullifiers_only {
+        false => pools,
+        true => ShieldedPool::ALL
+            .into_iter()
+            .filter(|pool| pools.includes(*pool))
+            .fold(PoolFilter::none(), PoolFilter::with_pool)
+            .nullifiers_only(),
+    }
+}
+
 fn no_such_transaction() -> NodeBackedIndexerServiceError {
     NodeBackedIndexerServiceError::RpcError(crate::error::LegacyRpcError::new(
         zebra_rpc::server::error::LegacyCode::InvalidAddressOrKey,
@@ -497,18 +517,14 @@ impl<
             }
         };
 
+        // `BlockID` has no `poolTypes`; unfiltered is served the legacy set, as
+        // `GetBlockRange` serves an empty one.
+        let pools = served_pools(&PoolTypeFilter::default(), nullifiers_only);
         let block = self
             .indexer
-            .get_compact_block(
-                &snapshot,
-                types::Height(height),
-                // `BlockID` has no `poolTypes`; unfiltered is served the legacy set, as
-                // `GetBlockRange` serves an empty one.
-                PoolTypeFilter::default(),
-            )
+            .compact_block(&snapshot, types::Height(height), pools)
             .await;
         let failure = match block {
-            Ok(Some(block)) if nullifiers_only => return Ok(compact_block_to_nullifiers(block)),
             Ok(Some(block)) => return Ok(block),
             Ok(None) => status(tonic::Status::not_found(
                 "Error: Failed to retrieve block from state.",
@@ -537,19 +553,19 @@ impl<
     }
 
     /// Shared body of `get_block_range` and `get_block_range_nullifiers`: streams the
-    /// requested compact-block range through a channel, applying `map_block` to every
-    /// block before it is sent. `rpc_name` labels log lines and nothing else.
+    /// requested compact-block range through a channel, each block read with only its
+    /// nullifiers when `nullifiers_only`. `rpc_name` labels log lines and nothing else.
     #[allow(deprecated)]
     async fn spawn_block_range_stream(
         &self,
         request: &BlockRange,
         rpc_name: &'static str,
-        map_block: impl Fn(CompactBlock) -> CompactBlock + Send + Sync + 'static,
+        nullifiers_only: bool,
     ) -> Result<CompactBlockStream, NodeBackedIndexerServiceError> {
         let validated_request = ValidatedBlockRangeRequest::new_from_block_range(request)
             .map_err(NodeBackedIndexerServiceError::from)?;
 
-        let pool_type_filter = validated_request.pool_type_filter().clone();
+        let pools = served_pools(validated_request.pool_type_filter(), nullifiers_only);
 
         let start = validated_request.start();
         let end = validated_request.end();
@@ -563,18 +579,16 @@ impl<
             4,
             tonic::Status::deadline_exceeded(format!("Error: {rpc_name} gRPC request timed out.")),
             |channel_tx| async move {
-                let stream = indexer
-                    .get_compact_block_stream(
-                        &snapshot,
-                        types::Height(start),
-                        types::Height(end),
-                        pool_type_filter,
-                    )
-                    .await;
+                let stream = indexer.compact_block_stream(
+                    &snapshot,
+                    types::Height(start),
+                    types::Height(end),
+                    pools,
+                );
                 let failure = match stream {
                     Ok(Some(mut compact_block_stream)) => {
                         while let Some(stream_item) = compact_block_stream.next().await {
-                            if channel_tx.send(stream_item.map(&map_block)).await.is_err() {
+                            if channel_tx.send(stream_item).await.is_err() {
                                 return;
                             }
                         }
@@ -623,7 +637,7 @@ impl NodeBackedIndexerServiceSubscriber<ZebraValidatorSource> {
     /// directly off the mempool's entries. Production code goes through the `ChainIndex`
     /// mempool API.
     #[cfg(feature = "test_dependencies")]
-    pub fn mempool(&self) -> &zaino_mempool_service::MempoolSubscriber {
+    pub fn mempool(&self) -> zaino_mempool_service::MempoolSubscriber {
         self.indexer.mempool_subscriber()
     }
 }
@@ -1266,7 +1280,7 @@ impl<
         &self,
         request: BlockRange,
     ) -> Result<CompactBlockStream, Self::Error> {
-        self.spawn_block_range_stream(&request, "GetBlockRange", |block| block)
+        self.spawn_block_range_stream(&request, "GetBlockRange", false)
             .await
     }
 
@@ -1277,12 +1291,8 @@ impl<
         &self,
         request: BlockRange,
     ) -> Result<CompactBlockStream, Self::Error> {
-        self.spawn_block_range_stream(
-            &request,
-            "GetBlockRangeNullifiers",
-            compact_block_to_nullifiers,
-        )
-        .await
+        self.spawn_block_range_stream(&request, "GetBlockRangeNullifiers", true)
+            .await
     }
 
     /// Return the requested full (not compact) transaction (as from the legacy full node)
@@ -1659,35 +1669,22 @@ impl<
     /// Return information about this lightwalletd instance and the blockchain
     async fn get_lightd_info(&self) -> Result<LightdInfo, Self::Error> {
         let blockchain_info = self.get_blockchain_info().await?;
-
-        // Sapling's consensus branch id is protocol-fixed; the domain names
-        // upgrades by branch id, so it is matched directly rather than through
-        // a hex-string key.
-        const SAPLING_BRANCH_ID: u32 = 0x76b8_09bb;
-
-        let sapling_activation_height = blockchain_info
-            .upgrades
-            .iter()
-            .find(|upgrade| u32::from(upgrade.branch_id) == SAPLING_BRANCH_ID)
-            .map_or(1, |upgrade| u32::from(upgrade.activation_height));
-
+        // proto3's zero and empty string are "not scheduled" (K-02)
+        let schedule =
+            zaino_service::schedule_at(&blockchain_info.upgrades, blockchain_info.blocks);
         let consensus_branch_id = zebra_chain::parameters::ConsensusBranchId::from(u32::from(
             blockchain_info.consensus.chain_tip,
         ))
         .to_string();
-
-        // The upgrade name is now the validator's own, carried through the
-        // domain type, rather than this build's `NetworkUpgrade` rendering of
-        // the same branch id.
-        let latest_upgrade = super::latest_network_upgrade(&blockchain_info.upgrades)
-            .map_err(NodeBackedIndexerServiceError::TonicStatusError)?;
 
         Ok(LightdInfo {
             version: self.data.build_info().version(),
             vendor: "ZingoLabs ZainoD".to_string(),
             taddr_support: true,
             chain_name: blockchain_info.chain.clone(),
-            sapling_activation_height: u64::from(sapling_activation_height),
+            sapling_activation_height: schedule
+                .sapling_activation
+                .map_or(0, |height| u64::from(u32::from(height))),
             consensus_branch_id,
             block_height: u64::from(u32::from(blockchain_info.blocks)),
             git_commit: self.data.build_info().commit_hash(),
@@ -1703,8 +1700,13 @@ impl<
                 .as_ref()
                 .map(DonationAddress::encode)
                 .unwrap_or_default(),
-            upgrade_name: latest_upgrade.name.clone(),
-            upgrade_height: u64::from(u32::from(latest_upgrade.activation_height)),
+            upgrade_name: schedule
+                .next_upgrade
+                .map(|upgrade| upgrade.name.clone())
+                .unwrap_or_default(),
+            upgrade_height: schedule
+                .next_upgrade
+                .map_or(0, |upgrade| u64::from(u32::from(upgrade.activation_height))),
             lightwallet_protocol_version: "v0.6.0".to_string(),
         })
     }

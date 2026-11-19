@@ -32,7 +32,6 @@ pub mod chain_store;
 /// ChainIndex's side of the ChainView boundary: handing ChainView a validator,
 /// and composing it.
 pub mod chain_view;
-mod mempool;
 mod network_adoption;
 mod node_backed;
 mod reads;

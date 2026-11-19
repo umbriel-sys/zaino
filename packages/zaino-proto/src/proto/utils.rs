@@ -1,7 +1,7 @@
 use std::collections::BTreeSet;
 
 use crate::proto::{
-    compact_formats::{ChainMetadata, CompactBlock, CompactOrchardAction, CompactTx},
+    compact_formats::{CompactBlock, CompactTx},
     service::{BlockId, BlockRange, PoolType},
 };
 #[cfg(feature = "heavy")]
@@ -341,46 +341,6 @@ fn included_or_empty<T>(included: bool, items: Vec<T>) -> Vec<T> {
     } else {
         Vec::new()
     }
-}
-
-/// Rebuilds the block so each transaction carries only its nullifier
-/// carriers: Sapling spends whole (the spend is its own nullifier record),
-/// Orchard and Ironwood actions reduced to nullifier-only, and every other
-/// field emptied. Chain metadata is zeroed.
-pub fn compact_block_to_nullifiers(mut block: CompactBlock) -> CompactBlock {
-    block.vtx = block
-        .vtx
-        .into_iter()
-        .map(|compact_tx| CompactTx {
-            index: compact_tx.index,
-            txid: compact_tx.txid,
-            fee: compact_tx.fee,
-            spends: compact_tx.spends,
-            outputs: Vec::new(),
-            actions: nullifiers_only(compact_tx.actions),
-            ironwood_actions: nullifiers_only(compact_tx.ironwood_actions),
-            vin: Vec::new(),
-            vout: Vec::new(),
-        })
-        .collect();
-
-    block.chain_metadata = Some(ChainMetadata {
-        sapling_commitment_tree_size: 0,
-        orchard_commitment_tree_size: 0,
-        ironwood_commitment_tree_size: 0,
-    });
-    block
-}
-
-/// Reduces each action to one carrying only its nullifier.
-fn nullifiers_only(actions: Vec<CompactOrchardAction>) -> Vec<CompactOrchardAction> {
-    actions
-        .into_iter()
-        .map(|action| CompactOrchardAction {
-            nullifier: action.nullifier,
-            ..Default::default()
-        })
-        .collect()
 }
 
 #[cfg(test)]

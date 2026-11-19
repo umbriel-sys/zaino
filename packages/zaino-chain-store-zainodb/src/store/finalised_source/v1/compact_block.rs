@@ -1482,6 +1482,7 @@ fn compact_tx(
         orchard_actions: orchard.map(domain_actions).unwrap_or_default(),
         ironwood_actions: ironwood.map(domain_actions).unwrap_or_default(),
         fee: None,
+        sapling_outputs_unread: 0,
     })
 }
 

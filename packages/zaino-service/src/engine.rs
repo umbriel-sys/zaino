@@ -9,15 +9,16 @@ use std::sync::Arc;
 use tokio_util::sync::CancellationToken;
 use zaino_chain::{ChainView as _, ChainViewComposer, ChainViewSync, StoreIndexes};
 use zaino_chain_head_service::{ChainHeadInitError, ChainHeadService, ChainHeadSubscriber};
-use zaino_chain_store::{ChainStoreError, ChainStoreIngest as _};
+use zaino_chain_store::{ChainStoreError, ChainStoreIngest as _, Provenance};
 use zaino_chain_store_service::{BootError, ChainStore, LinkedChainStore, LinkedError, Polling};
-use zaino_component::{ComponentStatus, StatusSource as _};
+use zaino_component::{ComponentStatus, Lifecycle, StatusSource as _};
 use zaino_indexes::IndexId;
-use zaino_primitives::types::{Network, NetworkUpgradeInfo};
+use zaino_primitives::types::{ChainStateEpoch, Height, Network, NetworkUpgradeInfo};
 
 use crate::capability::ServiceManifest;
 use crate::config::{DiskStore, Mode, ServiceConfig, Store};
 use crate::error::ServiceError;
+use crate::reads::ChainSnapshot;
 use crate::source::ServiceSource;
 use mempool::{Coherence, Mempool};
 use store::EngineStore;
@@ -45,6 +46,30 @@ pub enum SpawnError {
     ChainHead(#[from] ChainHeadInitError),
 }
 
+/// The service's components' statuses.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Statuses {
+    /// The store (or, without one, a stand-in that is always ready).
+    pub store: ComponentStatus,
+    /// The chain head.
+    pub head: ComponentStatus,
+    /// The tip-agnostic mempool.
+    pub mempool: ComponentStatus,
+    /// The mempool's coherence layer.
+    pub coherence: ComponentStatus,
+    /// A primary store's background sync.
+    pub sync: Option<ComponentStatus>,
+}
+
+impl Statuses {
+    /// Every component's status.
+    pub fn all(&self) -> impl Iterator<Item = &ComponentStatus> {
+        [&self.store, &self.head, &self.mempool, &self.coherence]
+            .into_iter()
+            .chain(self.sync.as_ref())
+    }
+}
+
 /// One running indexer service (D-33, D-48).
 pub struct Service<S: ServiceSource> {
     pub(crate) view: Arc<View<S>>,
@@ -54,6 +79,8 @@ pub struct Service<S: ServiceSource> {
     _linked: Option<Polling>,
     pub(crate) mempool: Arc<Mempool<S>>,
     pub(crate) coherence: Arc<Coherence>,
+    /// Held so streams can borrow it for the service's lifetime.
+    coherent: zaino_mempool_service::CoherentSubscriber,
     pub(crate) source: Arc<S>,
     network: Network,
     cancel: CancellationToken,
@@ -144,6 +171,7 @@ impl<S: ServiceSource> Service<S> {
             sync,
             _linked: linked,
             mempool,
+            coherent: coherence.subscriber(),
             coherence,
             source,
             network,
@@ -156,17 +184,108 @@ impl<S: ServiceSource> Service<S> {
         self.network
     }
 
+    /// The chain view's snapshot now.
+    pub fn chain_snapshot(&self) -> ChainSnapshot<S> {
+        self.view.snapshot()
+    }
+
+    /// Epochs as the chain head publishes them.
+    pub fn subscribe_tip(&self) -> tokio::sync::watch::Receiver<ChainStateEpoch> {
+        self.view.subscribe_tip()
+    }
+
+    /// The store's committed tip, `None` while empty or without a store.
+    pub fn store_tip(&self) -> Option<Height> {
+        let watermark = zaino_chain_store::ChainStoreReader::watermark(
+            &zaino_chain_store::ChainStoreService::reader(&self.store),
+        );
+        match watermark.provenance {
+            Provenance::Durable => watermark.tip.map(|tip| tip.height),
+            Provenance::Passthrough => None,
+        }
+    }
+
+    /// How long the coherent mempool has been frozen, `None` while live.
+    pub fn mempool_frozen_for(&self) -> Option<std::time::Duration> {
+        self.coherent.frozen_for()
+    }
+
+    /// Resolves once a primary store has caught up with the chain head's
+    /// floor; at once without one. `Err` if the sync stops first.
+    pub async fn caught_up(&self) -> Result<(), ServiceError> {
+        let Some(sync) = &self.sync else {
+            return Ok(());
+        };
+        let mut status = zaino_component::StatusWatch::subscribe(sync.as_ref());
+        let caught_up = status
+            .wait_for(|status| status.lifecycle == Lifecycle::Ready || !status.is_live())
+            .await
+            .map(|status| status.lifecycle == Lifecycle::Ready);
+        match caught_up {
+            Ok(true) => Ok(()),
+            Ok(false) | Err(_) => Err(ServiceError::Stale("the store's sync stopped")),
+        }
+    }
+
     /// Who answers each capability now.
     pub fn manifest(&self) -> ServiceManifest {
         let store = &self.store;
         ServiceManifest::derive(&self.view.serviceability(), |id| store.serviceability(id))
     }
 
-    /// The status of each component that reports one.
-    pub fn statuses(&self) -> Vec<ComponentStatus> {
-        let mut statuses = vec![self.store.status(), self.head.status()];
-        statuses.extend(self.sync.as_ref().map(|sync| sync.status()));
-        statuses
+    /// Each component's status.
+    pub fn statuses(&self) -> Statuses {
+        Statuses {
+            store: self.store.status(),
+            head: self.head.status(),
+            mempool: self.mempool.status(),
+            coherence: self.coherence.status(),
+            sync: self.sync.as_ref().map(|sync| sync.status()),
+        }
+    }
+
+    /// Whether a primary store has caught up with the chain head's floor;
+    /// true without one.
+    pub fn is_caught_up(&self) -> bool {
+        self.sync
+            .as_ref()
+            .is_none_or(|sync| sync.status().lifecycle == Lifecycle::Ready)
+    }
+
+    /// The tip-agnostic mempool set.
+    pub fn mempool_subscriber(&self) -> zaino_mempool_service::MempoolSubscriber {
+        self.mempool.subscriber()
+    }
+
+    /// The mempool's txids, whatever the tip.
+    pub fn mempool_txids(&self) -> Arc<[zaino_primitives::types::TransactionId]> {
+        self.mempool.subscriber().get_txids()
+    }
+
+    /// The mempool's size and cost, whatever the tip.
+    pub fn mempool_info(&self) -> zaino_mempool_service::MempoolInfo {
+        self.mempool.subscriber().get_mempool_info()
+    }
+
+    /// The mempool's entries but those whose txid ends in one of `exclude`;
+    /// a malformed suffix is refused, never trimmed.
+    pub fn mempool_entries(
+        &self,
+        exclude: &[Vec<u8>],
+    ) -> Result<Vec<Arc<zaino_mempool::MempoolEntry>>, ServiceError> {
+        crate::mempool_reads::entries(&self.mempool.subscriber(), exclude)
+    }
+
+    /// The coherent mempool's stream until the tip moves; with `chain`, only
+    /// if coherent with that snapshot (`None` otherwise).
+    pub fn mempool_stream(
+        &self,
+        chain: Option<&ChainSnapshot<S>>,
+    ) -> Option<impl futures::Stream<Item = Result<bytes::Bytes, ServiceError>> + Send + '_> {
+        crate::mempool_reads::coherent_stream(
+            &self.coherent,
+            chain.map(zaino_chain::ChainViewSnapshot::epoch),
+        )
     }
 
     /// Stops every task; a primary store flushes. Dropping the service stops
@@ -179,7 +298,8 @@ impl<S: ServiceSource> Service<S> {
         }
     }
 
-    fn stop(&self) {
+    /// Stops every task without the flush; for synchronous teardown.
+    pub fn stop(&self) {
         self.cancel.cancel();
         self.mempool.close();
         self.coherence.close();

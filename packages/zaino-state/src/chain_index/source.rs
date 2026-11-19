@@ -67,10 +67,7 @@ use crate::chain_index::{
     ShieldedPool,
 };
 use crate::SendFut;
-use zaino_primitives::types::rpc::{
-    AddressDeltas, AddressDeltasRequest, BlockDeltas, BlockHeaderVerbose, BlockSubsidy, MiningInfo,
-    NodeInfo, PeerInfo, StandardFee,
-};
+use zaino_primitives::types::rpc::{BlockSubsidy, MiningInfo, NodeInfo, PeerInfo, StandardFee};
 use zebra_rpc::client::{GetAddressBalanceRequest, GetAddressTxIdsRequest};
 use zebra_state::HashOrHeight;
 
@@ -105,41 +102,9 @@ pub(crate) type NonfinalizedBlockReceiver =
 /// Temporary scaffolding — see the [module docs](self). The capability-based
 /// split this once carried a TODO for now exists in `zaino-source`; this trait
 /// remains only so ChainIndex can keep its current shape while the new stack is
-/// wired in beneath it.
-///
-/// # The mempool ports are supertraits, not methods
-///
-/// The four mempool questions are required here rather than declared as methods
-/// below, because the mempool subsystem has already completed the migration this
-/// trait is scaffolding for: it reads `zaino-source` directly and never sees a
-/// `BlockchainSource`. Restating those questions as wire-typed methods would
-/// mean converting domain types out and back for no reader.
-///
-/// This is what "methods leave `BlockchainSource` as subsystems move onto the
-/// ports" looks like from the other side — the requirement stays (ChainIndex
-/// still needs a source that can answer them, to hand to the mempool), but the
-/// answering is no longer routed through here. See the [module docs](self) for
-/// why a growing supertrait list is this trait dissolving rather than accreting.
-///
-/// A consequence worth stating, because it looks like a defect and is not:
-/// `MempoolSourceAdapter` (in the sibling `mempool` module) is bounded on this
-/// trait while calling none of its methods — it only forwards the supertraits
-/// above. That is the migrated state. Narrowing its bound to those four ports
-/// would decouple nothing on its own, because ChainIndex only ever instantiates
-/// it from its own `Source: BlockchainSource`; the change that decouples is
-/// removing the supertraits, which pushes the requirement onto every
-/// `NodeBackedChainIndex` bound and is churn this staging exists to avoid until
-/// the ChainHead cutover does it once.
-pub trait BlockchainSource:
-    zaino_source::OneShotGetMempoolTxids
-    + zaino_source::OneShotGetMempoolMetadata
-    + zaino_source::OneShotGetRawMempoolTransaction
-    + zaino_source::OneShotGetMempoolSourceTip
-    + Clone
-    + Send
-    + Sync
-    + 'static
-{
+/// wired in beneath it. The mempool is fed by the service through the
+/// view's ports, not through this trait.
+pub trait BlockchainSource: Clone + Send + Sync + 'static {
     // ********** Block methods **********
 
     /// Returns a best-chain block by hash or height
@@ -157,26 +122,6 @@ pub trait BlockchainSource:
         hash_or_height: HashOrHeight,
         verbosity: Option<u8>,
     ) -> impl SendFut<BlockchainSourceResult<zebra_rpc::methods::GetBlock>>;
-
-    /// Returns the `getblockheader`-shaped block header for the given block hash.
-    ///
-    /// When `verbose` is false the header is returned in raw hex form; when true it is
-    /// returned as a structured object.
-    fn get_block_header(
-        &self,
-        hash: String,
-    ) -> impl SendFut<BlockchainSourceResult<BlockHeaderVerbose>>;
-
-    /// Returns the raw serialised header of the block with the given hash.
-    ///
-    /// The non-verbose half of `getblockheader`. Verbosity is chosen by the
-    /// caller, so it selects between two questions here rather than making one
-    /// answer polymorphic; the serving layer picks which to ask.
-    fn get_raw_block_header(&self, hash: String) -> impl SendFut<BlockchainSourceResult<Vec<u8>>>;
-
-    /// Returns the `getblockdeltas`-shaped transparent input/output deltas for the block
-    /// with the given hash.
-    fn get_block_deltas(&self, hash: String) -> impl SendFut<BlockchainSourceResult<BlockDeltas>>;
 
     // ********** Transaction methods **********
 
@@ -257,12 +202,6 @@ pub trait BlockchainSource:
         include_mempool: Option<bool>,
     ) -> impl SendFut<BlockchainSourceResult<Option<zaino_primitives::types::rpc::TxOut>>>;
 
-    /// Returns the `getspentinfo` response for the given request.
-    fn get_spent_info(
-        &self,
-        outpoint: zaino_primitives::types::rpc::SpentOutpoint,
-    ) -> impl SendFut<BlockchainSourceResult<zaino_primitives::types::rpc::SpentInfo>>;
-
     /// Returns the `getnetworksolps` response.
     fn get_network_sol_ps(
         &self,
@@ -311,20 +250,6 @@ pub trait BlockchainSource:
     ///
     /// block height range, default is the full blockchain.
     /// If start or end are not specified, they default to zero.
-    /// If start is greater than the latest block height, it's interpreted as that height.
-    ///
-    /// If end is zero, it's interpreted as the latest block height.
-    ///
-    /// [the original legacy full-node implementation](https://github.com/zcash/zcash/blob/18238d90cd0b810f5b07d5aaa1338126aa128c06/src/rpc/misc.cpp#L881)
-    ///
-    /// Zcash RPC reference: [`getaddressdeltas`](https://zcash.github.io/rpc/getaddressdeltas.html)
-    /// method: post
-    /// tags: address
-    fn get_address_deltas(
-        &self,
-        params: AddressDeltasRequest,
-    ) -> impl SendFut<BlockchainSourceResult<AddressDeltas>>;
-
     /// Returns the total balance of a provided `addresses` in an [`AddressBalance`](zaino_primitives::types::AddressBalance) instance.
     ///
     /// Zcash RPC reference: [`getaddressbalance`](https://zcash.github.io/rpc/getaddressbalance.html)

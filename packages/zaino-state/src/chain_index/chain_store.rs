@@ -64,22 +64,6 @@ where
     }
 }
 
-/// Opens the finalised store `config` names, built from `source`.
-pub(super) async fn spawn<S: WithChainStoreSource>(
-    config: &crate::config::ChainIndexConfig,
-    source: &S,
-) -> Result<
-    zaino_chain_store_zainodb::store::FinalisedState<S::Store>,
-    crate::error::FinalisedStateError,
-> {
-    zaino_chain_store_zainodb::store::FinalisedState::spawn(
-        config.chain_store_config(),
-        config.zainodb_config(),
-        source.chain_store_source(),
-    )
-    .await
-}
-
 #[cfg(test)]
 mod tests {
     use super::WithChainStoreSource;

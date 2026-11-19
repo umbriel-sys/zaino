@@ -11,8 +11,9 @@
 use std::collections::HashSet;
 use std::num::NonZeroU128;
 
-use zaino_chain::{ChainBlock, ChainTxPosition, SpendStatus, TransactionLocations};
+use zaino_chain::{ChainBlock, ChainTxPosition, SpendStatus};
 use zaino_primitives::types as domain;
+use zaino_service::Placement;
 
 use crate::error::ChainIndexError;
 
@@ -33,11 +34,6 @@ pub(crate) fn domain_height(height: Height) -> Option<domain::Height> {
 
 pub(crate) fn local_height(height: domain::Height) -> Height {
     Height(u32::from(height))
-}
-
-/// The height after `height` (domain heights end far below `u32::MAX`).
-pub(crate) fn local_height_after(height: domain::Height) -> Height {
-    Height(u32::from(height).saturating_add(1))
 }
 
 pub(crate) fn domain_txid(txid: &TransactionHash) -> domain::TransactionId {
@@ -76,30 +72,43 @@ pub(crate) fn spender(status: SpendStatus) -> Result<Option<TransactionHash>, Ch
     }
 }
 
-/// Where a transaction was mined, in the legacy location shapes.
+/// Where a transaction is, in the legacy location shapes.
 pub(crate) fn chain_locations(
-    locations: TransactionLocations,
-) -> (Option<BestChainLocation>, HashSet<NonBestChainLocation>) {
+    status: zaino_service::TransactionStatus,
+) -> Result<(Option<BestChainLocation>, HashSet<NonBestChainLocation>), ChainIndexError> {
     let at = |position: ChainTxPosition| {
         (
             local_hash(position.block.hash),
             local_height(position.block.height),
         )
     };
-    (
-        locations.best_chain.map(|position| {
+    let best = match status.best {
+        None => None,
+        Some(Placement::Block(position)) => {
             let (hash, height) = at(position);
-            BestChainLocation::Block(hash, height)
-        }),
-        locations
-            .non_best_chain
-            .into_iter()
-            .map(|position| {
+            Some(BestChainLocation::Block(hash, height))
+        }
+        Some(Placement::Mempool(Some(height))) => {
+            Some(BestChainLocation::Mempool(local_height(height)))
+        }
+        Some(Placement::Mempool(None)) => {
+            return Err(ChainIndexError::internal(
+                "a coherent mempool placement without a height",
+            ))
+        }
+    };
+    let elsewhere = status
+        .elsewhere
+        .into_iter()
+        .map(|placement| match placement {
+            Placement::Block(position) => {
                 let (hash, height) = at(position);
                 NonBestChainLocation::Block(hash, height)
-            })
-            .collect(),
-    )
+            }
+            Placement::Mempool(height) => NonBestChainLocation::Mempool(height.map(local_height)),
+        })
+        .collect();
+    Ok((best, elsewhere))
 }
 
 /// A ChainView block, in the legacy shape.
@@ -238,26 +247,49 @@ mod tests {
     }
 
     #[test]
-    fn locations_keep_best_and_competing_blocks_apart() {
-        let mut locations = TransactionLocations::default();
-        locations.best_chain = Some(ChainTxPosition {
-            block: domain_ref(10, 1),
-            tx_index: 0,
-        });
-        locations.non_best_chain = vec![ChainTxPosition {
-            block: domain_ref(10, 2),
-            tx_index: 1,
-        }];
+    fn locations_keep_best_and_competing_placements_apart() {
+        let status = zaino_service::TransactionStatus {
+            best: Some(Placement::Block(ChainTxPosition {
+                block: domain_ref(10, 1),
+                tx_index: 0,
+            })),
+            elsewhere: vec![
+                Placement::Block(ChainTxPosition {
+                    block: domain_ref(10, 2),
+                    tx_index: 1,
+                }),
+                Placement::Mempool(None),
+            ],
+        };
 
-        let (best, others) = chain_locations(locations);
+        let (best, others) = chain_locations(status).expect("convertible");
         assert_eq!(
             best,
             Some(BestChainLocation::Block(BlockHash([1; 32]), Height(10)))
         );
         assert_eq!(
             others,
-            HashSet::from([NonBestChainLocation::Block(BlockHash([2; 32]), Height(10))])
+            HashSet::from([
+                NonBestChainLocation::Block(BlockHash([2; 32]), Height(10)),
+                NonBestChainLocation::Mempool(None),
+            ])
         );
+    }
+
+    #[test]
+    fn a_coherent_mempool_placement_keeps_its_height() {
+        let height = zaino_primitives::types::Height::try_from(11).expect("small");
+        let status = zaino_service::TransactionStatus {
+            best: Some(Placement::Mempool(Some(height))),
+            elsewhere: Vec::new(),
+        };
+        let (best, _) = chain_locations(status).expect("convertible");
+        assert_eq!(best, Some(BestChainLocation::Mempool(Height(11))));
+        let heightless = zaino_service::TransactionStatus {
+            best: Some(Placement::Mempool(None)),
+            elsewhere: Vec::new(),
+        };
+        assert!(chain_locations(heightless).is_err());
     }
 
     /// The legacy code a rejection carries, as the JSON-RPC layer recovers it.
