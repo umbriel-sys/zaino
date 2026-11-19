@@ -22,7 +22,7 @@
 use zaino_primitives::txout_commitment::TxOutSetAccumulator;
 use zaino_primitives::types::{
     rpc::ChainTip, BlockHash, BlockRef, ChainStateEpoch, ConsensusBranchId, Height, Outpoint,
-    PoolFrontier, ShieldedPool, SubtreeRoot, TransactionId, TxIndex,
+    PoolFilter, PoolFrontier, PreIndexCompactTx, ShieldedPool, SubtreeRoot, TransactionId, TxIndex,
 };
 
 use crate::{block::ChainHeadBlock, capability::HeadCapabilities, error::ChainHeadError};
@@ -329,6 +329,24 @@ pub trait ChainHeadTreeStateService: ChainHeadSnapshot {
     ) -> Result<Vec<SubtreeRoot>, ChainHeadError> {
         let _ = (pool, start, limit);
         not_built("tree state")
+    }
+}
+
+/// The window's compact blocks as I-05 folds them (the `compact_blocks`
+/// extension): the same reads as the store's, fees included.
+///
+/// Answers cover the window's blocks above the store's tip alone, branches
+/// included: a block at or below it, or not in the window, is `None`.
+pub trait ChainHeadCompactBlockService: ChainHeadSnapshot {
+    /// The compact transactions of the window block `hash`, holding what
+    /// `pools` asks for.
+    fn compact_transactions(
+        &self,
+        hash: &BlockHash,
+        pools: PoolFilter,
+    ) -> Result<Option<Vec<PreIndexCompactTx>>, ChainHeadError> {
+        let _ = (hash, pools);
+        not_built("compact blocks")
     }
 }
 

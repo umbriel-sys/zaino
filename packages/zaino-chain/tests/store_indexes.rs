@@ -67,6 +67,7 @@ async fn the_indexes_build_when_the_store_moves_under_an_unchanged_head() {
         vec![
             HeadCapability::TxOutSet,
             HeadCapability::TransparentHistory,
+            HeadCapability::CompactBlocks,
             HeadCapability::TreeState,
             HeadCapability::HistoryTree
         ]

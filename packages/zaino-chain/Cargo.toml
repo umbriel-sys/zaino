@@ -60,7 +60,7 @@ futures = { workspace = true }
 # through its `testing` feature. No fakes of the ports exist here.
 zaino-source-mock = { workspace = true }
 zaino-chain-store-service = { workspace = true }
-zaino-chain-head-service = { workspace = true, features = ["address_history", "history_tree", "testing", "transactions", "tree_state", "txout_set"] }
+zaino-chain-head-service = { workspace = true, features = ["address_history", "compact_blocks", "history_tree", "testing", "transactions", "tree_state", "txout_set"] }
 zaino-persistence = { path = "../zaino-persistence", features = ["testing"] }
 zaino-consensus = { workspace = true }
 tokio-util = { workspace = true }

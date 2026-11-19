@@ -29,9 +29,10 @@ use futures::Stream;
 use std::collections::HashMap;
 use tokio::sync::{watch, Semaphore};
 use zaino_chain_head::{
-    ChainHeadBlock, ChainHeadBlockService, ChainHeadError, ChainHeadHistoryTreeService,
-    ChainHeadSnapshot, ChainHeadTransactionService, ChainHeadTransparentHistoryService,
-    ChainHeadTreeStateService, ChainHeadTxOutSetService, HeadCapabilities, HeadCapability,
+    ChainHeadBlock, ChainHeadBlockService, ChainHeadCompactBlockService, ChainHeadError,
+    ChainHeadHistoryTreeService, ChainHeadSnapshot, ChainHeadTransactionService,
+    ChainHeadTransparentHistoryService, ChainHeadTreeStateService, ChainHeadTxOutSetService,
+    HeadCapabilities, HeadCapability,
 };
 use zaino_chain_store::{
     ChainStoreError, ChainStoreReader, ChainStoreService,
@@ -42,9 +43,9 @@ use zaino_chain_store::{
 use zaino_primitives::types::{
     legacy_tree_from_frontier, rpc::ChainTip, AbsoluteChainWork, AddressBalance, AddressDelta,
     BlockConfirmations, BlockHash, BlockHeader, BlockRef, ChainStateEpoch, CompactBlock, Height,
-    Outpoint, PoolFrontier, PoolTreestate, ShieldedPool, SignedZatoshis, SubtreeIndex, SubtreeRoot,
-    TransactionId, TransparentAddress, TransparentAddressKey, TransparentOutput, Treestate, Utxo,
-    Zatoshis, ZatoshisFlowSum,
+    Outpoint, PoolFrontier, PoolTreestate, PreIndexCompactTx, ShieldedPool, SignedZatoshis,
+    SubtreeIndex, SubtreeRoot, TransactionId, TransparentAddress, TransparentAddressKey,
+    TransparentOutput, Treestate, Utxo, Zatoshis, ZatoshisFlowSum,
 };
 
 use crate::block::ChainBlock;
@@ -381,7 +382,11 @@ where
     Store: ChainStoreService<
         Reader: TreeRootsIndex + StoreCompactBlockRead + TransactionIndex + TreeStateIndex,
     >,
-    Head: ChainHeadBlockService<Snapshot: ChainHeadTransactionService + ChainHeadTreeStateService>,
+    Head: ChainHeadBlockService<
+        Snapshot: ChainHeadTransactionService
+                      + ChainHeadTreeStateService
+                      + ChainHeadCompactBlockService,
+    >,
     Source: ChainViewSource,
 {
     type Snapshot = ComposerSnapshot<Store::Reader, Head::Snapshot, Source>;
@@ -760,7 +765,8 @@ where
         + StoreCompactBlockRead
         + TransactionIndex
         + TreeStateIndex,
-    HeadSnapshot: ChainHeadTransactionService + ChainHeadTreeStateService,
+    HeadSnapshot:
+        ChainHeadTransactionService + ChainHeadTreeStateService + ChainHeadCompactBlockService,
     Source: ChainViewSource,
 {
     fn tip(&self) -> BlockRef {
@@ -783,7 +789,7 @@ where
 impl<Reader, HeadSnapshot, Source> ForkReconcile for ComposerSnapshot<Reader, HeadSnapshot, Source>
 where
     Reader: ChainStoreReader + TreeRootsIndex + StoreCompactBlockRead,
-    HeadSnapshot: ChainHeadSnapshot,
+    HeadSnapshot: ChainHeadCompactBlockService,
     Source: ChainViewSource,
 {
     fn chain_tips(&self) -> Vec<ChainTip> {
@@ -829,7 +835,7 @@ where
 impl<Reader, HeadSnapshot, Source> BlockRead for ComposerSnapshot<Reader, HeadSnapshot, Source>
 where
     Reader: ChainStoreReader + TreeRootsIndex + StoreCompactBlockRead,
-    HeadSnapshot: ChainHeadSnapshot,
+    HeadSnapshot: ChainHeadCompactBlockService,
     Source: ChainViewSource,
 {
     async fn block_hash(&self, height: Height) -> Result<Option<BlockHash>> {
@@ -895,14 +901,15 @@ where
             BlockId::Height(height) => height,
             BlockId::Hash(hash) => {
                 // The chain head can answer for a competing block, which no
-                // height names — so try it before resolving.
-                if let Some(block) = self.head.block_by_hash(&hash) {
+                // height names — so try it before resolving. A best-chain
+                // block resolves by height, to the provider that covers it.
+                if let Some(block) = self
+                    .head
+                    .block_by_hash(&hash)
+                    .filter(|block| !self.head.is_on_best_chain(block.reference))
+                {
                     let chainwork = self.absolute_chainwork(block).await?;
-                    return Ok(Some(ChainBlock::from_parsed(
-                        &block.block,
-                        block.tree_roots.clone(),
-                        chainwork,
-                    )));
+                    return self.head_chain_block(block, chainwork).map(Some);
                 }
                 match self.block_height(hash).await? {
                     Some(height) => height,
@@ -926,11 +933,7 @@ where
                 None => Ok(None),
                 Some(block) => {
                     let chainwork = self.absolute_chainwork(block).await?;
-                    Ok(Some(ChainBlock::from_parsed(
-                        &block.block,
-                        block.tree_roots.clone(),
-                        chainwork,
-                    )))
+                    self.head_chain_block(block, chainwork).map(Some)
                 }
             },
             // The validator reports no work through this path, so there is
@@ -1086,7 +1089,7 @@ fn unpinned(height: Height) -> ChainViewError {
 impl<Reader, HeadSnapshot, Source> ComposerSnapshot<Reader, HeadSnapshot, Source>
 where
     Reader: ChainStoreReader + TreeRootsIndex + StoreCompactBlockRead,
-    HeadSnapshot: ChainHeadSnapshot,
+    HeadSnapshot: ChainHeadCompactBlockService,
     Source: ChainViewSource,
 {
     /// Indexed blocks for a run of heights, from one provider.
@@ -1147,18 +1150,11 @@ where
                 // Resolved once for the run rather than per block: it is the
                 // same anchor for every block in the window.
                 let offset = self.chainwork_offset().await?;
-                Ok(self
-                    .head
+                self.head
                     .best_chain_blocks(first, last)
                     .map_err(|error| ChainViewError::Fatal(error.to_string()))?
-                    .map(|block| {
-                        ChainBlock::from_parsed(
-                            &block.block,
-                            block.tree_roots.clone(),
-                            rebase(offset, block),
-                        )
-                    })
-                    .collect())
+                    .map(|block| self.head_chain_block(block, rebase(offset, block)))
+                    .collect()
             }
             // The validator reports no work through this path, so there is
             // nothing to rebase and nothing to serve.
@@ -1175,8 +1171,45 @@ where
 
 impl<Reader, HeadSnapshot, Source> ComposerSnapshot<Reader, HeadSnapshot, Source>
 where
+    HeadSnapshot: ChainHeadCompactBlockService,
+{
+    /// A window block's compact transactions from the head's I-05 fold,
+    /// fees included; `None` where the fold does not cover it (not built, or
+    /// at or below its root), and the block is projected instead.
+    fn head_compact(
+        &self,
+        block: &ChainHeadBlock,
+        pools: PoolFilter,
+    ) -> Result<Option<Vec<PreIndexCompactTx>>> {
+        match self.head.compact_transactions(&block.hash(), pools) {
+            Ok(transactions) => Ok(transactions),
+            Err(ChainHeadError::NotBuilt { .. }) => Ok(None),
+            Err(error) => Err(head_err(error)),
+        }
+    }
+
+    /// A window block as an indexed block, its transactions the fold's where
+    /// it covers the block.
+    fn head_chain_block(
+        &self,
+        block: &ChainHeadBlock,
+        chainwork: Option<AbsoluteChainWork>,
+    ) -> Result<ChainBlock> {
+        let parsed = ChainBlock::from_parsed(&block.block, block.tree_roots.clone(), chainwork);
+        Ok(match self.head_compact(block, PoolFilter::all())? {
+            Some(transactions) => ChainBlock {
+                transactions,
+                ..parsed
+            },
+            None => parsed,
+        })
+    }
+}
+
+impl<Reader, HeadSnapshot, Source> ComposerSnapshot<Reader, HeadSnapshot, Source>
+where
     Reader: ChainStoreReader + StoreCompactBlockRead,
-    HeadSnapshot: ChainHeadSnapshot,
+    HeadSnapshot: ChainHeadCompactBlockService,
     Source: ChainViewSource,
 {
     /// Compact blocks for a run of heights, from one provider.
@@ -1197,18 +1230,32 @@ where
                 .compact_chunk(first, last, pools)
                 .await
                 .map_err(store_err),
-            Provider::Head => Ok(self
+            Provider::Head => self
                 .head
                 .best_chain_blocks(first, last)
                 .map_err(|error| ChainViewError::Fatal(error.to_string()))?
                 .map(|block| {
-                    stream::compact_from_pre_index(
-                        zaino_primitives::types::PreIndexCompactBlock::from(&block.block),
-                        stream::metadata_from_roots(&block.tree_roots),
-                        pools,
-                    )
+                    let header = &block.block.header;
+                    let transactions = match self.head_compact(block, pools)? {
+                        Some(transactions) => transactions,
+                        None => block
+                            .block
+                            .transactions()
+                            .iter()
+                            .map(|tx| stream::filter_tx(PreIndexCompactTx::from(tx), pools))
+                            .collect(),
+                    };
+                    Ok(CompactBlock {
+                        hash: header.hash,
+                        prev_hash: header.prev_hash,
+                        height: u32::from(header.height),
+                        time: header.time,
+                        bits: header.bits,
+                        transactions,
+                        chain_metadata: stream::metadata_from_roots(&block.tree_roots),
+                    })
                 })
-                .collect()),
+                .collect(),
             Provider::Source => self.fetch.fill_compact(heights, pools).await,
         }
     }
@@ -1220,7 +1267,7 @@ impl<Reader, HeadSnapshot, Source> CompactBlockRead
     for ComposerSnapshot<Reader, HeadSnapshot, Source>
 where
     Reader: ChainStoreReader + StoreCompactBlockRead,
-    HeadSnapshot: ChainHeadSnapshot,
+    HeadSnapshot: ChainHeadCompactBlockService,
     Source: ChainViewSource,
 {
     async fn compact_block(
@@ -1340,7 +1387,7 @@ where
 impl<Reader, HeadSnapshot, Source> TreestateRead for ComposerSnapshot<Reader, HeadSnapshot, Source>
 where
     Reader: ChainStoreReader + TreeStateIndex + TreeRootsIndex + StoreCompactBlockRead,
-    HeadSnapshot: ChainHeadTreeStateService,
+    HeadSnapshot: ChainHeadTreeStateService + ChainHeadCompactBlockService,
     Source: ChainViewSource,
 {
     async fn treestate(&self, at: BlockId) -> Result<Option<Treestate>> {
@@ -1409,7 +1456,7 @@ where
 impl<Reader, HeadSnapshot, Source> ComposerSnapshot<Reader, HeadSnapshot, Source>
 where
     Reader: ChainStoreReader + TreeStateIndex + TreeRootsIndex + StoreCompactBlockRead,
-    HeadSnapshot: ChainHeadTreeStateService,
+    HeadSnapshot: ChainHeadTreeStateService + ChainHeadCompactBlockService,
     Source: ChainViewSource,
 {
     /// Whether the store's trees to its tip and the head's above it cover the

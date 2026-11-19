@@ -410,6 +410,7 @@ impl Shape {
                     .with_transactions()
                     .with_txout_set(Arc::clone(&indexes))
                     .with_address_history(Arc::clone(&indexes))
+                    .with_compact_blocks(Arc::clone(&indexes))
                     .with_tree_state(Arc::clone(&indexes))
                     .with_history_tree(indexes)
                     .spawn_without_writer()

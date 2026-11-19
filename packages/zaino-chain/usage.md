@@ -73,7 +73,11 @@ store-covered height it is composed from three store reads, each over one index
 (headers with chainwork, compact transactions with every pool, tree roots), so a
 store answers it with the `CompactBlocks` and `TreeRoots` capabilities; `block_header`
 needs only the headers index. The chain head and the validator supply parsed
-blocks, projected to the same shape.
+blocks, projected to the same shape. Each compact transaction's `fee` comes
+from I-05: the store's always, the head's where its `compact_blocks`
+extension is built (otherwise `None`, as from the validator). A hash on the
+best chain is answered by the provider covering its height; only a competing
+block is read from the head directly.
 
 Every read answers for the snapshot's chain, even when the validator serves the
 bytes. A raw block wanted by height is fetched by the hash the snapshot pins at

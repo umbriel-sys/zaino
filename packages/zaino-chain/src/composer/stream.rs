@@ -214,7 +214,7 @@ fn size_of(info: Option<&zaino_primitives::types::TreeRootInfo>) -> TreeSize {
 }
 
 /// Clears the pools the caller did not ask for.
-fn filter_tx(mut tx: PreIndexCompactTx, pools: PoolFilter) -> PreIndexCompactTx {
+pub(crate) fn filter_tx(mut tx: PreIndexCompactTx, pools: PoolFilter) -> PreIndexCompactTx {
     if !pools.includes_transparent() {
         tx.transparent_inputs.clear();
         tx.transparent_outputs.clear();

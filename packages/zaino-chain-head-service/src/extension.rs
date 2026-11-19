@@ -22,6 +22,7 @@ use crate::snapshot::PersistentSnapshot;
 #[cfg(any(
     feature = "txout_set",
     feature = "address_history",
+    feature = "compact_blocks",
     feature = "tree_state",
     feature = "history_tree"
 ))]
@@ -31,6 +32,8 @@ pub(crate) mod inputs;
 
 #[cfg(feature = "address_history")]
 pub(crate) mod address_history;
+#[cfg(feature = "compact_blocks")]
+pub(crate) mod compact_blocks;
 #[cfg(feature = "history_tree")]
 pub(crate) mod history_tree;
 #[cfg(feature = "transactions")]
@@ -83,6 +86,7 @@ impl<T> Slot<T> {
 #[cfg(any(
     feature = "txout_set",
     feature = "address_history",
+    feature = "compact_blocks",
     feature = "tree_state",
     feature = "history_tree"
 ))]
@@ -114,6 +118,8 @@ pub(crate) struct Slots {
     pub(crate) txout_set: Option<Slot<txout_set::TxOutSet>>,
     #[cfg(feature = "address_history")]
     pub(crate) address_history: Option<Slot<address_history::AddressHistory>>,
+    #[cfg(feature = "compact_blocks")]
+    pub(crate) compact_blocks: Option<Slot<compact_blocks::CompactBlocks>>,
     #[cfg(feature = "tree_state")]
     pub(crate) tree_state: Option<Slot<tree_state::TreeState>>,
     #[cfg(feature = "history_tree")]
@@ -135,6 +141,10 @@ impl Slots {
         }
         #[cfg(feature = "address_history")]
         if let Some(Slot::Built(built)) = &mut self.address_history {
+            built.retain(graph);
+        }
+        #[cfg(feature = "compact_blocks")]
+        if let Some(Slot::Built(built)) = &mut self.compact_blocks {
             built.retain(graph);
         }
         #[cfg(feature = "tree_state")]
@@ -162,6 +172,10 @@ impl Slots {
         #[cfg(feature = "address_history")]
         if let Some(failure) = self.address_history.as_ref().and_then(Slot::failure) {
             failures.push((HeadCapability::TransparentHistory, failure.0.clone()));
+        }
+        #[cfg(feature = "compact_blocks")]
+        if let Some(failure) = self.compact_blocks.as_ref().and_then(Slot::failure) {
+            failures.push((HeadCapability::CompactBlocks, failure.0.clone()));
         }
         #[cfg(feature = "tree_state")]
         if let Some(failure) = self.tree_state.as_ref().and_then(Slot::failure) {
@@ -201,6 +215,14 @@ impl Slots {
         {
             built = built.with(HeadCapability::TransparentHistory);
         }
+        #[cfg(feature = "compact_blocks")]
+        if self
+            .compact_blocks
+            .as_ref()
+            .is_some_and(|slot| slot.built().is_some())
+        {
+            built = built.with(HeadCapability::CompactBlocks);
+        }
         #[cfg(feature = "tree_state")]
         if self
             .tree_state
@@ -236,6 +258,8 @@ pub(crate) struct Enabled {
     pub(crate) txout_set: Option<txout_set::Ports>,
     #[cfg(feature = "address_history")]
     pub(crate) address_history: Option<Arc<dyn below::Prevouts>>,
+    #[cfg(feature = "compact_blocks")]
+    pub(crate) compact_blocks: Option<Arc<dyn below::Prevouts>>,
     #[cfg(feature = "tree_state")]
     pub(crate) tree_state: Option<tree_state::Ports>,
     #[cfg(feature = "history_tree")]
@@ -338,6 +362,20 @@ pub(crate) async fn advance(
                 enabled,
                 prevouts.as_ref(),
                 previous.address_history.as_ref(),
+                graph,
+                &root,
+                next.transactions.as_ref().and_then(Slot::built),
+            )
+            .await,
+        );
+    }
+    #[cfg(feature = "compact_blocks")]
+    if let Some(prevouts) = &enabled.compact_blocks {
+        next.compact_blocks = Some(
+            compact_blocks::advance(
+                enabled,
+                prevouts.as_ref(),
+                previous.compact_blocks.as_ref(),
                 graph,
                 &root,
                 next.transactions.as_ref().and_then(Slot::built),

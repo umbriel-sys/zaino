@@ -76,10 +76,10 @@ pub use extension::{
 };
 pub use ports::{ChainHeadBlockService, ChainHeadBlockSource};
 pub use snapshot::{
-    ChainHeadBlockIter, ChainHeadHistoryTreeService, ChainHeadSnapshot,
-    ChainHeadTransactionLocations, ChainHeadTransactionService, ChainHeadTransparentHistoryService,
-    ChainHeadTreeStateService, ChainHeadTxOutSetService, ChainHeadTxPosition, HistoryEpochAt,
-    SpenderLocation,
+    ChainHeadBlockIter, ChainHeadCompactBlockService, ChainHeadHistoryTreeService,
+    ChainHeadSnapshot, ChainHeadTransactionLocations, ChainHeadTransactionService,
+    ChainHeadTransparentHistoryService, ChainHeadTreeStateService, ChainHeadTxOutSetService,
+    ChainHeadTxPosition, HistoryEpochAt, SpenderLocation,
 };
 pub use transparent::{
     ChainHeadAddressEffects, LocatedTransparentOutput, LocatedTransparentSpend,

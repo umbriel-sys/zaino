@@ -2,7 +2,11 @@
 //! service holds any implementation without a type parameter per port. Each
 //! is compiled with the extensions that drive it.
 
-#[cfg(any(feature = "txout_set", feature = "address_history"))]
+#[cfg(any(
+    feature = "txout_set",
+    feature = "address_history",
+    feature = "compact_blocks"
+))]
 use std::sync::Arc;
 
 use zaino_chain_head::SeedError;
@@ -10,7 +14,11 @@ use zaino_primitives::types::BlockRef;
 
 type BoxFuture<'a, T> = core::pin::Pin<Box<dyn core::future::Future<Output = T> + Send + 'a>>;
 
-#[cfg(any(feature = "txout_set", feature = "address_history"))]
+#[cfg(any(
+    feature = "txout_set",
+    feature = "address_history",
+    feature = "compact_blocks"
+))]
 pub(crate) trait Prevouts: Send + Sync {
     fn previous_outputs<'a>(
         &'a self,
@@ -19,7 +27,11 @@ pub(crate) trait Prevouts: Send + Sync {
     ) -> BoxFuture<'a, Result<Vec<Option<zaino_primitives::types::TransparentOutput>>, SeedError>>;
 }
 
-#[cfg(any(feature = "txout_set", feature = "address_history"))]
+#[cfg(any(
+    feature = "txout_set",
+    feature = "address_history",
+    feature = "compact_blocks"
+))]
 impl<T: zaino_chain_head::PrevoutSource> Prevouts for T {
     fn previous_outputs<'a>(
         &'a self,
@@ -111,7 +123,11 @@ impl<T: zaino_chain_head::HistoryTreeSeed> HistorySeed for T {
 }
 
 /// `ports` as each of the object-safe views it implements.
-#[cfg(any(feature = "txout_set", feature = "address_history"))]
+#[cfg(any(
+    feature = "txout_set",
+    feature = "address_history",
+    feature = "compact_blocks"
+))]
 pub(crate) fn prevouts<P: zaino_chain_head::PrevoutSource>(ports: &Arc<P>) -> Arc<dyn Prevouts> {
     let typed: Arc<P> = Arc::clone(ports);
     typed

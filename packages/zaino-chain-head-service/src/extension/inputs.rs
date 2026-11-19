@@ -2,17 +2,29 @@
 //! with their prevouts where an extension needs them, roots, and the
 //! frontiers and subtrees the validator reports for it.
 
-#[cfg(any(feature = "txout_set", feature = "address_history"))]
+#[cfg(any(
+    feature = "txout_set",
+    feature = "address_history",
+    feature = "compact_blocks"
+))]
 use std::collections::HashMap;
 use std::sync::Arc;
 
 use zaino_chain_head::ChainHeadBlock;
 use zaino_indexes::{CompletedSubtree, FoldBlock, FoldBlockParts, FoldTx, PoolFrontiers};
-#[cfg(any(feature = "txout_set", feature = "address_history"))]
+#[cfg(any(
+    feature = "txout_set",
+    feature = "address_history",
+    feature = "compact_blocks"
+))]
 use zaino_primitives::types::Outpoint;
 use zaino_primitives::types::{branch_at, BlockRef, NetworkUpgradeInfo, TransparentOutput};
 
-#[cfg(any(feature = "txout_set", feature = "address_history"))]
+#[cfg(any(
+    feature = "txout_set",
+    feature = "address_history",
+    feature = "compact_blocks"
+))]
 use super::below;
 use super::Failure;
 use crate::snapshot::PersistentSnapshot;
@@ -52,7 +64,11 @@ pub(crate) fn fold_block(
 /// window is read from the block that created it on `block`'s own ancestry
 /// (located through the `transactions` view of the parent); one created
 /// below the root is asked of `below`.
-#[cfg(any(feature = "txout_set", feature = "address_history"))]
+#[cfg(any(
+    feature = "txout_set",
+    feature = "address_history",
+    feature = "compact_blocks"
+))]
 pub(crate) async fn prevouts(
     block: &ChainHeadBlock,
     graph: &PersistentSnapshot,
@@ -124,7 +140,11 @@ pub(crate) async fn prevouts(
 
 /// The output `outpoint` names, created at `position` on `block`'s ancestry;
 /// a located output the window cannot produce is a fault.
-#[cfg(any(feature = "txout_set", feature = "address_history"))]
+#[cfg(any(
+    feature = "txout_set",
+    feature = "address_history",
+    feature = "compact_blocks"
+))]
 fn created_at(
     graph: &PersistentSnapshot,
     block: &ChainHeadBlock,
@@ -179,7 +199,11 @@ pub(crate) fn below_root_txids(
 /// Every transparent output `block` itself creates: what a later transaction
 /// in the same block may spend (consensus orders a block's spends after the
 /// outputs they take).
-#[cfg(any(feature = "txout_set", feature = "address_history"))]
+#[cfg(any(
+    feature = "txout_set",
+    feature = "address_history",
+    feature = "compact_blocks"
+))]
 fn own_outputs(block: &ChainHeadBlock) -> HashMap<Outpoint, TransparentOutput> {
     let mut outputs = HashMap::new();
     for tx in block.block.transactions() {
@@ -200,4 +224,88 @@ fn own_outputs(block: &ChainHeadBlock) -> HashMap<Outpoint, TransparentOutput> {
 /// then each branch ascending.
 pub(crate) fn above(graph: &PersistentSnapshot, root: BlockRef) -> Vec<Arc<ChainHeadBlock>> {
     graph.above(root.height).cloned().collect()
+}
+
+/// An index folding resolved prevouts over the window, advanced to `graph`:
+/// the previous fold kept while it sits under the trunk (rebased onto the
+/// root once it moved far enough), else seeded at the root by `seed`; then
+/// caught up.
+#[cfg(any(feature = "address_history", feature = "compact_blocks"))]
+pub(crate) async fn advance_resolved<I>(
+    enabled: &super::Enabled,
+    below: &dyn super::below::Prevouts,
+    previous: Option<&super::folded::Folded<I>>,
+    graph: &PersistentSnapshot,
+    root: &Result<BlockRef, Failure>,
+    transactions: Option<&super::transactions::Transactions>,
+    seed: impl Fn(BlockRef) -> I::State,
+) -> Result<super::folded::Folded<I>, Failure>
+where
+    I: zaino_indexes::Index + 'static,
+    I::State: Clone + Send + Sync + 'static,
+{
+    let root = root.clone()?;
+    let transactions = transactions.ok_or_else(|| {
+        Failure("needs the transactions extension, which is not built".to_owned())
+    })?;
+    let mut folded = match previous {
+        Some(folded) if folded.under_trunk(graph) => {
+            match super::due_for_rebase(folded.root(), root) {
+                true => folded.rebased(root, seed(root), &above(graph, root))?,
+                false => folded.clone(),
+            }
+        }
+        _ => super::folded::Folded::seeded(root, seed(root))?,
+    };
+    catch_up_resolved(&mut folded, enabled, below, graph, transactions).await?;
+    Ok(folded)
+}
+
+/// `folded` caught up to every retained block above its root, each folded
+/// with its prevouts resolved: inside the window through `transactions`,
+/// below the root through `below`.
+#[cfg(any(feature = "address_history", feature = "compact_blocks"))]
+async fn catch_up_resolved<I>(
+    folded: &mut super::folded::Folded<I>,
+    enabled: &super::Enabled,
+    below: &dyn super::below::Prevouts,
+    graph: &PersistentSnapshot,
+    transactions: &super::transactions::Transactions,
+) -> Result<(), Failure>
+where
+    I: zaino_indexes::Index + 'static,
+    I::State: Clone + Send + Sync + 'static,
+{
+    let root = folded.root();
+    for block in above(graph, root) {
+        if folded.has(&block.hash()) || !folded.has(&block.parent_hash) {
+            continue;
+        }
+        let parent = block.parent_hash;
+        let locate = |outpoint: &Outpoint| transactions.locate(&parent, outpoint.txid);
+        let resolved = prevouts(&block, graph, locate, below, root).await?;
+        let fold_block = fold_block(
+            &block,
+            &enabled.schedule,
+            Some(&resolved),
+            Default::default(),
+        )?;
+        let state = folded
+            .view(&parent)
+            .map(|view| view.state.clone())
+            .ok_or_else(|| Failure(format!("no view of the parent {parent}")))?;
+        let _fold = enabled
+            .folds
+            .acquire()
+            .await
+            .map_err(|error| Failure::of("folds", error))?;
+        let mut next = folded.clone();
+        *folded = tokio::task::spawn_blocking(move || {
+            next.fold(&parent, &state, &fold_block)?;
+            Ok::<_, Failure>(next)
+        })
+        .await
+        .map_err(|error| Failure::of("fold task", error))??;
+    }
+    Ok(())
 }

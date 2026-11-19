@@ -126,7 +126,9 @@ last is dropped. It implements the `zaino-chain-store` ports:
   - Every answer is bounded by the reader's watermark: an empty store is
     `NotReady`, a height above the watermark is `AboveWatermark`, a range is
     cut at it, and a row an index holds past it is not returned.
-  - A port whose capability is not built is `Unavailable`.
+  - A port whose capability is not built is `Unavailable`. A read that
+    needs only some of a capability's indexes asks for those alone:
+    `outputs_by_outpoint` needs I-03 and I-04, not the spent index.
   - Point reads run inline. Compact ranges read on the blocking pool, 100
     blocks per chunk.
 - `ChainStoreIngest`:

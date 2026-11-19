@@ -174,9 +174,11 @@ root), `TreeStateSeed` (each pool's frontier at the root) and
 implements them over the finalised store; the head names neither the store
 nor the validator. The answers are the capability traits:
 `ChainHeadTransactionService`, `ChainHeadTxOutSetService`,
-`ChainHeadTreeStateService`, `ChainHeadHistoryTreeService` and
-`ChainHeadTransparentHistoryService`; each covers the window above the store's
-tip, the store answering at and below it.
+`ChainHeadTreeStateService`, `ChainHeadHistoryTreeService`,
+`ChainHeadTransparentHistoryService` and `ChainHeadCompactBlockService`; each
+covers the window above the store's tip, the store answering at and below it.
+`compact_transactions` takes a block hash, so a branch block is answered from
+its own fold, fees included.
 
 Every capability method returns a `Result` whose default body is
 `ChainHeadError::NotBuilt` (D-56): a runtime implements only what it builds,

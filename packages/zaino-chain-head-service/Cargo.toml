@@ -16,11 +16,13 @@ default = []
 
 # Extensions (D-50): one `zaino-indexes` fold each, run over the window and
 # enabled through the builder. Each is its own feature so a head that serves
-# none pulls in neither the indexes nor the persistence port. `txout_set` and
-# `address_history` resolve in-window spends through `transactions`.
+# none pulls in neither the indexes nor the persistence port. `txout_set`,
+# `address_history` and `compact_blocks` resolve in-window spends through
+# `transactions`.
 transactions = ["dep:zaino-indexes", "dep:zaino-persistence"]
 txout_set = ["transactions"]
 address_history = ["transactions"]
+compact_blocks = ["transactions"]
 tree_state = ["dep:zaino-indexes", "dep:zaino-persistence"]
 history_tree = ["dep:zaino-indexes", "dep:zaino-persistence"]
 

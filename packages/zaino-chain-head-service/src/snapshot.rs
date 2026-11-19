@@ -364,7 +364,11 @@ impl PersistentSnapshot {
 
     /// The block at `height` on the ancestry of the retained block `of`: the
     /// trunk's, or the branch's above its fork.
-    #[cfg(any(feature = "txout_set", feature = "address_history"))]
+    #[cfg(any(
+        feature = "txout_set",
+        feature = "address_history",
+        feature = "compact_blocks"
+    ))]
     pub(crate) fn ancestor_at(
         &self,
         of: &BlockHash,
@@ -683,6 +687,19 @@ impl ChainHeadTransparentHistoryService for PersistentSnapshot {
     ) -> Result<zaino_chain_head::transparent::ChainHeadAddressEffects, ChainHeadError> {
         crate::extension::built(&self.extensions.address_history, "transparent history")?
             .address_effects(self, query)
+    }
+}
+
+impl zaino_chain_head::ChainHeadCompactBlockService for PersistentSnapshot {
+    /// The `compact_blocks` extension's compact transactions.
+    #[cfg(feature = "compact_blocks")]
+    fn compact_transactions(
+        &self,
+        hash: &BlockHash,
+        pools: zaino_primitives::types::PoolFilter,
+    ) -> Result<Option<Vec<zaino_primitives::types::PreIndexCompactTx>>, ChainHeadError> {
+        crate::extension::built(&self.extensions.compact_blocks, "compact blocks")?
+            .compact_transactions(self, hash, pools)
     }
 }
 

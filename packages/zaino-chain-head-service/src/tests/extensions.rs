@@ -14,9 +14,9 @@ use zaino_chain_head::{
         TreeStateSeed, TxOutSetSeed,
     },
     snapshot::{
-        ChainHeadHistoryTreeService as _, ChainHeadTransactionService as _,
-        ChainHeadTransparentHistoryService as _, ChainHeadTreeStateService as _,
-        ChainHeadTxOutSetService as _,
+        ChainHeadCompactBlockService as _, ChainHeadHistoryTreeService as _,
+        ChainHeadTransactionService as _, ChainHeadTransparentHistoryService as _,
+        ChainHeadTreeStateService as _, ChainHeadTxOutSetService as _,
     },
     transparent::TransparentHistoryQuery,
     ChainHeadBlockService as _, ChainHeadError, ChainHeadSnapshot as _, HeadCapability,
@@ -29,8 +29,9 @@ use zaino_persistence::in_memory::InMemoryBackend;
 use zaino_persistence::{Backend as _, BackendWriter as _, Namespace};
 use zaino_primitives::txout_commitment::{commitment_address, is_unspendable, TxOutSetAccumulator};
 use zaino_primitives::types::{
-    branch_at, BlockRef, ConsensusBranchId, Height, NetworkUpgradeInfo, Outpoint, PoolFrontier,
-    ShieldedPool, TransactionId, TransparentAddressKey, TransparentOutput,
+    branch_at, BlockRef, ConsensusBranchId, Height, NetworkUpgradeInfo, Outpoint, PoolFilter,
+    PoolFrontier, PreIndexCompactTx, ShieldedPool, TransactionId, TransparentAddressKey,
+    TransparentOutput,
 };
 use zaino_source_mock::{next_block, Activations, BlockSpec, ChainBuilder, MockBlock, MockChain};
 
@@ -323,6 +324,7 @@ impl Harness {
         .with_transactions()
         .with_txout_set(Arc::clone(&below))
         .with_address_history(Arc::clone(&below))
+        .with_compact_blocks(Arc::clone(&below))
         .with_tree_state(Arc::clone(&below))
         .with_history_tree(Arc::clone(&below))
         .spawn_without_writer()
@@ -367,6 +369,65 @@ fn window(
     root: BlockRef,
 ) -> Vec<Arc<zaino_chain_head::ChainHeadBlock>> {
     snapshot.above(root.height).cloned().collect()
+}
+
+/// Each trunk block of `blocks` has its own compact transactions in the head,
+/// each with the chain's fee; a nullifiers-only read drops the outputs.
+fn assert_compact_blocks(
+    snapshot: &PersistentSnapshot,
+    chain: &MockChain,
+    blocks: &[Arc<zaino_chain_head::ChainHeadBlock>],
+) {
+    for block in blocks
+        .iter()
+        .filter(|block| snapshot.is_trunk_block(block.reference))
+    {
+        let height = block.height();
+        let full: Vec<_> = block
+            .block
+            .transactions()
+            .iter()
+            .enumerate()
+            .map(|(index, tx)| PreIndexCompactTx {
+                fee: Some(
+                    chain
+                        .fee_at(u32::from(height), index)
+                        .expect("on the chain"),
+                ),
+                ..PreIndexCompactTx::from(tx)
+            })
+            .collect();
+        assert_eq!(
+            snapshot
+                .compact_transactions(&block.hash(), PoolFilter::all())
+                .expect("built"),
+            Some(full.clone()),
+            "{height}"
+        );
+        let nullifiers: Vec<_> = full
+            .into_iter()
+            .map(|mut tx| {
+                tx.transparent_inputs.clear();
+                tx.transparent_outputs.clear();
+                tx.sapling_outputs.clear();
+                for action in tx
+                    .orchard_actions
+                    .iter_mut()
+                    .chain(tx.ironwood_actions.iter_mut())
+                {
+                    action.output = None;
+                }
+                tx
+            })
+            .collect();
+        assert_eq!(
+            snapshot
+                .compact_transactions(&block.hash(), PoolFilter::default().nullifiers_only())
+                .expect("built"),
+            Some(nullifiers),
+            "{height} nullifiers"
+        );
+    }
 }
 
 /// The accumulator over the whole chain through `through`, computed without
@@ -645,6 +706,11 @@ async fn a_built_extension_missing_a_view_fails_every_read() {
     assert!(failed(broken.history_root(at).map(drop)));
     assert!(failed(broken.history_epoch(at).map(drop)));
     assert!(failed(broken.history_entries(at, &[0]).map(drop)));
+    assert!(failed(
+        broken
+            .compact_transactions(&reference(&newest).hash, PoolFilter::all())
+            .map(drop)
+    ));
 }
 
 /// What the extensions answer, against computations that use no index.
@@ -660,6 +726,26 @@ async fn answers_match_independent_computations() {
         snapshot.capabilities().iter().collect::<Vec<_>>(),
         HeadCapability::ALL.to_vec()
     );
+
+    // compact blocks: at the root and above the tip there is nothing
+    assert_compact_blocks(&snapshot, &chain, &window);
+    assert!(
+        window
+            .iter()
+            .flat_map(|block| block.block.transactions().iter().skip(1))
+            .any(|tx| !tx.transparent.inputs.is_empty()),
+        "the window has fee-paying spends"
+    );
+    let below_root = reference(&chain.block_at(2).expect("held")).hash;
+    for outside in [root.hash, below_root] {
+        assert_eq!(
+            snapshot
+                .compact_transactions(&outside, PoolFilter::all())
+                .expect("built"),
+            None,
+            "{outside}"
+        );
+    }
 
     // transactions: every window transaction located, every window spend named
     let mut spent_in_window: HashMap<Outpoint, (BlockRef, TransactionId, u32)> = HashMap::new();
@@ -894,6 +980,7 @@ async fn a_reorg_keeps_branch_views_and_answers_follow_the_trunk() {
     // own, unlike a coinbase the replacing block at that height repeats
     let displaced = chain.block_at(tip - 3).expect("held");
     let displaced_txid = displaced.block.transactions()[1].txid;
+    assert_compact_blocks(&before, &chain, &window(&before, harness.root()));
 
     let fork_parent = chain.block_at(tip - 4).expect("held");
     let activations = Activations::default();
@@ -930,6 +1017,18 @@ async fn a_reorg_keeps_branch_views_and_answers_follow_the_trunk() {
         after.txout_set().expect("built"),
         before.txout_set().expect("built")
     );
+    // the trunk's compact blocks are the new branch's, fees included; the
+    // displaced block, now a branch, reads as it did on the trunk
+    assert_compact_blocks(&after, &chain, &window(&after, harness.root()));
+    assert!(!after.is_trunk_block(reference(&displaced)));
+    let displaced_compact = |snapshot: &PersistentSnapshot| {
+        snapshot
+            .compact_transactions(&reference(&displaced).hash, PoolFilter::all())
+            .expect("built")
+            .expect("in the window")
+    };
+    assert_eq!(displaced_compact(&after), displaced_compact(&before));
+    assert!(displaced_compact(&after).iter().all(|tx| tx.fee.is_some()));
     // every trunk transaction is located on the trunk (a branch block may
     // repeat a trunk transaction, which is then the trunk's)
     for block in window(&after, harness.root())
@@ -952,7 +1051,7 @@ async fn a_reorg_keeps_branch_views_and_answers_follow_the_trunk() {
 /// A port that fails darkens the extensions that asked it, the others keep
 /// answering, and the next tick rebuilds the failed ones. The ports are asked
 /// at a rebase (the root moved far enough), so the three seeded extensions
-/// fail and the two seedless ones do not.
+/// fail and the three seedless ones do not.
 #[tokio::test]
 async fn a_failing_port_darkens_one_extension_and_the_next_tick_rebuilds_it() {
     let chain = chain();
@@ -1004,6 +1103,12 @@ async fn a_failing_port_darkens_one_extension_and_the_next_tick_rebuilds_it() {
         })
         .is_ok(),
         "address history still answers"
+    );
+    assert!(
+        dark.compact_transactions(&reference(&newest).hash, PoolFilter::all())
+            .expect("built")
+            .is_some(),
+        "compact blocks still answer"
     );
 
     harness.below.failing.store(false, Ordering::SeqCst);
@@ -1085,6 +1190,15 @@ async fn a_rebase_leaves_every_answer_unchanged() {
             .pool_frontier(ShieldedPool::Sapling, new_root.height())
             .expect("built")
             .is_none(),
+        "the root itself is the store's"
+    );
+    // compact blocks read the same over the new root
+    assert_compact_blocks(&after, &chain, &window(&after, reference(&new_root)));
+    assert_eq!(
+        after
+            .compact_transactions(&reference(&new_root).hash, PoolFilter::all())
+            .expect("built"),
+        None,
         "the root itself is the store's"
     );
 }

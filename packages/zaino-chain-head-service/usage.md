@@ -172,6 +172,7 @@ let head = ChainHeadService::builder(source, config, cancel)
     .with_transactions()                      // I-03, I-09: positions and spenders
     .with_txout_set(store_indexes.clone())    // I-11: the set at the tip (enables transactions)
     .with_address_history(store_indexes.clone()) // I-10: address effects (enables transactions)
+    .with_compact_blocks(store_indexes.clone()) // I-05: compact blocks with fees (enables transactions)
     .with_tree_state(store_indexes.clone())   // C2: trees after each block
     .with_history_tree(store_indexes)         // C6: the history tree after each block
     .spawn()
@@ -185,7 +186,10 @@ carries the index after it: its fold state and an overlay of
 the rows the window wrote. A view costs one fold per block, a branch's views
 are already there when a reorg returns to it, and an answer is a typed read
 over the tip's view, so it covers the window alone and the store answers
-below. What a fold needs from below the root is asked through the ports in
+below. Compact blocks are read from the named block's own view, so a branch
+block reads as it did on the trunk. `address_history` and `compact_blocks`
+resolve every spend's prevout, inside the window from the head and below the
+root through `PrevoutSource`, so I-05's fees are the store's. What a fold needs from below the root is asked through the ports in
 `zaino_chain_head::extension`, implemented by `zaino-chain` over the store;
 the head names neither the store nor the validator for it.
 

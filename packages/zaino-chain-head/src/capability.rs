@@ -16,16 +16,19 @@ pub enum HeadCapability {
     TreeState,
     /// The history tree after each block in the window.
     HistoryTree,
+    /// The window's compact blocks folded into I-05, fees included.
+    CompactBlocks,
 }
 
 impl HeadCapability {
     /// Every capability, in a fixed order.
-    pub const ALL: [Self; 5] = [
+    pub const ALL: [Self; 6] = [
         Self::Transactions,
         Self::TxOutSet,
         Self::TransparentHistory,
         Self::TreeState,
         Self::HistoryTree,
+        Self::CompactBlocks,
     ];
 
     const fn bit(self) -> u8 {
@@ -35,6 +38,7 @@ impl HeadCapability {
             Self::TransparentHistory => 1 << 2,
             Self::TreeState => 1 << 3,
             Self::HistoryTree => 1 << 4,
+            Self::CompactBlocks => 1 << 5,
         }
     }
 }
@@ -47,6 +51,7 @@ impl fmt::Display for HeadCapability {
             Self::TransparentHistory => "transparent history",
             Self::TreeState => "tree state",
             Self::HistoryTree => "history tree",
+            Self::CompactBlocks => "compact blocks",
         })
     }
 }

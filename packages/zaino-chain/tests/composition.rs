@@ -19,6 +19,7 @@ use zaino_chain::{
     ForkReconcile as _, Locator, PrevoutRead as _, SpendRead as _, SpendStatus,
     TransactionRead as _, TreestateRead as _,
 };
+use zaino_chain_head::ChainHeadBlockService as _;
 use zaino_chain_store::PoolFilter;
 use zaino_primitives::types::{
     BlockRef, PreIndexCompactTx, ShieldedPool, TransactionId, TransparentAddress,
@@ -1176,6 +1177,103 @@ async fn previous_outputs_refuse_to_span_a_hole() {
             .await,
         Err(ChainViewError::NotServiceable(_))
     ));
+}
+
+/// With the head folding I-05, the window's blocks carry fees like the
+/// store's: every compact and indexed block from the store and the window
+/// has the chain's fee for every transaction, and nullifiers-only reads are
+/// the full reads without outputs.
+#[tokio::test]
+async fn store_and_window_answer_the_same_fees() {
+    let rig = rig(chain()).store_to(STEADY).extended_head().build().await;
+    let head = rig.head.subscriber().current();
+    assert!(
+        head.extension_failures().is_empty(),
+        "{:?}",
+        head.extension_failures()
+    );
+    let snapshot = rig.view().snapshot();
+    let (start, end) = (height(101), height(TIP));
+    let full: Vec<_> = snapshot
+        .stream_compact(start, end, PoolFilter::all())
+        .try_collect::<Vec<_>>()
+        .await
+        .expect("serviceable")
+        .into_iter()
+        .flatten()
+        .collect();
+    assert_eq!(full.len(), usize::try_from(TIP - 100).expect("small"));
+    for block in &full {
+        for (index, tx) in block.transactions.iter().enumerate() {
+            assert_eq!(
+                tx.fee,
+                rig.chain.fee_at(block.height, index),
+                "{} tx {index}",
+                block.height
+            );
+        }
+    }
+    for at in [STEADY - 1, IN_WINDOW, TIP] {
+        let indexed = snapshot
+            .block(BlockId::Height(height(at)))
+            .await
+            .expect("serviceable")
+            .expect("covered");
+        for (index, tx) in indexed.transactions.iter().enumerate() {
+            assert_eq!(tx.fee, rig.chain.fee_at(at, index), "{at} tx {index}");
+        }
+        let by_hash = snapshot
+            .block(BlockId::Hash(hash_of(&rig.chain, at)))
+            .await
+            .expect("serviceable")
+            .expect("covered");
+        assert_eq!(by_hash.transactions, indexed.transactions, "{at} by hash");
+    }
+    let nullifiers: Vec<_> = snapshot
+        .stream_compact(start, end, PoolFilter::all().nullifiers_only())
+        .try_collect::<Vec<_>>()
+        .await
+        .expect("serviceable")
+        .into_iter()
+        .flatten()
+        .collect();
+    let stripped: Vec<_> = full
+        .into_iter()
+        .map(|mut block| {
+            for tx in &mut block.transactions {
+                tx.sapling_outputs.clear();
+                for action in tx
+                    .orchard_actions
+                    .iter_mut()
+                    .chain(tx.ironwood_actions.iter_mut())
+                {
+                    action.output = None;
+                }
+            }
+            block
+        })
+        .collect();
+    assert_eq!(nullifiers, stripped);
+
+    // a block the reorg orphans keeps its fees, read by hash from its branch
+    let orphan = hash_of(&rig.chain, 295);
+    let canonical = snapshot
+        .block(BlockId::Height(height(295)))
+        .await
+        .expect("serviceable")
+        .expect("covered");
+    assert!(canonical.transactions.iter().all(|tx| tx.fee.is_some()));
+    reorg(&rig.chain, 290, 12, 7);
+    rig.advance().await;
+    let orphaned = rig
+        .view()
+        .snapshot()
+        .block(BlockId::Hash(orphan))
+        .await
+        .expect("serviceable")
+        .expect("held as a branch");
+    assert_eq!(orphaned.header.hash, orphan);
+    assert_eq!(orphaned.transactions, canonical.transactions);
 }
 
 /// The store answers every compact transaction's fee from I-05, equal to the

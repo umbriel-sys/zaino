@@ -980,6 +980,8 @@ impl<S: ChainHeadBlockSource> ChainHeadBuilder<S> {
                 txout_set: None,
                 #[cfg(feature = "address_history")]
                 address_history: None,
+                #[cfg(feature = "compact_blocks")]
+                compact_blocks: None,
                 #[cfg(feature = "tree_state")]
                 tree_state: None,
                 #[cfg(feature = "history_tree")]
@@ -1044,6 +1046,19 @@ impl<S: ChainHeadBlockSource> ExtensionBuilder<S> {
     ) -> Self {
         self.enabled.transactions = true;
         self.enabled.address_history = Some(crate::extension::below::prevouts(&prevouts));
+        self
+    }
+
+    /// The window's compact blocks (I-05), fees included; the spends of
+    /// outputs below the root are resolved through `prevouts`. Enables
+    /// `transactions`.
+    #[cfg(feature = "compact_blocks")]
+    pub fn with_compact_blocks<P: zaino_chain_head::PrevoutSource>(
+        mut self,
+        prevouts: Arc<P>,
+    ) -> Self {
+        self.enabled.transactions = true;
+        self.enabled.compact_blocks = Some(crate::extension::below::prevouts(&prevouts));
         self
     }
 

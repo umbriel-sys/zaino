@@ -20,7 +20,8 @@ use zaino_persistence::{
 };
 use zaino_primitives::types::{
     ActionOutput, BlockRef, CompactAction, CompactCiphertext, EphemeralKey, Height, NoteCommitment,
-    Nullifier, SaplingOutput, ShieldedPool, SignedZatoshis, Zatoshis,
+    Nullifier, PoolFilter, PreIndexCompactTx, SaplingOutput, ShieldedPool, SignedZatoshis,
+    TransactionId, TransparentData, Zatoshis,
 };
 
 use crate::block::{FoldBlock, FoldTx};
@@ -303,6 +304,103 @@ impl<'a, R: BackendReader> Reader<'a, R> {
                 enc_ciphertext,
             })
         })
+    }
+
+    /// The compact transactions of the block laid out by `layout`: each
+    /// shielded element `pools` asks for read from the columns, each fee from
+    /// the layout. `txids` and `transparent` (one per transaction, in block
+    /// order) supply what other indexes hold; `transparent` is cleared where
+    /// `pools` excludes it.
+    pub fn transactions(
+        &self,
+        layout: &BlockLayout,
+        txids: Vec<TransactionId>,
+        transparent: Vec<TransparentData>,
+        pools: PoolFilter,
+    ) -> Result<Vec<PreIndexCompactTx>, FoldError> {
+        let count = layout.txs.len();
+        if txids.len() != count || transparent.len() != count {
+            return Err(FoldError::continuity(
+                NAME,
+                format!(
+                    "a layout of {count} transactions beside {} txids and {} transparent rows",
+                    txids.len(),
+                    transparent.len()
+                ),
+            ));
+        }
+        let total = |count: fn(&TxLayout) -> u16| {
+            layout
+                .txs
+                .iter()
+                .fold(0u32, |sum, tx| sum.saturating_add(u32::from(count(tx))))
+        };
+        let wanted = |pool: ShieldedPool| pools.includes(pool);
+        let sapling_nullifiers = match wanted(ShieldedPool::Sapling) {
+            true => self
+                .sapling_nullifiers(layout.starts.sapling_spends, total(|tx| tx.sapling_spends))?,
+            false => Vec::new(),
+        };
+        let sapling_outputs = match wanted(ShieldedPool::Sapling) && pools.includes_outputs() {
+            true => self.sapling_outputs(
+                layout.starts.sapling_outputs,
+                total(|tx| tx.sapling_outputs),
+            )?,
+            false => Vec::new(),
+        };
+        let actions =
+            |pool: ShieldedPool, start: u32, count: fn(&TxLayout) -> u16| match wanted(pool) {
+                true => self.actions(pool, start, total(count), pools.includes_outputs()),
+                false => Ok(Vec::new()),
+            };
+        let orchard_actions =
+            actions(ShieldedPool::Orchard, layout.starts.orchard_actions, |tx| {
+                tx.orchard_actions
+            })?;
+        let ironwood_actions = actions(
+            ShieldedPool::Ironwood,
+            layout.starts.ironwood_actions,
+            |tx| tx.ironwood_actions,
+        )?;
+
+        let (mut sapling_nullifiers, mut sapling_outputs) =
+            (sapling_nullifiers.into_iter(), sapling_outputs.into_iter());
+        let (mut orchard_actions, mut ironwood_actions) =
+            (orchard_actions.into_iter(), ironwood_actions.into_iter());
+        Ok(txids
+            .into_iter()
+            .zip(&layout.txs)
+            .zip(transparent)
+            .map(|((txid, tx), axis)| {
+                let take = |count: u16| usize::from(count);
+                let (inputs, outputs) = match pools.includes_transparent() {
+                    true => (axis.inputs, axis.outputs),
+                    false => (Vec::new(), Vec::new()),
+                };
+                PreIndexCompactTx {
+                    txid,
+                    transparent_inputs: inputs,
+                    transparent_outputs: outputs,
+                    sapling_nullifiers: sapling_nullifiers
+                        .by_ref()
+                        .take(take(tx.sapling_spends))
+                        .collect(),
+                    sapling_outputs: sapling_outputs
+                        .by_ref()
+                        .take(take(tx.sapling_outputs))
+                        .collect(),
+                    orchard_actions: orchard_actions
+                        .by_ref()
+                        .take(take(tx.orchard_actions))
+                        .collect(),
+                    ironwood_actions: ironwood_actions
+                        .by_ref()
+                        .take(take(tx.ironwood_actions))
+                        .collect(),
+                    fee: Some(tx.fee),
+                }
+            })
+            .collect())
     }
 
     /// `count` actions of `pool` (Orchard or Ironwood) from position `start`;

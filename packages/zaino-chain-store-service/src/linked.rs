@@ -21,7 +21,8 @@ use crate::reader::StoreReader;
 use crate::record::{status_of, PrimaryRecord, PrimaryState, RecordError};
 use crate::set::{IndexSet, SetError};
 use crate::store::{
-    capabilities_of, identity, parent_of, parents, serviceability_of, watermark_of, Serviceability,
+    capabilities_of, holding_of, identity, parent_of, parents, serviceability_of, watermark_of,
+    Serviceability,
 };
 
 /// The store's primary, as a linked reader last saw it.
@@ -208,7 +209,13 @@ impl<St: Storage> LinkedChainStore<St> {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         let watermark = *inner.watermark.borrow();
-        let capabilities = capabilities_of(&inner.serviceability.borrow());
+        let (capabilities, holding) = {
+            let serviceability = inner.serviceability.borrow();
+            (
+                capabilities_of(&serviceability),
+                holding_of(&serviceability),
+            )
+        };
         let readers = inner
             .indexes
             .iter()
@@ -216,7 +223,14 @@ impl<St: Storage> LinkedChainStore<St> {
             .filter_map(|(id, backend)| backend.reader().ok().map(|reader| (*id, reader)))
             .collect();
         let status = self.status();
-        StoreReader::new(readers, watermark, capabilities, status, inner.network)
+        StoreReader::new(
+            readers,
+            watermark,
+            capabilities,
+            holding,
+            status,
+            inner.network,
+        )
     }
 }
 

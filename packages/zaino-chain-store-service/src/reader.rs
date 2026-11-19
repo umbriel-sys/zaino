@@ -4,7 +4,7 @@
 //! compact-block ranges read each chunk on the blocking pool. The primary and
 //! the linked store share it.
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::fmt;
 use std::num::NonZeroUsize;
 use std::sync::Arc;
@@ -28,8 +28,8 @@ use zaino_indexes::{
 use zaino_persistence::BackendReader;
 use zaino_primitives::types::{
     AbsoluteChainWork, BlockHash, BlockRef, BlockTxPosition, ChainMetadata, CompactBlock,
-    ConsensusBranchId, Height, Network, Outpoint, PoolFrontier, PreIndexCompactTx, ShieldedPool,
-    SubtreeRoot, TransactionId, TransparentData, TransparentOutput, TreeRoot, TreeRoots, TreeSize,
+    ConsensusBranchId, Height, Network, Outpoint, PoolFrontier, ShieldedPool, SubtreeRoot,
+    TransactionId, TransparentData, TransparentOutput, TreeRoot, TreeRoots, TreeSize,
 };
 
 /// Blocks per compact chunk read on the blocking pool.
@@ -57,6 +57,9 @@ struct Snapshot<R> {
     readers: BTreeMap<IndexId, R>,
     watermark: StoreWatermark,
     capabilities: StoreCapabilities,
+    /// The indexes that hold a block, for a read needing fewer than a whole
+    /// capability.
+    holding: BTreeSet<IndexId>,
     status: ComponentStatus,
     network: Network,
 }
@@ -85,6 +88,7 @@ impl<R> StoreReader<R> {
         readers: BTreeMap<IndexId, R>,
         watermark: StoreWatermark,
         capabilities: StoreCapabilities,
+        holding: BTreeSet<IndexId>,
         status: ComponentStatus,
         network: Network,
     ) -> Self {
@@ -93,6 +97,7 @@ impl<R> StoreReader<R> {
                 readers,
                 watermark,
                 capabilities,
+                holding,
                 status,
                 network,
             }),
@@ -163,6 +168,18 @@ impl<R: BackendReader> Snapshot<R> {
         self.readers
             .get(&id)
             .ok_or(ChainStoreError::Unavailable(capability))
+    }
+
+    /// `id`'s reader where `id` itself holds a block, for a read of
+    /// `capability`'s port that needs only some of its indexes.
+    fn holding(&self, id: IndexId, capability: StoreCapability) -> Result<&R, ChainStoreError> {
+        match self.holding.contains(&id) {
+            true => self
+                .readers
+                .get(&id)
+                .ok_or(ChainStoreError::Unavailable(capability)),
+            false => Err(ChainStoreError::Unavailable(capability)),
+        }
     }
 
     /// `read` over index `id`, kept only where the store holds the height
@@ -328,50 +345,6 @@ impl<R: BackendReader> Snapshot<R> {
                 ids.len()
             )));
         }
-        let total = |count: fn(&compact_block::TxLayout) -> u16| {
-            layout
-                .txs
-                .iter()
-                .fold(0u32, |sum, tx| sum.saturating_add(u32::from(count(tx))))
-        };
-        let wanted = |pool: ShieldedPool| pools.includes(pool);
-        let sapling_nullifiers = match wanted(ShieldedPool::Sapling) {
-            true => columns
-                .sapling_nullifiers(layout.starts.sapling_spends, total(|tx| tx.sapling_spends))
-                .map_err(fail(IndexId::CompactBlock))?,
-            false => Vec::new(),
-        };
-        let sapling_outputs = match wanted(ShieldedPool::Sapling) && pools.includes_outputs() {
-            true => columns
-                .sapling_outputs(
-                    layout.starts.sapling_outputs,
-                    total(|tx| tx.sapling_outputs),
-                )
-                .map_err(fail(IndexId::CompactBlock))?,
-            false => Vec::new(),
-        };
-        let orchard_actions = match wanted(ShieldedPool::Orchard) {
-            true => columns
-                .actions(
-                    ShieldedPool::Orchard,
-                    layout.starts.orchard_actions,
-                    total(|tx| tx.orchard_actions),
-                    pools.includes_outputs(),
-                )
-                .map_err(fail(IndexId::CompactBlock))?,
-            false => Vec::new(),
-        };
-        let ironwood_actions = match wanted(ShieldedPool::Ironwood) {
-            true => columns
-                .actions(
-                    ShieldedPool::Ironwood,
-                    layout.starts.ironwood_actions,
-                    total(|tx| tx.ironwood_actions),
-                    pools.includes_outputs(),
-                )
-                .map_err(fail(IndexId::CompactBlock))?,
-            false => Vec::new(),
-        };
         let transparent: Vec<TransparentData> = match pools.includes_transparent() {
             true => transparent::Reader::new(read(IndexId::Transparent)?)
                 .transactions(height)
@@ -389,41 +362,9 @@ impl<R: BackendReader> Snapshot<R> {
             .roots(height)
             .map_err(fail(IndexId::ChainMetadata))?
             .ok_or_else(|| missing(IndexId::ChainMetadata, height))?;
-
-        let (mut sapling_nullifiers, mut sapling_outputs) =
-            (sapling_nullifiers.into_iter(), sapling_outputs.into_iter());
-        let (mut orchard_actions, mut ironwood_actions) =
-            (orchard_actions.into_iter(), ironwood_actions.into_iter());
-        let transactions = ids
-            .into_iter()
-            .zip(&layout.txs)
-            .zip(transparent)
-            .map(|((txid, tx), axis)| {
-                let take = |count: u16| usize::from(count);
-                PreIndexCompactTx {
-                    txid,
-                    transparent_inputs: axis.inputs,
-                    transparent_outputs: axis.outputs,
-                    sapling_nullifiers: sapling_nullifiers
-                        .by_ref()
-                        .take(take(tx.sapling_spends))
-                        .collect(),
-                    sapling_outputs: sapling_outputs
-                        .by_ref()
-                        .take(take(tx.sapling_outputs))
-                        .collect(),
-                    orchard_actions: orchard_actions
-                        .by_ref()
-                        .take(take(tx.orchard_actions))
-                        .collect(),
-                    ironwood_actions: ironwood_actions
-                        .by_ref()
-                        .take(take(tx.ironwood_actions))
-                        .collect(),
-                    fee: Some(tx.fee),
-                }
-            })
-            .collect();
+        let transactions = columns
+            .transactions(&layout, ids, transparent, pools)
+            .map_err(fail(IndexId::CompactBlock))?;
         Ok(CompactBlock {
             hash: header.hash,
             prev_hash: header.prev_hash,
@@ -482,7 +423,9 @@ impl<R: BackendReader> Snapshot<R> {
             .iter()
             .copied()
             .zip(
-                txid_location::Reader::new(self.index(id, capability)?)
+                // I-03 and I-04 alone, not the spent index (I-09) the rest of
+                // the port reads: a light-client store resolves prevouts too
+                txid_location::Reader::new(self.holding(id, capability)?)
                     .positions(&txids)
                     .map_err(|error| index_error(id, error))?,
             )
@@ -500,7 +443,7 @@ impl<R: BackendReader> Snapshot<R> {
             .collect();
         let id = IndexId::Transparent;
         let reads: Vec<(BlockTxPosition, u32)> = wanted.iter().map(|(_, read)| *read).collect();
-        let outputs = transparent::Reader::new(self.index(id, capability)?)
+        let outputs = transparent::Reader::new(self.holding(id, capability)?)
             .outputs(&reads)
             .map_err(|error| index_error(id, error))?;
         let mut found = vec![None; outpoints.len()];

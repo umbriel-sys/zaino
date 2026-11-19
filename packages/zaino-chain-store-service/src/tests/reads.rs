@@ -590,6 +590,35 @@ async fn address_effects_are_refused_past_the_row_limit() {
     ));
 }
 
+/// A light-client store (no spent index, I-09) still answers the outputs
+/// outpoints name, from I-03 and I-04 alone; the spenders it cannot.
+#[tokio::test]
+async fn a_store_without_the_spent_index_answers_outputs_by_outpoint() {
+    let chain = chain();
+    let storage = InMemoryStorage::new();
+    let lightclient = crate::set::NamedSet::Lightclient.indexes();
+    assert!(!lightclient.contains(&IndexId::Spent));
+    let store = boot(&config(lightclient), &storage, &chain)
+        .await
+        .expect("boots");
+    store.build_to(tip_of(&chain).height).await.expect("builds");
+    let reader = store.reader();
+    let (created, _) = ground_truth(&blocks(&chain));
+    let outpoints: Vec<Outpoint> = created.iter().map(|(outpoint, _)| *outpoint).collect();
+    let expected: Vec<Option<TransparentOutput>> = created
+        .into_iter()
+        .map(|(_, output)| Some(output))
+        .collect();
+    assert_eq!(
+        reader.outputs_by_outpoint(&outpoints).await.expect("read"),
+        expected
+    );
+    assert!(matches!(
+        reader.outpoint_spenders(&outpoints).await,
+        Err(ChainStoreError::Unavailable(StoreCapability::SpentOutputs))
+    ));
+}
+
 #[tokio::test]
 async fn address_effects_match_the_chain() {
     let chain = chain();

@@ -15,7 +15,7 @@ use zaino_primitives::types::{BlockRef, Outpoint, TxIndex};
 
 use super::folded::Folded;
 use super::transactions::Transactions;
-use super::{below, due_for_rebase, failed, inputs, Enabled, Failure, Slot};
+use super::{below, failed, inputs, Enabled, Failure, Slot};
 use crate::snapshot::PersistentSnapshot;
 
 const NAME: &str = "address_history";
@@ -126,49 +126,6 @@ impl AddressHistory {
         }
         Ok(effects)
     }
-
-    async fn catch_up(
-        &mut self,
-        enabled: &Enabled,
-        prevouts: &dyn below::Prevouts,
-        graph: &PersistentSnapshot,
-        transactions: &Transactions,
-    ) -> Result<(), Failure> {
-        let root = self.folded.root();
-        for block in inputs::above(graph, root) {
-            if self.folded.has(&block.hash()) || !self.folded.has(&block.parent_hash) {
-                continue;
-            }
-            let parent = block.parent_hash;
-            let locate = |outpoint: &Outpoint| transactions.locate(&parent, outpoint.txid);
-            let resolved = inputs::prevouts(&block, graph, locate, prevouts, root).await?;
-            let fold_block = inputs::fold_block(
-                &block,
-                &enabled.schedule,
-                Some(&resolved),
-                Default::default(),
-            )?;
-            let state = self
-                .folded
-                .view(&parent)
-                .map(|view| view.state.clone())
-                .ok_or_else(|| Failure(format!("no view of the parent {parent}")))?;
-            let _fold = enabled
-                .folds
-                .acquire()
-                .await
-                .map_err(|error| Failure::of("folds", error))?;
-            let folded = self.folded.clone();
-            self.folded = tokio::task::spawn_blocking(move || {
-                let mut folded = folded;
-                folded.fold(&parent, &state, &fold_block)?;
-                Ok::<_, Failure>(folded)
-            })
-            .await
-            .map_err(|error| Failure::of("fold task", error))??;
-        }
-        Ok(())
-    }
 }
 
 pub(crate) async fn advance(
@@ -179,36 +136,12 @@ pub(crate) async fn advance(
     root: &Result<BlockRef, Failure>,
     transactions: Option<&Transactions>,
 ) -> Slot<AddressHistory> {
-    let root = match root {
-        Ok(root) => *root,
-        Err(failure) => return failed(NAME, failure.clone()),
-    };
-    let Some(transactions) = transactions else {
-        return failed(
-            NAME,
-            Failure("needs the transactions extension, which is not built".to_owned()),
-        );
-    };
+    let previous = previous.and_then(Slot::built).map(|built| &built.folded);
     let seed = |root: BlockRef| address_history::State { tip: root };
-    let mut built = match previous {
-        Some(Slot::Built(built)) if built.folded.under_trunk(graph) => {
-            let mut built = built.clone();
-            if due_for_rebase(built.folded.root(), root) {
-                let above = inputs::above(graph, root);
-                built = match built.folded.rebased(root, seed(root), &above) {
-                    Ok(folded) => AddressHistory { folded },
-                    Err(failure) => return failed(NAME, failure),
-                };
-            }
-            built
-        }
-        _ => match Folded::seeded(root, seed(root)) {
-            Ok(folded) => AddressHistory { folded },
-            Err(failure) => return failed(NAME, failure),
-        },
-    };
-    match built.catch_up(enabled, prevouts, graph, transactions).await {
-        Ok(()) => Slot::Built(built),
+    match inputs::advance_resolved(enabled, prevouts, previous, graph, root, transactions, seed)
+        .await
+    {
+        Ok(folded) => Slot::Built(AddressHistory { folded }),
         Err(failure) => failed(NAME, failure),
     }
 }

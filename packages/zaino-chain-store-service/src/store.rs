@@ -1,7 +1,7 @@
 //! The store runtime (§5.2, D-72, D-78): boot over a [`Storage`], then
 //! [`ChainStore::build_to`], the only write path.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -545,7 +545,13 @@ impl<St: Storage, Src: ChainStoreSource> Inner<St, Src> {
     /// taken first (so each index holds at least that much).
     fn reader(&self) -> StoreReader<<St::Backend as Backend>::Reader> {
         let watermark = *self.watermark.borrow();
-        let capabilities = self.capabilities();
+        let (capabilities, holding) = {
+            let serviceability = self.serviceability.borrow();
+            (
+                capabilities_of(&serviceability),
+                holding_of(&serviceability),
+            )
+        };
         let backends = self
             .backends
             .read()
@@ -565,6 +571,7 @@ impl<St: Storage, Src: ChainStoreSource> Inner<St, Src> {
             readers,
             watermark,
             capabilities,
+            holding,
             self.status(),
             self.network,
         )
@@ -776,18 +783,29 @@ fn backends_of<B: Backend>(indexes: &[Open<B>]) -> BTreeMap<IndexId, Arc<B>> {
         .collect()
 }
 
+/// The indexes that hold a block.
+pub(crate) fn holding_of(serviceability: &BTreeMap<IndexId, Serviceability>) -> BTreeSet<IndexId> {
+    serviceability
+        .iter()
+        .filter(|(_, served)| {
+            matches!(
+                served,
+                Serviceability::ToHeight(_) | Serviceability::Building(Some(_))
+            )
+        })
+        .map(|(id, _)| *id)
+        .collect()
+}
+
 /// Each capability whose indexes all hold a block (D-81).
 pub(crate) fn capabilities_of(
     serviceability: &BTreeMap<IndexId, Serviceability>,
 ) -> StoreCapabilities {
-    let holds = |id: &IndexId| match serviceability.get(id) {
-        Some(Serviceability::ToHeight(_)) | Some(Serviceability::Building(Some(_))) => true,
-        Some(Serviceability::Building(None)) | Some(Serviceability::Absent) | None => false,
-    };
+    let holding = holding_of(serviceability);
     StoreCapabilities::new(
         ROOTS
             .iter()
-            .filter(|(capability, _)| indexes_of(*capability).all(|id| holds(&id)))
+            .filter(|(capability, _)| indexes_of(*capability).all(|id| holding.contains(&id)))
             .map(|(capability, _)| *capability),
     )
 }
