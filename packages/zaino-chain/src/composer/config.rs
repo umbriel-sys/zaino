@@ -88,6 +88,12 @@ pub struct ChainViewConfig {
     /// zebrad applies, because a result row can cost several history rows.
     /// Default 400,000.
     pub max_address_scan_rows: usize,
+
+    /// The most bytes of encoded compact-block frames the view keeps for every
+    /// client to share, least recently used evicted first; 0 keeps none.
+    /// Default 64 MiB.
+    #[cfg(feature = "frames")]
+    pub frame_cache_bytes: usize,
 }
 
 impl Default for ChainViewConfig {
@@ -99,6 +105,8 @@ impl Default for ChainViewConfig {
             passthrough_per_request: 16,
             chunk_budget_bytes: 2 * 1024 * 1024,
             max_address_scan_rows: 400_000,
+            #[cfg(feature = "frames")]
+            frame_cache_bytes: 64 * 1024 * 1024,
         }
     }
 }
@@ -137,6 +145,13 @@ impl ChainViewConfig {
     /// Sets the address-history row bound.
     pub fn with_max_address_scan_rows(mut self, rows: usize) -> Self {
         self.max_address_scan_rows = rows.max(1);
+        self
+    }
+
+    /// Sets the frame cache's byte bound; 0 keeps none.
+    #[cfg(feature = "frames")]
+    pub fn with_frame_cache_bytes(mut self, bytes: usize) -> Self {
+        self.frame_cache_bytes = bytes;
         self
     }
 }

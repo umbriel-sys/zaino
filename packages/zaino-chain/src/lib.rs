@@ -82,6 +82,8 @@ pub use capability::{
     Answerable, ChainCapability, ServedCapabilities, ServiceabilityManifest, ServiceableRange,
 };
 pub use error::{ChainViewError, Result};
+#[cfg(feature = "frames")]
+pub use ports::CompactFrameRead;
 pub use ports::{
     AddressRead, BlockRead, ChainView, ChainViewSnapshot, CompactBlockRead, ForkReconcile,
     HistoryTreeRead, PrevoutRead, SpendRead, TransactionRead, TreestateRead, TxOutSetRead,

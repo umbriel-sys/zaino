@@ -13,6 +13,8 @@ version = "0.1.0"
 
 [features]
 default = []
+# Compact blocks as encoded wire frames, with a shared frame cache.
+frames = ["dep:zaino-proto", "dep:bytes"]
 
 [dependencies]
 # The domain vocabulary. This crate names no wire, node, or backend type.
@@ -48,6 +50,8 @@ tokio-util = { workspace = true }
 # Utility
 thiserror = { workspace = true }
 tracing = { workspace = true }
+bytes = { workspace = true, optional = true }
+zaino-proto = { version = "0.6.1", path = "../zaino-proto", default-features = false, features = ["zaino-primitives"], optional = true }
 
 [dev-dependencies]
 # The compile-time check that a real validator satisfies `ChainViewSource`.
@@ -65,6 +69,7 @@ zaino-persistence = { path = "../zaino-persistence", features = ["testing"] }
 zaino-consensus = { workspace = true }
 tokio-util = { workspace = true }
 zaino-indexes = { path = "../zaino-indexes" }
+prost.workspace = true
 
 [lints.rust]
 unsafe_code = "forbid"

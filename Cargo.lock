@@ -6034,7 +6034,9 @@ dependencies = [
 name = "zaino-chain"
 version = "0.1.0"
 dependencies = [
+ "bytes",
  "futures",
+ "prost",
  "thiserror 2.0.20",
  "tokio",
  "tokio-util",
@@ -6048,6 +6050,7 @@ dependencies = [
  "zaino-indexes",
  "zaino-persistence",
  "zaino-primitives",
+ "zaino-proto",
  "zaino-source",
  "zaino-source-mock",
  "zaino-source-zebra",

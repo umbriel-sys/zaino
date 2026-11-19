@@ -20,6 +20,8 @@
 pub(crate) mod config;
 pub(crate) mod coverage;
 pub(crate) mod fetch;
+#[cfg(feature = "frames")]
+mod frames;
 pub(crate) mod stream;
 pub(crate) mod sync;
 
@@ -85,6 +87,9 @@ pub struct ChainViewComposer<Store, Head, Source> {
     /// On the composer, not the snapshot: one per snapshot would be one per
     /// client, which is exactly the unbounded case this prevents.
     permits: Arc<Semaphore>,
+    /// Encoded compact blocks every client shares.
+    #[cfg(feature = "frames")]
+    frames: Arc<frames::FrameCache>,
     /// Runs between the head and store reads of `snapshot`.
     #[cfg(test)]
     between_reads: BetweenReads,
@@ -152,6 +157,8 @@ where
         served: ServedCapabilities,
     ) -> Self {
         let permits = Arc::new(Semaphore::new(config.passthrough_permits));
+        #[cfg(feature = "frames")]
+        let frames = Arc::new(frames::FrameCache::new(config.frame_cache_bytes));
         Self {
             store,
             head,
@@ -159,6 +166,8 @@ where
             config: Arc::new(config),
             served,
             permits,
+            #[cfg(feature = "frames")]
+            frames,
             #[cfg(test)]
             between_reads: BetweenReads::default(),
         }
@@ -223,6 +232,8 @@ where
                 Arc::clone(&self.config),
             ),
             config: Arc::clone(&self.config),
+            #[cfg(feature = "frames")]
+            frames: Arc::clone(&self.frames),
         }
     }
 
@@ -533,6 +544,9 @@ pub struct ComposerSnapshot<Reader, HeadSnapshot, Source> {
     chainwork_offset: Arc<tokio::sync::OnceCell<AnchorChainWork>>,
     fetch: fetch::Fetcher<Source>,
     config: Arc<ChainViewConfig>,
+    /// The view's frame cache, shared by every snapshot.
+    #[cfg(feature = "frames")]
+    frames: Arc<frames::FrameCache>,
 }
 
 /// Cloning shares the providers rather than duplicating them.
@@ -550,6 +564,8 @@ impl<Reader: Clone, HeadSnapshot, Source> Clone for ComposerSnapshot<Reader, Hea
             chainwork_offset: Arc::clone(&self.chainwork_offset),
             fetch: self.fetch.clone(),
             config: Arc::clone(&self.config),
+            #[cfg(feature = "frames")]
+            frames: Arc::clone(&self.frames),
         }
     }
 }

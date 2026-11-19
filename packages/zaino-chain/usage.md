@@ -140,6 +140,29 @@ endpoint. Three properties matter at scale:
   per client instead, which with thousands of them is the difference between
   bounded and unbounded memory.
 
+### Frames: encoded once, shared by every client
+
+With the `frames` feature, `CompactFrameRead` serves the same blocks as
+encoded `CompactBlock` messages (`bytes::Bytes`), written by
+`zaino_proto::compact::write_compact_block`:
+
+```rust,ignore
+let mut frames = chain.stream_compact_frames(start, end, pools);
+while let Some(chunk) = frames.try_next().await? {
+    // chunk: Vec<Bytes>, sized by its exact bytes
+}
+let one = chain.compact_frame(height, pools).await?;
+```
+
+A frame is the compact block under `pools` exactly as prost would encode it,
+with zero tree sizes under a nullifiers-only filter. The view keeps a
+byte-bounded LRU of frames keyed by (height, filter) and shared by every
+snapshot (`frame_cache_bytes`, default 64 MiB; 0 keeps none). It keeps only
+final frames: the store's, and the head's from its `compact_blocks` fold
+(dropped when the epoch moves). Projected head frames (fees unknown) and the
+validator's are never kept, so a frame read from the cache is always what an
+uncached read would return.
+
 ## Capabilities are traits, and optional ones are absent
 
 The always-available reads — `BlockRead`, `CompactBlockRead`,

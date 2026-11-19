@@ -176,6 +176,29 @@ pub trait CompactBlockRead: Send + Sync {
     ) -> impl Stream<Item = Result<Vec<CompactBlock>>> + Send + use<Self>;
 }
 
+/// Compact blocks as encoded `CompactBlock` messages, for serving: the same
+/// blocks as [`CompactBlockRead`], each written once and shared by every
+/// client through the view's frame cache. Under a nullifiers-only filter the
+/// tree sizes are zero, as the protocol's nullifier responses carry.
+#[cfg(feature = "frames")]
+pub trait CompactFrameRead: Send + Sync {
+    /// The encoded compact block at `height`.
+    fn compact_frame(
+        &self,
+        height: Height,
+        pools: PoolFilter,
+    ) -> impl Future<Output = Result<Option<bytes::Bytes>>> + Send;
+
+    /// The encoded compact blocks from `start` to `end`, in either direction,
+    /// as a stream of chunks sized by their exact bytes.
+    fn stream_compact_frames(
+        &self,
+        start: Height,
+        end: Height,
+        pools: PoolFilter,
+    ) -> impl Stream<Item = Result<Vec<bytes::Bytes>>> + Send + use<Self>;
+}
+
 /// Transactions, and where they were mined.
 pub trait TransactionRead: Send + Sync {
     /// The consensus bytes of `txid`.

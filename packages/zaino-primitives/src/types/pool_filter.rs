@@ -29,7 +29,7 @@ use super::ShieldedPool;
 /// here changes.
 ///
 /// [`nullifiers_only`]: Self::nullifiers_only
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct PoolFilter {
     /// One bit per [`ShieldedPool`], indexed by its discriminant.
     shielded: u8,
