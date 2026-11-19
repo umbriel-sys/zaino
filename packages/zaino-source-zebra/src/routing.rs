@@ -403,10 +403,9 @@ impl OneShotGetMempoolSourceTip for ZebraValidator {
 }
 
 impl OneShotGetChainTips for ZebraValidator {
+    /// zebrad has no `getchaintips`: refused without a round trip.
     async fn get_chain_tips(&self) -> Result<Vec<rpc::ChainTip>, QueryError<GetChainTipsError>> {
-        // Enumerating the block tree includes side-chain tips, which the
-        // finalized state does not retain.
-        self.rpc.get_chain_tips().await
+        Err(QueryError::Domain(GetChainTipsError::Unsupported))
     }
 }
 

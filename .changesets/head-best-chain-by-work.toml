@@ -1,0 +1,40 @@
+[[changes]]
+crate = "zaino-chain-head-service"
+kind = "breaking"
+description = """
+The heaviest retained chain is the best chain (HEAD-1): a strictly heavier \
+retained branch is followed, even a shorter one; on equal work the \
+validator's tip stays. A validator tip lighter than a retained branch makes \
+the status `Ready | Recoverable`, naming both tips, and counts \
+`zaino.chain_head.tip_disagreements_total`. Once after its first advance the \
+head seeds the validator's fully validated side-chain tips inside the window \
+from `GetChainTips` (HEAD-2)."""
+
+[[changes]]
+crate = "zaino-chain-head"
+kind = "breaking"
+description = "`ChainHeadBlockSource` requires `OneShotGetChainTips`."
+
+[[changes]]
+crate = "zaino-source"
+kind = "feature"
+description = "`GetChainTipsError::Unsupported`: the validator does not answer `getchaintips`."
+
+[[changes]]
+crate = "zaino-source-zebra"
+kind = "fix"
+description = """
+`get_chain_tips` answers `Unsupported` without a round trip: zebrad has no \
+`getchaintips`."""
+
+[[changes]]
+crate = "zaino-source-zcash-rpc"
+kind = "fix"
+description = "`getchaintips` answered with −32601 is `GetChainTipsError::Unsupported`."
+
+[[changes]]
+crate = "zaino-source-mock"
+kind = "breaking"
+description = """
+`get_chain_tips` is refused as zebra refuses it unless `NodeFacts::chain_tips` \
+is set (zcashd); the contract accepts both."""

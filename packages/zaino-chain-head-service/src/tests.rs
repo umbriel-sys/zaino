@@ -24,8 +24,8 @@ use std::{sync::Arc, time::Duration};
 
 use tokio_util::sync::CancellationToken;
 use zaino_chain_head::{ChainHeadBlockService as _, ChainHeadConfig, ChainHeadSnapshot};
+use zaino_component::Health;
 use zaino_primitives::types::{
-    rpc::{ChainTip, ChainTipStatus},
     Block, BlockCommitments, BlockHash, BlockHeader, BlockRef, EquihashSolution, Height,
     MerkleRoot, RelativeChainWork, Transaction, TransactionId, TreeRoots,
 };
@@ -33,14 +33,17 @@ use zaino_source::FailureMode;
 use zaino_source_mock::{MockBlock, MockChain, NodeFacts, PoolTrees, Spendable};
 
 use crate::{
-    error::ChainHeadAdvanceError,
-    service::{ChainHeadService, TipSelection},
-    snapshot::PersistentSnapshot,
+    error::ChainHeadAdvanceError, service::ChainHeadService, snapshot::PersistentSnapshot,
 };
 
 /// A valid nBits value: non-negative, non-zero, no overflow.
 fn valid_bits() -> zaino_primitives::types::CompactDifficulty {
     zaino_primitives::types::CompactDifficulty::try_from_bits(0x2007_ffff).expect("valid nBits")
+}
+
+/// A target 256 times smaller than [`valid_bits`]: 256 times the work.
+fn heavier_bits() -> zaino_primitives::types::CompactDifficulty {
+    zaino_primitives::types::CompactDifficulty::try_from_bits(0x1f07_ffff).expect("valid nBits")
 }
 
 pub(crate) fn hash(id: u16) -> BlockHash {
@@ -61,6 +64,16 @@ pub(crate) fn height(h: u32) -> Height {
 
 /// A block identified by a small integer, so test chains read as `1 -> 2 -> 3`.
 pub(crate) fn block(h: u32, id: u16, parent: u16) -> Block {
+    block_with_bits(h, id, parent, valid_bits())
+}
+
+/// [`block`] at difficulty `bits`.
+fn block_with_bits(
+    h: u32,
+    id: u16,
+    parent: u16,
+    bits: zaino_primitives::types::CompactDifficulty,
+) -> Block {
     let header = BlockHeader {
         hash: hash(id),
         version: 4,
@@ -69,7 +82,7 @@ pub(crate) fn block(h: u32, id: u16, parent: u16) -> Block {
         time: 0,
         merkle_root: MerkleRoot::from([0; 32]),
         block_commitments: BlockCommitments::from([0; 32]),
-        bits: valid_bits(),
+        bits,
         nonce: [0; 32],
         solution: EquihashSolution::Regtest([0; 36]),
     };
@@ -91,8 +104,13 @@ fn coinbase(id: u16) -> Transaction {
 /// One id-named block as the shared mock serves it: no pools, so no roots
 /// or trees.
 fn mock_block(h: u32, id: u16, parent: u16) -> MockBlock {
+    mock_block_with(block(h, id, parent))
+}
+
+/// `block` as the shared mock serves it.
+fn mock_block_with(block: Block) -> MockBlock {
     MockBlock {
-        block: block(h, id, parent),
+        block,
         tree_roots: TreeRoots {
             sapling: None,
             orchard: None,
@@ -150,6 +168,16 @@ impl MockValidator {
     /// Replaces the best chain from `from_height` upwards with `ids`, leaving
     /// the displaced blocks known but no longer canonical.
     fn reorg(&self, from_height: u32, ids: &[u16]) {
+        self.reorg_at(from_height, ids, valid_bits());
+    }
+
+    /// [`reorg`](Self::reorg) with blocks at difficulty `bits`.
+    fn reorg_at(
+        &self,
+        from_height: u32,
+        ids: &[u16],
+        bits: zaino_primitives::types::CompactDifficulty,
+    ) {
         let mut parent = from_height
             .checked_sub(1)
             .and_then(|below| self.chain.block_at(below))
@@ -157,7 +185,7 @@ impl MockValidator {
         let blocks = (from_height..)
             .zip(ids)
             .map(|(h, &id)| {
-                let block = mock_block(h, id, parent);
+                let block = mock_block_with(block_with_bits(h, id, parent, bits));
                 parent = id;
                 block
             })
@@ -214,22 +242,6 @@ async fn stepped(validator: &MockValidator, max_depth: u32) -> Arc<ChainHeadServ
     .expect("mock validator is reachable")
 }
 
-/// An anchored chain head with no writer, selecting its tip by `selection`.
-async fn stepped_selecting(
-    validator: &MockValidator,
-    max_depth: u32,
-    selection: TipSelection,
-) -> Arc<ChainHeadService<MockChain>> {
-    ChainHeadService::spawn_without_writer_selecting(
-        Arc::new(validator.chain.clone()),
-        test_config(max_depth),
-        selection,
-        CancellationToken::new(),
-    )
-    .await
-    .expect("mock validator is reachable")
-}
-
 /// A chain head with its writer running, for behaviour tests.
 async fn running(validator: &MockValidator, max_depth: u32) -> Arc<ChainHeadService<MockChain>> {
     ChainHeadService::spawn(
@@ -265,13 +277,10 @@ pub(crate) fn best_chain_hashes(snapshot: &impl ChainHeadSnapshot) -> Vec<BlockH
     snapshot.best_chain().map(|block| block.hash()).collect()
 }
 
-/// A stepped chain head selecting its tip by `selection`, synced to a
-/// five-block chain `0 -> 4`.
-async fn synced_on_five_blocks(
-    selection: TipSelection,
-) -> (MockValidator, Arc<ChainHeadService<MockChain>>) {
+/// A stepped chain head synced to a five-block chain `0 -> 4`.
+async fn synced_on_five_blocks() -> (MockValidator, Arc<ChainHeadService<MockChain>>) {
     let validator = MockValidator::linear(5);
-    let service = stepped_selecting(&validator, 100, selection).await;
+    let service = stepped(&validator, 100).await;
     step_to_tip(&service, &validator).await;
     (validator, service)
 }
@@ -601,7 +610,7 @@ async fn a_re_anchor_carries_zero_work() {
 /// through the reorg that created one.
 #[tokio::test]
 async fn a_higher_reorg_retains_the_displaced_branch() {
-    let (validator, service) = synced_on_five_blocks(TipSelection::Source).await;
+    let (validator, service) = synced_on_five_blocks().await;
 
     let snapshot = reorg_and_advance(&service, &validator, 4, &[40, 41]).await;
 
@@ -616,72 +625,67 @@ async fn a_higher_reorg_retains_the_displaced_branch() {
     assert!(!snapshot.is_on_best_chain(displaced.reference));
 }
 
-/// A branch swap at the same height. The extension loop cannot see this — it
-/// finds no higher block — so `check_for_nonhigher_reorgs` is what catches it.
+/// A branch swap at the same height and equal work: the validator's tip wins
+/// the tie. The extension loop cannot see this — it finds no higher block — so
+/// `check_for_nonhigher_reorgs` is what catches it.
 #[tokio::test]
 async fn a_same_height_reorg_is_caught_without_a_higher_block() {
-    let (validator, service) = synced_on_five_blocks(TipSelection::Source).await;
+    let (validator, service) = synced_on_five_blocks().await;
 
     let snapshot = reorg_and_advance(&service, &validator, 4, &[40]).await;
 
     assert_eq!(snapshot.best_tip(), block_ref(4, 40));
 }
 
-/// The source's tip drops below ours with nothing replacing the blocks above
-/// it, as after an `invalidateblock`. The source picks the tip, so the chain
-/// head follows it down even though the abandoned block carries more work.
+/// The validator's tip drops below ours with nothing replacing the blocks
+/// above it, as after an `invalidateblock`. The abandoned block carries more
+/// work, so the head keeps it, reports the disagreement naming both tips, and
+/// counts it.
 #[tokio::test]
-async fn a_rollback_lowers_the_tip() {
-    let (validator, service) = synced_on_five_blocks(TipSelection::Source).await;
+async fn a_rollback_onto_lighter_work_is_not_followed_and_is_reported() {
+    let recorder = metrics_util::debugging::DebuggingRecorder::new();
+    let snapshotter = recorder.snapshotter();
+    let _guard = metrics::set_default_local_recorder(&recorder);
+    let (validator, service) = synced_on_five_blocks().await;
 
     let snapshot = reorg_and_advance(&service, &validator, 4, &[]).await;
 
-    assert_eq!(snapshot.best_tip(), block_ref(3, 3));
-}
-
-/// After a rollback nothing is canonical above the new tip. The abandoned block
-/// stays retained, as a competing tip one block off the best chain.
-#[tokio::test]
-async fn a_rollback_abandons_the_heights_above_the_new_tip() {
-    let (validator, service) = synced_on_five_blocks(TipSelection::Source).await;
-
-    let snapshot = reorg_and_advance(&service, &validator, 4, &[]).await;
-
-    assert!(snapshot.best_block_by_height(height(4)).is_none());
-    assert_eq!(
-        snapshot.best_chain().last().map(|block| block.hash()),
-        Some(hash(3))
+    assert_eq!(snapshot.best_tip(), block_ref(4, 4));
+    let status = zaino_component::StatusSource::status(service.as_ref());
+    assert_eq!(status.health, Health::Recoverable);
+    let reason = status.reason.expect("the disagreement is named");
+    assert!(
+        reason.contains(&hash(3).to_string()) && reason.contains(&hash(4).to_string()),
+        "{reason}"
     );
-    let abandoned = snapshot
-        .block_by_hash(&hash(4))
-        .expect("the abandoned block is retained");
-    assert!(!snapshot.is_on_best_chain(abandoned.reference));
+    let counted = snapshotter
+        .snapshot()
+        .into_vec()
+        .into_iter()
+        .any(|(key, _, _, value)| {
+            key.key().name() == crate::metric_names::CHAIN_HEAD_TIP_DISAGREEMENTS_TOTAL
+                && matches!(value, metrics_util::debugging::DebugValue::Counter(n) if n > 0)
+        });
+    assert!(counted, "the disagreement is counted");
+
+    validator.reorg(4, &[4, 5]);
+    step_to_tip(&service, &validator).await;
     assert_eq!(
-        snapshot.chain_tips(),
-        vec![
-            ChainTip {
-                height: height(4),
-                hash: hash(4),
-                branch_len: 1,
-                status: ChainTipStatus::ValidFork,
-            },
-            ChainTip {
-                height: height(3),
-                hash: hash(3),
-                branch_len: 0,
-                status: ChainTipStatus::Active,
-            },
-        ]
+        zaino_component::StatusSource::status(service.as_ref()).health,
+        Health::Healthy,
+        "agreement restores health"
     );
 }
 
-/// A reorg onto a shorter branch: the new tip is lower than the old one, and
-/// the old branch's top height is no longer canonical.
+/// A reorg onto a shorter branch that carries more work: the head follows it,
+/// and the old branch's top height is no longer canonical.
 #[tokio::test]
-async fn a_lower_reorg_abandons_the_heights_above_the_new_tip() {
-    let (validator, service) = synced_on_five_blocks(TipSelection::Source).await;
+async fn a_shorter_heavier_branch_wins() {
+    let (validator, service) = synced_on_five_blocks().await;
 
-    let snapshot = reorg_and_advance(&service, &validator, 3, &[30]).await;
+    validator.reorg_at(3, &[30], heavier_bits());
+    step_to_tip(&service, &validator).await;
+    let snapshot = service.subscriber().current();
 
     assert_eq!(snapshot.best_tip(), block_ref(3, 30));
     assert!(snapshot.best_block_by_height(height(4)).is_none());
@@ -695,7 +699,7 @@ async fn a_lower_reorg_abandons_the_heights_above_the_new_tip() {
 /// the retained blocks to the fork point instead of refetching them.
 #[tokio::test]
 async fn a_reorg_back_onto_a_retained_branch_restores_it() {
-    let (validator, service) = synced_on_five_blocks(TipSelection::Source).await;
+    let (validator, service) = synced_on_five_blocks().await;
 
     reorg_and_advance(&service, &validator, 3, &[30, 31]).await;
     let snapshot = reorg_and_advance(&service, &validator, 3, &[3, 4, 5]).await;
@@ -713,16 +717,68 @@ async fn a_reorg_back_onto_a_retained_branch_restores_it() {
     }
 }
 
-/// Selecting by retained work instead lets local work override the source: the
-/// abandoned block outweighs the source's lower tip, so the rollback is not
-/// followed.
+/// A validator that lists its tips (zcashd): a side branch that existed before
+/// the head started is laid down as a retained branch, the best chain as the
+/// validator has it.
 #[tokio::test]
-async fn heaviest_retained_selection_overrides_a_rollback() {
-    let (validator, service) = synced_on_five_blocks(TipSelection::HeaviestRetained).await;
+async fn side_tips_the_validator_lists_are_seeded_at_start() {
+    let blocks = (0..5u16)
+        .map(|id| mock_block(u32::from(id), id, id.saturating_sub(1)))
+        .collect();
+    let validator = MockValidator {
+        chain: MockChain::new(
+            NodeFacts {
+                chain_tips: true,
+                ..NodeFacts::regtest()
+            },
+            blocks,
+        ),
+    };
+    validator.reorg(3, &[30, 31, 32]);
+    let service = stepped(&validator, 100).await;
+    step_to_tip(&service, &validator).await;
 
-    let snapshot = reorg_and_advance(&service, &validator, 4, &[]).await;
+    let snapshot = service.subscriber().current();
+    assert_eq!(snapshot.best_tip(), block_ref(5, 32));
+    for side in [3, 4] {
+        let block = snapshot
+            .block_by_hash(&hash(side))
+            .expect("the side branch is retained");
+        assert!(!snapshot.is_on_best_chain(block.reference));
+    }
+    step_to_tip(&service, &validator).await;
+    assert_eq!(validator.chain.calls("get_chain_tips"), 1, "asked once");
+}
+
+/// A validator that refuses `getchaintips` (zebrad) is asked once and the
+/// head runs on.
+#[tokio::test]
+async fn a_validator_without_chain_tips_is_asked_once() {
+    let validator = MockValidator::linear(5);
+    validator.reorg(3, &[30, 31, 32]);
+    let service = stepped(&validator, 100).await;
+    step_to_tip(&service, &validator).await;
+    step_to_tip(&service, &validator).await;
+
+    let snapshot = service.subscriber().current();
+    assert_eq!(snapshot.best_tip(), block_ref(5, 32));
+    assert!(snapshot.block_by_hash(&hash(4)).is_none());
+    assert_eq!(validator.chain.calls("get_chain_tips"), 1);
+}
+
+/// A lower reorg onto lighter work is not followed: the head keeps the
+/// heavier retained branch.
+#[tokio::test]
+async fn a_lower_reorg_onto_lighter_work_keeps_the_heavier_branch() {
+    let (validator, service) = synced_on_five_blocks().await;
+
+    let snapshot = reorg_and_advance(&service, &validator, 3, &[30]).await;
 
     assert_eq!(snapshot.best_tip(), block_ref(4, 4));
+    assert!(
+        snapshot.block_by_hash(&hash(30)).is_some(),
+        "the lighter branch is retained"
+    );
 }
 
 /// Growth past the window drops the oldest blocks, so retention stays bounded

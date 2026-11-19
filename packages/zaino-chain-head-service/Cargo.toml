@@ -66,6 +66,7 @@ zaino-chain-head-service = { path = ".", features = [
     "tree_state",
     "history_tree",
 ] }
+metrics-util = "0.20"
 
 [lints.rust]
 unsafe_code = "forbid"

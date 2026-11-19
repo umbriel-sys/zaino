@@ -634,8 +634,14 @@ impl zaino_source::OneShotGetChainTips for ZcashRpcAdapter {
         Vec<zaino_primitives::types::rpc::ChainTip>,
         QueryError<zaino_source::GetChainTipsError>,
     > {
-        self.call_parsed("getchaintips", vec![], parse::parse_chain_tips)
-            .await
+        self.call_parsed_classified(
+            "getchaintips",
+            vec![],
+            None,
+            parse::parse_chain_tips,
+            |error| method_missing_or_fetch(error, || zaino_source::GetChainTipsError::Unsupported),
+        )
+        .await
     }
 }
 

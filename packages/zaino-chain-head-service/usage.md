@@ -130,14 +130,20 @@ This is not merely an optimisation to preserve. Without it every poll interval
 rebuilds and republishes the whole window, which in tests turned seconds into
 minutes.
 
-## The source picks the tip; retained work only checks it
+## The heaviest retained chain is the best chain
 
-The chain head does not validate blocks and sees only what it retained, so the
-source's tip is the best chain. After every advance the tip's work is compared
-against the heaviest retained block. A heavier retained block means the source
-moved away from it — a rollback, an invalidation, or a misbehaving source — and
-is logged at `warn`, not followed. Selection by retained work is available
-inside the crate as a policy; under it, a rollback is overridden.
+After every advance the validator's tip is compared against the heaviest
+retained block. A strictly heavier retained branch becomes the best chain, even
+a shorter one; on equal work the validator's tip stays. A validator tip lighter
+than a retained branch (a rollback, an invalidation, a misbehaving source) is a
+disagreement: the status is `Ready | Recoverable` with a reason naming both
+tips until they agree again, and
+`zaino.chain_head.tip_disagreements_total` counts it.
+
+Once, after its first advance, the head asks `GetChainTips` and lays down each
+fully validated side-chain tip that forks inside the window as a retained
+branch. A validator that refuses the question (`Unsupported`, zebrad) is not
+asked again.
 
 The comparison against the tip is strictly greater-than. Taking the heaviest
 block by `max_by_key` alone would settle an equal-work tie by hash-map iteration
@@ -212,3 +218,5 @@ nothing. A fold or port failure darkens that extension alone
 - `zaino.sync.consecutive_failures` and `zaino.sync.backoff_seconds`: the retry
   ladder, both 0 when healthy.
 - `zaino.sync.reorg_total` and `zaino.sync.reorg_depth`: reorganisations.
+- `zaino.chain_head.tip_disagreements_total`: advances that followed a
+  retained branch heavier than the validator's tip.

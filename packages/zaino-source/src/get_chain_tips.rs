@@ -12,6 +12,10 @@ pub enum GetChainTipsError {
     /// The validator is not ready to enumerate tips (e.g. still syncing).
     #[error("validator not ready")]
     NotReady,
+
+    /// The validator does not answer `getchaintips` (zebrad).
+    #[error("the validator does not answer getchaintips")]
+    Unsupported,
 }
 
 /// Enumerate every tip of the block tree the validator knows: the active tip

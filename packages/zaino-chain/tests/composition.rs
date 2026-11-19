@@ -1437,13 +1437,13 @@ async fn a_snapshot_survives_a_reorg_underneath_it() {
     let pinned = before.epoch();
     assert_eq!(before.tip().height, height(TIP));
 
-    // The chain shortens to 284 and the head lives through it.
-    reorg(&rig.chain, 280, 5, 3);
+    // A heavier branch replaces the chain from 280 and the head lives through it.
+    reorg(&rig.chain, 280, 25, 3);
     rig.advance().await;
 
     assert_eq!(before.tip().height, height(TIP), "the pinned view moved");
     assert_eq!(before.epoch(), pinned, "the pinned epoch moved");
-    assert_eq!(view.snapshot().tip().height, height(284));
+    assert_eq!(view.snapshot().tip().height, height(304));
     assert!(view.snapshot().epoch().generation > pinned.generation);
 }
 

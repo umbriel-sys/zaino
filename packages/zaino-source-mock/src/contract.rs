@@ -16,7 +16,7 @@ use zaino_primitives::types::{
 };
 use zaino_source::{
     GetAddressBalanceError, GetAddressDeltasError, GetAddressTxidsError, GetAddressUtxosError,
-    GetBlockByHashError, GetBlockError, GetCommitmentTreeRootsByHeightError,
+    GetBlockByHashError, GetBlockError, GetChainTipsError, GetCommitmentTreeRootsByHeightError,
     GetCommitmentTreeRootsError, GetSpentInfoError, GetSubtreeRootsError, GetTransactionError,
     GetTreestateByHashError, GetTreestateError, QueryError,
 };
@@ -96,7 +96,11 @@ where
     ensure(height == tip && Some(hash) == tip_hash, || {
         "chain tip disagrees with the best block".to_owned()
     })?;
-    let tips = answered("chain tips", source.get_chain_tips().await)?;
+    let tips = match source.get_chain_tips().await {
+        // zebrad has no getchaintips
+        Err(QueryError::Domain(GetChainTipsError::Unsupported)) => return Ok(()),
+        answer => answered("chain tips", answer)?,
+    };
     ensure(
         tips.iter()
             .filter(|t| t.status == ChainTipStatus::Active)

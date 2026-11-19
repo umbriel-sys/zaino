@@ -465,7 +465,16 @@ fn the_schedule_configures_a_regtest_node() {
 #[tokio::test]
 async fn a_reorg_keeps_the_displaced_blocks_as_a_side_branch() {
     let base = crate::COINBASE_MATURITY;
-    let chain = ChainBuilder::new().matured().blocks(5).build();
+    let chain = ChainBuilder::with(
+        crate::NodeFacts {
+            chain_tips: true,
+            ..crate::NodeFacts::regtest()
+        },
+        crate::Activations::default(),
+    )
+    .matured()
+    .blocks(5)
+    .build();
     let displaced = chain.block_at(base + 4).expect("loaded");
     let displaced_tip = chain.block_at(base + 5).expect("loaded");
     let parent = chain.block_at(base + 3).expect("loaded");
@@ -490,6 +499,16 @@ async fn a_reorg_keeps_the_displaced_blocks_as_a_side_branch() {
         .map(|tip| (tip.hash, tip.height, tip.branch_len))
         .collect();
     assert_eq!(forks, [(displaced_tip.hash(), height(base + 5), 2)]);
+    let zebra = ChainBuilder::new().blocks(2).build();
+    assert!(
+        matches!(
+            zebra.get_chain_tips().await,
+            Err(zaino_source::QueryError::Domain(
+                zaino_source::GetChainTipsError::Unsupported
+            ))
+        ),
+        "refused as zebra refuses"
+    );
     let txid = displaced.block.transactions()[1].txid;
     let found = chain.get_transaction(txid).await.expect("known");
     assert_eq!(found.location, TransactionLocation::NonBestChain);

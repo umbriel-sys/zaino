@@ -125,9 +125,13 @@ impl zaino_source::OneShotGetChainTip for MockChain {
 
 impl zaino_source::OneShotGetChainTips for MockChain {
     /// The active tip, and each side branch's tip with its length back to
-    /// the best chain.
+    /// the best chain, as zcashd answers; refused as zebra refuses unless
+    /// [`NodeFacts::chain_tips`](crate::NodeFacts::chain_tips).
     async fn get_chain_tips(&self) -> Result<Vec<ChainTip>, QueryError<GetChainTipsError>> {
         let served = self.enter("get_chain_tips", CallArg::None).await?;
+        if !served.facts().chain_tips {
+            return refused(GetChainTipsError::Unsupported);
+        }
         let Some(tip) = served.tip() else {
             return refused(GetChainTipsError::NotReady);
         };

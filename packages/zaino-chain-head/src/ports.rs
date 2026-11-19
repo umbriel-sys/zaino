@@ -49,11 +49,9 @@ use crate::snapshot::ChainHeadSnapshot;
 /// type answering all of them, so production composites and test mocks earn the
 /// bound the same way.
 ///
-/// Six questions, and deliberately no `GetChainTips`. ChainHead learns of a
-/// competing branch only by living through the reorg that created it — walking
-/// back by hash from a block whose parent it does not hold — so it never asks a
-/// validator to enumerate tips. A bound naming a question nothing asks would
-/// oblige every source to answer it for nothing.
+/// ChainHead learns of a competing branch by living through the reorg that
+/// created it, and at start from `GetChainTips` where the validator answers it
+/// (zcashd); a validator refusing it (`Unsupported`, zebrad) is not asked again.
 ///
 /// [`SubscribeBlocks`](zaino_source::SubscribeBlocks) is a latency hint only.
 /// Its channel carries `()`, and ChainHead re-reads the source on every wake,
@@ -66,6 +64,7 @@ use crate::snapshot::ChainHeadSnapshot;
 /// satisfies this bound directly rather than through a wrapper.
 pub trait ChainHeadBlockSource:
     zaino_source::OneShotGetChainTip
+    + zaino_source::OneShotGetChainTips
     + zaino_source::OneShotGetBlock
     + zaino_source::OneShotGetBlockByHash
     + zaino_source::OneShotGetCommitmentTreeRoots
@@ -79,6 +78,7 @@ pub trait ChainHeadBlockSource:
 
 impl<T> ChainHeadBlockSource for T where
     T: zaino_source::OneShotGetChainTip
+        + zaino_source::OneShotGetChainTips
         + zaino_source::OneShotGetBlock
         + zaino_source::OneShotGetBlockByHash
         + zaino_source::OneShotGetCommitmentTreeRoots

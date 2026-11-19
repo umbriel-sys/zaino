@@ -145,17 +145,17 @@ inside the graph, and rebasing at the edge, is what keeps that comparison exact.
 
 ## The driven port names only what is asked
 
-`ChainHeadBlockSource` is a bound alias over five `zaino-source` ports with a
-blanket impl. Nothing implements it directly: a type answering all five earns
+`ChainHeadBlockSource` is a bound alias over six `zaino-source` ports with a
+blanket impl. Nothing implements it directly: a type answering all six earns
 the bound automatically, so production composites and test mocks qualify the
 same way.
 
 Add a port to that bound **only when the chain head actually asks the question**.
 The bound is a statement of requirements, and every entry obliges every source
-to answer. `GetChainTips` was in it and was removed for precisely this reason —
-the chain head learns of a competing branch by living through the reorg that
-created it, never by asking a validator to enumerate tips. See ADR-0011, which
-also records that `zebra-rpc` does not implement `getchaintips` at all.
+to answer. `GetChainTips` is in it because the head asks it once at start, to
+seed side-chain tips where the validator lists them (zcashd); a source that
+cannot answer says `Unsupported`, as the zebra composite does without a round
+trip (`zebra-rpc` has no `getchaintips`).
 
 The bound is deliberately not `Clone`. A source may own connections and a
 database handle that must not be duplicated; the runtime shares one behind an

@@ -112,6 +112,8 @@ verbosity names the block's hash, height, parent and transactions.
 Where zcashd and zebra legitimately differ (zebra omits chain work; its
 difficulty divides by its exact 256-bit limit), the mock answers as zcashd
 does and the contract accepts both. `NodeFacts::chainwork = false` answers
-chain work as zebra does: never. Subtree roots are answered for all three
+chain work as zebra does: never. `get_chain_tips` is refused (`Unsupported`)
+as zebra refuses it; `NodeFacts::chain_tips = true` answers as zcashd does,
+and the contract accepts both. Subtree roots are answered for all three
 pools, as zebra does; `NodeFacts::subtree_pools` without Ironwood refuses it
 as zcashd does (`PoolUnavailable`).

@@ -20,8 +20,9 @@
 //!
 //! # Who picks the tip
 //!
-//! The source does. Retained work only checks the source's answer; see
-//! [`TipSelection`] and the crate's `usage.md`.
+//! The heaviest retained chain; on equal work, the validator's tip. A
+//! validator tip lighter than a retained branch is reported in the status and
+//! counted; see the crate's `usage.md`.
 //!
 //! # Advancing is not an operation
 //!
@@ -77,23 +78,11 @@ const COMPONENT: &str = "ChainHead";
 /// reorg it is sized for without this.
 const RETENTION_MARGIN: u32 = 10;
 
-/// What decides the best chain when the source's tip and retained work disagree.
-///
-/// A policy, not a capability: both arms run the same comparison after every
-/// advance, and differ only in what they do when a retained block outweighs the
-/// tip.
+/// The validator's tip and the heavier retained branch the head follows.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum TipSelection {
-    /// The source's tip is the best chain. A heavier retained block is logged
-    /// and left where it is.
-    Source,
-    /// The heaviest retained block is the best chain, even when the source has
-    /// moved its tip elsewhere.
-    #[cfg_attr(
-        not(test),
-        expect(dead_code, reason = "a selectable policy; only tests select it")
-    )]
-    HeaviestRetained,
+struct TipDisagreement {
+    validator: BlockRef,
+    heavier: BlockRef,
 }
 
 /// The bounded non-finalised head of the chain, kept current with a validator.
@@ -113,7 +102,8 @@ pub struct ChainHeadService<S: ChainHeadBlockSource> {
     cancel: CancellationToken,
     task: Mutex<Option<JoinHandle<()>>>,
     config: ChainHeadConfig,
-    tip_selection: TipSelection,
+    /// Whether the validator's side-chain tips have been laid down (HEAD-2).
+    seeded: std::sync::atomic::AtomicBool,
     /// The extensions the builder enabled (D-50), with their ports.
     #[cfg(any(
         feature = "transactions",
@@ -175,7 +165,6 @@ impl<S: ChainHeadBlockSource> ChainHeadService<S> {
             source,
             config,
             cancel,
-            tip_selection: TipSelection::Source,
             #[cfg(any(
                 feature = "transactions",
                 feature = "tree_state",
@@ -217,20 +206,6 @@ impl<S: ChainHeadBlockSource> ChainHeadService<S> {
             .await
     }
 
-    /// [`spawn_without_writer`](Self::spawn_without_writer) under a chosen
-    /// [`TipSelection`].
-    #[cfg(test)]
-    pub(crate) async fn spawn_without_writer_selecting(
-        source: Arc<S>,
-        config: ChainHeadConfig,
-        tip_selection: TipSelection,
-        cancel: CancellationToken,
-    ) -> Result<Arc<Self>, ChainHeadInitError> {
-        let mut builder = Self::builder(source, config, cancel);
-        builder.tip_selection = tip_selection;
-        Self::anchored(builder).await
-    }
-
     /// Advances the graph by one iteration and publishes the result.
     ///
     /// Compiled out of production builds. This is what the writer task does per
@@ -247,7 +222,6 @@ impl<S: ChainHeadBlockSource> ChainHeadService<S> {
             source,
             config,
             cancel,
-            tip_selection,
             #[cfg(any(
                 feature = "transactions",
                 feature = "tree_state",
@@ -280,7 +254,7 @@ impl<S: ChainHeadBlockSource> ChainHeadService<S> {
             cancel,
             task: Mutex::new(None),
             config,
-            tip_selection,
+            seeded: std::sync::atomic::AtomicBool::new(false),
             #[cfg(any(
                 feature = "transactions",
                 feature = "tree_state",
@@ -445,6 +419,12 @@ impl<S: ChainHeadBlockSource> ChainHeadService<S> {
         // for a same-height reorg, which costs a round trip per poll for an
         // answer that cannot have changed.
         if tip == previous.best_tip() {
+            if !self.seeded.load(std::sync::atomic::Ordering::Acquire) {
+                let next = self.seed_side_tips((*previous).clone()).await?;
+                self.mark_fresh();
+                self.publish_snapshot(&previous, next);
+                return Ok(());
+            }
             // the store moved under an unchanged head: the extensions catch up
             #[cfg(any(
                 feature = "transactions",
@@ -466,7 +446,8 @@ impl<S: ChainHeadBlockSource> ChainHeadService<S> {
             return Ok(());
         }
 
-        let next = self.next_graph(&previous, tip.height).await?;
+        let (next, disagreement) = self.next_graph(&previous, tip.height).await?;
+        let next = self.seed_side_tips(next).await?;
         #[cfg(any(
             feature = "transactions",
             feature = "tree_state",
@@ -481,7 +462,10 @@ impl<S: ChainHeadBlockSource> ChainHeadService<S> {
             }
             None => next,
         };
-        self.mark_fresh();
+        match disagreement {
+            Some(disagreement) => self.mark_diverged(disagreement),
+            None => self.mark_fresh(),
+        }
         self.publish_snapshot(&previous, next);
         Ok(())
     }
@@ -490,6 +474,23 @@ impl<S: ChainHeadBlockSource> ChainHeadService<S> {
     /// swap, so no reader can observe a fresh snapshot under a stale `Syncing`.
     fn mark_fresh(&self) {
         record(&self.status, TickOutcome::Advanced);
+    }
+
+    /// Advanced onto a branch heavier than the validator's tip: `Ready` but
+    /// `Recoverable`, naming both tips, and counted.
+    fn mark_diverged(&self, disagreement: TipDisagreement) {
+        metrics::counter!(crate::metric_names::CHAIN_HEAD_TIP_DISAGREEMENTS_TOTAL).increment(1);
+        self.status.degraded_unless_closing(
+            Lifecycle::Ready,
+            format!(
+                "the validator's tip {} at {} is lighter than the retained branch at {} \
+                 ({}); following the heavier",
+                disagreement.validator.hash,
+                disagreement.validator.height,
+                disagreement.heavier.height,
+                disagreement.heavier.hash,
+            ),
+        );
     }
 
     /// Builds the graph as it should be at `chain_height`.
@@ -502,7 +503,7 @@ impl<S: ChainHeadBlockSource> ChainHeadService<S> {
         &self,
         previous: &PersistentSnapshot,
         chain_height: Height,
-    ) -> Result<PersistentSnapshot, ChainHeadAdvanceError> {
+    ) -> Result<(PersistentSnapshot, Option<TipDisagreement>), ChainHeadAdvanceError> {
         // Anchor floor: the chain head must never start more than the
         // configured depth below the chain tip. Previously this took the
         // greater of the finalised database's height and this floor; with the
@@ -591,23 +592,78 @@ impl<S: ChainHeadBlockSource> ChainHeadService<S> {
         // the blocks that crossed the seam this iteration. Trimming first would
         // remove them before they could be handed off.
 
-        // Check the source's tip against retained work; `tip_selection`
-        // decides what a disagreement does.
-        let heaviest = graph.heaviest_block();
-        if heaviest.hash() != graph.best_tip().hash {
-            match self.tip_selection {
-                TipSelection::Source => warn!(
-                    tip = ?graph.best_tip(),
-                    heavier = ?heaviest.reference,
-                    "a retained block outweighs the source's tip; following the source"
-                ),
-                TipSelection::HeaviestRetained => {
-                    let heaviest = heaviest.clone();
-                    self.handle_reorg(&mut graph, &heaviest).await?;
-                }
-            }
+        // The heaviest retained chain is the best chain; on equal work the
+        // validator's tip stays (the trunk wins ties).
+        let validator_tip = graph.best_tip();
+        let heaviest = graph.heaviest_block().clone();
+        if heaviest.hash() == validator_tip.hash {
+            return Ok((graph, None));
         }
+        warn!(
+            validator = ?validator_tip,
+            heavier = ?heaviest.reference,
+            "a retained branch outweighs the validator's tip; following the heavier"
+        );
+        self.handle_reorg(&mut graph, &heaviest).await?;
+        Ok((
+            graph,
+            Some(TipDisagreement {
+                validator: validator_tip,
+                heavier: heaviest.reference,
+            }),
+        ))
+    }
 
+    /// Once, after the first advance: lays down each fully validated
+    /// side-chain tip the validator lists that forks inside the window, as a
+    /// retained branch. A validator that does not list tips (zebrad) is not
+    /// asked again; a transport failure retries with the next advance.
+    async fn seed_side_tips(
+        &self,
+        mut graph: PersistentSnapshot,
+    ) -> Result<PersistentSnapshot, ChainHeadAdvanceError> {
+        use std::sync::atomic::Ordering;
+        use zaino_primitives::types::rpc::ChainTipStatus;
+
+        if self.seeded.load(Ordering::Acquire) {
+            return Ok(graph);
+        }
+        let tips = match self.source.get_chain_tips().await {
+            Ok(tips) => tips,
+            Err(zaino_source::QueryError::Domain(zaino_source::GetChainTipsError::Unsupported)) => {
+                self.seeded.store(true, Ordering::Release);
+                return Ok(graph);
+            }
+            Err(error) => return Err(advance_error(error, "chain_tips")),
+        };
+        let floor = u32::from(graph.lowest_retained_height());
+        let best = graph
+            .block_by_hash(&graph.best_tip().hash)
+            .cloned()
+            .ok_or_else(|| {
+                ChainHeadAdvanceError::ReorgFailure("the best tip is not retained".to_string())
+            })?;
+        for tip in tips {
+            let forks_in_window = u32::from(tip.height)
+                .checked_sub(tip.branch_len)
+                .is_some_and(|fork| fork >= floor);
+            if tip.status != ChainTipStatus::ValidFork
+                || !forks_in_window
+                || graph.block_by_hash(&tip.hash).is_some()
+            {
+                continue;
+            }
+            let block = self.block_at_hash(tip.hash).await?.ok_or_else(|| {
+                ChainHeadAdvanceError::InconsistentSource(format!(
+                    "validator lists the tip {} but does not serve it",
+                    tip.hash
+                ))
+            })?;
+            // onto the side branch, then back: it stays as a retained branch
+            self.handle_reorg(&mut graph, &block).await?;
+            self.handle_reorg(&mut graph, &best).await?;
+        }
+        self.seeded.store(true, Ordering::Release);
         Ok(graph)
     }
 
@@ -910,7 +966,6 @@ pub struct ChainHeadBuilder<S: ChainHeadBlockSource> {
     source: Arc<S>,
     config: ChainHeadConfig,
     cancel: CancellationToken,
-    tip_selection: TipSelection,
     #[cfg(any(
         feature = "transactions",
         feature = "tree_state",
