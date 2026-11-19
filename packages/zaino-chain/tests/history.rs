@@ -73,6 +73,6 @@ async fn without_both_halves_the_history_tree_is_not_serviceable() {
             .snapshot()
             .history_root(height(1))
             .await,
-        Err(ChainViewError::NotServiceable(_))
+        Err(ChainViewError::NotBuilt(_))
     ));
 }

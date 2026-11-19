@@ -6,7 +6,7 @@ mod common;
 
 use common::{chain, height, rig, TIP};
 use zaino_chain::{AddressRead as _, ChainView as _, ChainViewConfig, ChainViewError};
-use zaino_primitives::types::{Network, TransparentAddress};
+use zaino_primitives::types::{Height, Network, TransparentAddress};
 use zaino_source::UtxoPage;
 use zaino_source_mock::{address_of, MockChain, MINER_SCRIPT, RECIPIENT_SCRIPT};
 
@@ -27,6 +27,10 @@ const ADDRESS_PORTS: [&str; 4] = [
 
 fn rejected<T>(result: &Result<T, ChainViewError>) -> bool {
     matches!(result, Err(ChainViewError::Rejected(_)))
+}
+
+fn invalid<T>(result: &Result<T, ChainViewError>, start: Height, end: Height) -> bool {
+    matches!(result, Err(ChainViewError::InvalidRange { start: s, end: e }) if *s == start && *e == end)
 }
 
 fn asked(source: &MockChain) -> bool {
@@ -147,17 +151,46 @@ async fn address_reads_refuse_as_the_validator_does() {
     let foreign = vec![address(&MINER_SCRIPT, Network::Mainnet)];
     let (inverted, past) = ((height(10), height(5)), (height(1), height(TIP + 1)));
     for (start, end) in [inverted, past] {
-        assert_eq!(
-            rejected(&snapshot.address_txids(&miner, start, end).await),
-            rejected(&expected.address_txids(&miner, start, end).await),
-            "txids over {start}..={end}"
+        assert!(
+            invalid(
+                &snapshot.address_txids(&miner, start, end).await,
+                start,
+                end
+            ),
+            "local txids over {start}..={end}"
         );
-        assert_eq!(
-            rejected(&snapshot.address_deltas(&miner, start, end).await),
-            rejected(&expected.address_deltas(&miner, start, end).await),
-            "deltas over {start}..={end}"
+        assert!(
+            invalid(
+                &expected.address_txids(&miner, start, end).await,
+                start,
+                end
+            ),
+            "validator txids over {start}..={end}"
         );
     }
+    let (start, end) = inverted;
+    assert!(
+        invalid(
+            &snapshot.address_deltas(&miner, start, end).await,
+            start,
+            end
+        ),
+        "local deltas over {start}..={end}"
+    );
+    assert!(
+        invalid(
+            &expected.address_deltas(&miner, start, end).await,
+            start,
+            end
+        ),
+        "validator deltas over {start}..={end}"
+    );
+    let (start, end) = past;
+    assert_eq!(
+        snapshot.address_deltas(&miner, start, end).await.is_ok(),
+        expected.address_deltas(&miner, start, end).await.is_ok(),
+        "deltas over {start}..={end}"
+    );
     assert!(rejected(&snapshot.address_balance(&foreign).await));
     assert!(rejected(&expected.address_balance(&foreign).await));
     assert!(rejected(

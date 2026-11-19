@@ -284,6 +284,18 @@ impl ChainIndexError {
         }
     }
 
+    /// An error of `kind` keeping `error` as its source.
+    pub(crate) fn with_source(
+        kind: ChainIndexErrorKind,
+        error: impl std::error::Error + Send + Sync + 'static,
+    ) -> Self {
+        Self {
+            kind,
+            message: error.to_string(),
+            source: Some(Box::new(error)),
+        }
+    }
+
     /// Constructs an `Unavailable`-kind error: the request was fine, Zaino
     /// simply cannot serve it from its current view. Tells the caller to retry.
     pub(crate) fn unavailable(message: impl Into<String>) -> Self {
@@ -466,11 +478,24 @@ impl From<zaino_service::ServiceError> for ChainIndexError {
                     zaino_source::NonDomainError,
                 >::Domain(error)))
             }
-            Error::Stale(message) => ChainIndexError::unavailable(message),
-            not_served @ Error::NotServed { .. } => {
-                ChainIndexError::unavailable(not_served.to_string())
+            error @ Error::NotServed { .. } => {
+                ChainIndexError::with_source(ChainIndexErrorKind::Unimplemented, error)
             }
-            Error::Inconsistent(message) => ChainIndexError::internal(message),
+            error @ Error::InvalidRange { .. } => {
+                ChainIndexError::with_source(ChainIndexErrorKind::InvalidArgument, error)
+            }
+            error @ (Error::MempoolIncoherent
+            | Error::MempoolStreamLagged
+            | Error::SyncStopped
+            | Error::ComponentStopped) => {
+                ChainIndexError::with_source(ChainIndexErrorKind::Unavailable, error)
+            }
+            error @ (Error::MissingBlock(_)
+            | Error::MissingPrevout { .. }
+            | Error::AmountOutOfRange { .. }
+            | Error::HeightOverflow(_)
+            | Error::SpendCountMismatch { .. }
+            | Error::MinedAndInMempool(_)) => ChainIndexError::internal_from(error),
         }
     }
 }
@@ -493,7 +518,12 @@ impl From<zaino_chain::ChainViewError> for ChainIndexError {
                     ),
                 )
             }
-            Error::NotServiceable(_) | Error::Transient(_) => ChainIndexErrorKind::Unavailable,
+            // the request's own range: the code the validator path serves
+            Error::InvalidRange { .. } => return ChainIndexError::validator_rejected(&value),
+            Error::NotServed(_) | Error::NotBuilt(_) | Error::ValidatorDisabled(_) => {
+                ChainIndexErrorKind::Unimplemented
+            }
+            Error::Building { .. } | Error::Transient(_) => ChainIndexErrorKind::Unavailable,
             Error::Fatal(_) => ChainIndexErrorKind::InternalServerError,
             ref other => {
                 return ChainIndexError::internal(format!("chain view read failed: {other}"))
@@ -615,7 +645,8 @@ mod tests {
         );
     }
 
-    /// Not serviceable and transient reads are retryable; a fatal one is a
+    /// Building and transient reads are retryable; a capability not served,
+    /// not built or without its validator is unimplemented; a fatal one is a
     /// server fault that keeps its cause.
     #[test]
     fn chain_view_failures_map_to_their_kinds() {
@@ -623,7 +654,10 @@ mod tests {
         use zaino_chain::ChainViewError;
 
         for error in [
-            ChainViewError::NotServiceable("hole"),
+            ChainViewError::Building {
+                what: "spends",
+                store_tip: Some(h(5)),
+            },
             ChainViewError::Transient("between states".into()),
         ] {
             assert_eq!(
@@ -631,10 +665,80 @@ mod tests {
                 ChainIndexErrorKind::Unavailable
             );
         }
+        for error in [
+            ChainViewError::NotServed(zaino_chain::ChainCapability::TxOutSet),
+            ChainViewError::NotBuilt("the txout set"),
+            ChainViewError::ValidatorDisabled("raw blocks"),
+        ] {
+            assert_eq!(
+                ChainIndexError::from(error).kind(),
+                ChainIndexErrorKind::Unimplemented
+            );
+        }
+        let range = ChainIndexError::from(ChainViewError::InvalidRange {
+            start: h(9),
+            end: h(2),
+        });
+        assert_eq!(range.kind(), ChainIndexErrorKind::InvalidArgument);
+        assert_eq!(
+            legacy_code(&range),
+            Some(zebra_rpc::server::error::LegacyCode::InvalidParameter as i64)
+        );
 
         let fatal = ChainIndexError::from(ChainViewError::Fatal("backend".into()));
         assert_eq!(fatal.kind(), ChainIndexErrorKind::InternalServerError);
         assert!(fatal.source().is_some());
+    }
+
+    /// A capability not served is unimplemented, a stopped component or an
+    /// incoherent mempool retryable, an inconsistency internal; each keeps
+    /// the service error as its cause.
+    #[test]
+    fn service_failures_map_to_their_kinds_and_keep_their_cause() {
+        use std::error::Error as _;
+        use zaino_service::ServiceError;
+
+        let cases = [
+            (
+                ServiceError::NotServed {
+                    capability: zaino_service::Capability::Chain(
+                        zaino_chain::ChainCapability::TxOutSet,
+                    ),
+                    index: None,
+                },
+                ChainIndexErrorKind::Unimplemented,
+            ),
+            (
+                ServiceError::InvalidRange {
+                    start: h(9),
+                    end: h(2),
+                },
+                ChainIndexErrorKind::InvalidArgument,
+            ),
+            (
+                ServiceError::MempoolIncoherent,
+                ChainIndexErrorKind::Unavailable,
+            ),
+            (ServiceError::SyncStopped, ChainIndexErrorKind::Unavailable),
+            (
+                ServiceError::MissingBlock(h(3)),
+                ChainIndexErrorKind::InternalServerError,
+            ),
+            (
+                ServiceError::HeightOverflow(h(3)),
+                ChainIndexErrorKind::InternalServerError,
+            ),
+        ];
+        for (error, kind) in cases {
+            let mapped = ChainIndexError::from(error);
+            assert_eq!(mapped.kind(), kind, "{mapped}");
+            assert!(
+                mapped
+                    .source()
+                    .is_some_and(|source| source.is::<ServiceError>()),
+                "{mapped} lost its cause"
+            );
+        }
     }
 
     /// An unreachable validator keeps its transport error in the chain.

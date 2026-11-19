@@ -37,9 +37,10 @@ impl<S: ServiceSource> ServiceSnapshot<S> {
             .ok_or_else(|| {
                 ServiceError::InvalidParameter(format!("block height {index} out of range"))
             })?;
-        self.chain().block_hash(height).await?.ok_or_else(|| {
-            ServiceError::Inconsistent(format!("no block at {height} below the tip"))
-        })
+        self.chain()
+            .block_hash(height)
+            .await?
+            .ok_or(ServiceError::MissingBlock(height))
     }
 
     /// Every best-chain block whose own time lies in `[low, high)`, by time
@@ -84,5 +85,5 @@ impl<S: ServiceSource> ServiceSnapshot<S> {
 }
 
 fn missing_header(height: Height) -> ServiceError {
-    ServiceError::Inconsistent(format!("no header at {height} below the tip"))
+    ServiceError::MissingBlock(height)
 }

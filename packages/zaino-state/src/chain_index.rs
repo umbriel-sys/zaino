@@ -525,11 +525,11 @@ pub trait ChainIndexRpcExt: ChainIndex {
 
     /// Returns the full `gettxoutsetinfo` response for the whole chain at the tip.
     ///
-    /// Returns `None` while the finalised state and the chain head do not yet
-    /// meet. The wire layer renders that as the legacy full node's empty object.
+    /// Refused while the set is building (retryable) and where the deployment
+    /// does not build it.
     fn get_tx_out_set_info(
         &self,
-    ) -> impl std::future::Future<Output = Result<Option<TxOutSetInfo>, Self::Error>>;
+    ) -> impl std::future::Future<Output = Result<TxOutSetInfo, Self::Error>>;
 }
 
 /// The shielded pools this crate names.

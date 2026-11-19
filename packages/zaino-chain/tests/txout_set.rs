@@ -5,7 +5,7 @@
 
 mod common;
 
-use common::{chain, rig, TIP};
+use common::{chain, height, rig, TIP};
 use zaino_chain::{ChainViewError, TxOutSetRead as _};
 use zaino_chain_store::{ChainStoreService as _, TxOutSetIndex as _};
 
@@ -61,6 +61,6 @@ async fn a_hole_between_store_and_window_is_not_serviceable() {
         .build();
     assert!(matches!(
         view.snapshot().txout_set().await,
-        Err(ChainViewError::NotServiceable(_))
+        Err(ChainViewError::Building { store_tip: Some(top), .. }) if top == height(10)
     ));
 }

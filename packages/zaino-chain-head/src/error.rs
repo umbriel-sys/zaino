@@ -26,12 +26,20 @@ pub enum ChainHeadError {
         /// The requested end.
         end: Height,
     },
-    /// The capability's extension is not built on this snapshot: not enabled,
-    /// or failed and not yet rebuilt. The consumer falls back.
+    /// The capability's extension is not built on this snapshot: not
+    /// enabled. The consumer falls back.
     #[error("the chain head does not build {capability}")]
     NotBuilt {
         /// The capability asked for.
         capability: &'static str,
+    },
+    /// The capability's extension failed and is not yet rebuilt.
+    #[error("the chain head's {capability} failed: {reason}")]
+    Failed {
+        /// The capability asked for.
+        capability: &'static str,
+        /// Why it failed.
+        reason: String,
     },
     /// The capability is built but reading it failed: a fault, not a reason
     /// to fall back.

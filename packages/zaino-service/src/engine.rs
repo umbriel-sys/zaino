@@ -223,7 +223,7 @@ impl<S: ServiceSource> Service<S> {
             .map(|status| status.lifecycle == Lifecycle::Ready);
         match caught_up {
             Ok(true) => Ok(()),
-            Ok(false) | Err(_) => Err(ServiceError::Stale("the store's sync stopped")),
+            Ok(false) | Err(_) => Err(ServiceError::SyncStopped),
         }
     }
 

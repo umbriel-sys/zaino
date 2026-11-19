@@ -163,7 +163,7 @@ async fn an_older_snapshot_places_the_mempool_elsewhere() {
     );
     assert!(matches!(
         old.transaction(next).await,
-        Err(ServiceError::Stale(_))
+        Err(ServiceError::MempoolIncoherent)
     ));
     let fresh = service.snapshot();
     assert_eq!(

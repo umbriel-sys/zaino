@@ -200,9 +200,12 @@ where
 fn submission_rejection(error: &NonDomainError) -> Option<zaino_source::SendRawTransactionError> {
     use zaino_source::SendRawTransactionError as Rejection;
 
+    let message = error.message.clone();
     match error.mode {
-        FailureMode::RpcError(-22) => Some(Rejection::Malformed(error.message.clone())),
-        FailureMode::RpcError(-27..=-25) => Some(Rejection::Rejected(error.message.clone())),
+        FailureMode::RpcError(-22) => Some(Rejection::Malformed(message)),
+        FailureMode::RpcError(-25) => Some(Rejection::Rejected(message)),
+        FailureMode::RpcError(-26) => Some(Rejection::RejectedByPolicy(message)),
+        FailureMode::RpcError(-27) => Some(Rejection::AlreadyInChain(message)),
         _ => None,
     }
 }
@@ -1378,13 +1381,14 @@ mod classification_tests {
             Some(SendRawTransactionError::Malformed(_))
         ));
 
-        for code in [-25, -26, -27] {
-            assert!(
-                matches!(
-                    submission_rejection(&rpc(code, "rejected").into()),
-                    Some(SendRawTransactionError::Rejected(_))
-                ),
-                "code {code} is the validator declining the transaction"
+        for code in [-22, -25, -26, -27] {
+            let rejection = submission_rejection(&rpc(code, "rejected").into());
+            assert_eq!(
+                rejection
+                    .as_ref()
+                    .map(|rejection| (rejection.legacy_code(), rejection.message())),
+                Some((code, "rejected")),
+                "code {code} keeps its code and the validator's message"
             );
         }
 

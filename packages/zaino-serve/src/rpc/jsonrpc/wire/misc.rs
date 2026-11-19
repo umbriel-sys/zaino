@@ -192,26 +192,20 @@ impl TxOutWire {
 pub enum TxOutSetInfoWire {
     /// UTXO set statistics.
     Info(TxOutSetInfoStats),
-    /// An empty object. the legacy full node answers this way when it cannot collect the
-    /// statistics; Zaino does the same while its accumulator is still syncing.
-    Empty(EmptyTxOutSetInfo),
 }
 
 impl TxOutSetInfoWire {
-    /// Renders UTXO set statistics, or the empty object if there are none.
-    pub fn from_domain(info: Option<TxOutSetInfo>) -> Self {
-        match info {
-            None => Self::Empty(EmptyTxOutSetInfo {}),
-            Some(info) => Self::Info(TxOutSetInfoStats {
-                height: u64::from(u32::from(info.height)),
-                best_block: display_hex(<[u8; 32]>::from(info.best_block)),
-                transactions: info.transactions,
-                txouts: info.tx_outs,
-                bytes_serialized: info.bytes_serialized,
-                hash_serialized: info.hash_serialized,
-                total_amount: zats_to_zec(info.total_amount),
-            }),
-        }
+    /// Renders UTXO set statistics.
+    pub fn from_domain(info: TxOutSetInfo) -> Self {
+        Self::Info(TxOutSetInfoStats {
+            height: u64::from(u32::from(info.height)),
+            best_block: display_hex(<[u8; 32]>::from(info.best_block)),
+            transactions: info.transactions,
+            txouts: info.tx_outs,
+            bytes_serialized: info.bytes_serialized,
+            hash_serialized: info.hash_serialized,
+            total_amount: zats_to_zec(info.total_amount),
+        })
     }
 }
 
@@ -234,10 +228,6 @@ pub struct TxOutSetInfoStats {
     /// Total value held, in ZEC.
     pub total_amount: f64,
 }
-
-/// The empty `gettxoutsetinfo` answer.
-#[derive(Clone, Debug, PartialEq, Eq, Deserialize, Serialize)]
-pub struct EmptyTxOutSetInfo {}
 
 #[cfg(test)]
 mod tests {
@@ -354,16 +344,9 @@ mod tests {
         }
     }
 
-    /// the legacy full node's empty answer is `{}`, not `null` and not zeroed statistics.
-    #[test]
-    fn tx_out_set_info_empty_is_an_empty_object() {
-        let wire = TxOutSetInfoWire::from_domain(None);
-        assert_eq!(serde_json::to_value(&wire).unwrap(), json!({}));
-    }
-
     #[test]
     fn tx_out_set_info_shape() {
-        let wire = TxOutSetInfoWire::from_domain(Some(TxOutSetInfo {
+        let wire = TxOutSetInfoWire::from_domain(TxOutSetInfo {
             height: Height::try_from(42).unwrap(),
             best_block: [0xbb; 32].into(),
             transactions: 5,
@@ -371,7 +354,7 @@ mod tests {
             bytes_serialized: 585,
             hash_serialized: "cc".repeat(32),
             total_amount: zats(250_000_000),
-        }));
+        });
 
         assert_eq!(
             serde_json::to_value(&wire).unwrap(),

@@ -82,7 +82,8 @@ impl<T> Slot<T> {
     }
 }
 
-/// The extension built in `slot`, else `NotBuilt` for `capability`.
+/// The extension built in `slot`: `NotBuilt` when absent, `Failed` when it
+/// failed.
 #[cfg(any(
     feature = "txout_set",
     feature = "address_history",
@@ -94,9 +95,14 @@ pub(crate) fn built<'a, T>(
     slot: &'a Option<Slot<T>>,
     capability: &'static str,
 ) -> Result<&'a T, zaino_chain_head::ChainHeadError> {
-    slot.as_ref()
-        .and_then(Slot::built)
-        .ok_or(zaino_chain_head::ChainHeadError::NotBuilt { capability })
+    match slot {
+        Some(Slot::Built(built)) => Ok(built),
+        Some(Slot::Failed(failure)) => Err(zaino_chain_head::ChainHeadError::Failed {
+            capability,
+            reason: failure.0.clone(),
+        }),
+        None => Err(zaino_chain_head::ChainHeadError::NotBuilt { capability }),
+    }
 }
 
 /// A built extension's failed read, as the head reports it.

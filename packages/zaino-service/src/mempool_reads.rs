@@ -92,9 +92,7 @@ impl<S: ServiceSource> ServiceSnapshot<S> {
             None if self.mempool.contains_txid(&txid)
                 && self.chain().transaction_locations(txid).await?.is_empty() =>
             {
-                return Err(ServiceError::Stale(
-                    "the mempool is not coherent with this snapshot",
-                ));
+                return Err(ServiceError::MempoolIncoherent);
             }
             None => {}
         }
@@ -141,9 +139,7 @@ impl<S: ServiceSource> ServiceSnapshot<S> {
         let coherent = self.coherence.coherent_snapshot();
         if self.coherent_epoch(&coherent).is_some() {
             if status.best.is_some() {
-                return Err(ServiceError::Inconsistent(
-                    "the best chain and a coherent mempool both hold the transaction".to_owned(),
-                ));
+                return Err(ServiceError::MinedAndInMempool(txid));
             }
             status.best = Some(Placement::Mempool(Some(successor(self.tip().height)?)));
         } else {
@@ -195,13 +191,11 @@ pub(crate) fn coherent_stream(
         }
     }
     let stream = coherence.stream_transactions_until_tip_change(epoch)?;
-    Some(stream.map(|item| {
-        item.map_err(|_| ServiceError::Stale("the mempool stream lagged and ended early"))
-    }))
+    Some(stream.map(|item| item.map_err(|_| ServiceError::MempoolStreamLagged)))
 }
 
 fn successor(height: Height) -> Result<Height> {
     height
         .checked_add(1)
-        .ok_or_else(|| ServiceError::Inconsistent(format!("no height above {height}")))
+        .ok_or(ServiceError::HeightOverflow(height))
 }

@@ -391,7 +391,7 @@ async fn a_hole_is_unserviceable_without_the_validator() {
 
     assert!(matches!(
         snapshot.block_hash(height(IN_HOLE)).await,
-        Err(ChainViewError::NotServiceable(_))
+        Err(ChainViewError::ValidatorDisabled(_))
     ));
     assert!(snapshot.block_hash(height(50)).await.is_ok());
     assert!(snapshot.block_hash(height(IN_WINDOW)).await.is_ok());
@@ -400,7 +400,10 @@ async fn a_hole_is_unserviceable_without_the_validator() {
         .stream_compact(height(50), height(IN_WINDOW), PoolFilter::all())
         .try_collect::<Vec<_>>()
         .await;
-    assert!(matches!(streamed, Err(ChainViewError::NotServiceable(_))));
+    assert!(matches!(
+        streamed,
+        Err(ChainViewError::ValidatorDisabled(_))
+    ));
 }
 
 #[tokio::test]
@@ -1040,7 +1043,7 @@ async fn a_full_chain_spend_search_refuses_to_span_a_hole() {
         snapshot
             .outpoint_spenders(&[unspent], ChainScope::FullChain)
             .await,
-        Err(ChainViewError::NotServiceable(_))
+        Err(ChainViewError::Building { .. })
     ));
     assert_eq!(
         snapshot
@@ -1178,7 +1181,7 @@ async fn previous_outputs_refuse_to_span_a_hole() {
                 index: 0,
             }])
             .await,
-        Err(ChainViewError::NotServiceable(_))
+        Err(ChainViewError::Building { .. })
     ));
 }
 

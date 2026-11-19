@@ -141,7 +141,7 @@ impl<S: ServiceSource> ServiceSnapshot<S> {
     /// block and its prevouts where Zaino holds them, else the validator's.
     pub async fn block_deltas(&self, hash: BlockHash) -> Result<Option<BlockDeltas>> {
         match self.local_block_deltas(hash).await {
-            Err(ServiceError::Chain(ChainViewError::NotServiceable(_))) => {}
+            Err(ServiceError::Chain(error)) if not_local(&error) => {}
             answer => return answer,
         }
         found(self.source.get_block_deltas(hash).await, |error| {
@@ -176,10 +176,13 @@ impl<S: ServiceSource> ServiceSnapshot<S> {
                 let output = match prevouts.next() {
                     Some((_, Some(output))) => output,
                     _ => {
-                        return Err(ServiceError::Inconsistent(format!(
-                            "the input {}:{} of {} spends no output Zaino holds",
-                            input.prev_txid, input.prev_index, tx.txid
-                        )))
+                        return Err(ServiceError::MissingPrevout {
+                            outpoint: Outpoint {
+                                txid: input.prev_txid,
+                                index: input.prev_index,
+                            },
+                            spender: tx.txid,
+                        })
                     }
                 };
                 let Some(address) = address(output.script.as_bytes()) else {
@@ -258,7 +261,14 @@ impl<S: ServiceSource> ServiceSnapshot<S> {
                 }))
             }
             Ok([SpendStatus::Unspent]) => return Ok(None),
-            Ok(_) | Err(ChainViewError::NotServiceable(_)) => {}
+            Ok([SpendStatus::SpentSpenderUnknown]) => {}
+            Ok(statuses) => {
+                return Err(ServiceError::SpendCountMismatch {
+                    asked: 1,
+                    answered: statuses.len(),
+                })
+            }
+            Err(error) if not_local(error) => {}
             Err(_) => return local.map(|_| None).map_err(ServiceError::from),
         }
         match self.source.get_spent_info(outpoint).await {
@@ -279,7 +289,7 @@ impl<S: ServiceSource> ServiceSnapshot<S> {
     pub async fn txout_set_info(&self) -> Result<TxOutSetInfo> {
         let set = match self.chain.txout_set().await {
             Ok(set) => set,
-            Err(ChainViewError::NotServiceable(_)) => {
+            Err(ChainViewError::NotServed(_) | ChainViewError::NotBuilt(_)) => {
                 return Err(ServiceError::NotServed {
                     capability: Capability::Chain(zaino_chain::ChainCapability::TxOutSet),
                     index: Some(IndexId::TxOutSet),
@@ -295,8 +305,11 @@ impl<S: ServiceSource> ServiceSnapshot<S> {
             tx_outs: set.transaction_outputs,
             bytes_serialized: set.bytes_serialized,
             hash_serialized: hex::encode(set.hash_serialized),
-            total_amount: Zatoshis::new(set.total_zatoshis).map_err(|error| {
-                ServiceError::Inconsistent(format!("the txout set's total: {error}"))
+            total_amount: Zatoshis::new(set.total_zatoshis).map_err(|_| {
+                ServiceError::AmountOutOfRange {
+                    what: "the txout set's total",
+                    zatoshis: set.total_zatoshis,
+                }
             })?,
         })
     }
@@ -362,9 +375,7 @@ impl<S: ServiceSource> ServiceSnapshot<S> {
     async fn block_at(&self, height: Height) -> Result<BlockRef> {
         match self.chain.block_hash(height).await? {
             Some(hash) => Ok(BlockRef { hash, height }),
-            None => Err(ServiceError::Inconsistent(format!(
-                "no block at {height}, at or below the tip"
-            ))),
+            None => Err(ServiceError::MissingBlock(height)),
         }
     }
 
@@ -475,16 +486,13 @@ impl<S: ServiceSource> ServiceSnapshot<S> {
                 .chain
                 .block_header(BlockId::Height(current))
                 .await?
-                .ok_or_else(|| {
-                    ServiceError::Inconsistent(format!("no header at {current} below the tip"))
-                })?;
+                .ok_or(ServiceError::MissingBlock(current))?;
             times.push(header.time);
             at = current.checked_sub(1);
         }
         // oldest first, as the window is taken
         times.reverse();
-        zaino_consensus::median_time_past(&times)
-            .ok_or_else(|| ServiceError::Inconsistent(format!("no block times at {height}")))
+        zaino_consensus::median_time_past(&times).ok_or(ServiceError::MissingBlock(height))
     }
 
     fn difficulty(&self, bits: u32) -> Difficulty {
@@ -507,7 +515,22 @@ fn debit(value: Zatoshis) -> Result<SignedZatoshis> {
         .ok()
         .and_then(i64::checked_neg)
         .and_then(|value| SignedZatoshis::try_new(value).ok())
-        .ok_or_else(|| ServiceError::Inconsistent(format!("a prevout of {value:?}")))
+        .ok_or(ServiceError::AmountOutOfRange {
+            what: "a spent prevout",
+            zatoshis: value.as_u64(),
+        })
+}
+
+/// A chain read refused because it is not answered locally here: the
+/// validator may answer it instead.
+fn not_local(error: &ChainViewError) -> bool {
+    matches!(
+        error,
+        ChainViewError::NotServed(_)
+            | ChainViewError::NotBuilt(_)
+            | ChainViewError::Building { .. }
+            | ChainViewError::ValidatorDisabled(_)
+    )
 }
 
 /// The validator's answer; a refusal `absent` names is a miss.

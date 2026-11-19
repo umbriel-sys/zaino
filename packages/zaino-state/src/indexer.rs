@@ -593,7 +593,7 @@ pub trait ZcashIndexer: Send + Sync + 'static {
     /// tags: blockchain
     fn get_tx_out_set_info(
         &self,
-    ) -> impl SendFut<Result<Option<zaino_primitives::types::TxOutSetInfo>, Self::Error>>;
+    ) -> impl SendFut<Result<zaino_primitives::types::TxOutSetInfo, Self::Error>>;
 
     /// Returns the estimated network solutions per second based on the last n blocks.
     ///

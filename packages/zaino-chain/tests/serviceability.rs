@@ -88,7 +88,10 @@ async fn a_withheld_capability_is_refused_by_the_read() {
         .outpoint_spenders(&[an_outpoint()], ChainScope::FullChain)
         .await;
     assert!(
-        matches!(refused, Err(ChainViewError::NotServiceable(_))),
+        matches!(
+            refused,
+            Err(ChainViewError::NotServed(ChainCapability::SpendStatus))
+        ),
         "a withheld read must refuse, not answer: {refused:?}",
     );
 }
@@ -119,7 +122,7 @@ async fn previous_outputs_follow_the_same_rule() {
     );
     assert!(matches!(
         withheld.snapshot().previous_outputs(&[an_outpoint()]).await,
-        Err(ChainViewError::NotServiceable(_)),
+        Err(ChainViewError::NotServed(ChainCapability::Prevouts)),
     ));
     let offered = rig.builder().serving_prevouts().build();
     assert_ne!(
@@ -139,7 +142,7 @@ async fn the_txout_set_follows_the_same_rule() {
     let rig = steady().await;
     assert!(matches!(
         rig.builder().build().snapshot().txout_set().await,
-        Err(ChainViewError::NotServiceable(_)),
+        Err(ChainViewError::NotServed(ChainCapability::TxOutSet)),
     ));
     assert!(rig
         .builder()
@@ -173,7 +176,7 @@ async fn the_txout_set_is_advertised_where_the_head_builds_it() {
     );
     assert!(matches!(
         plain.view().snapshot().txout_set().await,
-        Err(ChainViewError::NotServiceable(_))
+        Err(ChainViewError::NotBuilt(_))
     ));
 }
 

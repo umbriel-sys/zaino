@@ -1084,11 +1084,11 @@ async fn a_failing_port_darkens_one_extension_and_the_next_tick_rebuilds_it() {
         ],
         "the three seeded below the root"
     );
-    let not_built =
-        |result: Result<(), ChainHeadError>| matches!(result, Err(ChainHeadError::NotBuilt { .. }));
-    assert!(not_built(dark.txout_set().map(drop)));
-    assert!(not_built(dark.history_root(height(tip)).map(drop)));
-    assert!(not_built(
+    let failed =
+        |result: Result<(), ChainHeadError>| matches!(result, Err(ChainHeadError::Failed { .. }));
+    assert!(failed(dark.txout_set().map(drop)));
+    assert!(failed(dark.history_root(height(tip)).map(drop)));
+    assert!(failed(
         dark.pool_frontier(ShieldedPool::Sapling, height(tip))
             .map(drop)
     ));

@@ -273,11 +273,11 @@ impl<
         &self,
         raw_transaction_hex: String,
     ) -> Result<zaino_primitives::types::TransactionId, Self::Error> {
-        // Rejected locally before the validator round trip, with the legacy
-        // `InvalidParameter` code the validator would have given.
+        // Rejected locally before the validator round trip, with zebrad's
+        // `Deserialization` code (methods.rs:1519-1522).
         validate_raw_transaction_hex(&raw_transaction_hex).map_err(|error| {
             ChainIndexError::internal_from(crate::error::LegacyRpcError::new(
-                zebra_rpc::server::error::LegacyCode::InvalidParameter,
+                zebra_rpc::server::error::LegacyCode::Deserialization,
                 error.to_string(),
             ))
         })?;
@@ -321,13 +321,9 @@ impl<
         }
     }
 
-    async fn get_tx_out_set_info(&self) -> Result<Option<TxOutSetInfo>, Self::Error> {
+    async fn get_tx_out_set_info(&self) -> Result<TxOutSetInfo, Self::Error> {
         let snapshot = self.snapshot_nonfinalized_state();
-        match self.reads(&snapshot).txout_set_info().await {
-            Ok(info) => Ok(Some(info)),
-            Err(zaino_service::ServiceError::NotServed { .. }) => Ok(None),
-            Err(error) => Err(error.into()),
-        }
+        Ok(self.reads(&snapshot).txout_set_info().await?)
     }
 }
 

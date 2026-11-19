@@ -204,6 +204,24 @@ where
     }
 }
 
+/// [`err`], for a submission: a rejection keeps the validator's own code and
+/// message.
+fn send_err<N>(error: QueryError<zaino_source::SendRawTransactionError, N>) -> BlockchainSourceError
+where
+    N: std::error::Error + Send + Sync + 'static,
+{
+    match error {
+        QueryError::Domain(rejection) => BlockchainSourceError::unrecoverable_context(
+            "validator rejected the transaction",
+            crate::error::LegacyRpcError {
+                code: rejection.legacy_code(),
+                message: rejection.message().to_owned(),
+            },
+        ),
+        fetch @ QueryError::NonDomain(_) => err(fetch),
+    }
+}
+
 /// Flatten a `getspentinfo` port error, preserving the legacy full node's own error code.
 ///
 /// The generic [`err`] reports every domain rejection as `InvalidParameter`
@@ -962,7 +980,7 @@ impl<V: ChainIndexSourcePorts> BlockchainSource for ValidatorSource<V> {
         self.validator
             .send_raw_transaction(bytes)
             .await
-            .map_err(err)
+            .map_err(send_err)
     }
 
     async fn get_tx_out(

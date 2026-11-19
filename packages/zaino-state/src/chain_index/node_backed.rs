@@ -241,9 +241,7 @@ impl<
                 .all()
                 .any(|status| !status.is_live() || status.lifecycle == Lifecycle::Closing)
             {
-                return Err(zaino_service::ServiceError::Stale(
-                    "a component stopped before every index answered locally",
-                ));
+                return Err(zaino_service::ServiceError::ComponentStopped);
             }
             tokio::time::sleep(std::time::Duration::from_millis(50)).await;
         }

@@ -1133,6 +1133,52 @@ async fn node_backed_indexer_service_serves_latest_block() {
     assert_eq!(latest.height, u64::from(CHAIN_TIP));
 }
 
+/// GetTransaction for a txid no one holds is `NotFound`, as lightwalletd
+/// answers (service.go:524-527).
+#[tokio::test(flavor = "multi_thread")]
+async fn get_transaction_of_an_unknown_txid_is_not_found() {
+    use crate::indexer::node_backed_indexer::NodeBackedIndexerServiceSubscriber;
+    use crate::LightWalletIndexer as _;
+
+    let index = synced(MockchainMode::Static).await;
+    let service = NodeBackedIndexerServiceSubscriber::new_for_test(index.reader, regtest());
+    let error = service
+        .get_transaction(zaino_proto::proto::service::TxFilter {
+            block: None,
+            index: 0,
+            hash: vec![7; 32],
+        })
+        .await
+        .expect_err("no such transaction");
+    assert_eq!(tonic::Status::from(error).code(), tonic::Code::NotFound);
+}
+
+/// GetBlock by a hash whose lookup fails keeps the failure's cause, not a
+/// fixed "Internal db error".
+#[tokio::test(flavor = "multi_thread")]
+async fn get_block_by_hash_keeps_the_lookup_failure() {
+    use crate::indexer::node_backed_indexer::NodeBackedIndexerServiceSubscriber;
+    use crate::LightWalletIndexer as _;
+
+    let index = synced(MockchainMode::Static).await;
+    let mockchain = index.source.clone();
+    let service = NodeBackedIndexerServiceSubscriber::new_for_test(index.reader, regtest());
+    mockchain
+        .source()
+        .fail_next(u32::MAX, zaino_source::FailureMode::Auth);
+    let error = service
+        .get_block(zaino_proto::proto::service::BlockId {
+            height: 0,
+            hash: vec![9; 32],
+        })
+        .await
+        .expect_err("the lookup fails");
+    let status = tonic::Status::from(error);
+    assert_eq!(status.code(), tonic::Code::Internal);
+    assert_ne!(status.message(), "Error: Internal db error.");
+    assert!(status.message().contains("backing node"), "{status:?}");
+}
+
 /// Dropping the chain index without an explicit `shutdown()` call must still
 /// release source-owned background work.
 #[tokio::test(flavor = "multi_thread")]
@@ -1173,9 +1219,13 @@ async fn z_get_block_resolves_negative_heights_against_the_tip() {
 /// The legacy code an error carries, recovered as the serve layer does: by
 /// downcast-walking the `source()` chain.
 fn legacy_code(error: &(dyn std::error::Error + 'static)) -> Option<i64> {
+    legacy_code_and_message(error).map(|(code, _)| code)
+}
+
+fn legacy_code_and_message(error: &(dyn std::error::Error + 'static)) -> Option<(i64, String)> {
     std::iter::successors(Some(error), |error| error.source())
         .find_map(|error| error.downcast_ref::<crate::error::LegacyRpcError>())
-        .map(|rejection| rejection.code)
+        .map(|rejection| (rejection.code, rejection.message.clone()))
 }
 
 /// An unparsable `getblock` identifier carries the legacy InvalidParameter
@@ -1253,7 +1303,7 @@ async fn chaintip_update_subscriber_absent_without_tip_stream() {
 }
 
 /// `sendrawtransaction` rejections carry the legacy error code: invalid hex
-/// is zcashd's `-8`, and is refused before the validator is asked.
+/// is zebrad's `-22`, and is refused before the validator is asked.
 #[tokio::test(flavor = "multi_thread")]
 async fn send_raw_transaction_invalid_hex_keeps_legacy_error_code() {
     let index = synced(MockchainMode::Static).await;
@@ -1266,13 +1316,77 @@ async fn send_raw_transaction_invalid_hex_keeps_legacy_error_code() {
 
     assert_eq!(
         legacy_code(&error),
-        Some(zebra_rpc::server::error::LegacyCode::InvalidParameter as i64),
-        "the typed LegacyRpcError (legacy code -8) must stay reachable via the source() chain"
+        Some(zebra_rpc::server::error::LegacyCode::Deserialization as i64),
+        "the typed LegacyRpcError (legacy code -22) must stay reachable via the source() chain"
     );
     assert!(
         index.source.source().sent().is_empty(),
         "invalid hex never reaches the validator"
     );
+}
+
+/// gettxoutsetinfo with no store is refused as not served, never answered
+/// empty; with the set built it answers at the tip.
+#[tokio::test]
+async fn tx_out_set_info_is_answered_or_refused() {
+    let activations = zaino_source_mock::Activations::default();
+    let dir = tempfile::tempdir().expect("a temp dir");
+    let config = crate::config::ChainIndexConfig {
+        ephemeral: true,
+        ..super::index_config(&dir, &activations)
+    };
+    let ephemeral = crate::chain_index::NodeBackedChainIndex::new(
+        super::mock_source(&activations, super::chain_blocks()),
+        config,
+    )
+    .await
+    .expect("the index starts");
+    let refused = ephemeral
+        .subscriber()
+        .get_tx_out_set_info()
+        .await
+        .expect_err("no store builds the set");
+    assert_eq!(
+        refused.kind(),
+        crate::error::ChainIndexErrorKind::Unimplemented
+    );
+
+    let index = synced(MockchainMode::Static).await;
+    let info = index
+        .reader
+        .get_tx_out_set_info()
+        .await
+        .expect("the set is built");
+    assert_eq!(u32::from(info.height), served_tip(&index.source));
+}
+
+/// A validator's rejection keeps its own code and message.
+#[tokio::test(flavor = "multi_thread")]
+async fn send_raw_transaction_keeps_the_validators_rejection_code() {
+    use zaino_source::SendRawTransactionError as Rejection;
+    let index = synced(MockchainMode::Static).await;
+    let cases = [
+        (vec![1u8], Rejection::Malformed("unparseable".into())),
+        (vec![2u8], Rejection::Rejected("bad proof".into())),
+        (vec![3u8], Rejection::RejectedByPolicy("low fee".into())),
+        (vec![4u8], Rejection::AlreadyInChain("known".into())),
+    ];
+    for (bytes, rejection) in cases {
+        index
+            .source
+            .source()
+            .script_send(bytes.clone(), Err(rejection.clone()));
+        let error = index
+            .reader
+            .send_raw_transaction(hex::encode(&bytes))
+            .await
+            .expect_err("rejected");
+        assert_eq!(
+            legacy_code_and_message(&error),
+            Some((rejection.legacy_code(), rejection.message().to_owned())),
+            "{rejection:?}"
+        );
+    }
 }
 
 /// GetLightdInfo reports Sapling's activation and the next pending upgrade

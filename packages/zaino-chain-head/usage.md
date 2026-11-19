@@ -183,7 +183,8 @@ its own fold, fees included.
 Every capability method returns a `Result` whose default body is
 `ChainHeadError::NotBuilt` (D-56): a runtime implements only what it builds,
 and a consumer tells "not built" (fall back) from "nothing in the window"
-(an empty or `None` answer). `ChainHeadSnapshot::capabilities` lists what a
+(an empty or `None` answer). An extension that failed and is not yet rebuilt
+answers `ChainHeadError::Failed` with the reason. `ChainHeadSnapshot::capabilities` lists what a
 snapshot builds. `address_effects` reads at most the query's `limit` rows
 (receives and spends) and past it refuses with `ChainHeadError::TooManyRows`.
 

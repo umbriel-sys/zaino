@@ -84,7 +84,7 @@ A port's error enum enumerates what that question can be answered with:
 
 ```rust
 GetBlockError::HeightNotFound(Height)
-SendRawTransactionError::Rejected(String)
+SendRawTransactionError::{ Malformed, Rejected, RejectedByPolicy, AlreadyInChain } // −22, −25, −26, −27
 GetSpentInfoError::{ NotSpent, Unsupported }
 GetStandardFeeError::Unsupported             // validator lacks getstandardfee
 GetAddressTxidsError::TooManyResults { limit } // over MAX_ADDRESS_QUERY_RESULTS

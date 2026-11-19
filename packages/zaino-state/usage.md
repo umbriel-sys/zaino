@@ -38,6 +38,11 @@ chain). Notable shapes:
 - `GetLightdInfo` reports Sapling's activation and the next pending upgrade
   (`upgradeName` empty and `upgradeHeight` 0 when none).
 - `getblock` by height asks the validator by the hash the snapshot holds.
+- `gettxoutsetinfo` answers the set or refuses: `Unimplemented` where it is
+  not built, `Unavailable` while building.
+- `sendrawtransaction` keeps the validator's rejection code and message
+  (−22, −25, −26, −27); invalid hex is −22 before the validator is asked.
+- `GetTransaction` for an unknown txid is `NotFound`.
 
 ## Legacy vocabulary
 

@@ -69,7 +69,7 @@ by ChainView. Built on top:
 | `block_header(at)` | composed from the indexed block (header, Sapling root, chainwork); the validator fills holes through ChainView |
 | `block_deltas(hash)` | composed from the indexed block and `previous_outputs`; the validator's `getblockdeltas` where prevouts are not local |
 | `spent_info(outpoint)` | the spend index (I-09 and the head); the validator otherwise, `NotServed` if it lacks the method |
-| `txout_set_info()` | I-11 and the head; `NotServed` without them |
+| `txout_set_info()` | I-11 and the head; `NotServed` without them, ChainView's `Building` while the store has not reached the window, a fault if the head's set failed |
 | `raw_transaction(txid, block)` | ChainView's, only from `block` when given |
 | `address_utxos(addresses, page)` | ChainView's page and the tip it describes |
 | `address_deltas(request)` | ChainView's, over the range clamped to the snapshot's tip (`end` 0, or the single-address form, reads to it); with `chain_info`, the range's bounding blocks |
@@ -84,8 +84,8 @@ The mempool reads (D6-02) never ask the validator:
 | Read | From |
 | --- | --- |
 | `mempool_txids`, `mempool_info`, `mempool_entries(exclude)` | the tip-agnostic set; a malformed exclude is `InvalidParameter`, never trimmed |
-| `mempool_stream(pinned)` | the coherent view until the tip moves; `pinned` asks for one coherent with this snapshot (`None` otherwise); a lag ends it with `Stale` |
-| `transaction(txid)` | the coherent mempool (to be mined at the tip's successor), else the chain; a mempool not coherent with this snapshot that holds a txid the chain lacks is `Stale` |
+| `mempool_stream(pinned)` | the coherent view until the tip moves; `pinned` asks for one coherent with this snapshot (`None` otherwise); a lag ends it with `MempoolStreamLagged` |
+| `transaction(txid)` | the coherent mempool (to be mined at the tip's successor), else the chain; a mempool not coherent with this snapshot that holds a txid the chain lacks is `MempoolIncoherent` |
 | `transaction_status(txid)` | its blocks, and the mempool: `best` when coherent with this snapshot, `elsewhere` (at the successor of the mempool's tip as the chain holds it now) when not |
 
 The listings and the stream need no snapshot, so `Service` has them too:
@@ -115,6 +115,13 @@ before the validator is asked.
 `ValidatorRejected` keeps the port's typed error, so a transport can downcast
 it to pick its own code. `ServiceError::from_query` classifies a validator
 query's failure as refused or unreachable.
+
+Every other cause has its own variant: `InvalidRange`, `MissingBlock`,
+`MissingPrevout`, `AmountOutOfRange`, `HeightOverflow`, `SpendCountMismatch`
+and `MinedAndInMempool` are faults or invalid requests; `MempoolIncoherent`,
+`MempoolStreamLagged`, `SyncStopped` and `ComponentStopped` are retryable.
+ChainView's refusals arrive in `Chain`: `NotServed`, `NotBuilt` and
+`ValidatorDisabled` are final, `Building` retryable.
 
 ## Lifecycle
 

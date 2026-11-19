@@ -384,8 +384,8 @@ where
                 WalkState::Done => return None,
                 WalkState::Failed => {
                     self.state = WalkState::Done;
-                    return Some(Err(ChainViewError::NotServiceable(
-                        "no provider covers part of this range and the validator is disabled",
+                    return Some(Err(ChainViewError::ValidatorDisabled(
+                        "no provider covers part of this range",
                     )));
                 }
                 WalkState::Running {

@@ -105,7 +105,7 @@ impl<Source: ChainViewSource> Fetcher<Source> {
         if self.enabled() {
             Ok(())
         } else {
-            Err(ChainViewError::NotServiceable(what))
+            Err(ChainViewError::ValidatorDisabled(what))
         }
     }
 

@@ -588,7 +588,7 @@ pub(crate) fn store_err(error: ChainStoreError) -> ChainViewError {
         ChainStoreError::NotReady => {
             ChainViewError::Transient(String::from("finalised store is not ready"))
         }
-        ChainStoreError::Unavailable(index) => ChainViewError::NotServiceable(match index {
+        ChainStoreError::Unavailable(index) => ChainViewError::NotBuilt(match index {
             zaino_chain_store::StoreCapability::CompactBlocks => {
                 "the store does not build the compact-block index"
             }
@@ -602,7 +602,7 @@ pub(crate) fn store_err(error: ChainStoreError) -> ChainViewError {
         }),
         // Coverage decides which provider answers *before* asking, so either of
         // these means it chose wrongly — a fault here, not a condition there.
-        // Reporting them as `NotServiceable` would make a routing bug look like
+        // Reporting them as not built would make a routing bug look like
         // a store that has not caught up, which happens often enough that
         // nobody would look twice.
         other @ (ChainStoreError::AboveWatermark { .. } | ChainStoreError::InvalidRange { .. }) => {
@@ -615,12 +615,11 @@ pub(crate) fn store_err(error: ChainStoreError) -> ChainViewError {
 }
 
 /// A chain-head failure, classified for a consumer: a capability the head
-/// does not build (not enabled, or failed and not yet rebuilt) is not
-/// serviceable; anything else is a fault.
+/// does not build is not built; a failed extension or read is a fault.
 pub(crate) fn head_err(error: ChainHeadError) -> ChainViewError {
     match error {
         ChainHeadError::NotBuilt { .. } => {
-            ChainViewError::NotServiceable("the chain head does not build this capability")
+            ChainViewError::NotBuilt("the chain head does not build this capability")
         }
         other @ ChainHeadError::TooManyRows { .. } => ChainViewError::Rejected(other.to_string()),
         other => ChainViewError::Fatal(other.to_string()),
@@ -652,37 +651,35 @@ enum AnchorChainWork {
     Unknown,
 }
 
-/// This deployment does not offer `capability`.
-///
-/// Distinct from the tiers being unable to answer: they may well be able, and
-/// the deployment has chosen not to. The message says so, because "not
-/// serviceable" reads as a fault otherwise and an operator needs to know which
-/// of the two to go and change.
-///
-/// The manifest reports the same capabilities as
-/// [`Absent`](crate::Answerable::Absent) from the same set, so a consumer that
+/// This deployment does not offer `capability`. The manifest reports the same
+/// capabilities as [`Absent`](crate::Answerable::Absent), so a consumer that
 /// checked first never reaches this.
 fn withheld(capability: ChainCapability) -> ChainViewError {
-    ChainViewError::NotServiceable(match capability {
-        ChainCapability::Blocks => "this deployment does not serve blocks",
-        ChainCapability::CompactBlocks => "this deployment does not serve compact blocks",
-        ChainCapability::Transactions => "this deployment does not serve transactions",
-        ChainCapability::Treestate => "this deployment does not serve treestates",
-        ChainCapability::SubtreeRoots => "this deployment does not serve subtree roots",
-        ChainCapability::ChainTips => "this deployment does not serve chain tips",
-        ChainCapability::AddressHistory => {
-            "this deployment does not serve transparent address history"
-        }
-        ChainCapability::SpendStatus => "this deployment does not serve spend status",
-        ChainCapability::TxOutSet => "this deployment does not serve the txout set",
-        ChainCapability::HistoryTree => "this deployment does not serve the history tree",
-        ChainCapability::Prevouts => "this deployment does not serve previous outputs",
-    })
+    ChainViewError::NotServed(capability)
 }
 
 /// The chain view cannot cover a height from any provider.
 fn uncoverable() -> ChainViewError {
-    ChainViewError::NotServiceable("no provider covers this height and the validator is disabled")
+    ChainViewError::ValidatorDisabled("no provider covers this height")
+}
+
+impl<Reader, HeadSnapshot, Source> ComposerSnapshot<Reader, HeadSnapshot, Source> {
+    /// A read that needs the store, which holds nothing: not built when it is
+    /// disabled, else still building.
+    fn store_missing(&self, what: &'static str) -> ChainViewError {
+        match self.config.store_enabled {
+            false => ChainViewError::NotBuilt(what),
+            true => self.store_gap(what),
+        }
+    }
+
+    /// A read the store has not yet built far enough for.
+    fn store_gap(&self, what: &'static str) -> ChainViewError {
+        ChainViewError::Building {
+            what,
+            store_tip: self.coverage.store_top,
+        }
+    }
 }
 
 impl<Reader, HeadSnapshot, Source> ComposerSnapshot<Reader, HeadSnapshot, Source>
@@ -1201,7 +1198,7 @@ where
     ) -> Result<Option<Vec<PreIndexCompactTx>>> {
         match self.head.compact_transactions(&block.hash(), pools) {
             Ok(transactions) => Ok(transactions),
-            Err(ChainHeadError::NotBuilt { .. }) => Ok(None),
+            Err(ChainHeadError::NotBuilt { .. } | ChainHeadError::Failed { .. }) => Ok(None),
             Err(error) => Err(head_err(error)),
         }
     }
@@ -1675,9 +1672,7 @@ where
             return Err(withheld(ChainCapability::SpendStatus));
         }
         if self.coverage.store_top.is_none() {
-            return Err(ChainViewError::NotServiceable(
-                "spend status needs the finalised store, which is disabled",
-            ));
+            return Err(self.store_missing("spend status needs the finalised store"));
         }
 
         let finalised = self
@@ -1701,9 +1696,9 @@ where
         // silently incomplete. Unlike a block read there is nothing to degrade
         // to, so refusing is the only honest option.
         if !self.coverage.contiguous() {
-            return Err(ChainViewError::NotServiceable(
-                "spend status cannot span the range the finalised store has not built",
-            ));
+            return Err(
+                self.store_gap("spend status cannot span the range the store has not built")
+            );
         }
 
         // The recent window wins where it has an answer: an outpoint is spent
@@ -1742,15 +1737,13 @@ where
             return Err(withheld(ChainCapability::Prevouts));
         }
         if self.coverage.store_top.is_none() {
-            return Err(ChainViewError::NotServiceable(
-                "previous outputs need the finalised store, which is disabled",
-            ));
+            return Err(self.store_missing("previous outputs need the finalised store"));
         }
         // No validator index to fill a hole with, as for spend status.
         if !self.coverage.contiguous() {
-            return Err(ChainViewError::NotServiceable(
-                "previous outputs cannot span the range the finalised store has not built",
-            ));
+            return Err(
+                self.store_gap("previous outputs cannot span the range the store has not built")
+            );
         }
 
         // The window first; what it does not create, the store.
@@ -1838,9 +1831,12 @@ where
             return Err(withheld(ChainCapability::TxOutSet));
         }
         if !self.config.store_enabled {
-            return Err(ChainViewError::NotServiceable(
+            return Err(ChainViewError::NotBuilt(
                 "the txout set starts from the finalised store, which is disabled",
             ));
+        }
+        if !self.coverage.contiguous() {
+            return Err(self.store_gap("the txout set needs the store to reach the window"));
         }
         self.head.txout_set().map_err(head_err)
     }
@@ -1868,6 +1864,7 @@ where
         call: impl core::future::Future<
             Output = core::result::Result<T, zaino_source::QueryError<E, N>>,
         >,
+        range_of: fn(&E) -> Option<(Height, Height)>,
     ) -> Result<T>
     where
         E: core::fmt::Debug + core::fmt::Display,
@@ -1878,7 +1875,13 @@ where
         }
         self.fetch
             .require("address history needs the validator, which is disabled")?;
-        fetch::answered(call.await)
+        match call.await {
+            Err(zaino_source::QueryError::Domain(error)) => match range_of(&error) {
+                Some((start, end)) => Err(invalid_range(start, end)),
+                None => fetch::answered(Err(zaino_source::QueryError::<_, N>::Domain(error))),
+            },
+            answer => fetch::answered(answer),
+        }
     }
 }
 
@@ -1895,7 +1898,10 @@ where
     async fn address_balance(&self, addresses: &[TransparentAddress]) -> Result<AddressBalance> {
         let Some(effects) = self.local_effects(addresses, None).await? else {
             return self
-                .address_query(self.fetch.source().get_address_balance(encoded(addresses)))
+                .address_query(
+                    self.fetch.source().get_address_balance(encoded(addresses)),
+                    |_| None,
+                )
                 .await;
         };
         let unspent = effects.unspent();
@@ -1924,6 +1930,7 @@ where
                     self.fetch
                         .source()
                         .get_address_utxos(encoded(addresses), page),
+                    |_| None,
                 )
                 .await;
         };
@@ -1958,11 +1965,17 @@ where
         let range = Some((start, end, RangeRule::WithinTip));
         let Some(effects) = self.local_effects(addresses, range).await? else {
             return self
-                .address_query(self.fetch.source().get_address_txids(
-                    encoded(addresses),
-                    start,
-                    end,
-                ))
+                .address_query(
+                    self.fetch
+                        .source()
+                        .get_address_txids(encoded(addresses), start, end),
+                    |error| match error {
+                        zaino_source::GetAddressTxidsError::InvalidRange { start, end } => {
+                            Some((*start, *end))
+                        }
+                        _ => None,
+                    },
+                )
                 .await;
         };
         let txids = effects.transactions();
@@ -1979,11 +1992,17 @@ where
         let range = Some((start, end, RangeRule::Ordered));
         let Some(effects) = self.local_effects(addresses, range).await? else {
             return self
-                .address_query(self.fetch.source().get_address_deltas(
-                    encoded(addresses),
-                    start,
-                    end,
-                ))
+                .address_query(
+                    self.fetch
+                        .source()
+                        .get_address_deltas(encoded(addresses), start, end),
+                    |error| match error {
+                        zaino_source::GetAddressDeltasError::InvalidRange { start, end } => {
+                            Some((*start, *end))
+                        }
+                        _ => None,
+                    },
+                )
                 .await;
         };
         capped(effects.transactions().len())?;
@@ -2325,17 +2344,20 @@ where
         if !self.served.contains(ChainCapability::HistoryTree) {
             return Err(withheld(ChainCapability::HistoryTree));
         }
-        let local = both_build(
+        let built = both_build(
             &self.config,
             self.reader.capabilities(),
             StoreCapability::HistoryTree,
             self.head.capabilities(),
             HeadCapability::HistoryTree,
-        ) && self.coverage.contiguous();
-        if !local {
-            return Err(ChainViewError::NotServiceable(
-                "the history tree needs the store's and the chain head's, with nothing between",
+        );
+        if !built {
+            return Err(ChainViewError::NotBuilt(
+                "the history tree needs the store's and the chain head's",
             ));
+        }
+        if !self.coverage.contiguous() {
+            return Err(self.store_gap("the history tree cannot span what the store has not built"));
         }
         if height > self.head.best_tip().height {
             return Ok(None);
@@ -2378,7 +2400,7 @@ fn capped(rows: usize) -> Result<()> {
 
 /// A range the validator refuses: inverted, or (for txids) past the tip.
 fn invalid_range(start: Height, end: Height) -> ChainViewError {
-    ChainViewError::Rejected(format!("invalid range {start}..={end}"))
+    ChainViewError::InvalidRange { start, end }
 }
 
 /// Amounts that left their range: the store and head disagree with the chain.
@@ -2402,15 +2424,23 @@ fn encoded(addresses: &[TransparentAddress]) -> Vec<String> {
 mod tests {
     use super::*;
 
-    /// A capability the head does not build is not serviceable; a built one
-    /// that fails to read is a fault, never a reason to fall back.
+    /// A capability the head does not build is not built; a failed extension
+    /// or a built one that fails to read is a fault, never a reason to fall
+    /// back.
     #[test]
     fn head_errors_keep_not_built_apart_from_faults() {
         assert!(matches!(
             head_err(ChainHeadError::NotBuilt {
                 capability: "tree state"
             }),
-            ChainViewError::NotServiceable(_)
+            ChainViewError::NotBuilt(_)
+        ));
+        assert!(matches!(
+            head_err(ChainHeadError::Failed {
+                capability: "the txout set",
+                reason: "fold".to_owned(),
+            }),
+            ChainViewError::Fatal(_)
         ));
         assert!(matches!(
             head_err(ChainHeadError::ReadFailed {

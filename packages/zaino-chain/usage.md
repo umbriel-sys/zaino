@@ -267,8 +267,17 @@ chain at a height no tier covers; at a covered height the view pins a different
 block, and above the tip there is none.
 
 A miss is not a rejection. An address never paid is an empty answer, but an
-invalid request — an unparseable address, a range the validator cannot serve,
-a pool not yet active — is `ChainViewError::Rejected`, never an empty result.
+invalid request — an unparseable address, a pool not yet active — is
+`ChainViewError::Rejected`, never an empty result. An address read over a
+range it refuses (inverted, or past the tip for txids) is
+`ChainViewError::InvalidRange`, from the local and the validator path alike;
+block ranges never refuse an inverted range, they run descending.
+
+A read not answered here says why: `NotServed(capability)` (the deployment
+withholds it), `NotBuilt` (no store index or head extension builds it),
+`Building { store_tip }` (the store has not reached the heights it needs;
+retry) or `ValidatorDisabled` (no provider covers it and passthrough is off).
+A failed head extension is `Fatal`.
 
 ## Configuration
 

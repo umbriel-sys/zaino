@@ -130,12 +130,11 @@ impl<
             .await
         {
             Ok(status) => status,
-            Err(zaino_service::ServiceError::Inconsistent(message)) => {
-                return Err(ChainIndexError {
-                    kind: ChainIndexErrorKind::InvalidSnapshot,
-                    message,
-                    source: None,
-                })
+            Err(error @ zaino_service::ServiceError::MinedAndInMempool(_)) => {
+                return Err(ChainIndexError::with_source(
+                    ChainIndexErrorKind::InvalidSnapshot,
+                    error,
+                ))
             }
             Err(error) => return Err(error.into()),
         };

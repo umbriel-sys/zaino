@@ -469,7 +469,11 @@ impl<
             .indexer
             .get_raw_transaction(snapshot, &txid)
             .await?
-            .ok_or_else(no_such_transaction)?;
+            .ok_or_else(|| {
+                NodeBackedIndexerServiceError::TonicStatusError(tonic::Status::not_found(format!(
+                    "transaction not found: {txid_hex}"
+                )))
+            })?;
         let (best, non_best) = self.indexer.get_transaction_status(snapshot, &txid).await?;
         let height = match best {
             Some(types::BestChainLocation::Block(_, height)) => u64::from(height.0),
@@ -510,8 +514,8 @@ impl<
                             "Error: Invalid hash and/or height out of range. Hash not found in chain",
                         )));
                     }
-                    Err(_e) => {
-                        return Err(status(tonic::Status::internal("Error: Internal db error.")));
+                    Err(error) => {
+                        return Err(NodeBackedIndexerServiceError::ChainIndexError(error))
                     }
                 }
             }
@@ -854,7 +858,7 @@ impl<
     /// tags: blockchain
     async fn get_tx_out_set_info(
         &self,
-    ) -> Result<Option<zaino_primitives::types::TxOutSetInfo>, Self::Error> {
+    ) -> Result<zaino_primitives::types::TxOutSetInfo, Self::Error> {
         Ok(self.indexer.get_tx_out_set_info().await?)
     }
 
@@ -1070,8 +1074,7 @@ impl<
 
         let transaction = zebra_chain::transaction::Transaction::zcash_deserialize(
             serialized_transaction.as_slice(),
-        )
-        .map_err(|_| no_such_transaction())?;
+        )?;
 
         let (best_chain_location, _non_best_chain_locations) = self
             .indexer
