@@ -1019,7 +1019,7 @@ pub trait CompactBlockExt: Send + Sync {
     /// requested pool, so a transaction's position in the result is its
     /// position in the block. The wire form omits the empty ones, and the
     /// conversion to it does that — see
-    /// [`compact_block_to_wire`](crate::conversion::compact_block_to_wire).
+    /// `zaino_proto::compact::compact_block_to_wire`.
     ///
     /// The filter is still pushed down: a pool it excludes is not read from
     /// disk at all, which is where the saving is.

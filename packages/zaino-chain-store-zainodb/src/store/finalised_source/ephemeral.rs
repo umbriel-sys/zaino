@@ -793,19 +793,11 @@ impl<T: ChainStoreSource> CompactBlockExt for EphemeralFinalisedState<T> {
                     }
                 };
 
+                let pools = zaino_proto::compact::pool_filter_from_wire(&pool_types);
                 let compact_block_result = source
-                    .get_compact_block(
-                        height,
-                        crate::store::finalised_source::v1::compact_block::pool_filter_from_wire(
-                            &pool_types,
-                        ),
-                    )
+                    .get_compact_block(height, pools)
                     .await
-                    .map(|block| {
-                        crate::store::finalised_source::v1::compact_block::compact_block_to_wire(
-                            &block,
-                        )
-                    })
+                    .map(|block| zaino_proto::compact::compact_block_to_wire(&block, pools))
                     .map_err(|error| tonic::Status::internal(error.to_string()));
 
                 if compact_block_sender

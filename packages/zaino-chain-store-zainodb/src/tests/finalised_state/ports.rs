@@ -25,9 +25,9 @@ use zaino_proto::proto::utils::PoolTypeFilter;
 
 use super::v1::load_vectors_v1db_and_reader;
 use crate::adapter::domain_outpoint;
-use crate::conversion::{compact_block_to_wire, pool_filter_from_wire};
 use crate::tests::fixtures::indexed_block_chain;
 use crate::types::{Height, Outpoint};
+use zaino_proto::compact::{compact_block_to_wire, pool_filter_from_wire};
 
 /// The domain height for a stored one, in a test that has already established
 /// the height is real.
@@ -108,7 +108,7 @@ async fn compact_blocks_match_the_inherent_read() {
                     .await
                     .expect("the store holds every vector height");
             assert_eq!(chunk.len(), 1);
-            let through_ports = compact_block_to_wire(&chunk.pop().expect("checked above"));
+            let through_ports = compact_block_to_wire(&chunk.pop().expect("checked above"), pools);
 
             assert_eq!(
                 through_ports, expected,
@@ -139,20 +139,16 @@ async fn the_compact_stream_matches_the_inherent_stream() {
         expected.push(block.expect("no block fails over the vector range"));
     }
 
-    let chunks = CompactBlockRead::compact_stream(
-        &reader,
-        domain(Height(0)),
-        domain(last),
-        pool_filter_from_wire(&filter),
-    )
-    .await
-    .expect("the whole vector range is below the watermark");
+    let pools = pool_filter_from_wire(&filter);
+    let chunks = CompactBlockRead::compact_stream(&reader, domain(Height(0)), domain(last), pools)
+        .await
+        .expect("the whole vector range is below the watermark");
     let mut chunks = std::pin::pin!(chunks);
 
     let mut through_ports = Vec::new();
     while let Some(chunk) = chunks.next().await {
         for block in chunk.expect("no chunk fails over the vector range") {
-            through_ports.push(compact_block_to_wire(&block));
+            through_ports.push(compact_block_to_wire(&block, pools));
         }
     }
 

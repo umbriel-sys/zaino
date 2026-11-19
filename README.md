@@ -223,6 +223,7 @@ mistakes its design is trying to prevent.
 - [`zaino-encoding`](./packages/zaino-encoding/usage.md): the versioned record format, and why nested fields must have their version pinned.
 - [`zaino-chain-store`](./packages/zaino-chain-store/usage.md): the finalised state's ports, why the chunk is the block-read primitive, and why a read past the watermark is not a miss.
 - [`zaino-chain-store-zainodb`](./packages/zaino-chain-store-zainodb/usage.md): the LMDB store, its on-disk compatibility contract, and why its checksums are load-bearing.
+- [`zaino-proto`](./packages/zaino-proto/usage.md): the light-wallet types, and the compact-block conversion and direct writer every serving crate shares.
 - [`zaino-chain`](./packages/zaino-chain/usage.md): ChainView's ports, how coverage decides which provider answers, and what a hole between the tiers degrades versus what it refuses.
 - [`zaino-serve`](./packages/zaino-serve/usage.md): served RPCs.
 - [`zainod`](./packages/zainod/usage.md): the admin listener — what goes on `/metrics`, `/metrics` (quantities) vs `/readyz` (per-component health & modes).

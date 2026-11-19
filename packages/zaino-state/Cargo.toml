@@ -30,7 +30,7 @@ experimental_features = ["transparent_address_history_experimental"]
 transparent_address_history_experimental = []
 
 [dependencies]
-zaino-proto = { workspace = true }
+zaino-proto = { workspace = true, features = ["zaino-primitives"] }
 
 # LibRustZcash
 incrementalmerkletree = { workspace = true }

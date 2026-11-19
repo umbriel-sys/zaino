@@ -34,29 +34,6 @@
 //!    is not cosmetic: it is a persisted field, and dropping it would change
 //!    the bytes of every block on disk.
 
-/// The domain compact block and pool filter, as the light-wallet wire carries
-/// them.
-///
-/// Re-exported here because the implementations sit beside the reader that has
-/// always produced them, and a second copy at the crate's public edge would be
-/// a second thing to keep in step with the protocol. Naming follows the
-/// project's wire-boundary rule (`to_wire` / `from_wire`) rather than the
-/// `_proto` suffix they carried while they were private.
-///
-/// # Temporary
-///
-/// A storage crate has no business building wire messages. These are public
-/// because ChainIndex reads compact blocks through
-/// [`zaino_chain_store::CompactBlockRead`], which yields domain blocks, and
-/// still answers its callers in the wire shape — so the conversion has to be
-/// reachable from outside. `compact_tx_to_wire` is also how the indexer
-/// renders mempool transactions. All three move to the serving side, together
-/// with this crate's `zaino-proto` dependency, when ChainIndex's wire surface
-/// goes.
-pub use crate::store::finalised_source::v1::compact_block::{
-    compact_block_to_wire, compact_tx_to_wire, pool_filter_from_wire,
-};
-
 use zaino_primitives::types::{classify_script, Block, Transaction, TreeRoots};
 
 use crate::types::{

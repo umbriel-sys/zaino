@@ -6308,11 +6308,13 @@ name = "zaino-proto"
 version = "0.6.1"
 dependencies = [
  "librocksdb-sys",
+ "proptest",
  "prost",
  "tonic",
  "tonic-prost",
  "tonic-prost-build",
  "which",
+ "zaino-primitives",
  "zebra-chain",
  "zebra-state",
 ]

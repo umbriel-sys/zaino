@@ -1,0 +1,24 @@
+[[changes]]
+crate = "zaino-proto"
+kind = "feature"
+description = """
+Feature `zaino-primitives`: `compact::{compact_block_to_wire, \
+compact_tx_to_wire, pool_filter_from_wire}`, and `write_compact_block` / \
+`compact_block_len`, a direct writer byte-equal to prost's encoding. Fees \
+are served (saturated to `u32`, unset where unknown); tree sizes are zero \
+only for nullifiers-only reads."""
+
+[[changes]]
+crate = "zaino-chain-store-zainodb"
+kind = "breaking"
+description = """
+`conversion::{compact_block_to_wire, compact_tx_to_wire, \
+pool_filter_from_wire}` removed; they live in `zaino_proto::compact`."""
+
+[[changes]]
+crate = "zaino-state"
+kind = "fix"
+description = """
+Compact blocks go to the wire through `zaino_proto::compact`. The nullifier \
+methods' docs now say what they return: Sapling, Orchard and Ironwood \
+nullifiers, and zero tree sizes."""

@@ -1254,9 +1254,8 @@ impl<
         self.compact_block_by_id(request, false).await
     }
 
-    /// Same as GetBlock except actions contain only nullifiers
-    ///
-    /// NOTE: Currently this only returns Orchard nullifiers to follow Lightwalletd functionality but Sapling could be added if required by wallets.
+    /// Same as GetBlock, carrying only the shielded nullifiers (Sapling spends,
+    /// Orchard and Ironwood actions) and zero tree sizes.
     async fn get_block_nullifiers(&self, request: BlockId) -> Result<CompactBlock, Self::Error> {
         self.compact_block_by_id(request, true).await
     }
@@ -1271,9 +1270,8 @@ impl<
             .await
     }
 
-    /// Same as GetBlockRange except actions contain only nullifiers
-    ///
-    /// NOTE: Currently this only returns Orchard nullifiers to follow Lightwalletd functionality but Sapling could be added if required by wallets.
+    /// Same as GetBlockRange, carrying only the shielded nullifiers (Sapling
+    /// spends, Orchard and Ironwood actions) and zero tree sizes.
     #[allow(deprecated)]
     async fn get_block_range_nullifiers(
         &self,
@@ -1471,7 +1469,7 @@ impl<
                             })
                             .map(|transaction| {
                                 // A mempool transaction is in no block, so index 0.
-                                zaino_chain_store_zainodb::conversion::compact_tx_to_wire(
+                                zaino_proto::compact::compact_tx_to_wire(
                                     0,
                                     &zaino_primitives::types::PreIndexCompactTx::from(&transaction),
                                 )

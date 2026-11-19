@@ -60,7 +60,7 @@ zebra-chain = { workspace = true }
 # compact blocks, at which point these conversions lose their in-crate callers
 # and move to `zaino-serve`'s side of the boundary along with them. Splitting
 # them out ahead of their callers would mean editing the same code twice.
-zaino-proto = { workspace = true }
+zaino-proto = { workspace = true, features = ["zaino-primitives"] }
 
 metrics = { workspace = true }
 

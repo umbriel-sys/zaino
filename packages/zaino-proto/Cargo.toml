@@ -17,6 +17,7 @@ exclude = ["lightwallet-protocol/.github", "lightwallet-protocol/buf.yaml"]
 default = ["heavy"]
 heavy = ["dep:zebra-state", "dep:zebra-chain", "dep:which"]
 grpc_proxy_server = []
+zaino-primitives = ["dep:zaino-primitives"]
 
 [dependencies]
 
@@ -45,7 +46,11 @@ tonic = { workspace = true }
 # Miscellaneous Crate
 prost = { workspace = true }
 tonic-prost = "0.14"
+zaino-primitives = { workspace = true, optional = true }
 
 [build-dependencies]
 which = { workspace = true, optional = true }
 tonic-prost-build = "0.14"
+
+[dev-dependencies]
+proptest.workspace = true

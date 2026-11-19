@@ -592,16 +592,12 @@ impl<T: ChainStoreSource> DbReader<T> {
         height: Height,
         pool_types: PoolTypeFilter,
     ) -> Result<zaino_proto::proto::compact_formats::CompactBlock, StoreError> {
+        let pools = zaino_proto::compact::pool_filter_from_wire(&pool_types);
         let block = self
             .db(CapabilityRequest::CompactBlockExt)?
-            .get_compact_block(
-                height,
-                crate::store::finalised_source::v1::compact_block::pool_filter_from_wire(
-                    &pool_types,
-                ),
-            )
+            .get_compact_block(height, pools)
             .await?;
-        Ok(crate::store::finalised_source::v1::compact_block::compact_block_to_wire(&block))
+        Ok(zaino_proto::compact::compact_block_to_wire(&block, pools))
     }
 
     /// Returns every compact block in `start..=end`, ascending, under one read

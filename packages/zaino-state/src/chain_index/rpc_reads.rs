@@ -4,13 +4,13 @@
 use futures::StreamExt as _;
 use hex::ToHex as _;
 use zaino_chain::{CompactBlockRead as _, TxOutSetRead as _};
-use zaino_chain_store_zainodb::conversion::{compact_block_to_wire, pool_filter_from_wire};
 use zaino_consensus::validate_raw_transaction_hex;
 use zaino_primitives::types::rpc::{
     AddressDeltas, AddressDeltasRequest, BlockDeltas, BlockHeaderVerbose, BlockSubsidy, MiningInfo,
     NodeInfo, PeerInfo, StandardFee,
 };
 use zaino_primitives::types::{MempoolInfo, TxOutSetInfo};
+use zaino_proto::compact::{compact_block_to_wire, pool_filter_from_wire};
 use zaino_proto::proto::utils::PoolTypeFilter;
 use zebra_rpc::methods::GetBlock;
 use zebra_state::HashOrHeight;
@@ -44,11 +44,12 @@ impl<
         let Some(at) = domain_height(height).filter(|at| *at <= snapshot.best_tip().height) else {
             return Ok(None);
         };
+        let pools = pool_filter_from_wire(&pool_types);
         let block = snapshot
-            .compact_block(at, pool_filter_from_wire(&pool_types))
+            .compact_block(at, pools)
             .await?
             .ok_or_else(|| ChainIndexError::database_hole(height, None))?;
-        Ok(Some(compact_block_to_wire(&block)))
+        Ok(Some(compact_block_to_wire(&block, pools)))
     }
 
     async fn get_compact_block_stream(
@@ -70,16 +71,15 @@ impl<
         } else {
             end_height
         };
+        let pools = pool_filter_from_wire(&pool_types);
         let blocks = match (
             ascending && start_height.0 > tip,
             domain_height(start_height),
             domain_height(end),
         ) {
-            (false, Some(start), Some(end)) => Some(flatten(snapshot.stream_compact(
-                start,
-                end,
-                pool_filter_from_wire(&pool_types),
-            ))),
+            (false, Some(start), Some(end)) => {
+                Some(flatten(snapshot.stream_compact(start, end, pools)))
+            }
             _ => None,
         };
 
@@ -89,7 +89,7 @@ impl<
                 let mut blocks = std::pin::pin!(blocks);
                 while let Some(block) = blocks.next().await {
                     let item = block
-                        .map(|block| compact_block_to_wire(&block))
+                        .map(|block| compact_block_to_wire(&block, pools))
                         .map_err(|error| tonic::Status::internal(error.to_string()));
                     if sender.send(item).await.is_err() {
                         return;

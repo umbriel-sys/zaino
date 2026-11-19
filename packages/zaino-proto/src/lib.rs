@@ -23,6 +23,8 @@
     )
 )]
 
+#[cfg(feature = "zaino-primitives")]
+pub mod compact;
 pub mod proto;
 
 #[cfg(feature = "grpc_proxy_server")]

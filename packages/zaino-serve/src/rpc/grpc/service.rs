@@ -159,11 +159,11 @@ where
         get_latest_block(ChainSpec) -> BlockId as empty,
         "Return the compact block corresponding to the given block identifier."
         get_block(BlockId) -> CompactBlock,
-        "Same as GetBlock except actions contain only nullifiers."
+        "Same as GetBlock, carrying only the shielded nullifiers and zero tree sizes."
         get_block_nullifiers(BlockId) -> CompactBlock,
         "Return a list of consecutive compact blocks."
         get_block_range(BlockRange) -> Self::GetBlockRangeStream as streaming,
-        "Same as GetBlockRange except actions contain only nullifiers."
+        "Same as GetBlockRange, carrying only the shielded nullifiers and zero tree sizes."
         get_block_range_nullifiers(BlockRange) -> Self::GetBlockRangeStream as streaming,
         "Return the requested full (not compact) transaction (as from the legacy full node)."
         get_transaction(TxFilter) -> RawTransaction,

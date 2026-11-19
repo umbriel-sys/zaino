@@ -716,7 +716,8 @@ pub trait LightWalletIndexer: Send + Sync + Clone + ZcashIndexer + 'static {
     /// Return the compact block corresponding to the given block identifier
     fn get_block(&self, request: BlockId) -> impl SendFut<Result<CompactBlock, Self::Error>>;
 
-    /// Same as GetBlock except actions contain only nullifiers
+    /// Same as GetBlock, carrying only the shielded nullifiers (Sapling spends,
+    /// Orchard and Ironwood actions) and zero tree sizes.
     fn get_block_nullifiers(
         &self,
         request: BlockId,
@@ -728,7 +729,8 @@ pub trait LightWalletIndexer: Send + Sync + Clone + ZcashIndexer + 'static {
         request: BlockRange,
     ) -> impl SendFut<Result<CompactBlockStream, Self::Error>>;
 
-    /// Same as GetBlockRange except actions contain only nullifiers
+    /// Same as GetBlockRange, carrying only the shielded nullifiers (Sapling
+    /// spends, Orchard and Ironwood actions) and zero tree sizes.
     fn get_block_range_nullifiers(
         &self,
         request: BlockRange,
