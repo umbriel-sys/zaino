@@ -116,4 +116,6 @@ chain work as zebra does: never. `get_chain_tips` is refused (`Unsupported`)
 as zebra refuses it; `NodeFacts::chain_tips = true` answers as zcashd does,
 and the contract accepts both. Subtree roots are answered for all three
 pools, as zebra does; `NodeFacts::subtree_pools` without Ironwood refuses it
-as zcashd does (`PoolUnavailable`).
+as zcashd does (`PoolUnavailable`). `get_address_txids` reads its range as
+zebrad does: bounds clamp to the tip, an end of 0 is the tip, then an
+inverted range is `InvalidRange`.

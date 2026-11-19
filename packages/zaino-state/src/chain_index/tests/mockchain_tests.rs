@@ -806,11 +806,19 @@ async fn get_address_txids() {
         .await;
     assert!(invalid_address_result.is_err());
 
-    let invalid_range_result = index
+    // zebrad's range: an end of 0 is the tip; a start above the end is −32602
+    let to_tip = index
         .reader
-        .get_address_txids(request(vec![miner_address()], active_height, 0))
-        .await;
-    assert!(invalid_range_result.is_err());
+        .get_address_txids(request(vec![miner_address()], 0, 0))
+        .await
+        .expect("an end of 0 reads to the tip");
+    assert_eq!(to_tip, expected_txids);
+    let inverted = index
+        .reader
+        .get_address_txids(request(vec![miner_address()], active_height, 1))
+        .await
+        .expect_err("a start above the end");
+    assert_eq!(legacy_code(&inverted), Some(-32602), "{inverted}");
 }
 
 #[tokio::test(flavor = "multi_thread")]

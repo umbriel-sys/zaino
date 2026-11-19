@@ -365,9 +365,22 @@ impl<S: ServiceSource> ServiceSnapshot<S> {
         Ok((utxos, self.chain.tip()))
     }
 
+    /// The ids of the transactions touching the addresses over zebrad's
+    /// range (`getaddresstxids`): see [`height_range`].
+    pub async fn address_txids(
+        &self,
+        addresses: &[TransparentAddress],
+        start: Option<u32>,
+        end: Option<u32>,
+    ) -> Result<Vec<TransactionId>> {
+        let (start, end) = height_range(self.chain.tip().height, start, end)?;
+        Ok(self.chain.address_txids(addresses, start, end).await?)
+    }
+
     /// The addresses' deltas over the request's range, clamped to this
-    /// snapshot's tip (`end` 0, or the single-address form, reads to it);
-    /// with `chain_info`, the range's bounding blocks too.
+    /// snapshot's tip (`end` 0, or the single-address form, reads to it), a
+    /// start above the end refused; with `chain_info`, the range's bounding
+    /// blocks too.
     pub async fn address_deltas(&self, request: AddressDeltasRequest) -> Result<AddressDeltas> {
         let (addresses, start, end, chain_info) = match request {
             AddressDeltasRequest::Filtered {
@@ -378,7 +391,7 @@ impl<S: ServiceSource> ServiceSnapshot<S> {
             } => (addresses, start, end, chain_info),
             AddressDeltasRequest::Address(address) => (vec![address], 0, 0, false),
         };
-        let (start, end) = deltas_range(self.chain.tip().height, start, end);
+        let (start, end) = height_range(self.chain.tip().height, Some(start), Some(end))?;
         let deltas = self.chain.address_deltas(&addresses, start, end).await?;
         if !chain_info {
             return Ok(AddressDeltas::Simple(deltas));
@@ -567,11 +580,21 @@ where
     }
 }
 
-/// A `getaddressdeltas` range clamped to `tip`: `end` 0 reads to it, and a
-/// bound past it (or past the protocol maximum) is the tip.
-fn deltas_range(tip: Height, start: u32, end: u32) -> (Height, Height) {
+/// zebrad's `build_height_range`, for `getaddresstxids` and
+/// `getaddressdeltas`: an absent start is genesis, an absent or zero end the
+/// tip; a bound past the tip (or the protocol maximum) is the tip; a start
+/// above the end is refused.
+fn height_range(tip: Height, start: Option<u32>, end: Option<u32>) -> Result<(Height, Height)> {
     let clamp = |raw: u32| Height::try_from(raw).map_or(tip, |height| height.min(tip));
-    (clamp(start), if end == 0 { tip } else { clamp(end) })
+    let start = clamp(start.unwrap_or(0));
+    let end = match end {
+        Some(0) | None => tip,
+        Some(end) => clamp(end),
+    };
+    if start > end {
+        return Err(ServiceError::InvalidRange { start, end });
+    }
+    Ok((start, end))
 }
 
 fn passthrough<T, E>(answer: core::result::Result<T, QueryError<E>>) -> Result<T>
@@ -583,37 +606,61 @@ where
 
 #[cfg(test)]
 mod tests {
-    use super::{deltas_range, Height};
+    use super::{height_range, Height, ServiceError};
 
     fn height(h: u32) -> Height {
         Height::try_from(h).expect("valid test height")
     }
 
-    /// `end` 0 reads to the tip, and both bounds clamp down to it.
+    fn range(tip: u32, start: Option<u32>, end: Option<u32>) -> Option<(Height, Height)> {
+        height_range(height(tip), start, end).ok()
+    }
+
+    /// An absent or zero end reads to the tip, and both bounds clamp to it.
     #[test]
     fn bounds_clamp_to_tip() {
         let tip = height(100);
-        assert_eq!(deltas_range(tip, 5, 0), (height(5), tip));
-        assert_eq!(deltas_range(tip, 5, 400), (height(5), tip));
-        assert_eq!(deltas_range(tip, 300, 50), (tip, height(50)));
+        assert_eq!(range(100, Some(5), Some(0)), Some((height(5), tip)));
+        assert_eq!(range(100, Some(5), None), Some((height(5), tip)));
+        assert_eq!(range(100, Some(5), Some(400)), Some((height(5), tip)));
+        assert_eq!(range(100, Some(300), Some(400)), Some((tip, tip)));
     }
 
     /// A bound past the protocol maximum is the tip, not a failure.
     #[test]
     fn a_bound_past_the_protocol_maximum_clamps() {
         let tip = height(100);
-        assert_eq!(deltas_range(tip, u32::MAX, u32::MAX), (tip, tip));
+        assert_eq!(range(100, Some(u32::MAX), Some(u32::MAX)), Some((tip, tip)));
     }
 
-    /// The single-address form's `0..=0` is the whole chain, not genesis.
+    /// No bounds, and the single-address form's `0..=0`, are the whole chain.
     #[test]
     fn absent_range_covers_the_whole_chain() {
-        assert_eq!(deltas_range(height(100), 0, 0), (height(0), height(100)));
+        let whole = Some((height(0), height(100)));
+        assert_eq!(range(100, None, None), whole);
+        assert_eq!(range(100, Some(0), Some(0)), whole);
     }
 
     /// A range inside the chain is untouched.
     #[test]
     fn in_range_bounds_pass_through() {
-        assert_eq!(deltas_range(height(100), 10, 20), (height(10), height(20)));
+        assert_eq!(
+            range(100, Some(10), Some(20)),
+            Some((height(10), height(20)))
+        );
+    }
+
+    /// A start above the end, after clamping, is refused with zebrad's words.
+    #[test]
+    fn a_start_above_the_end_is_refused() {
+        let refused = height_range(height(100), Some(300), Some(50)).expect_err("inverted");
+        assert!(matches!(
+            refused,
+            ServiceError::InvalidRange { start, end } if start == height(100) && end == height(50)
+        ));
+        assert_eq!(
+            refused.to_string(),
+            "start Height(100) must be less than or equal to end Height(50)"
+        );
     }
 }

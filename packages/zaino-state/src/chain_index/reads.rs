@@ -11,7 +11,7 @@ use zebra_rpc::client::{GetAddressBalanceRequest, GetAddressTxIdsRequest};
 
 use super::chain_view::{BestTip as _, ChainIndexSnapshot};
 use super::node_backed::NodeBackedChainIndexSubscriber;
-use super::source::{BlockchainSourceError, PoolTreestate};
+use super::source::PoolTreestate;
 use super::source_ports::ChainIndexSourcePorts;
 use super::types::{
     self, block_index, chain_locations, checked_addresses, domain_hash, domain_height,
@@ -35,10 +35,44 @@ pub(super) fn flatten<T>(
 }
 
 /// A request height, rejected as the legacy source rejected it.
-fn request_height(height: u32) -> Result<zaino_primitives::types::Height, ChainIndexError> {
-    zaino_primitives::types::Height::try_from(height).map_err(|error| {
-        ChainIndexError::backing_validator(BlockchainSourceError::Unrecoverable(error.to_string()))
-    })
+/// The address reads over a snapshot the caller holds, so one request reads
+/// one chain state (#49).
+impl<V: ChainIndexSourcePorts + ServiceSource> NodeBackedChainIndexSubscriber<V> {
+    pub(crate) async fn address_balance_in(
+        &self,
+        snapshot: &ChainIndexSnapshot<V>,
+        address_strings: GetAddressBalanceRequest,
+    ) -> Result<zaino_primitives::types::AddressBalance, ChainIndexError> {
+        let addresses = checked_addresses(&address_strings)?;
+        Ok(snapshot.address_balance(&addresses).await?)
+    }
+
+    pub(crate) async fn address_txids_in(
+        &self,
+        snapshot: &ChainIndexSnapshot<V>,
+        request: GetAddressTxIdsRequest,
+    ) -> Result<Vec<types::TransactionHash>, ChainIndexError> {
+        let addresses = checked_addresses(&request)?;
+        // an absent bound is 0, which zebrad's range rule reads the same way
+        let (_, start, end) = request.into_parts();
+        Ok(self
+            .reads(snapshot)
+            .address_txids(&addresses, Some(start), Some(end))
+            .await?
+            .into_iter()
+            .map(local_txid)
+            .collect())
+    }
+
+    pub(crate) async fn address_utxos_in(
+        &self,
+        snapshot: &ChainIndexSnapshot<V>,
+        address_strings: GetAddressBalanceRequest,
+        page: zaino_source::UtxoPage,
+    ) -> Result<Vec<zaino_primitives::types::Utxo>, ChainIndexError> {
+        let addresses = checked_addresses(&address_strings)?;
+        Ok(snapshot.address_utxos(&addresses, page).await?)
+    }
 }
 
 impl<V: ChainIndexSourcePorts + ServiceSource> ChainIndex for NodeBackedChainIndexSubscriber<V> {
@@ -230,40 +264,29 @@ impl<V: ChainIndexSourcePorts + ServiceSource> ChainIndex for NodeBackedChainInd
         &self,
         address_strings: GetAddressBalanceRequest,
     ) -> Result<zaino_primitives::types::AddressBalance, Self::Error> {
-        let addresses = checked_addresses(&address_strings)?;
-        Ok(self
-            .service
-            .chain_snapshot()
-            .address_balance(&addresses)
-            .await?)
+        let snapshot = self.service.chain_snapshot();
+        self.address_balance_in(&snapshot, address_strings).await
     }
 
     async fn get_address_txids(
         &self,
         request: GetAddressTxIdsRequest,
     ) -> Result<Vec<types::TransactionHash>, Self::Error> {
-        let addresses = checked_addresses(&request)?;
-        let (_, start, end) = request.into_parts();
-        Ok(self
-            .service
-            .chain_snapshot()
-            .address_txids(&addresses, request_height(start)?, request_height(end)?)
-            .await?
-            .into_iter()
-            .map(local_txid)
-            .collect())
+        let snapshot = self.service.chain_snapshot();
+        self.address_txids_in(&snapshot, request).await
     }
 
     async fn get_address_utxos(
         &self,
         address_strings: GetAddressBalanceRequest,
     ) -> Result<Vec<zaino_primitives::types::Utxo>, Self::Error> {
-        let addresses = checked_addresses(&address_strings)?;
-        Ok(self
-            .service
-            .chain_snapshot()
-            .address_utxos(&addresses, zaino_source::UtxoPage::default())
-            .await?)
+        let snapshot = self.service.chain_snapshot();
+        self.address_utxos_in(
+            &snapshot,
+            address_strings,
+            zaino_source::UtxoPage::default(),
+        )
+        .await
     }
 
     async fn get_outpoint_spenders(

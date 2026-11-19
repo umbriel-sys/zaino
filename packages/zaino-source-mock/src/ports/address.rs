@@ -150,15 +150,19 @@ impl zaino_source::OneShotGetAddressUtxos for MockChain {
     }
 }
 
-/// `start..=end` checked: refused when inverted or (where `tip_bound`) past
-/// the tip.
-fn range_ok(served: &Served<'_>, start: Height, end: Height, tip_bound: bool) -> bool {
-    let past_tip = |height: Height| {
-        served
-            .tip_height()
-            .is_none_or(|tip| u32::from(height) > tip)
+/// zebrad's `build_height_range` over the served chain: bounds clamp to the
+/// tip and an end of 0 is the tip; `None` when the start is then above the end.
+fn clamped_range(served: &Served<'_>, start: Height, end: Height) -> Option<(Height, Height)> {
+    let tip = served
+        .tip_height()
+        .and_then(|tip| Height::try_from(tip).ok())
+        .unwrap_or(Height::GENESIS);
+    let start = start.min(tip);
+    let end = match end {
+        Height::GENESIS => tip,
+        end => end.min(tip),
     };
-    start <= end && !(tip_bound && (past_tip(start) || past_tip(end)))
+    (start <= end).then_some((start, end))
 }
 
 /// Each transaction in `start..=end` touching the addresses, in chain order,
@@ -200,7 +204,8 @@ fn touching(
 
 impl zaino_source::OneShotGetAddressTxids for MockChain {
     /// Transactions paying or spending from the addresses in `start..=end`,
-    /// in chain order; a range inverted or past the tip is `InvalidRange`.
+    /// in chain order, the range read as zebrad reads it: clamped to the
+    /// tip, an end of 0 the tip; then inverted is `InvalidRange`.
     async fn get_address_txids(
         &self,
         addresses: Vec<String>,
@@ -213,12 +218,12 @@ impl zaino_source::OneShotGetAddressTxids for MockChain {
                 addresses_arg(&addresses, Some((start, end))),
             )
             .await?;
-        if !range_ok(&served, start, end, true) {
+        let Some((start, end)) = clamped_range(&served, start, end) else {
             return Err(QueryError::Domain(GetAddressTxidsError::InvalidRange {
                 start,
                 end,
             }));
-        }
+        };
         let wanted = requested(
             addresses,
             served.facts().network,
@@ -250,7 +255,7 @@ impl zaino_source::OneShotGetAddressDeltas for MockChain {
                 addresses_arg(&addresses, Some((start, end))),
             )
             .await?;
-        if !range_ok(&served, start, end, false) {
+        if start > end {
             return Err(QueryError::Domain(GetAddressDeltasError::InvalidRange {
                 start,
                 end,

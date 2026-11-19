@@ -33,6 +33,10 @@ impl LegacyRpcError {
     /// not implement a method Zaino forwards to it.
     pub(crate) const METHOD_NOT_FOUND: i64 = -32601;
 
+    /// The JSON-RPC envelope's "invalid params", as zebrad refuses an
+    /// inverted address height range.
+    pub(crate) const INVALID_PARAMS: i64 = -32602;
+
     /// Construct a rejection from zebra's `LegacyCode` enum.
     pub fn new(code: zebra_rpc::server::error::LegacyCode, message: impl Into<String>) -> Self {
         Self {
@@ -475,9 +479,13 @@ impl From<zaino_service::ServiceError> for ChainIndexError {
             error @ Error::NotServed { .. } => {
                 ChainIndexError::with_source(ChainIndexErrorKind::Unimplemented, error)
             }
-            error @ Error::InvalidRange { .. } => {
-                ChainIndexError::with_source(ChainIndexErrorKind::InvalidArgument, error)
-            }
+            error @ Error::InvalidRange { .. } => ChainIndexError::with_source(
+                ChainIndexErrorKind::InvalidArgument,
+                LegacyRpcError {
+                    code: LegacyRpcError::INVALID_PARAMS,
+                    message: error.to_string(),
+                },
+            ),
             error
             @ (Error::MempoolIncoherent | Error::MempoolStreamLagged | Error::SyncStopped) => {
                 ChainIndexError::with_source(ChainIndexErrorKind::Unavailable, error)
@@ -701,13 +709,6 @@ mod tests {
                 ChainIndexErrorKind::Unimplemented,
             ),
             (
-                ServiceError::InvalidRange {
-                    start: h(9),
-                    end: h(2),
-                },
-                ChainIndexErrorKind::InvalidArgument,
-            ),
-            (
                 ServiceError::MempoolIncoherent,
                 ChainIndexErrorKind::Unavailable,
             ),
@@ -731,6 +732,23 @@ mod tests {
                 "{mapped} lost its cause"
             );
         }
+        // an inverted range is zebrad's −32602 and message (S-11)
+        let inverted = ChainIndexError::from(ServiceError::InvalidRange {
+            start: h(9),
+            end: h(2),
+        });
+        assert_eq!(inverted.kind(), ChainIndexErrorKind::InvalidArgument);
+        let legacy = inverted
+            .source()
+            .and_then(|source| source.downcast_ref::<crate::LegacyRpcError>())
+            .expect("a legacy code");
+        assert_eq!(
+            (legacy.code, legacy.message.as_str()),
+            (
+                -32602,
+                "start Height(9) must be less than or equal to end Height(2)"
+            )
+        );
     }
 
     /// An unreachable validator keeps its transport error in the chain.

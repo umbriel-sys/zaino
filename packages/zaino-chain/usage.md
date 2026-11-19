@@ -270,9 +270,10 @@ block, and above the tip there is none.
 
 A miss is not a rejection. An address never paid is an empty answer, but an
 invalid request — an unparseable address, a pool not yet active — is
-`ChainViewError::Rejected`, never an empty result. An address read over a
-range it refuses (inverted, or past the tip for txids) is
-`ChainViewError::InvalidRange`, from the local and the validator path alike;
+`ChainViewError::Rejected`, never an empty result. An address read over an
+inverted range is `ChainViewError::InvalidRange`, from the local and the
+validator path alike; `address_txids` reads its range as zebrad does (bounds
+clamp to the tip, an end of 0 is the tip) before that check;
 block ranges never refuse an inverted range, they run descending.
 
 A read not answered here says why: `NotServed(capability)` (the deployment

@@ -72,7 +72,8 @@ by ChainView. Built on top:
 | `txout_set_info()` | I-11 and the head; `NotServed` without them, ChainView's `Building` while the store has not reached the window, a fault if the head's set failed |
 | `raw_transaction(txid, block)` | ChainView's, only from `block` when given |
 | `address_utxos(addresses, page)` | ChainView's page and the tip it describes |
-| `address_deltas(request)` | ChainView's, over the range clamped to the snapshot's tip (`end` 0, or the single-address form, reads to it); with `chain_info`, the range's bounding blocks |
+| `address_txids(addresses, start, end)` | ChainView's, over zebrad's `build_height_range`: an absent start is genesis, an absent or zero end the tip, both clamp to the snapshot's tip; a start above the end is `ServiceError::InvalidRange` (zebrad's message) |
+| `address_deltas(request)` | ChainView's, over the same range rule (the single-address form reads the whole chain); with `chain_info`, the range's bounding blocks |
 | `raw_block_header`, `raw_block`, `block_verbose(at, verbosity)` | the validator's answer (`getblock` 0 to 3), by the hash the snapshot holds |
 | `block_subsidy(height)` | the validator, at the tip when `None` |
 | `block_hash(index)` | Zaino's headers; `index` from genesis, or from the tip when negative (`-1` is the tip), as zebrad reads it |

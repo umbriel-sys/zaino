@@ -36,8 +36,8 @@ pub enum ServiceError {
     /// so a transport can map it to its own code.
     #[error("validator rejected the request: {0}")]
     ValidatorRejected(#[source] Box<dyn std::error::Error + Send + Sync>),
-    /// The request's height range is inverted.
-    #[error("invalid range {start}..={end}")]
+    /// The request's height range is inverted (zebrad's message).
+    #[error("start Height({start}) must be less than or equal to end Height({end})")]
     InvalidRange {
         /// The requested start.
         start: Height,

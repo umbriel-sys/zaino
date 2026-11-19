@@ -47,6 +47,17 @@ chain). Notable shapes:
 - `sendrawtransaction` keeps the validator's rejection code and message
   (−22, −25, −26, −27); invalid hex is −22 before the validator is asked.
 - `GetTransaction` for an unknown txid is `NotFound`.
+- `getaddresstxids` and `getaddressdeltas` read their height range as zebrad
+  does: an absent start is genesis, an absent or zero end the tip, both clamp
+  to the tip; a start above the end is −32602 with zebrad's message.
+- `GetTaddressTransactions` needs a range and its start; an absent or zero end
+  is the tip; an inverted range is `InvalidArgument`, never swapped. The ids
+  and the transactions come from one snapshot, as do `GetSubtreeRoots`' roots
+  and completing blocks.
+- `GetAddressUtxos` and its stream page by the request's `startHeight` and
+  `maxEntries`; `maxEntries` past the result cap is `InvalidArgument`.
+- `GetTaddressBalanceStream` counts each address once, over one snapshot in
+  one query, and refuses more than 10,000 addresses (`InvalidArgument`).
 
 ## Legacy vocabulary
 

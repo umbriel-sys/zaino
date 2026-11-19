@@ -132,8 +132,8 @@ async fn address_reads_match_the_validator() {
     assert!(!asked(&source), "answered without the validator");
 }
 
-/// The validator's refusals are the local path's: an inverted range, txids
-/// past the tip, an address for another network.
+/// The validator's refusals are the local path's: an inverted range, an
+/// address for another network; txids past the tip clamp to it on both.
 #[tokio::test]
 async fn address_reads_refuse_as_the_validator_does() {
     let local = rig(chain())
@@ -150,25 +150,46 @@ async fn address_reads_refuse_as_the_validator_does() {
     let miner = vec![address(&MINER_SCRIPT, Network::Regtest)];
     let foreign = vec![address(&MINER_SCRIPT, Network::Mainnet)];
     let (inverted, past) = ((height(10), height(5)), (height(1), height(TIP + 1)));
-    for (start, end) in [inverted, past] {
-        assert!(
-            invalid(
-                &snapshot.address_txids(&miner, start, end).await,
-                start,
-                end
-            ),
+    let (start, end) = inverted;
+    assert!(
+        invalid(
+            &snapshot.address_txids(&miner, start, end).await,
+            start,
+            end
+        ),
+        "local txids over {start}..={end}"
+    );
+    assert!(
+        invalid(
+            &expected.address_txids(&miner, start, end).await,
+            start,
+            end
+        ),
+        "validator txids over {start}..={end}"
+    );
+    let whole = snapshot
+        .address_txids(&miner, height(1), height(TIP))
+        .await
+        .expect("answered");
+    assert!(!whole.is_empty());
+    for (start, end) in [past, (height(1), height(0))] {
+        assert_eq!(
+            snapshot
+                .address_txids(&miner, start, end)
+                .await
+                .expect("clamped"),
+            whole,
             "local txids over {start}..={end}"
         );
-        assert!(
-            invalid(
-                &expected.address_txids(&miner, start, end).await,
-                start,
-                end
-            ),
+        assert_eq!(
+            expected
+                .address_txids(&miner, start, end)
+                .await
+                .expect("clamped"),
+            whole,
             "validator txids over {start}..={end}"
         );
     }
-    let (start, end) = inverted;
     assert!(
         invalid(
             &snapshot.address_deltas(&miner, start, end).await,

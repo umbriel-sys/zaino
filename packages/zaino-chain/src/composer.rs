@@ -1996,7 +1996,7 @@ where
         start: Height,
         end: Height,
     ) -> Result<Vec<TransactionId>> {
-        let range = Some((start, end, RangeRule::WithinTip));
+        let range = Some((start, end, RangeRule::Clamped));
         let Some(effects) = self.local_effects(addresses, range).await? else {
             return self
                 .address_query(
@@ -2143,12 +2143,25 @@ where
             return Ok(None);
         }
         let tip = self.head.best_tip().height;
-        if let Some((start, end, rule)) = range {
-            let past_tip = matches!(rule, RangeRule::WithinTip) && (start > tip || end > tip);
-            if start > end || past_tip {
-                return Err(invalid_range(start, end));
+        let range = match range {
+            Some((start, end, rule)) => {
+                let (from, to) = match rule {
+                    RangeRule::Ordered => (start, end),
+                    RangeRule::Clamped => (
+                        start.min(tip),
+                        match end {
+                            Height::GENESIS => tip,
+                            end => end.min(tip),
+                        },
+                    ),
+                };
+                if from > to {
+                    return Err(invalid_range(start, end));
+                }
+                Some((from, to))
             }
-        }
+            None => None,
+        };
         let network = self.reader.network();
         if let Some(foreign) = addresses.iter().find(|address| !address.is_for(network)) {
             return Err(ChainViewError::Rejected(format!(
@@ -2160,7 +2173,7 @@ where
             .map(|address| (address.key(), address.clone()))
             .collect();
         let keys: Vec<TransparentAddressKey> = by_key.keys().copied().collect();
-        let (start, end) = range.map_or((Height::GENESIS, tip), |(start, end, _)| (start, end));
+        let (start, end) = range.unwrap_or((Height::GENESIS, tip));
         let end = end.min(tip);
         let mut all = Vec::new();
         if start > end {
@@ -2417,8 +2430,9 @@ fn stored_spender(spender: zaino_chain_store::SpenderRef) -> SpendStatus {
 enum RangeRule {
     /// Refused when inverted.
     Ordered,
-    /// Refused when inverted or past the tip.
-    WithinTip,
+    /// zebrad's `build_height_range`: clamped to the tip, an end of 0 the
+    /// tip, then refused when inverted.
+    Clamped,
 }
 
 /// An answer over the validator's result limit is refused, as it refuses it.

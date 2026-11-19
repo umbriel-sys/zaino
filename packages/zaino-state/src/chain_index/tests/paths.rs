@@ -357,6 +357,89 @@ async fn startup_waits_for_the_head_not_the_store() {
     );
 }
 
+/// The gRPC taddress reads as lightwalletd reads them: an inverted range is
+/// refused, not swapped (#42); `GetAddressUtxos` pages by the request's start
+/// height and entry count (#46); a balance stream counts an address once
+/// (Q-45).
+#[tokio::test]
+#[allow(deprecated)]
+async fn taddress_requests_are_read_as_lightwalletd_reads_them() {
+    use zaino_proto::proto::service::{
+        Address, AddressList, BlockRange, GetAddressUtxosArg, TransparentAddressBlockFilter,
+    };
+    let rig = rig(true).await;
+    let code =
+        |error: crate::error::NodeBackedIndexerServiceError| tonic::Status::from(error).code();
+    let block = |height| {
+        Some(BlockId {
+            height,
+            hash: Vec::new(),
+        })
+    };
+
+    let inverted = TransparentAddressBlockFilter {
+        address: miner(),
+        range: Some(BlockRange {
+            start: block(20),
+            end: block(10),
+            pool_types: Vec::new(),
+        }),
+    };
+    let refused = rig
+        .rpc
+        .get_taddress_transactions(inverted)
+        .await
+        .map(drop)
+        .expect_err("an inverted range");
+    assert_eq!(code(refused), tonic::Code::InvalidArgument);
+
+    let utxos = |start_height, max_entries| {
+        rig.rpc.get_address_utxos(GetAddressUtxosArg {
+            addresses: vec![miner()],
+            start_height,
+            max_entries,
+        })
+    };
+    let over_the_cap = u32::try_from(zaino_source::MAX_ADDRESS_QUERY_RESULTS + 1).expect("fits");
+    let refused = utxos(0, over_the_cap).await.expect_err("over the cap");
+    assert_eq!(code(refused), tonic::Code::InvalidArgument);
+    let all = utxos(0, 0).await.expect("answered").address_utxos;
+    let from: Vec<_> = all
+        .iter()
+        .filter(|utxo| utxo.height >= u64::from(IN_HOLE))
+        .cloned()
+        .collect();
+    assert!(from.len() > 1 && from.len() < all.len());
+    let page = utxos(u64::from(IN_HOLE), 1).await.expect("answered");
+    assert_eq!(
+        page.address_utxos,
+        from.iter().take(1).cloned().collect::<Vec<_>>()
+    );
+
+    let (sender, receiver) = tokio::sync::mpsc::channel(2);
+    for _ in 0..2 {
+        sender
+            .send(Ok(Address { address: miner() }))
+            .await
+            .expect("the receiver lives");
+    }
+    drop(sender);
+    let streamed = rig
+        .rpc
+        .get_taddress_balance_stream(crate::stream::AddressStream::new(receiver))
+        .await
+        .expect("answered");
+    let once = rig
+        .rpc
+        .get_taddress_balance(AddressList {
+            addresses: vec![miner()],
+        })
+        .await
+        .expect("answered");
+    assert!(once.value_zat > 0);
+    assert_eq!(streamed, once);
+}
+
 /// With the store mid-build, what it holds is local and the hole is the
 /// validator's; the txout set is retryable.
 #[tokio::test(flavor = "multi_thread")]

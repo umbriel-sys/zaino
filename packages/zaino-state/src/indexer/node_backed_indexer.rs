@@ -285,22 +285,17 @@ fn no_such_transaction() -> NodeBackedIndexerServiceError {
     ))
 }
 
-/// The UTXOs at or above `start_height`, at most `max_entries` of them (0 is
-/// unlimited).
-fn requested_utxos(
-    utxos: Vec<zaino_primitives::types::Utxo>,
-    start_height: u64,
-    max_entries: u32,
-) -> impl Iterator<Item = zaino_primitives::types::Utxo> {
-    let limit = if max_entries > 0 {
-        max_entries as usize
-    } else {
-        usize::MAX
-    };
-    utxos
-        .into_iter()
-        .filter(move |utxo| u64::from(u32::from(utxo.height)) >= start_height)
-        .take(limit)
+/// The request's page: its `start_height` and `max_entries` (0: no bound but
+/// the cap), as lightwalletd passes them to the validator (#46).
+fn utxo_page(start_height: u64, max_entries: u32) -> Result<zaino_source::UtxoPage, tonic::Status> {
+    let start = u32::try_from(start_height)
+        .ok()
+        .and_then(|height| zaino_primitives::types::Height::try_from(height).ok())
+        .ok_or_else(|| tonic::Status::invalid_argument("Error: Start height out of range."))?;
+    let max_entries = usize::try_from(max_entries)
+        .map_err(|_| tonic::Status::invalid_argument("Error: Max entries out of range."))?;
+    zaino_source::UtxoPage::new(start, max_entries)
+        .map_err(|error| tonic::Status::invalid_argument(format!("Error: {error}.")))
 }
 
 /// A UTXO as the light-wallet protocol's reply.
@@ -421,6 +416,25 @@ impl<V: ChainIndexSourcePorts + ServiceSource> NodeBackedIndexerServiceSubscribe
         Some(ChainTipSubscriber {
             monitor: self.indexer.source().chain_tip_change()?,
         })
+    }
+
+    /// The page of unspent outputs a `GetAddressUtxos` request asks for.
+    async fn requested_utxos(
+        &self,
+        request: GetAddressUtxosArg,
+    ) -> Result<Vec<zaino_primitives::types::Utxo>, NodeBackedIndexerServiceError> {
+        let status = NodeBackedIndexerServiceError::TonicStatusError;
+        super::validate_utxo_address_count(request.addresses.len()).map_err(status)?;
+        let page = utxo_page(request.start_height, request.max_entries).map_err(status)?;
+        let snapshot = self.indexer.snapshot_nonfinalized_state();
+        Ok(self
+            .indexer
+            .address_utxos_in(
+                &snapshot,
+                GetAddressBalanceRequest::new(request.addresses),
+                page,
+            )
+            .await?)
     }
 
     /// A transaction as the light-wallet `RawTransaction`: its best-chain
@@ -1259,9 +1273,18 @@ impl<V: ChainIndexSourcePorts + ServiceSource> LightWalletIndexer
         &self,
         request: TransparentAddressBlockFilter,
     ) -> Result<RawTransactionStream, Self::Error> {
-        let txids = self.get_taddress_txids_helper(request).await?;
-        let service = self.clone();
+        // one snapshot for the ids and the transactions (#49)
+        let request = super::taddress_txids_request(request)
+            .map_err(NodeBackedIndexerServiceError::TonicStatusError)?;
         let snapshot = self.indexer.snapshot_nonfinalized_state();
+        let txids: Vec<String> = self
+            .indexer
+            .address_txids_in(&snapshot, request)
+            .await?
+            .into_iter()
+            .map(|txid| txid.to_rpc_hex())
+            .collect();
+        let service = self.clone();
         Ok(RawTransactionStream::new(super::spawn_timed_stream(
             self.timeout_channel_size(),
             4,
@@ -1317,26 +1340,31 @@ impl<V: ChainIndexSourcePorts + ServiceSource> LightWalletIndexer
         let total_balance = timeout(
             time::Duration::from_secs(u64::from(self.config.service.timeout) * 4),
             async {
-                // A running total past the money supply means the addresses
-                // overlap or the source double-counts, and is refused.
-                let mut total_balance = zaino_primitives::types::Zatoshis::ZERO;
+                // each address once, at most the limit, then one query over
+                // one snapshot (Q-45, as lightwalletd)
+                let mut seen = std::collections::HashSet::new();
+                let mut addresses = Vec::new();
                 while let Some(address) = request.next().await {
-                    let address = address.map_err(|e| {
-                        tonic::Status::unknown(format!("Failed to read from stream: {e}"))
-                    })?;
-                    let balance = self
-                        .z_get_address_balance(GetAddressBalanceRequest::new(vec![address.address]))
-                        .await
-                        .map_err(tonic::Status::from)?;
-                    total_balance =
-                        total_balance.checked_add(balance.balance).ok_or_else(|| {
-                            tonic::Status::data_loss(
-                                "Error: address balances total past the money supply; the \
-                                     requested addresses overlap or the source data is corrupt.",
-                            )
-                        })?;
+                    let address = address
+                        .map_err(|e| {
+                            tonic::Status::unknown(format!("Failed to read from stream: {e}"))
+                        })?
+                        .address;
+                    if !seen.insert(address.clone()) {
+                        continue;
+                    }
+                    super::validate_balance_address_count(seen.len())?;
+                    addresses.push(address);
                 }
-                Ok(u64::from(total_balance))
+                let snapshot = self.indexer.snapshot_nonfinalized_state();
+                let balance = self
+                    .indexer
+                    .address_balance_in(&snapshot, GetAddressBalanceRequest::new(addresses))
+                    .await
+                    .map_err(|error| {
+                        tonic::Status::from(NodeBackedIndexerServiceError::from(error))
+                    })?;
+                Ok(u64::from(balance.balance))
             },
         )
         .await
@@ -1546,6 +1574,57 @@ impl<V: ChainIndexSourcePorts + ServiceSource> LightWalletIndexer
         )
     }
 
+    /// The subtree roots and their completing blocks, all from one snapshot
+    /// (#49): each completing block's hash is the one the snapshot holds.
+    async fn get_subtree_roots(
+        &self,
+        request: zaino_proto::proto::service::GetSubtreeRootsArg,
+    ) -> Result<crate::stream::SubtreeRootReplyStream, Self::Error> {
+        let (pool, start_index, limit) = super::subtree_roots_request(&request)
+            .map_err(NodeBackedIndexerServiceError::TonicStatusError)?;
+        let snapshot = self.indexer.snapshot_nonfinalized_state();
+        let subtrees =
+            zaino_chain::TreestateRead::subtree_roots(&snapshot, pool, start_index, limit)
+                .await
+                .map_err(crate::error::ChainIndexError::from)?;
+        Ok(crate::stream::SubtreeRootReplyStream::new(
+            super::spawn_timed_stream(
+                self.timeout_channel_size(),
+                4,
+                tonic::Status::deadline_exceeded("Error: get_subtree_roots gRPC request timed out"),
+                |channel_tx| async move {
+                    for subtree in subtrees {
+                        let height = subtree.end_height;
+                        let reply =
+                            match zaino_chain::BlockRead::block_hash(&snapshot, height).await {
+                                Ok(Some(hash)) => {
+                                    let mut display = <[u8; 32]>::from(hash);
+                                    display.reverse();
+                                    Ok(zaino_proto::proto::service::SubtreeRoot {
+                                        root_hash: <[u8; 32]>::from(subtree.root).to_vec(),
+                                        completing_block_hash: display.to_vec(),
+                                        completing_block_height: u64::from(u32::from(height)),
+                                    })
+                                }
+                                Ok(None) => Err(tonic::Status::internal(format!(
+                                    "Error: no block at {height}, where a subtree completed."
+                                ))),
+                                Err(error) => {
+                                    Err(tonic::Status::from(NodeBackedIndexerServiceError::from(
+                                        crate::error::ChainIndexError::from(error),
+                                    )))
+                                }
+                            };
+                        let failed = reply.is_err();
+                        if channel_tx.send(reply).await.is_err() || failed {
+                            return;
+                        }
+                    }
+                },
+            ),
+        ))
+    }
+
     /// Returns all unspent outputs for a list of addresses.
     ///
     /// Ignores all utxos below block height [GetAddressUtxosArg.start_height].
@@ -1556,10 +1635,10 @@ impl<V: ChainIndexSourcePorts + ServiceSource> LightWalletIndexer
         &self,
         request: GetAddressUtxosArg,
     ) -> Result<GetAddressUtxosReplyList, Self::Error> {
-        super::validate_utxo_address_count(request.addresses.len())?;
-        let taddrs = GetAddressBalanceRequest::new(request.addresses);
-        let utxos = self.z_get_address_utxos(taddrs).await?;
-        let address_utxos = requested_utxos(utxos, request.start_height, request.max_entries)
+        let address_utxos = self
+            .requested_utxos(request)
+            .await?
+            .into_iter()
             .map(utxo_reply)
             .collect::<Result<Vec<_>, _>>()
             .map_err(NodeBackedIndexerServiceError::TonicStatusError)?;
@@ -1577,9 +1656,7 @@ impl<V: ChainIndexSourcePorts + ServiceSource> LightWalletIndexer
         &self,
         request: GetAddressUtxosArg,
     ) -> Result<UtxoReplyStream, Self::Error> {
-        super::validate_utxo_address_count(request.addresses.len())?;
-        let taddrs = GetAddressBalanceRequest::new(request.addresses);
-        let utxos = self.z_get_address_utxos(taddrs).await?;
+        let utxos = self.requested_utxos(request).await?;
         Ok(UtxoReplyStream::new(super::spawn_timed_stream(
             self.timeout_channel_size(),
             4,
@@ -1587,9 +1664,7 @@ impl<V: ChainIndexSourcePorts + ServiceSource> LightWalletIndexer
                 "Error: get_address_utxos_stream gRPC request timed out",
             ),
             |channel_tx| async move {
-                for reply in requested_utxos(utxos, request.start_height, request.max_entries)
-                    .map(utxo_reply)
-                {
+                for reply in utxos.into_iter().map(utxo_reply) {
                     let failed = reply.is_err();
                     if channel_tx.send(reply).await.is_err() || failed {
                         return;
