@@ -156,9 +156,96 @@ pub trait StatusWatch {
     fn subscribe(&self) -> watch::Receiver<ComponentStatus>;
 }
 
+impl ComponentStatus {
+    /// Whether the component is running: neither failed nor stopped.
+    pub fn is_live(&self) -> bool {
+        !matches!(self.health, Health::Critical | Health::Offline)
+    }
+
+    /// Whether it can serve now: `Ready` and `Healthy`.
+    pub fn is_ready(&self) -> bool {
+        self.lifecycle == Lifecycle::Ready && self.health == Health::Healthy
+    }
+}
+
+/// A component's status, set by its runtime and read by every handle to it.
+#[derive(Clone, Debug)]
+pub struct StatusCell {
+    sender: std::sync::Arc<watch::Sender<ComponentStatus>>,
+}
+
+impl StatusCell {
+    /// A cell for `name`, at `lifecycle` and `health`.
+    pub fn new(name: ComponentName, lifecycle: Lifecycle, health: Health) -> Self {
+        Self {
+            sender: std::sync::Arc::new(watch::Sender::new(ComponentStatus::new(
+                name, lifecycle, health,
+            ))),
+        }
+    }
+
+    /// Moves to `lifecycle` and `health`, clearing any reason.
+    pub fn set(&self, lifecycle: Lifecycle, health: Health) {
+        self.sender.send_modify(|status| {
+            status.lifecycle = lifecycle;
+            status.health = health;
+            status.reason = None;
+        });
+    }
+
+    /// Moves to `lifecycle` and `health` unless the component is closing,
+    /// which every later transition leaves in place.
+    pub fn set_unless_closing(&self, lifecycle: Lifecycle, health: Health) {
+        self.sender.send_if_modified(|status| {
+            if status.lifecycle == Lifecycle::Closing {
+                return false;
+            }
+            status.lifecycle = lifecycle;
+            status.health = health;
+            status.reason = None;
+            true
+        });
+    }
+}
+
+impl StatusSource for StatusCell {
+    fn status(&self) -> ComponentStatus {
+        self.sender.borrow().clone()
+    }
+}
+
+impl StatusWatch for StatusCell {
+    fn subscribe(&self) -> watch::Receiver<ComponentStatus> {
+        self.sender.subscribe()
+    }
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{ComponentName, ComponentStatus, Progress};
+    use super::{ComponentName, ComponentStatus, Progress, StatusCell, StatusSource, StatusWatch};
+
+    /// Every handle reads what the runtime set; closing holds.
+    #[test]
+    fn a_cell_is_shared_and_closing_holds() {
+        let cell = StatusCell::new(
+            ComponentName("mempool"),
+            Lifecycle::Spawning,
+            Health::Healthy,
+        );
+        let handle = cell.clone();
+        let mut watcher = cell.subscribe();
+        cell.set(Lifecycle::Ready, Health::Healthy);
+        assert!(handle.status().is_ready());
+        assert!(watcher.has_changed().expect("open"));
+        watcher.mark_unchanged();
+        cell.set(Lifecycle::Closing, Health::Healthy);
+        cell.set_unless_closing(Lifecycle::Ready, Health::Healthy);
+        assert_eq!(handle.status().lifecycle, Lifecycle::Closing);
+        assert!(!handle.status().is_ready());
+        assert!(handle.status().is_live());
+        cell.set(Lifecycle::Offline, Health::Critical);
+        assert!(!handle.status().is_live());
+    }
     use crate::{Health, Lifecycle};
 
     #[test]

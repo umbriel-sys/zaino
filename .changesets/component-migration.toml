@@ -1,0 +1,42 @@
+[[changes]]
+crate = "zaino-component"
+kind = "feature"
+description = """
+`StatusCell` (a shared status a runtime sets and handles read and watch) and \
+`ComponentStatus::{is_live, is_ready}`."""
+
+[[changes]]
+crate = "zaino-chain-head-service"
+kind = "breaking"
+description = """
+Status held in a `StatusCell`; `zaino-status` dropped."""
+
+[[changes]]
+crate = "zaino-mempool-service"
+kind = "breaking"
+description = """
+`MempoolService`, `MempoolSubscriber`, `CoherenceService` and \
+`CoherentSubscriber` report `ComponentStatus`; `zaino-status` dropped."""
+
+[[changes]]
+crate = "zaino-serve"
+kind = "breaking"
+description = """
+`TonicServer` and `JsonRpcServer` report `ComponentStatus` through a \
+`StatusCell`; the JSON-RPC server stops on the closing transition instead of \
+polling for it; `zaino-status` dropped."""
+
+[[changes]]
+crate = "zainod"
+kind = "breaking"
+description = """
+`Indexer::statuses` replaces `status`; restart and shutdown decisions read \
+`ComponentStatus` with the old precedence (closing first); `zaino-status` \
+dropped."""
+
+[[changes]]
+crate = "zaino-state"
+kind = "feature"
+description = """
+`legacy::status::component_status` maps a `ZcashService`'s legacy status to \
+a `ComponentStatus`."""

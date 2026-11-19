@@ -7,7 +7,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use tokio::sync::broadcast;
-use zaino_status::StatusType;
+use zaino_component::{Health, Lifecycle};
 
 use zaino_mempool::ports::{Mempool, NfsEpochObserver};
 use zaino_mempool::update::MempoolUpdate;
@@ -41,7 +41,7 @@ impl<M: Mempool, N: NfsEpochObserver> super::CoherenceService<M, N> {
     /// rather than in per-reconcile spans.
     #[tracing::instrument(name = "mempool_coherence_loop", skip_all)]
     pub(super) async fn run(self: Arc<Self>) {
-        self.status.store(StatusType::Syncing);
+        self.status.set(Lifecycle::Syncing, Health::Healthy);
 
         let mut updates = self.mempool.subscribe_updates();
         // The NS tip advances on Zaino's own sync, which does not always coincide

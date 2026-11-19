@@ -2,4 +2,5 @@
 //! configuration vocabulary and the XDG path policy its defaults use.
 
 pub mod config;
+pub mod status;
 pub mod xdg;

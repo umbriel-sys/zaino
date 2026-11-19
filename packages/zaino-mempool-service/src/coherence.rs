@@ -24,7 +24,9 @@ use std::time::Instant;
 use arc_swap::ArcSwap;
 use tokio::sync::broadcast;
 use tokio_util::sync::CancellationToken;
-use zaino_status::{NamedAtomicStatus, StatusType};
+use zaino_component::{
+    ComponentName, ComponentStatus, Health, Lifecycle, StatusCell, StatusSource as _,
+};
 
 use zaino_mempool::config::MempoolConfig;
 use zaino_mempool::event::MempoolEvent;
@@ -67,7 +69,7 @@ pub struct CoherenceService<M: Mempool, N: NfsEpochObserver> {
     coherent: Arc<ArcSwap<CoherentSnapshot>>,
     events: broadcast::Sender<Arc<MempoolEvent>>,
     config: MempoolConfig,
-    status: NamedAtomicStatus,
+    status: StatusCell,
     /// When the current continuous freeze began, or `None` when the view is
     /// live/serving. Shared with every [`CoherentSubscriber`] so an operator can
     /// escalate a freeze that outlasts normal block-driven thaw (see
@@ -81,7 +83,7 @@ pub struct CoherenceService<M: Mempool, N: NfsEpochObserver> {
 impl<M: Mempool, N: NfsEpochObserver> std::fmt::Debug for CoherenceService<M, N> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("CoherenceService")
-            .field("status", &self.status.load())
+            .field("status", &self.status.status())
             .finish_non_exhaustive()
     }
 }
@@ -125,7 +127,11 @@ impl<M: Mempool, N: NfsEpochObserver> CoherenceService<M, N> {
             coherent: Arc::new(ArcSwap::from_pointee(CoherentSnapshot::empty_not_ready())),
             events,
             config,
-            status: NamedAtomicStatus::new("MempoolCoherence", StatusType::Spawning),
+            status: StatusCell::new(
+                ComponentName("MempoolCoherence"),
+                Lifecycle::Spawning,
+                Health::Healthy,
+            ),
             frozen_since: Arc::new(std::sync::Mutex::new(None)),
             cancel,
             task: std::sync::Mutex::new(None),
@@ -155,8 +161,8 @@ impl<M: Mempool, N: NfsEpochObserver> CoherenceService<M, N> {
     }
 
     /// Current coherence-layer status.
-    pub fn status(&self) -> StatusType {
-        self.status.load()
+    pub fn status(&self) -> ComponentStatus {
+        self.status.status()
     }
 
     /// Signal shutdown: publish `Closing`, then stop the task.
@@ -179,14 +185,14 @@ impl<M: Mempool, N: NfsEpochObserver> CoherenceService<M, N> {
 pub struct CoherentSubscriber {
     coherent: Arc<ArcSwap<CoherentSnapshot>>,
     events: broadcast::Sender<Arc<MempoolEvent>>,
-    status: NamedAtomicStatus,
+    status: StatusCell,
     frozen_since: Arc<std::sync::Mutex<Option<Instant>>>,
 }
 
 impl std::fmt::Debug for CoherentSubscriber {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("CoherentSubscriber")
-            .field("status", &self.status.load())
+            .field("status", &self.status.status())
             .finish_non_exhaustive()
     }
 }
@@ -198,8 +204,8 @@ impl CoherentSubscriber {
     }
 
     /// The coherence-layer status.
-    pub fn status(&self) -> StatusType {
-        self.status.load()
+    pub fn status(&self) -> ComponentStatus {
+        self.status.status()
     }
 
     /// How long the coherent view has been *continuously* frozen, or `None` when

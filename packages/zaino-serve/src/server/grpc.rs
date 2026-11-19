@@ -8,14 +8,19 @@ use tonic::{
     transport::{server::TcpIncoming, Server},
 };
 use tracing::warn;
-use zaino_status::{NamedAtomicStatus, StatusType};
+use zaino_component::{
+    ComponentName, ComponentStatus, Health, Lifecycle, StatusCell, StatusSource as _,
+};
+
+/// The name the gRPC server reports status under.
+const NAME: &str = "gRPC";
 
 use crate::server::{config::GrpcServerConfig, error::ServerError};
 
 /// LightWallet gRPC server capable of servicing clients over TCP.
 pub struct TonicServer {
     /// Current status of the server.
-    pub status: NamedAtomicStatus,
+    pub status: StatusCell,
     /// JoinHandle for the servers `serve` task.
     pub server_handle: Option<tokio::task::JoinHandle<Result<(), ServerError>>>,
     shutdown: watch::Sender<()>,
@@ -98,7 +103,7 @@ impl TonicServer {
     where
         BuildRoutes: FnOnce(watch::Receiver<()>) -> Routes,
     {
-        let status = NamedAtomicStatus::new("gRPC", StatusType::Spawning);
+        let status = StatusCell::new(ComponentName(NAME), Lifecycle::Spawning, Health::Healthy);
         let (shutdown, mut shutdown_signal) = watch::channel(());
         let routes = build_routes(shutdown.subscribe());
 
@@ -133,9 +138,9 @@ impl TonicServer {
 
         let task_status = status.clone();
         let server_handle = tokio::task::spawn(async move {
-            task_status.store(StatusType::Ready);
+            task_status.set(Lifecycle::Ready, Health::Healthy);
             server_future.await?;
-            task_status.store(StatusType::Offline);
+            task_status.set(Lifecycle::Offline, Health::Offline);
             Ok(())
         });
 
@@ -148,7 +153,7 @@ impl TonicServer {
 
     /// Sets the servers to close gracefully.
     pub async fn close(&mut self) {
-        self.status.store(StatusType::Closing);
+        self.status.set(Lifecycle::Closing, Health::Healthy);
         self.shutdown.send_replace(());
 
         if let Some(handle) = self.server_handle.take() {
@@ -167,11 +172,11 @@ impl TonicServer {
     /// otherwise a serve task that died after reporting `Ready` would
     /// keep the indexer's critical-error check from firing. See
     /// zingolabs/zaino#1081.
-    pub fn status(&self) -> StatusType {
+    pub fn status(&self) -> ComponentStatus {
         if self.server_handle.as_ref().is_some_and(|h| h.is_finished()) {
-            return StatusType::Offline;
+            return ComponentStatus::new(ComponentName(NAME), Lifecycle::Offline, Health::Offline);
         }
-        self.status.load()
+        self.status.status()
     }
 }
 

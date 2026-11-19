@@ -35,6 +35,14 @@ exactly what it uses.
 samples every component without awaiting. A component that publishes
 [`StatusWatch`] lets a supervisor react to transitions instead of polling.
 
+A runtime that sets its own status holds a [`StatusCell`]: cloned into every
+handle, it is both a `StatusSource` and a `StatusWatch`. `set` moves it;
+`set_unless_closing` leaves a closing component closing, for a loop whose last
+iteration may race its shutdown. For a supervisor's verdict,
+`ComponentStatus::is_live` (health neither `Critical` nor `Offline`) and
+`is_ready` (`Ready` and `Healthy`) read the two axes together; nothing else
+should collapse them.
+
 ```rust
 use zaino_component::{ComponentName, ComponentStatus, Health, Lifecycle, StatusSource};
 

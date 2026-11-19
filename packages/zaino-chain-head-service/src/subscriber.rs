@@ -5,9 +5,8 @@ use std::sync::Arc;
 use arc_swap::ArcSwap;
 use tokio::sync::watch;
 use zaino_chain_head::ChainHeadBlockService;
-use zaino_component::{ComponentStatus, StatusSource};
+use zaino_component::{ComponentStatus, StatusCell, StatusSource};
 use zaino_primitives::types::ChainStateEpoch;
-use zaino_status::NamedAtomicStatus;
 
 use crate::snapshot::PersistentSnapshot;
 
@@ -38,14 +37,14 @@ pub struct ChainHeadSubscriber {
     /// only this handle to say whether the tip it is being served is fresh —
     /// a snapshot looks identical whether the writer is keeping up or has given
     /// up, so without this the answer is unobtainable from the read side.
-    status: NamedAtomicStatus,
+    status: StatusCell,
 }
 
 impl std::fmt::Debug for ChainHeadSubscriber {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("ChainHeadSubscriber")
             .field("epoch", &*self.updates.borrow())
-            .field("status", &self.status.load())
+            .field("status", &self.status.status())
             .finish_non_exhaustive()
     }
 }
@@ -54,7 +53,7 @@ impl ChainHeadSubscriber {
     pub(crate) fn new(
         current: Arc<ArcSwap<PersistentSnapshot>>,
         updates: watch::Receiver<ChainStateEpoch>,
-        status: NamedAtomicStatus,
+        status: StatusCell,
     ) -> Self {
         Self {
             current,
@@ -75,7 +74,7 @@ impl StatusSource for ChainHeadSubscriber {
     /// The same value `ChainHeadService::status` returns — both read one cell,
     /// so a transition cannot be visible on one handle and not the other.
     fn status(&self) -> ComponentStatus {
-        crate::service::component_status(&self.status)
+        self.status.status()
     }
 }
 

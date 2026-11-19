@@ -6091,7 +6091,6 @@ dependencies = [
  "zaino-primitives",
  "zaino-source",
  "zaino-source-mock",
- "zaino-status",
 ]
 
 [[package]]
@@ -6247,10 +6246,10 @@ dependencies = [
  "tokio",
  "tokio-util",
  "tracing",
+ "zaino-component",
  "zaino-mempool",
  "zaino-primitives",
  "zaino-source",
- "zaino-status",
 ]
 
 [[package]]
@@ -6354,13 +6353,13 @@ dependencies = [
  "tower 0.4.13",
  "tracing",
  "zaino-address",
+ "zaino-component",
  "zaino-consensus",
  "zaino-primitives",
  "zaino-proto",
  "zaino-rpc",
  "zaino-source",
  "zaino-state",
- "zaino-status",
  "zebra-chain",
  "zebra-rpc",
 ]
@@ -6568,13 +6567,13 @@ dependencies = [
  "toml",
  "tracing",
  "zaino-chain-head-service",
+ "zaino-component",
  "zaino-logging",
  "zaino-mempool",
  "zaino-primitives",
  "zaino-rpc",
  "zaino-serve",
  "zaino-state",
- "zaino-status",
  "zcash_address",
  "zcash_protocol",
  "zebra-state",

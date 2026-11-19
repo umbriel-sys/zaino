@@ -3,16 +3,17 @@
 use tokio::time::Instant;
 use tracing::info;
 
+use zaino_component::{ComponentName, ComponentStatus, Health, Lifecycle};
 use zaino_rpc::probe_node;
 use zaino_serve::{
     rpc::grpc_routes,
     server::{config::GrpcServerConfig, grpc::TonicServer, jsonrpc::JsonRpcServer},
 };
+use zaino_state::legacy::status::component_status;
 use zaino_state::{
     IndexerService, LightWalletService, NodeBackedIndexerService, NodeBackedIndexerServiceConfig,
     ZcashIndexer, ZcashService,
 };
-use zaino_status::StatusType;
 
 use crate::{config::ZainodConfig, error::IndexerError};
 
@@ -228,49 +229,34 @@ where
         Ok((serve_task, service_subscriber.inner()))
     }
 
-    /// Checks indexers status and servers internal statuses for either offline of critical error signals.
+    /// Whether the indexer must restart: the service or the gRPC server is
+    /// gone, or, while nothing is closing, a component is not live.
     fn check_for_critical_errors(&self) -> bool {
-        let status = self.status_int();
-        if status == 5 || status >= 7 {
-            let service_status = self
-                .service
-                .as_ref()
-                .map(|s| s.inner_ref().status())
-                .unwrap_or(StatusType::Offline);
-            let server_status = self
-                .server
-                .as_ref()
-                .map(|s| s.status())
-                .unwrap_or(StatusType::Offline);
-            tracing::error!(
-                combined_status = status,
-                ?service_status,
-                ?server_status,
-                "check_for_critical_errors triggered"
-            );
-            return true;
+        let critical = match self.statuses() {
+            None => true,
+            Some(statuses) => !closing(&statuses) && statuses.iter().any(|s| !s.is_live()),
+        };
+        if critical {
+            tracing::error!(statuses = ?self.statuses(), "check_for_critical_errors triggered");
         }
-        false
+        critical
     }
 
-    /// Checks indexers status and servers internal status for closure signal.
+    /// Whether a component is closing.
     fn check_for_shutdown(&self) -> bool {
-        if self.status_int() == 4 {
-            return true;
-        }
-        false
+        self.statuses().is_some_and(|statuses| closing(&statuses))
     }
 
     /// Sets the servers to close gracefully.
     async fn close(&mut self) {
         if let Some(mut json_server) = self.json_server.take() {
             json_server.close().await;
-            json_server.status.store(StatusType::Offline);
+            json_server.status.set(Lifecycle::Offline, Health::Offline);
         }
 
         if let Some(mut server) = self.server.take() {
             server.close().await;
-            server.status.store(StatusType::Offline);
+            server.status.set(Lifecycle::Offline, Health::Offline);
         }
 
         if let Some(service) = self.service.take() {
@@ -279,40 +265,25 @@ where
         }
     }
 
-    /// Returns the indexers current status usize, calculates from internal statuses.
-    fn status_int(&self) -> usize {
-        let service_status = match &self.service {
-            Some(service) => service.inner_ref().status(),
-            None => return 7,
-        };
-
-        let json_server_status = self
-            .json_server
-            .as_ref()
-            .map(|json_server| json_server.status());
-
-        let mut server_status = match &self.server {
-            Some(server) => server.status(),
-            None => return 7,
-        };
-
-        if let Some(json_status) = json_server_status {
-            server_status = StatusType::combine(server_status, json_status);
-        }
-
-        usize::from(StatusType::combine(service_status, server_status))
-    }
-
-    /// Returns the current StatusType of the indexer.
-    pub fn status(&self) -> StatusType {
-        StatusType::from(self.status_int())
+    /// The status of the indexer service, the gRPC server and, when running,
+    /// the JSON-RPC server; `None` while the service or the gRPC server is
+    /// not held.
+    pub fn statuses(&self) -> Option<Vec<ComponentStatus>> {
+        let service = self.service.as_ref()?;
+        let grpc = self.server.as_ref()?;
+        let mut statuses = vec![
+            component_status(SERVICE, service.inner_ref().status()),
+            grpc.status(),
+        ];
+        statuses.extend(self.json_server.as_ref().map(JsonRpcServer::status));
+        Some(statuses)
     }
 
     /// Logs the indexers status.
     pub fn log_status(&self) {
         let service_status = match &self.service {
-            Some(service) => service.inner_ref().status(),
-            None => StatusType::Offline,
+            Some(service) => component_status(SERVICE, service.inner_ref().status()),
+            None => offline(SERVICE),
         };
 
         // `chain_state: Ready` on its own is ambiguous: while initial sync or a migration runs, an
@@ -327,12 +298,12 @@ where
 
         let json_server_status = match &self.json_server {
             Some(json_server) => json_server.status(),
-            None => StatusType::Offline,
+            None => offline("JSON-RPC"),
         };
 
         let grpc_server_status = match &self.server {
             Some(server) => server.status(),
-            None => StatusType::Offline,
+            None => offline("gRPC"),
         };
 
         info!(
@@ -343,6 +314,21 @@ where
             "Zaino status check"
         );
     }
+}
+
+/// The name the indexer service reports status under.
+const SERVICE: &str = "indexer";
+
+/// Whether any component is closing.
+fn closing(statuses: &[ComponentStatus]) -> bool {
+    statuses
+        .iter()
+        .any(|status| status.lifecycle == Lifecycle::Closing)
+}
+
+/// A component that is not running.
+fn offline(name: &'static str) -> ComponentStatus {
+    ComponentStatus::new(ComponentName(name), Lifecycle::Offline, Health::Offline)
 }
 
 /// Resolves on SIGTERM (pod teardown) or ctrl-c; ctrl-c only off unix

@@ -150,8 +150,8 @@ an incomplete set as complete on a full-mempool API.
 separate axis: `is_ready()`, which reads the `source_tip` tag (no tag, no set).
 The pre-first-poll snapshot is empty and trivially `Complete`, so `is_whole()`
 alone is not a readiness check — the coherence layer refuses to bless an unready
-set, and the service's `StatusType` is the operator-facing form of the same
-question.
+set, and the service's `ComponentStatus` is the operator-facing form of the
+same question.
 
 `unadmitted` is the per-txid form of the short case: the exact txids the source
 reported that are not in `by_txid` (capacity-refused, or metadata-deferred),

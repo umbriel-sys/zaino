@@ -46,11 +46,12 @@ use tracing::{debug, info, instrument, warn};
 use zaino_chain_head::{
     ChainHeadBlock, ChainHeadBlockSource, ChainHeadConfig, ChainHeadSnapshot as _,
 };
-use zaino_component::{ComponentName, ComponentStatus, Health, Lifecycle, StatusSource};
+use zaino_component::{
+    ComponentName, ComponentStatus, Health, Lifecycle, StatusCell, StatusSource,
+};
 use zaino_primitives::types::{
     BlockHash, BlockRef, ChainStateEpoch, Height, RelativeChainWork, TreeRoots,
 };
-use zaino_status::{NamedAtomicStatus, StatusType};
 
 use crate::{
     error::{ChainHeadAdvanceError, ChainHeadInitError},
@@ -108,7 +109,7 @@ pub struct ChainHeadService<S: ChainHeadBlockSource> {
     /// readers, who will hold a stale copy.
     current: Arc<ArcSwap<PersistentSnapshot>>,
     updates: watch::Sender<ChainStateEpoch>,
-    status: NamedAtomicStatus,
+    status: StatusCell,
     cancel: CancellationToken,
     task: Mutex<Option<JoinHandle<()>>>,
     config: ChainHeadConfig,
@@ -125,7 +126,7 @@ pub struct ChainHeadService<S: ChainHeadBlockSource> {
 impl<S: ChainHeadBlockSource> std::fmt::Debug for ChainHeadService<S> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("ChainHeadService")
-            .field("status", &self.status.load())
+            .field("status", &self.status.status())
             .field("best_tip", &self.current.load().best_tip())
             .finish_non_exhaustive()
     }
@@ -254,7 +255,11 @@ impl<S: ChainHeadBlockSource> ChainHeadService<S> {
             ))]
             extensions,
         } = builder;
-        let status = NamedAtomicStatus::new(COMPONENT, StatusType::Syncing);
+        let status = StatusCell::new(
+            ComponentName(COMPONENT),
+            Lifecycle::Syncing,
+            Health::Healthy,
+        );
 
         let snapshot = anchor_with_retry(&source, &config, &cancel).await?;
         info!(
@@ -305,7 +310,7 @@ impl<S: ChainHeadBlockSource> ChainHeadService<S> {
 
     /// The runtime's current status.
     pub fn status(&self) -> ComponentStatus {
-        component_status(&self.status)
+        self.status.status()
     }
 
     /// Stops the writer task.
@@ -322,7 +327,7 @@ impl<S: ChainHeadBlockSource> ChainHeadService<S> {
     /// abort so `Closing` is observable on every handle regardless of when the
     /// task dies.
     pub fn shutdown(&self) {
-        self.status.store(StatusType::Closing);
+        self.status.set(Lifecycle::Closing, Health::Healthy);
         self.cancel.cancel();
         // a poisoned lock still holds the handle: abort it all the same
         if let Some(handle) = self
@@ -376,11 +381,11 @@ impl<S: ChainHeadBlockSource> ChainHeadService<S> {
                             attempts = consecutive_failures,
                             "ChainHead giving up on the validator; last published snapshot is now stale",
                         );
-                        self.status.apply(|s| next_status(s, TickOutcome::GaveUp));
+                        record(&self.status, TickOutcome::GaveUp);
                         break;
                     }
                     warn!(%error, attempts = consecutive_failures, "ChainHead failed to advance; retrying");
-                    self.status.apply(|s| next_status(s, TickOutcome::Retrying));
+                    record(&self.status, TickOutcome::Retrying);
                     if sleep_or_cancel(backoff, &self.cancel).await.is_break() {
                         break;
                     }
@@ -484,7 +489,7 @@ impl<S: ChainHeadBlockSource> ChainHeadService<S> {
     /// Publishes the [`TickOutcome::Advanced`] transition before the snapshot
     /// swap, so no reader can observe a fresh snapshot under a stale `Syncing`.
     fn mark_fresh(&self) {
-        self.status.apply(|s| next_status(s, TickOutcome::Advanced));
+        record(&self.status, TickOutcome::Advanced);
     }
 
     /// Builds the graph as it should be at `chain_height`.
@@ -830,30 +835,8 @@ where
 
 impl<S: ChainHeadBlockSource> StatusSource for ChainHeadService<S> {
     fn status(&self) -> ComponentStatus {
-        component_status(&self.status)
+        self.status.status()
     }
-}
-
-/// A status cell's fused value, as the two axes a component reports.
-///
-/// Transitional, and the only place the two vocabularies meet here. The
-/// runtime tracks the fused [`StatusType`] throughout — `next_status` still
-/// folds a tick outcome into one value — and this re-splits it at the reporting
-/// boundary. It goes when the runtime holds a phase and a condition separately.
-pub(crate) fn component_status(status: &NamedAtomicStatus) -> ComponentStatus {
-    let (lifecycle, health) = match status.load() {
-        StatusType::Spawning => (Lifecycle::Spawning, Health::Healthy),
-        StatusType::Syncing => (Lifecycle::Syncing, Health::Healthy),
-        StatusType::Ready => (Lifecycle::Ready, Health::Healthy),
-        StatusType::Closing => (Lifecycle::Closing, Health::Healthy),
-        StatusType::Offline => (Lifecycle::Offline, Health::Offline),
-        StatusType::Busy | StatusType::RecoverableError => {
-            (Lifecycle::Syncing, Health::Recoverable)
-        }
-        StatusType::CriticalError => (Lifecycle::Offline, Health::Critical),
-    };
-
-    ComponentStatus::new(ComponentName(status.name()), lifecycle, health)
 }
 
 impl<S: ChainHeadBlockSource> Drop for ChainHeadService<S> {
@@ -881,17 +864,16 @@ enum TickOutcome {
     GaveUp,
 }
 
-/// The chain head's status transition rule, pure and total so its invariants
-/// are stated once here instead of re-derived at every store site.
-fn next_status(current: StatusType, outcome: TickOutcome) -> StatusType {
-    match (current, outcome) {
-        // Closing absorbs every outcome: a shutdown that races the final
-        // iteration must stay observable on every handle.
-        (StatusType::Closing, _) => StatusType::Closing,
-        (_, TickOutcome::Advanced) => StatusType::Ready,
-        (_, TickOutcome::Retrying) => StatusType::RecoverableError,
-        (_, TickOutcome::GaveUp) => StatusType::CriticalError,
-    }
+/// The chain head's status transition rule, stated once: each outcome's
+/// status, except that closing absorbs every outcome so a shutdown racing the
+/// final iteration stays observable on every handle.
+fn record(status: &StatusCell, outcome: TickOutcome) {
+    let (lifecycle, health) = match outcome {
+        TickOutcome::Advanced => (Lifecycle::Ready, Health::Healthy),
+        TickOutcome::Retrying => (Lifecycle::Syncing, Health::Recoverable),
+        TickOutcome::GaveUp => (Lifecycle::Offline, Health::Critical),
+    };
+    status.set_unless_closing(lifecycle, health);
 }
 
 /// Classifies a source [`QueryError`](zaino_source::QueryError) into a
@@ -1407,7 +1389,8 @@ impl Block for zaino_primitives::types::Block {
 
 #[cfg(test)]
 mod next_status_rule {
-    use super::{next_status, StatusType, TickOutcome};
+    use super::{record, StatusCell, TickOutcome, COMPONENT};
+    use zaino_component::{ComponentName, Health, Lifecycle, StatusSource as _};
 
     const OUTCOMES: [TickOutcome; 3] = [
         TickOutcome::Advanced,
@@ -1419,39 +1402,38 @@ mod next_status_rule {
     #[test]
     fn closing_absorbs_every_outcome() {
         for outcome in OUTCOMES {
-            assert_eq!(
-                next_status(StatusType::Closing, outcome),
-                StatusType::Closing,
-                "{outcome:?} must not overwrite Closing"
+            let cell = StatusCell::new(
+                ComponentName(COMPONENT),
+                Lifecycle::Closing,
+                Health::Healthy,
             );
+            record(&cell, outcome);
+            assert_eq!(cell.status().lifecycle, Lifecycle::Closing, "{outcome:?}");
         }
     }
 
-    /// Every non-`Closing` state takes the status its outcome names.
+    /// From any other phase, each outcome takes its own status.
     #[test]
     fn every_live_state_takes_the_outcome_status() {
-        let live_states = [
-            StatusType::Spawning,
-            StatusType::Syncing,
-            StatusType::Ready,
-            StatusType::Busy,
-            StatusType::RecoverableError,
-            StatusType::CriticalError,
-            StatusType::Offline,
-        ];
-        for current in live_states {
-            assert_eq!(
-                next_status(current, TickOutcome::Advanced),
-                StatusType::Ready
-            );
-            assert_eq!(
-                next_status(current, TickOutcome::Retrying),
-                StatusType::RecoverableError
-            );
-            assert_eq!(
-                next_status(current, TickOutcome::GaveUp),
-                StatusType::CriticalError
-            );
+        for lifecycle in [
+            Lifecycle::Spawning,
+            Lifecycle::Syncing,
+            Lifecycle::Ready,
+            Lifecycle::Offline,
+        ] {
+            for (outcome, expected) in [
+                (TickOutcome::Advanced, (Lifecycle::Ready, Health::Healthy)),
+                (
+                    TickOutcome::Retrying,
+                    (Lifecycle::Syncing, Health::Recoverable),
+                ),
+                (TickOutcome::GaveUp, (Lifecycle::Offline, Health::Critical)),
+            ] {
+                let cell = StatusCell::new(ComponentName(COMPONENT), lifecycle, Health::Healthy);
+                record(&cell, outcome);
+                let status = cell.status();
+                assert_eq!((status.lifecycle, status.health), expected, "{outcome:?}");
+            }
         }
     }
 }

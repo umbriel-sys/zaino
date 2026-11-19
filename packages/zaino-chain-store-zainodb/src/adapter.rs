@@ -625,7 +625,7 @@ impl<T: ChainStoreSource> StatusSource for FinalisedState<T> {
 /// It is only ever produced when the router cannot resolve a backend for core
 /// reads, which is a degraded store rather than a loaded one — so it maps that
 /// way, and not to the readiness the fused model gave it.
-fn component_status(name: ComponentName, status: StatusType) -> ComponentStatus {
+pub fn component_status(name: ComponentName, status: StatusType) -> ComponentStatus {
     let (lifecycle, health) = match status {
         StatusType::Spawning => (Lifecycle::Spawning, Health::Healthy),
         StatusType::Syncing => (Lifecycle::Syncing, Health::Healthy),

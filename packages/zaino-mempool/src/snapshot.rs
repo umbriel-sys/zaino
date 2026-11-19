@@ -37,7 +37,7 @@ pub fn reversed_txid_key(txid: TransactionId) -> [u8; 32] {
 ///
 /// This describes the fidelity of a set that *exists*. Whether one has been
 /// built yet is a separate question, on a separate axis — see
-/// [`MempoolSnapshot::is_ready`], and the service's `StatusType`. Mixing the two
+/// [`MempoolSnapshot::is_ready`], and the service's `ComponentStatus`. Mixing the two
 /// here would mean every consumer matching on fidelity also had to handle a
 /// lifecycle case.
 ///

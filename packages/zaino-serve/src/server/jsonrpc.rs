@@ -5,8 +5,11 @@ use crate::{
     server::{config::JsonRpcServerConfig, error::ServerError},
 };
 
+use zaino_component::{
+    ComponentName, ComponentStatus, Health, Lifecycle, StatusCell, StatusSource as _,
+    StatusWatch as _,
+};
 use zaino_state::{IndexerSubscriber, LightWalletIndexer, ZcashIndexer};
-use zaino_status::{NamedAtomicStatus, StatusType};
 
 use zaino_consensus::MAX_BLOCK_BYTES;
 use zebra_rpc::server::{
@@ -16,14 +19,13 @@ use zebra_rpc::server::{
 };
 
 use jsonrpsee::server::{RpcServiceBuilder, ServerBuilder};
-use std::{path::PathBuf, time::Duration};
-use tokio::time::interval;
+use std::path::PathBuf;
 use tracing::warn;
 
 /// JSON-RPC server capable of servicing clients over TCP.
 pub struct JsonRpcServer {
     /// Current status of the server.
-    pub status: NamedAtomicStatus,
+    pub status: StatusCell,
     /// JoinHandle for the servers `serve` task.
     pub server_handle: Option<tokio::task::JoinHandle<Result<(), ServerError>>>,
     /// Cookie dir.
@@ -62,7 +64,11 @@ impl JsonRpcServer {
         server_config: JsonRpcServerConfig,
         listener: Option<std::net::TcpListener>,
     ) -> Result<Self, ServerError> {
-        let status = NamedAtomicStatus::new("JSON-RPC", StatusType::Spawning);
+        let status = StatusCell::new(
+            ComponentName("JSON-RPC"),
+            Lifecycle::Spawning,
+            Health::Healthy,
+        );
 
         let rpc_impl = JsonRpcClient {
             service_subscriber: service_subscriber.clone(),
@@ -139,7 +145,7 @@ impl JsonRpcServer {
         let server_task_handle = tokio::task::spawn({
             let server_handle_clone = server_handle.clone();
             async move {
-                task_status.store(StatusType::Ready);
+                task_status.set(Lifecycle::Ready, Health::Healthy);
 
                 tokio::select! {
                     _ = shutdown_signal => {
@@ -150,7 +156,7 @@ impl JsonRpcServer {
                     _ = server_handle.stopped() => {},
                 }
 
-                task_status.store(StatusType::Offline);
+                task_status.set(Lifecycle::Offline, Health::Offline);
                 Ok(())
             }
         });
@@ -164,7 +170,7 @@ impl JsonRpcServer {
 
     /// Sets the servers to close gracefully.
     pub async fn close(&mut self) {
-        self.status.store(StatusType::Closing);
+        self.status.set(Lifecycle::Closing, Health::Healthy);
 
         if let Some(dir) = &self.cookie_dir {
             if let Err(e) = remove_from_disk(dir) {
@@ -182,8 +188,8 @@ impl JsonRpcServer {
     }
 
     /// Returns the servers current status.
-    pub fn status(&self) -> StatusType {
-        self.status.load()
+    pub fn status(&self) -> ComponentStatus {
+        self.status.status()
     }
 }
 
@@ -198,12 +204,14 @@ impl Drop for JsonRpcServer {
     }
 }
 
-async fn shutdown_signal(status: NamedAtomicStatus) {
-    let mut shutdown_check_interval = interval(Duration::from_millis(100));
-    loop {
-        shutdown_check_interval.tick().await;
-        if status.load() == StatusType::Closing {
-            break;
-        }
+/// Resolves once the server is closing (or its status is gone).
+async fn shutdown_signal(status: StatusCell) {
+    let mut watcher = status.subscribe();
+    if watcher
+        .wait_for(|status| status.lifecycle == Lifecycle::Closing)
+        .await
+        .is_err()
+    {
+        // the status is gone: stop as well
     }
 }

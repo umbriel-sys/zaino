@@ -4,7 +4,7 @@
 use std::collections::HashSet;
 use std::sync::Arc;
 
-use zaino_status::StatusType;
+use zaino_component::{Health, Lifecycle};
 
 use zaino_mempool::entry::MempoolEntry;
 use zaino_mempool::ports::MempoolSource;
@@ -123,7 +123,7 @@ impl<S: MempoolSource> super::MempoolService<S> {
             },
         );
 
-        self.status.store(StatusType::Ready);
+        self.status.set(Lifecycle::Ready, Health::Healthy);
     }
 
     /// Re-publish the current set under a new tag / completeness, reusing every
@@ -155,7 +155,7 @@ impl<S: MempoolSource> super::MempoolService<S> {
                 sequence: next_sequence,
             },
         );
-        self.status.store(StatusType::Ready);
+        self.status.set(Lifecycle::Ready, Health::Healthy);
     }
 
     /// Log the edge back out of source-error degradation.
@@ -218,7 +218,7 @@ impl<S: MempoolSource> super::MempoolService<S> {
                 error,
                 "mempool still degraded; set remains incomplete"
             );
-            self.status.store(StatusType::Syncing);
+            self.status.set(Lifecycle::Syncing, Health::Healthy);
             return;
         }
 
@@ -248,7 +248,7 @@ impl<S: MempoolSource> super::MempoolService<S> {
                 sequence: next_sequence,
             },
         );
-        self.status.store(StatusType::Syncing);
+        self.status.set(Lifecycle::Syncing, Health::Healthy);
     }
 
     pub(super) fn publish_closing(&self) {
@@ -260,6 +260,6 @@ impl<S: MempoolSource> super::MempoolService<S> {
                 sequence: next_sequence,
             },
         );
-        self.status.store(StatusType::Closing);
+        self.status.set(Lifecycle::Closing, Health::Healthy);
     }
 }

@@ -26,7 +26,9 @@ use std::sync::Arc;
 use arc_swap::ArcSwap;
 use tokio::sync::broadcast;
 use tokio_util::sync::CancellationToken;
-use zaino_status::{NamedAtomicStatus, StatusType};
+use zaino_component::{
+    ComponentName, ComponentStatus, Health, Lifecycle, StatusCell, StatusSource as _,
+};
 
 use crate::subscriber::MempoolSubscriber;
 use zaino_mempool::config::MempoolConfig;
@@ -47,7 +49,7 @@ pub struct MempoolService<S: MempoolSource> {
     current: Arc<ArcSwap<MempoolSnapshot>>,
     updates: broadcast::Sender<MempoolUpdate>,
     config: MempoolConfig,
-    status: NamedAtomicStatus,
+    status: StatusCell,
     cancel: CancellationToken,
     task: std::sync::Mutex<Option<tokio::task::JoinHandle<()>>>,
     /// Per-process salt for the admission tiebreak (see
@@ -58,7 +60,7 @@ pub struct MempoolService<S: MempoolSource> {
 impl<S: MempoolSource> std::fmt::Debug for MempoolService<S> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("MempoolService")
-            .field("status", &self.status.load())
+            .field("status", &self.status.status())
             .finish_non_exhaustive()
     }
 }
@@ -95,7 +97,11 @@ impl<S: MempoolSource> MempoolService<S> {
             current: Arc::new(ArcSwap::from_pointee(MempoolSnapshot::empty())),
             updates,
             config,
-            status: NamedAtomicStatus::new("Mempool", StatusType::Spawning),
+            status: StatusCell::new(
+                ComponentName("Mempool"),
+                Lifecycle::Spawning,
+                Health::Healthy,
+            ),
             cancel,
             task: std::sync::Mutex::new(None),
             admission_salt,
@@ -125,8 +131,8 @@ impl<S: MempoolSource> MempoolService<S> {
     }
 
     /// Current service status.
-    pub fn status(&self) -> StatusType {
-        self.status.load()
+    pub fn status(&self) -> ComponentStatus {
+        self.status.status()
     }
 
     /// The current mempool memory bound (max total ZIP-401 cost), in bytes.

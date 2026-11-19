@@ -226,7 +226,7 @@ impl<
                 StatusSource::status(&self.finalized_db),
                 self.chain_view_sync.as_deref(),
             ),
-            self.mempool.status(),
+            fused(self.mempool.status()),
             fused(self.chain_head.status()),
         )
     }
@@ -360,7 +360,7 @@ impl<
                 StatusSource::status(&self.finalized_state),
                 self.chain_view_sync.as_deref(),
             ),
-            self.mempool.status(),
+            fused(self.mempool.status()),
             fused(self.chain_head.status()),
         )
     }

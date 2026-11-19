@@ -4,7 +4,7 @@
 use std::sync::Arc;
 use std::time::Instant;
 
-use zaino_status::StatusType;
+use zaino_component::{Health, Lifecycle};
 
 use zaino_mempool::event::MempoolEvent;
 use zaino_mempool::ports::{Mempool, NfsEpochObserver};
@@ -43,7 +43,7 @@ impl<M: Mempool, N: NfsEpochObserver> super::CoherenceService<M, N> {
             && prev.set.mempool_generation() == core.mempool_generation()
             && prev.observed_tips == observed
         {
-            self.status.store(StatusType::Ready);
+            self.status.set(Lifecycle::Ready, Health::Healthy);
             return;
         }
 
@@ -83,7 +83,7 @@ impl<M: Mempool, N: NfsEpochObserver> super::CoherenceService<M, N> {
             }),
         );
 
-        self.status.store(StatusType::Ready);
+        self.status.set(Lifecycle::Ready, Health::Healthy);
     }
 
     pub(super) fn freeze(
@@ -120,7 +120,7 @@ impl<M: Mempool, N: NfsEpochObserver> super::CoherenceService<M, N> {
         if matches!(prev.mode, MempoolMode::Frozen { reason: r, .. } if r == reason)
             && prev.observed_tips == observed
         {
-            self.status.store(StatusType::Syncing);
+            self.status.set(Lifecycle::Syncing, Health::Healthy);
             return;
         }
 
@@ -153,7 +153,7 @@ impl<M: Mempool, N: NfsEpochObserver> super::CoherenceService<M, N> {
                 reason,
             }),
         );
-        self.status.store(StatusType::Syncing);
+        self.status.set(Lifecycle::Syncing, Health::Healthy);
     }
 
     pub(super) fn publish_closing(&self) {
@@ -173,6 +173,6 @@ impl<M: Mempool, N: NfsEpochObserver> super::CoherenceService<M, N> {
                 sequence: next_sequence,
             }),
         );
-        self.status.store(StatusType::Closing);
+        self.status.set(Lifecycle::Closing, Health::Healthy);
     }
 }

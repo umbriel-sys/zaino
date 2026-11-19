@@ -20,9 +20,6 @@ zaino-mempool = { workspace = true }
 zaino-source = { workspace = true }
 zaino-primitives = { workspace = true }
 
-# The status vocabulary the service reports its health in.
-zaino-status = { workspace = true }
-
 # Runtime
 tokio = { workspace = true, features = ["full"] }
 tokio-util = { workspace = true }
@@ -40,6 +37,7 @@ bytes.workspace = true
 # becomes visible; `zaino-mempool` is types and ports with nothing to emit.
 tracing = { workspace = true }
 metrics = { workspace = true }
+zaino-component.workspace = true
 
 [features]
 # Opt-in tip-coherence layer: the `CoherenceService` and its coherent read/stream
