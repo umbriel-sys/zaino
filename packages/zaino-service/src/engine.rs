@@ -227,6 +227,37 @@ impl<S: ServiceSource> Service<S> {
         }
     }
 
+    /// Whether nothing is still building: the store caught up and every
+    /// capability answers from where it will keep answering.
+    pub fn is_local(&self) -> bool {
+        self.is_caught_up()
+            && !self
+                .manifest()
+                .iter()
+                .any(|(_, provision)| matches!(provision, crate::Provision::Building { .. }))
+    }
+
+    /// Resolves once [`is_local`](Self::is_local): the store built and the
+    /// chain head's extensions folded over it. `spawn` never waits for this;
+    /// it is for a caller that wants only local answers (tests, a
+    /// deployment that serves once built). `Err` if the sync stops first.
+    pub async fn wait_until_local(&self) -> Result<(), ServiceError> {
+        self.caught_up().await?;
+        // the head folds its extensions over the built store on its next
+        // tick, which no channel announces
+        while !self.is_local() {
+            if self
+                .sync
+                .as_ref()
+                .is_some_and(|sync| !sync.status().is_live())
+            {
+                return Err(ServiceError::SyncStopped);
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        }
+        Ok(())
+    }
+
     /// Who answers each capability now.
     pub fn manifest(&self) -> ServiceManifest {
         let store = &self.store;

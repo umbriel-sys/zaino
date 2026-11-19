@@ -79,6 +79,27 @@ async fn a_primary_store_builds_in_the_background_until_every_read_is_local() {
     service.shutdown().await.expect("stops");
 }
 
+/// `wait_until_local` resolves when nothing is still building: every
+/// capability then answers from where it will keep answering.
+#[tokio::test]
+async fn wait_until_local_resolves_when_nothing_is_building() {
+    let service = common::local(&chain()).await;
+    service.wait_until_local().await.expect("builds");
+    assert!(service.is_local());
+    let building: Vec<_> = service
+        .manifest()
+        .iter()
+        .filter(|(_, provision)| matches!(provision, Provision::Building { .. }))
+        .collect();
+    assert!(building.is_empty(), "{building:?}");
+
+    let remote = common::remote(&chain()).await;
+    remote.wait_until_local().await.expect("nothing to build");
+    assert!(remote.is_local());
+    service.shutdown().await.expect("stops");
+    remote.shutdown().await.expect("stops");
+}
+
 /// A smaller set serves what it builds locally, falls to the validator for
 /// what the validator can answer, and names the index for the rest.
 #[tokio::test]

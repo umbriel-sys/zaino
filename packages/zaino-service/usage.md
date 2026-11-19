@@ -129,7 +129,11 @@ ChainView's refusals arrive in `Chain`: `NotServed`, `NotBuilt` and
 `statuses()` gives each component's `ComponentStatus` (`Statuses`: store,
 head, mempool, coherence, and the sync for a primary store). `caught_up()`
 resolves once a primary store has caught up with the head's floor
-(`is_caught_up()` asks now); `store_tip()` is the store's committed tip and
+(`is_caught_up()` asks now). `wait_until_local()` resolves once nothing is
+still building: the store built and the chain head's extensions folded over
+it (`is_local()` asks now). `spawn` never waits for either; they are for a
+caller that wants only local answers, such as a test comparing two
+deployments. `store_tip()` is the store's committed tip and
 `mempool_frozen_for()` how long the coherent mempool has been frozen.
 `chain_snapshot()`, `with_chain(chain)` and `subscribe_tip()` give the chain
 view's snapshot, the service's reads over one, and the epochs as published.
