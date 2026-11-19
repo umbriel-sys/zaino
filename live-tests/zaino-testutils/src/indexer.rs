@@ -127,6 +127,7 @@ impl Zainod {
             grpc_settings: zaino_serve::server::config::GrpcServerConfig {
                 listen_address: grpc_addr,
                 tls: None,
+                limits: zaino_serve::server::config::GrpcLimits::default(),
             },
             validator_settings: ValidatorConfig {
                 validator_grpc_listen_address: Some(config.validator_grpc.to_string()),

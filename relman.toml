@@ -78,16 +78,8 @@ name = "zaino-mempool-service"
 path = "packages/zaino-mempool-service"
 
 [[target]]
-name = "zaino-status"
-path = "packages/zaino-status"
-
-[[target]]
 name = "zaino-component"
 path = "packages/zaino-component"
-
-[[target]]
-name = "zaino-encoding"
-path = "packages/zaino-encoding"
 
 [[target]]
 name = "zaino-source-macros"
@@ -104,10 +96,6 @@ path = "packages/zaino-chain-head-service"
 [[target]]
 name = "zaino-chain-store"
 path = "packages/zaino-chain-store"
-
-[[target]]
-name = "zaino-chain-store-zainodb"
-path = "packages/zaino-chain-store-zainodb"
 
 [[target]]
 name = "zaino-chain"

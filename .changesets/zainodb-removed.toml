@@ -1,0 +1,57 @@
+[[changes]]
+crate = "zaino-chain-store-zainodb"
+kind = "breaking"
+description = """
+Removed. The store is `zaino-chain-store-service`; an existing zainodb \
+directory is not read."""
+
+[[changes]]
+crate = "zaino-encoding"
+kind = "breaking"
+description = "Removed with zainodb, its only user."
+
+[[changes]]
+crate = "zaino-status"
+kind = "breaking"
+description = """
+Removed. Components report `zaino_component::ComponentStatus`; the legacy \
+`StatusType`, `Status`, `NamedAtomicStatus`, the probe traits and \
+`component_status` are in `zaino_state::legacy::status`."""
+
+[[changes]]
+crate = "zaino-chain-store"
+kind = "breaking"
+description = """
+Removed with zainodb: `ChainStoreConfig`, `ChainStoreReader::schema` with \
+`SchemaVersion`, `MigrationState` and `StoreSchema`, and \
+`is_legacy_unspendable`."""
+
+[[changes]]
+crate = "zaino-proto"
+kind = "breaking"
+description = """
+`prune_compact_block` is removed: compact blocks are filtered as they are \
+read (`PoolFilter`, `compact_block_to_wire`)."""
+
+[[changes]]
+crate = "zaino-state"
+kind = "breaking"
+description = """
+Removed: `MempoolError` with `NodeBackedIndexerServiceError::MempoolError` \
+(never produced), the `experimental_features` and \
+`transparent_address_history_experimental` features (they gated nothing), \
+and twelve unused dependencies."""
+
+[[changes]]
+crate = "zaino-serve"
+kind = "breaking"
+description = """
+The `experimental_features` and `transparent_address_history_experimental` \
+features are removed; they gated nothing."""
+
+[[changes]]
+crate = "zainod"
+kind = "breaking"
+description = """
+The `experimental_features` and `transparent_address_history_experimental` \
+features are removed; they gated nothing."""

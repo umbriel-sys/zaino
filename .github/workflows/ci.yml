@@ -48,9 +48,6 @@ jobs:
 
       - run: cargo nextest run --locked --workspace --no-fail-fast
 
-      # Only crate the experimental umbrella reaches; clippy --all-features covers its compile
-      - run: cargo nextest run --locked -p zaino-state --features experimental_features --no-fail-fast
-
       # Recorder, admin listener & metric registration contracts compile only under `prometheus`
       - run: cargo nextest run --locked -p zainod --features prometheus --no-fail-fast
 

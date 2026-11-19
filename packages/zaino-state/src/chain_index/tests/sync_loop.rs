@@ -1,9 +1,9 @@
 use std::num::{NonZeroU32, NonZeroU64};
 use std::time::Instant;
 
+use crate::legacy::status::{Status as _, StatusType};
 use tokio::time::{sleep, Duration};
 use zaino_chain_head::ChainHeadConfig;
-use zaino_status::{Status as _, StatusType};
 
 use super::{served_tip, synced, synced_with, MockchainMode};
 use crate::chain_index::chain_view::BestTip as _;

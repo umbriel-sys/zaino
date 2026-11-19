@@ -91,9 +91,8 @@ pub use zaino_chain_head::{ChainHeadBlock, ChainHeadSnapshot};
 pub use zaino_chain_head_service::PersistentSnapshot;
 pub use zaino_primitives::types::MempoolInfo;
 
-pub(crate) use chain_index::types::BlockHash;
 #[cfg(test)]
-pub(crate) use chain_index::types::{Height, Outpoint};
+pub(crate) use chain_index::types::{BlockHash, Height, Outpoint};
 
 #[cfg(feature = "test_dependencies")]
 /// allow public access to additional APIs, for testing

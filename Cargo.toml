@@ -1,12 +1,10 @@
 # Workspace Members are in dependency order, do not change this without prior consideration.
 [workspace]
 members = [
-    "packages/zaino-status",
     "packages/zaino-logging",
     "packages/zaino-async",
     "packages/zaino-component",
     "packages/zaino-consensus",
-    "packages/zaino-encoding",
     "packages/zaino-primitives",
     "packages/zaino-persistence",
     "packages/zaino-persistence-lsm-tree",
@@ -23,7 +21,6 @@ members = [
     "packages/zaino-chain-head",
     "packages/zaino-chain-head-service",
     "packages/zaino-chain-store",
-    "packages/zaino-chain-store-zainodb",
     "packages/zaino-chain-store-service",
     "packages/zaino-chain",
     "packages/zaino-service",
@@ -113,9 +110,6 @@ jsonrpsee = { version = "0.24", features = ["server", "macros"] }
 
 # Hashmaps, channels, DBs
 indexmap = "2.2.6"
-dashmap = "6.1"
-lmdb = "0.8"
-lmdb-sys = "0.8"
 futures = "0.3.30"
 
 # Metrics
@@ -137,43 +131,26 @@ thiserror = "2.0"
 chrono = "0.4"
 which = "8"
 whoami = "2.1"
-corez = "0.1"
 sha2 = "0.10"
 blake2 = "0.10"
 # Personalised BLAKE2b for ZIP 244 txids: the implementation `orchard` and `zcash_primitives` use.
 blake2b_simd = "1.0"
 hex = "0.4"
 toml = "1.1"
-primitive-types = "0.14"
-bitflags = "2.9"
 
 # Test
 tempfile = "3.2"
-# Service status and health-probe vocabulary. A leaf with one dependency
-# (`tracing`), so any subsystem can report its status without inheriting a
-# dependency graph to do it.
-zaino-status = { path = "packages/zaino-status", version = "0.1.2" }
 # The tracing subscriber a binary installs, and the panic hook that logs
 # through it.
 zaino-logging = { path = "packages/zaino-logging", version = "0.1.0" }
 # What a supervised component is: a lifecycle phase and a health condition as
-# two independent axes, plus the ports to read and watch them. Replaces the
-# fused `zaino-status` model; consumers adopt it one at a time, so both are
-# declared here while that is in progress.
+# two independent axes, plus the ports to read and watch them.
 zaino-component = { path = "packages/zaino-component", version = "0.1.0" }
 # Consensus-derived constants (reorg bound, coinbase maturity, block size limit)
 # and the protocol-limit validation built on them. A leaf that depends on no
 # node implementation, so referencing a consensus fact costs neither a
 # general-purpose dependency nor a peer's reading of the specification.
 zaino-consensus = { path = "packages/zaino-consensus", version = "0.2.0" }
-# Zaino's versioned encoding: the `ZainoVersionedSerde` / `FixedEncodedLen`
-# traits, `CompactSize`, and the little/big-endian byte helpers the on-disk
-# formats are written in. A leaf over `corez` alone, so a storage backend and a
-# wire codec can share one encoding vocabulary without either depending on the
-# other. Holds no impl for any domain type: those live with the type whose
-# bytes they describe, which is what keeps a schema out of the vocabulary
-# crates. See docs/adr/zaino/0012.
-zaino-encoding = { path = "packages/zaino-encoding", version = "0.1.1" }
 # Zero-dependency domain vocabulary. Every crate that needs chain-level types
 # (heights, hashes, blocks, transactions) depends on this rather than on
 # `zebra-chain` or on another zaino crate. See docs/adr/zaino/0010. The
@@ -218,11 +195,6 @@ zaino-chain-head-service = { path = "packages/zaino-chain-head-service", version
 # commitment, which is a contract between implementations rather than any one
 # implementation's business. See docs/adr/zaino/0012.
 zaino-chain-store = { path = "packages/zaino-chain-store", version = "0.1.1" }
-# The LMDB implementation of those ports, and the on-disk vocabulary it is
-# built from. Named for the backend rather than for the role: a second
-# implementation is expected, and neither should be able to claim to be *the*
-# chain store. Consumers depend on the ports; this is what a deployment picks.
-zaino-chain-store-zainodb = { path = "packages/zaino-chain-store-zainodb", version = "0.2.0" }
 # The new chain store runtime: a configurable set of indexes over any Storage.
 zaino-chain-store-service = { path = "packages/zaino-chain-store-service", version = "0.1.0" }
 # ChainView: the unified chain read surface, composed from the two tiers above

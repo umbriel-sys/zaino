@@ -51,10 +51,8 @@ Currently Zebra's `ReadStateService` only enables direct access to chain data (b
 
 ```
 packages/                          Cargo workspace member crates, in dependency order
-  zaino-status/                      How a component reports whether it is working
   zaino-component/                   Supervised subsystems: lifecycle, health, and tasks
   zaino-consensus/                   Zcash consensus constants and protocol limits
-  zaino-encoding/                    Versioned on-disk encoding traits and byte helpers
   zaino-primitives/                  Domain vocabulary (thiserror only; no serde; `zebra` feature: zebra-chain -> domain conversions)
   zaino-address/                     Zcash address classification
   zaino-source/                      Driven ports: one trait per chain question
@@ -67,8 +65,8 @@ packages/                          Cargo workspace member crates, in dependency 
   zaino-chain-head/                  Non-finalised chain head: vocabulary and ports
   zaino-chain-head-service/          Non-finalised chain head: the runtime
   zaino-chain-store/                 Finalised state: vocabulary and ports
-  zaino-chain-store-zainodb/         Finalised state: the LMDB implementation
   zaino-chain/                       ChainView: the unified chain read surface, ports + composer
+  zaino-service/                     The indexer service: store, chain head, ChainView, mempool, manifest
   zaino-state/                       Chain state and indexer service library
   zaino-serve/                       gRPC + JSON-RPC servers, and the served JSON schema
   zainod/                            Daemon binary
@@ -200,7 +198,6 @@ Records a newcomer needs first:
 ### Crate usage guides
 Practical guidance for working *in* a crate — its scope, its invariants, and the
 mistakes its design is trying to prevent.
-- [`zaino-status`](./packages/zaino-status/usage.md): the status vocabulary, and why it stays vocabulary.
 - [`zaino-logging`](./packages/zaino-logging/usage.md): centralized tracing setup, and the panic-at-origin hook that routes panics through the same sink.
 - [`zaino-async`](./packages/zaino-async/usage.md): the low-level async/tokio primitives (named, panic-rendering `Task`) the component layer is built on.
 - [`zaino-component`](./packages/zaino-component/usage.md): the component abstraction, its two independent axes, and the observed/owned line.
@@ -220,9 +217,7 @@ mistakes its design is trying to prevent.
 - [`zaino-chain-head`](./packages/zaino-chain-head/usage.md): the chain head's ports, why reads live on the snapshot, and why there is no way to make it synchronise.
 - [`zaino-chain-head-service`](./packages/zaino-chain-head-service/usage.md): the chain head runtime, its two testing styles, and the properties to keep when editing the advance path.
 - [`zaino-chain-store-service`](./packages/zaino-chain-store-service/usage.md): the chain store runtime: configuring the index set, what boot checks and repairs, and `build_to`.
-- [`zaino-encoding`](./packages/zaino-encoding/usage.md): the versioned record format, and why nested fields must have their version pinned.
 - [`zaino-chain-store`](./packages/zaino-chain-store/usage.md): the finalised state's ports, why the chunk is the block-read primitive, and why a read past the watermark is not a miss.
-- [`zaino-chain-store-zainodb`](./packages/zaino-chain-store-zainodb/usage.md): the LMDB store, its on-disk compatibility contract, and why its checksums are load-bearing.
 - [`zaino-proto`](./packages/zaino-proto/usage.md): the light-wallet types, and the compact-block conversion and direct writer every serving crate shares.
 - [`zaino-chain`](./packages/zaino-chain/usage.md): ChainView's ports, how coverage decides which provider answers, and what a hole between the tiers degrades versus what it refuses.
 - [`zaino-service`](./packages/zaino-service/usage.md): the one configurable service, its store modes, and the manifest of who answers each capability.

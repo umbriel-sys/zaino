@@ -106,45 +106,21 @@ impl Default for CacheConfig {
 pub struct DatabaseConfig {
     /// Database file path.
     pub path: PathBuf,
-    /// Database size limit. Defaults to 128 GB.
+    /// Deprecated: the old store's size limit; not read, warned when set.
     #[serde(default)]
     pub size: DatabaseSize,
-    /// Approximate in-memory budget (in GiB) for the finalised-state bulk-sync write batch.
-    ///
-    /// Bulk sync buffers fetched blocks up to this budget, then writes the whole batch in one
-    /// LMDB transaction with the random-keyed `spent` / `txid_location` entries inserted in **sorted**
-    /// key order. Sorting turns the random B-tree leaf faults (which dominate once the DB exceeds
-    /// RAM) into a sequential sweep; larger batches mean fewer sweeps.
-    ///
-    /// NOTE: this is a heap budget for buffered blocks; peak RAM is roughly this budget plus the
-    /// transaction's dirty pages, and it competes with the OS page cache the sorted sweep relies on
-    /// — larger is not always better, and on a memory-constrained host it risks the OOM-killer.
-    /// Defaults to 8 GiB; lower it on memory-constrained hosts. The txout-set accumulator rebuild
-    /// has its own, separate budget ([`DatabaseConfig::accumulator_rebuild_memory_size`]).
+    /// Deprecated: the old store's bulk-sync write batch; not read, warned when set.
     #[serde(default)]
     pub sync_write_batch_size: SyncWriteBatchSize,
-
-    /// In-memory budget (in GiB) for the from-genesis txout-set accumulator rebuild's spent set.
-    ///
-    /// The rebuild auto-shards by creating-txid prefix so the per-shard in-RAM spent set stays
-    /// within this budget. Kept separate from [`DatabaseConfig::sync_write_batch_size`] so the two
-    /// unrelated operations cannot inflate each other's peak memory. Defaults to 8 GiB; lower it on
-    /// memory-constrained hosts to bound peak rebuild RAM (at the cost of more, smaller passes).
+    /// Deprecated: the old store's accumulator rebuild budget; not read, warned when set.
     #[serde(default)]
     pub accumulator_rebuild_memory_size: AccumulatorRebuildMemorySize,
-
-    /// Maximum wall-clock time (in seconds) spent buffering a single bulk-sync write batch before
-    /// flushing, so commits (and durability) happen regularly even when block fetches are slow.
-    ///
-    /// Because the environment runs with `NO_SYNC`, this also bounds the window of unflushed writes
-    /// at risk on a hard kill / eviction. Raise it to make sync less reactive but faster on large-RAM
-    /// hosts where the memory budget is never reached before this interval; lower it to shrink the
-    /// crash-loss / corruption window. Defaults to 120 seconds (2 minutes).
+    /// Deprecated: the old store's checkpoint interval; not read, warned when set.
     #[serde(default = "default_sync_checkpoint_interval")]
     pub sync_checkpoint_interval: u64,
 }
 
-/// Default [`DatabaseConfig::sync_checkpoint_interval`]: the store's.
+/// Default [`DatabaseConfig::sync_checkpoint_interval`].
 fn default_sync_checkpoint_interval() -> u64 {
     DEFAULT_SYNC_CHECKPOINT_INTERVAL_SECS
 }

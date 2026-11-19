@@ -34,6 +34,7 @@ use zaino_proto::proto::{
     utils::{blockid_to_hashorheight, PoolTypeFilter, ValidatedBlockRangeRequest},
 };
 
+use crate::legacy::status::{Status, StatusType};
 use crate::{
     chain_index::chain_head::WithChainHeadSource, chain_index::chain_store::WithChainStoreSource,
     chain_index::chain_view::WithChainViewSource, ChainIndex, ChainIndexRpcExt,
@@ -54,7 +55,6 @@ use crate::{
     },
     utils::{get_build_info, ServiceMetadata},
 };
-use zaino_status::{Status, StatusType};
 
 /// A single node-backed chain-fetch + tx-submission service, generic over its
 /// [`BlockchainSource`].

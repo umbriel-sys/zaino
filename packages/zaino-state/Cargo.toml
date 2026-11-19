@@ -20,25 +20,10 @@ fast-test-seam = []
 # test_dependencies - Exposes internal functionality for testing.
 test_dependencies = ["zaino-source-zebra/test_dependencies"]
 
-# **Experimental and alpha features**
-# Exposes the **complete** set of experimental / alpha features currently implemented in Zaino.
-experimental_features = ["transparent_address_history_experimental"]
-
-# Activates transparent address history capability in zaino
-#
-# NOTE: currently this is only implemented in the finalised state.
-transparent_address_history_experimental = []
-
 [dependencies]
 zaino-proto = { workspace = true, features = ["zaino-primitives"] }
-
-# LibRustZcash
-incrementalmerkletree = { workspace = true }
 zcash_address = { workspace = true }
-zcash_keys = { workspace = true, features = ["sapling"] }
 zcash_protocol = { workspace = true }
-zcash_transparent = { workspace = true }
-sapling-crypto = { workspace = true }
 
 # Zebra
 zebra-chain = { workspace = true }
@@ -48,9 +33,6 @@ zebra-rpc = { workspace = true }
 # Tracing
 tracing = { workspace = true }
 
-# Metrics
-metrics = { workspace = true }
-
 # Documentation
 simple-mermaid = "0.2.0"
 
@@ -59,24 +41,14 @@ tokio = { workspace = true, features = ["full"] }
 thiserror = { workspace = true }
 tower = { workspace = true, features = ["buffer", "util"] }
 chrono = { workspace = true }
-indexmap = { workspace = true }
 hex = { workspace = true, features = ["serde"] }
 tokio-stream = { workspace = true }
 futures = { workspace = true }
 tonic = { workspace = true }
-dashmap = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true, features = ["preserve_order"] }
-blake2 = { workspace = true }
-sha2 = { workspace = true }
-corez = { workspace = true }
-arc-swap = { workspace = true }
 
-# The finalised store: the ports it is driven through, and the backend that
-# implements them. Both, because ChainIndex still reads the backend's own
-# vocabulary while it is being moved onto the ports.
 zaino-chain-store = { workspace = true }
-zaino-chain-store-zainodb = { workspace = true }
 reqwest.workspace = true
 zaino-source.workspace = true
 zaino-source-zebra.workspace = true
@@ -84,7 +56,6 @@ zaino-primitives = { workspace = true, features = ["zebra", "serde"] }
 zaino-rpc.workspace = true
 zaino-source-zcash-rpc.workspace = true
 zaino-address = { workspace = true }
-zaino-status.workspace = true
 zaino-consensus.workspace = true
 bytes.workspace = true
 zaino-mempool = { workspace = true, features = ["tip_aware_mempool"] }

@@ -5,8 +5,8 @@
 //! half of the chain that only ever grows.
 //!
 //! This crate is the domain half: vocabulary and ports, no runtime and no
-//! storage. An implementation is a separate crate — `zaino-chain-store-zainodb`
-//! is the LMDB one — so a consumer can name what a store answers without
+//! storage. An implementation is a separate crate — `zaino-chain-store-service`
+//! is the one in this workspace — so a consumer can name what a store answers without
 //! depending on the machinery that answers it, and so a second implementation
 //! is a matter of satisfying these traits rather than of replacing a crate
 //! everything else names.
@@ -19,7 +19,7 @@
 //! bound names exactly what it uses and a store that cannot serve something
 //! simply does not implement it. Absence is then a compile-time fact where it
 //! can be, and a runtime one ([`StoreCapabilities`]) where it cannot, because
-//! a store on an older schema genuinely lacks indexes until it has migrated.
+//! a store lacks an index until it has built it.
 //!
 //! # What ChainStore is not
 //!
@@ -66,7 +66,6 @@
 
 pub mod block;
 pub mod capability;
-pub mod config;
 pub mod error;
 pub mod output;
 pub mod ports;
@@ -75,11 +74,7 @@ pub mod tree;
 pub mod txout_set;
 
 pub use block::{PoolFilter, StoredHeader};
-pub use capability::{
-    MigrationState, Provenance, SchemaVersion, StoreCapabilities, StoreCapability, StoreSchema,
-    StoreWatermark,
-};
-pub use config::ChainStoreConfig;
+pub use capability::{Provenance, StoreCapabilities, StoreCapability, StoreWatermark};
 pub use error::{ChainStoreError, ChainStoreSourceError};
 pub use output::SpenderRef;
 pub use ports::{
@@ -90,8 +85,8 @@ pub use ports::{
 };
 pub use txout_set::{
     canonical_entry, canonical_entry_parts, commitment_address, entry_digest, entry_digest_parts,
-    is_legacy_unspendable, is_unspendable, script_type_tag, Delta, TxOutSetAccumulator,
-    TxOutSetError, MAX_SCRIPT_SIZE, TXOUT_SET_DOMAIN_TAG, TXOUT_SET_ENTRY_LEN,
+    is_unspendable, script_type_tag, Delta, TxOutSetAccumulator, TxOutSetError, MAX_SCRIPT_SIZE,
+    TXOUT_SET_DOMAIN_TAG, TXOUT_SET_ENTRY_LEN,
 };
 
 pub use ports::{

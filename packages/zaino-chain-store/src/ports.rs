@@ -38,7 +38,7 @@ use zaino_primitives::types::{
 };
 
 use crate::block::{PoolFilter, StoredHeader};
-use crate::capability::{StoreCapabilities, StoreCapability, StoreSchema, StoreWatermark};
+use crate::capability::{StoreCapabilities, StoreCapability, StoreWatermark};
 use crate::error::{ChainStoreError, ChainStoreSourceError};
 use crate::output::SpenderRef;
 use crate::tree::{HistoryEpoch, HistoryPeaks};
@@ -141,15 +141,12 @@ pub trait ChainStoreReader:
 
     /// What this store currently offers.
     ///
-    /// Runtime state, not a type-level fact: a store on an older schema lacks
-    /// indexes a newer one has, and gains them during a migration.
+    /// Runtime state, not a type-level fact: a store lacks an index until it
+    /// has built it.
     fn capabilities(&self) -> StoreCapabilities;
 
     /// The network this store indexes.
     fn network(&self) -> Network;
-
-    /// The schema on disk, and whether it is migrating.
-    fn schema(&self) -> impl Future<Output = Result<StoreSchema, ChainStoreError>> + Send;
 
     /// The canonical hash at `height`.
     ///

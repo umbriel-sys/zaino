@@ -2,8 +2,8 @@
 
 The domain half of the finalised-state subsystem: vocabulary and ports for
 everything below the reorg seam. No runtime, no storage, no `zebra-chain`, no
-`tonic`. The LMDB implementation is
-[`zaino-chain-store-zainodb`](../zaino-chain-store-zainodb/usage.md).
+`tonic`. The implementation is
+[`zaino-chain-store-service`](../zaino-chain-store-service/usage.md).
 
 Depend on this crate to *name* what a store answers. Depend on an
 implementation only if you are the one starting it.
@@ -30,8 +30,8 @@ implementation to stub what it cannot do, and stubs are where
 `Err(Unsupported)` at 3am comes from.
 
 Where absence *cannot* be a compile-time fact it is a runtime one:
-`capabilities()` exists because a store on an older schema genuinely lacks an
-index until it has migrated. That is a fact about a database, not a type.
+`capabilities()` exists because a store lacks an index until it has built
+it. That is a fact about a database, not a type.
 `network()` is the network the store indexes: what a consumer answering from
 the store checks a queried address against.
 
@@ -146,7 +146,7 @@ cause, so log the chain rather than the top line:
 
 ```rust
 // `{e}` alone prints "chain store backend failed: reading block 42" and stops.
-// The LMDB errno underneath is in `source()`.
+// The storage engine's error underneath is in `source()`.
 tracing::error!(error = &error as &dyn std::error::Error, "finalised read failed");
 ```
 
@@ -165,35 +165,8 @@ the opposite of what `Backend` is for. Compare by matching the variant:
 assert!(matches!(error, ChainStoreError::CorruptRow { .. }));
 ```
 
-## Configuration is two halves, and the split is not arbitrary
-
-`ChainStoreConfig` is what every store takes. An implementation pairs it with
-its own type for the things a domain crate cannot name — for ZainoDB that is
-`ZainoDbConfig`, carrying an LMDB budget and a `zebra-chain` network, and
-nothing else:
-
-```rust
-FinalisedState::spawn(
-    ChainStoreConfig::at_path("/var/lib/zaino"),
-    ZainoDbConfig::new(network),
-    source,
-)
-```
-
-The rule for deciding which half a knob belongs in: ask whether a second
-implementation would have the same question. Where the store lives, which
-schema to target, and how it behaves when a build fails are the same question
-for any store. A memory-map size is not.
-
-Fields are private and read through accessors, and three of the four numeric
-knobs are `NonZero` — the same shape as `MempoolConfig` and `ChainHeadConfig`.
-The one that keeps its zero is `background_build_threshold`, because zero is
-meaningful there (every build runs in the background); taking `NonZero` for
-uniformity would have removed a real configuration.
-
-Note what is *not* two fields: a store that holds nothing is one with no path,
-not a path beside a flag. That pair used to exist, and nothing said which won
-when they disagreed.
+A store's configuration is its implementation's
+(`zaino_chain_store_service::ChainStoreServiceConfig`); this crate names none.
 
 ## There is no whole-block read, and only one write path
 
@@ -493,8 +466,8 @@ things by the same number.
 ## `StoreCapabilities` routes; it does not advertise
 
 It is the store's runtime index set: one bit per storage trait, saying what
-*this database* holds right now — which is a runtime fact, because a store on an
-older schema gains an index mid-migration.
+*this database* holds right now — which is a runtime fact, because a store
+gains an index when it finishes building it.
 
 It is not a serving surface, despite the name. What a consumer is written
 against is

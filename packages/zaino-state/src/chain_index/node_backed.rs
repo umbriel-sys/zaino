@@ -5,6 +5,7 @@ use std::str::FromStr as _;
 use std::sync::Arc;
 
 use crate::legacy::chain::FinalisedStateMode;
+use crate::legacy::status::{NamedAtomicStatus, Status, StatusType};
 use zaino_chain::{BlockRead as _, ForkReconcile as _, Locator};
 use zaino_chain_store_service::{
     ChainStoreServiceConfig, IndexesConfig, IngestConfig, NamedSet, OnCorruption,
@@ -12,7 +13,6 @@ use zaino_chain_store_service::{
 use zaino_component::{ComponentStatus, Health, Lifecycle};
 use zaino_persistence_lsm_tree::{fs::RealFs, LsmConfig, LsmTreeStorage};
 use zaino_service::{DiskStore, Mode, Provision, Service, ServiceConfig, Store};
-use zaino_status::{NamedAtomicStatus, Status, StatusType};
 use zebra_state::HashOrHeight;
 
 use super::chain_head::{self, WithChainHeadSource};

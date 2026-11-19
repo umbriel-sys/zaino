@@ -30,11 +30,11 @@ use zebra_rpc::methods::{
     GetAddressBalanceRequest, GetAddressTxIdsRequest, GetBlock, GetBlockHash, GetRawTransaction,
 };
 
+use crate::legacy::status::Status;
 use crate::stream::{
     AddressStream, CompactBlockStream, CompactTransactionStream, IndexedTipStream,
     RawTransactionStream, SubtreeRootReplyStream, UtxoReplyStream,
 };
-use zaino_status::Status;
 
 /// Wrapper struct for a ZainoState chain-fetch service (currently the single
 /// [`node_backed_indexer::NodeBackedIndexerService`]).
@@ -75,8 +75,8 @@ where
 
 /// Zcash Service functionality.
 ///
-/// Implementors automatically gain [`Liveness`](zaino_status::probing::Liveness) and
-/// [`Readiness`](zaino_status::probing::Readiness) via the [`Status`] supertrait.
+/// Implementors automatically gain [`Liveness`](crate::legacy::status::Liveness) and
+/// [`Readiness`](crate::legacy::status::Readiness) via the [`Status`] supertrait.
 pub trait ZcashService: Sized + Status {
     /// A subscriber to the service, used to fetch chain data.
     type Subscriber: Clone + ZcashIndexer + LightWalletIndexer + IndexedTipIndexer + Status;
@@ -95,7 +95,7 @@ pub trait ZcashService: Sized + Status {
     /// Returns which backend is currently answering finalised-state reads.
     ///
     /// Companion to [`Status::status`], which cannot express this: an ephemeral passthrough reports
-    /// [`zaino_status::StatusType::Ready`] identically to a synced persistent database, so a caller
+    /// [`crate::legacy::status::StatusType::Ready`] identically to a synced persistent database, so a caller
     /// gating on `Ready` alone cannot tell which one it is about to query.
     fn finalised_state_mode(&self) -> crate::FinalisedStateMode;
 

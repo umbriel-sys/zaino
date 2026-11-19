@@ -13,10 +13,10 @@ use std::time::Instant;
 use futures::Stream;
 use zaino_chain_store::{
     ChainStoreError, ChainStoreReader, CompactBlockRead, HistoryEpoch, HistoryPeaks,
-    HistoryTreeIndex, LocatedOutput, LocatedSpend, MigrationState, PoolFilter, SchemaVersion,
-    SpenderRef, SpentOutputIndex, StoreAddressEffects, StoreCapabilities, StoreCapability,
-    StoreSchema, StoreWatermark, StoredHeader, TransactionIndex, TransparentHistoryIndex,
-    TransparentHistoryQuery, TreeRootsIndex, TreeStateIndex, TxOutSetAccumulator, TxOutSetIndex,
+    HistoryTreeIndex, LocatedOutput, LocatedSpend, PoolFilter, SpenderRef, SpentOutputIndex,
+    StoreAddressEffects, StoreCapabilities, StoreCapability, StoreWatermark, StoredHeader,
+    TransactionIndex, TransparentHistoryIndex, TransparentHistoryQuery, TreeRootsIndex,
+    TreeStateIndex, TxOutSetAccumulator, TxOutSetIndex,
 };
 use zaino_component::{ComponentStatus, StatusSource};
 
@@ -39,13 +39,6 @@ const COMPACT_CHUNK_BLOCKS: u32 = 100;
 const EVENT_CHUNK_BYTES: NonZeroUsize = match NonZeroUsize::new(1 << 20) {
     Some(bytes) => bytes,
     None => NonZeroUsize::MIN,
-};
-
-/// The layout version the new store reports: v1 was zainodb's.
-const SCHEMA: SchemaVersion = SchemaVersion {
-    major: 2,
-    minor: 0,
-    patch: 0,
 };
 
 /// A point-in-time view of the store; clones share it.
@@ -732,13 +725,6 @@ impl<R: BackendReader + Sync + 'static> ChainStoreReader for StoreReader<R> {
 
     fn network(&self) -> Network {
         self.snapshot.network
-    }
-
-    async fn schema(&self) -> Result<StoreSchema, ChainStoreError> {
-        Ok(StoreSchema {
-            version: SCHEMA,
-            migration: MigrationState::Settled,
-        })
     }
 
     async fn block_hash(&self, height: Height) -> Result<Option<BlockHash>, ChainStoreError> {

@@ -1,7 +1,7 @@
 use std::collections::BTreeSet;
 
 use crate::proto::{
-    compact_formats::{CompactBlock, CompactTx},
+    compact_formats::CompactTx,
     service::{BlockId, BlockRange, PoolType},
 };
 #[cfg(feature = "heavy")]
@@ -288,58 +288,6 @@ impl CompactTx {
             || !self.outputs.is_empty()
             || !self.actions.is_empty()
             || !self.ironwood_actions.is_empty()
-    }
-}
-
-/// Prunes a compact block of transaction information related to pools the
-/// filter excludes, then omits transactions left with no pool data at all.
-///
-/// An unfiltered request is expressed as [`PoolTypeFilter::default`]; the
-/// request-decode path ([`PoolTypeFilter::new_from_slice`]) produces it for
-/// an empty `poolTypes` field.
-pub fn prune_compact_block(mut block: CompactBlock, filter: &PoolTypeFilter) -> CompactBlock {
-    block.vtx = block
-        .vtx
-        .into_iter()
-        .map(|compact_tx| prune_compact_tx(compact_tx, filter))
-        .filter(CompactTx::has_pool_data)
-        .collect();
-    block
-}
-
-/// Rebuilds one transaction keeping only the data of pools the filter
-/// includes.
-fn prune_compact_tx(compact_tx: CompactTx, filter: &PoolTypeFilter) -> CompactTx {
-    let CompactTx {
-        index,
-        txid,
-        fee,
-        spends,
-        outputs,
-        actions,
-        ironwood_actions,
-        vin,
-        vout,
-    } = compact_tx;
-    CompactTx {
-        index,
-        txid,
-        fee,
-        spends: included_or_empty(filter.includes_sapling(), spends),
-        outputs: included_or_empty(filter.includes_sapling(), outputs),
-        actions: included_or_empty(filter.includes_orchard(), actions),
-        ironwood_actions: included_or_empty(filter.includes_ironwood(), ironwood_actions),
-        vin: included_or_empty(filter.includes_transparent(), vin),
-        vout: included_or_empty(filter.includes_transparent(), vout),
-    }
-}
-
-/// `items` when `included`, the empty vector otherwise.
-fn included_or_empty<T>(included: bool, items: Vec<T>) -> Vec<T> {
-    if included {
-        items
-    } else {
-        Vec::new()
     }
 }
 

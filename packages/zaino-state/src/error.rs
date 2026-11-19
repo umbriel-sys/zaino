@@ -3,8 +3,6 @@
 
 // Needs to be module level due to the thiserror::Error macro
 
-use crate::BlockHash;
-
 use std::fmt::Display;
 
 use zaino_proto::proto::utils::GetBlockRangeError;
@@ -79,10 +77,6 @@ pub enum NodeBackedIndexerServiceError {
     /// Chain index error.
     #[error("Chain index error: {0}")]
     ChainIndexError(#[from] ChainIndexError),
-
-    /// Error from the mempool.
-    #[error("Mempool error: {0}")]
-    MempoolError(#[from] MempoolError),
 
     /// Tonic gRPC error.
     #[error("Tonic status error: {0}")]
@@ -177,9 +171,6 @@ impl From<NodeBackedIndexerServiceError> for tonic::Status {
                 // one.
                 ChainIndexErrorKind::Unimplemented => tonic::Status::unimplemented(err.message),
             },
-            NodeBackedIndexerServiceError::MempoolError(err) => {
-                tonic::Status::internal(format!("Mempool error: {err:?}"))
-            }
             NodeBackedIndexerServiceError::TonicStatusError(err) => err,
             NodeBackedIndexerServiceError::SerializationError(err) => {
                 tonic::Status::internal(format!("Serialization error: {err}"))
@@ -204,31 +195,6 @@ impl From<NodeBackedIndexerServiceError> for tonic::Status {
             }
         }
     }
-}
-
-/// Errors related to the `Mempool`.
-#[derive(Debug, thiserror::Error)]
-pub enum MempoolError {
-    /// Critical Errors, Restart Zaino.
-    #[error("Critical error: {0}")]
-    Critical(String),
-
-    /// Incorrect expected chain tip given from client.
-    #[error(
-        "Incorrect chain tip (expected {expected_chain_tip:?}, current {current_chain_tip:?})"
-    )]
-    IncorrectChainTip {
-        expected_chain_tip: BlockHash,
-        current_chain_tip: BlockHash,
-    },
-
-    /// Errors originating from the BlockchainSource in use.
-    #[error("blockchain source error: {0}")]
-    BlockchainSourceError(#[from] crate::chain_index::source::BlockchainSourceError),
-
-    /// Error from a Tokio Watch Receiver.
-    #[error("Join error: {0}")]
-    WatchRecvError(#[from] tokio::sync::watch::error::RecvError),
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -537,33 +503,6 @@ impl From<zaino_chain::ChainViewError> for ChainIndexError {
         ChainIndexError {
             kind,
             message: value.to_string(),
-            source: Some(Box::new(value)),
-        }
-    }
-}
-
-impl From<MempoolError> for ChainIndexError {
-    fn from(value: MempoolError) -> Self {
-        // Construct a user-facing message depending on the variant
-        let message = match &value {
-            MempoolError::Critical(msg) => format!("critical mempool error: {msg}"),
-            MempoolError::IncorrectChainTip {
-                expected_chain_tip,
-                current_chain_tip,
-            } => {
-                format!(
-                    "incorrect chain tip (expected {expected_chain_tip:?}, current {current_chain_tip:?})"
-                )
-            }
-            MempoolError::BlockchainSourceError(err) => {
-                format!("mempool blockchain source error: {err}")
-            }
-            MempoolError::WatchRecvError(err) => format!("mempool watch receiver error: {err}"),
-        };
-
-        ChainIndexError {
-            kind: ChainIndexErrorKind::InternalServerError,
-            message,
             source: Some(Box::new(value)),
         }
     }

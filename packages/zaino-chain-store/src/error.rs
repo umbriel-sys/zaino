@@ -7,8 +7,8 @@ use crate::capability::StoreCapability;
 
 /// An opaque cause, kept for the operator's log.
 ///
-/// Boxed because the domain must not name the backend's error type: an LMDB
-/// errno and a validator's RPC failure are both causes here, and neither is
+/// Boxed because the domain must not name the backend's error type: a storage
+/// engine's error and a validator's RPC failure are both causes here, and neither is
 /// something this crate can depend on. Erasing the type keeps the cause
 /// reportable without making it branchable, which is the same contract
 /// [`ChainStoreError::Backend`] already had for its message.

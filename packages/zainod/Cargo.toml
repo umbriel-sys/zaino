@@ -48,18 +48,6 @@ prometheus = ["dep:metrics", "dep:metrics-exporter-prometheus", "dep:metrics-pro
 # mesh/proxy that terminates encryption).
 allow_unencrypted_public_json_rpc_bind = []
 
-# **Experimental and alpha features**
-# Exposes the **complete** set of experimental / alpha features currently implemented in Zaino.
-experimental_features = ["transparent_address_history_experimental"]
-
-# Activates transparent address history capability in zaino
-#
-# NOTE: currently this is only implemented in the finalised state.
-transparent_address_history_experimental = [
-  "zaino-state/transparent_address_history_experimental",
-  "zaino-serve/transparent_address_history_experimental"
-]
-
 [dependencies]
 zaino-primitives = { workspace = true, features = ["serde"] }
 zaino-logging = { workspace = true }

@@ -209,9 +209,6 @@ async fn core_reads_answer_every_height_and_refuse_above_the_watermark() {
         reader.block_hash(above).await,
         Err(ChainStoreError::AboveWatermark { .. })
     ));
-    let schema = reader.schema().await.expect("schema");
-    assert_eq!(schema.version.major, 2);
-
     // a store that has built nothing is not ready
     let empty = boot(&config(&every_index()), &InMemoryStorage::new(), &chain)
         .await
