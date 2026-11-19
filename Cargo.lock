@@ -6366,6 +6366,30 @@ dependencies = [
 ]
 
 [[package]]
+name = "zaino-service"
+version = "0.1.0"
+dependencies = [
+ "thiserror 2.0.20",
+ "tokio",
+ "tokio-util",
+ "tracing",
+ "zaino-chain",
+ "zaino-chain-head",
+ "zaino-chain-head-service",
+ "zaino-chain-store",
+ "zaino-chain-store-service",
+ "zaino-component",
+ "zaino-consensus",
+ "zaino-indexes",
+ "zaino-mempool",
+ "zaino-mempool-service",
+ "zaino-persistence-lsm-tree",
+ "zaino-primitives",
+ "zaino-source",
+ "zaino-source-mock",
+]
+
+[[package]]
 name = "zaino-source"
 version = "0.2.2"
 dependencies = [

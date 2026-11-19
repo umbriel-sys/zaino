@@ -111,7 +111,9 @@ indexes are the ones its port reads plus what those declare they read
 (`Index::READS`, D-83), derived rather than listed, so the two cannot drift:
 for example `TransparentHistory` is the address-history index plus txids and
 transparent, and `CompactBlocks` is the compact-block index plus headers,
-txids, transparent and chain metadata.
+txids, transparent and chain metadata. `indexes_of(capability)` lists them,
+roots first. `StoreReader::empty(network, status)` is a reader over no store
+(no watermark, no capabilities), for a deployment the validator backs.
 
 `ChainStore` is cheap to clone; clones share one store, which stops when the
 last is dropped. It implements the `zaino-chain-store` ports:

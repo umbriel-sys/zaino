@@ -103,6 +103,22 @@ impl<R> StoreReader<R> {
             }),
         }
     }
+
+    /// A reader over no store, for a deployment the validator backs: no
+    /// watermark, no capabilities, every read `NotReady`.
+    pub fn empty(network: Network, status: ComponentStatus) -> Self {
+        Self::new(
+            BTreeMap::new(),
+            StoreWatermark {
+                tip: None,
+                provenance: zaino_chain_store::Provenance::Passthrough,
+            },
+            StoreCapabilities::new([]),
+            BTreeSet::new(),
+            status,
+            network,
+        )
+    }
 }
 
 impl<R> StatusSource for StoreReader<R> {

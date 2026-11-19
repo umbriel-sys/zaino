@@ -831,18 +831,22 @@ const ROOTS: &[(StoreCapability, &[IndexId])] = &[
     (StoreCapability::HistoryTree, &[IndexId::HistoryTree]),
 ];
 
-/// Every index `capability` needs: its roots and what they read.
-pub(crate) fn indexes_of(capability: StoreCapability) -> impl Iterator<Item = IndexId> {
+/// Every index `capability` needs: its roots first, then what they read.
+pub fn indexes_of(capability: StoreCapability) -> impl Iterator<Item = IndexId> {
     let roots = ROOTS
         .iter()
         .find(|(root, _)| *root == capability)
         .map_or(&[][..], |(_, ids)| *ids);
-    let mut all: Vec<IndexId> = roots
+    let mut all: Vec<IndexId> = Vec::new();
+    for id in roots
         .iter()
-        .flat_map(|id| std::iter::once(*id).chain(id.reads()))
-        .collect();
-    all.sort_unstable();
-    all.dedup();
+        .copied()
+        .chain(roots.iter().flat_map(|id| id.reads()))
+    {
+        if !all.contains(&id) {
+            all.push(id);
+        }
+    }
     all.into_iter()
 }
 

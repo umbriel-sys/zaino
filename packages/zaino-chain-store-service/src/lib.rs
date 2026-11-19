@@ -35,4 +35,4 @@ pub use linked::{LinkedChainStore, LinkedError, Polling, PrimaryStatus};
 pub use reader::StoreReader;
 pub use record::{PrimaryState, RecordError};
 pub use set::{IndexSet, NamedSet, SetError};
-pub use store::{BootError, ChainStore, Serviceability};
+pub use store::{indexes_of, BootError, ChainStore, Serviceability};

@@ -26,6 +26,7 @@ members = [
     "packages/zaino-chain-store-zainodb",
     "packages/zaino-chain-store-service",
     "packages/zaino-chain",
+    "packages/zaino-service",
     "packages/zainod",
     "packages/zaino-serve",
     "packages/zaino-state",
@@ -231,6 +232,9 @@ zaino-chain-store-service = { path = "packages/zaino-chain-store-service", versi
 # vocabulary it implements. A consumer bringing its own store and head depends
 # on the same crate and writes its own composer against the same ports.
 zaino-chain = { path = "packages/zaino-chain", version = "0.1.0" }
+# The one configurable service over ChainView, the head, the store and the
+# mempool (Stage 6).
+zaino-service = { path = "packages/zaino-service", version = "0.1.0" }
 zaino-proto = { path = "packages/zaino-proto", version = "0.6.1" }
 zaino-state = { path = "packages/zaino-state", version = "0.10.0", default-features = false }
 zaino-serve = { path = "packages/zaino-serve", version = "0.9.0", default-features = false }

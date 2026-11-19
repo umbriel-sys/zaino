@@ -192,9 +192,20 @@ fn capabilities_follow_the_indexes_declared_reads() {
     for (capability, ids) in expected {
         let mut ids = ids.to_vec();
         ids.sort_unstable();
+        let mut actual = crate::store::indexes_of(capability).collect::<Vec<_>>();
+        actual.sort_unstable();
+        assert_eq!(actual, ids, "{capability}");
+    }
+    // the roots come first
+    for (capability, root) in [
+        (StoreCapability::CompactBlocks, CompactBlock),
+        (StoreCapability::SpentOutputs, Spent),
+        (StoreCapability::TransparentHistory, AddressHistory),
+        (StoreCapability::Transactions, TxidLocation),
+    ] {
         assert_eq!(
-            crate::store::indexes_of(capability).collect::<Vec<_>>(),
-            ids,
+            crate::store::indexes_of(capability).next(),
+            Some(root),
             "{capability}"
         );
     }
