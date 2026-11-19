@@ -76,11 +76,87 @@ pub struct BlockHeaderVerbose {
 
     /// Hash of the previous block.
     ///
-    /// `None` for the genesis block, which has no parent.
+    /// zebrad names genesis's all-zero parent; zcashd omits it there.
     pub previous_block_hash: Option<BlockHash>,
 
     /// Hash of the next block on the best chain.
     ///
     /// `None` when this block is the tip, or is not on the best chain.
     pub next_block_hash: Option<BlockHash>,
+}
+
+/// A header's `blockcommitments`, `finalsaplingroot` and `nonce` as zebrad's
+/// `getblockheader` and `getblock` write them.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct HeaderDisplay {
+    /// The header's bytes before Sapling, reversed from it.
+    pub block_commitments: Option<[u8; 32]>,
+    /// Reversed; all zeros before Sapling.
+    pub final_sapling_root: [u8; 32],
+    /// Reversed.
+    pub nonce: [u8; 32],
+}
+
+impl HeaderDisplay {
+    /// From the header's own values; `final_sapling_root` is `None` exactly
+    /// before Sapling.
+    pub fn new(
+        block_commitments: Option<BlockCommitments>,
+        final_sapling_root: Option<TreeRoot>,
+        nonce: EquihashNonce,
+    ) -> Self {
+        let reversed = |mut bytes: [u8; 32]| {
+            bytes.reverse();
+            bytes
+        };
+        Self {
+            block_commitments: block_commitments.map(|commitments| {
+                let bytes = <[u8; 32]>::from(commitments);
+                match final_sapling_root {
+                    Some(_) => reversed(bytes),
+                    None => bytes,
+                }
+            }),
+            final_sapling_root: final_sapling_root
+                .map(|root| reversed(root.into()))
+                .unwrap_or_default(),
+            nonce: reversed(nonce),
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn ascending() -> [u8; 32] {
+        core::array::from_fn(|i| i as u8)
+    }
+
+    fn descending() -> [u8; 32] {
+        let mut bytes = ascending();
+        bytes.reverse();
+        bytes
+    }
+
+    #[test]
+    fn from_sapling_everything_is_reversed() {
+        let display = HeaderDisplay::new(
+            Some(BlockCommitments::from(ascending())),
+            Some(TreeRoot::new(ascending())),
+            ascending(),
+        );
+        assert_eq!(display.block_commitments, Some(descending()));
+        assert_eq!(display.final_sapling_root, descending());
+        assert_eq!(display.nonce, descending());
+    }
+
+    #[test]
+    fn before_sapling_the_commitments_are_the_header_bytes_and_the_root_is_zero() {
+        let display =
+            HeaderDisplay::new(Some(BlockCommitments::from(ascending())), None, ascending());
+        assert_eq!(display.block_commitments, Some(ascending()));
+        assert_eq!(display.final_sapling_root, [0; 32]);
+        assert_eq!(display.nonce, descending());
+    }
 }

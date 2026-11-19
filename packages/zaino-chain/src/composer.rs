@@ -1369,30 +1369,64 @@ where
                 .collect(),
         };
 
-        if locations.best_chain.is_some() || self.coverage.store_top.is_none() {
+        if locations.best_chain.is_some() {
             return Ok(locations);
         }
 
         // Below the window there is a single chain, so the store's
         // best-chain-only index is the whole answer for its range.
-        let Some(position) = self.reader.tx_position(&txid).await.map_err(store_err)? else {
+        if self.coverage.store_top.is_some() {
+            if let Some(position) = self.reader.tx_position(&txid).await.map_err(store_err)? {
+                // The store answers with a height; a position names a block, so
+                // complete it with the hash at that height, which it must hold.
+                let hash = self
+                    .reader
+                    .block_hash(position.height)
+                    .await
+                    .map_err(store_err)?
+                    .ok_or_else(|| unpinned(position.height))?;
+                locations.best_chain = Some(ChainTxPosition {
+                    block: BlockRef {
+                        hash,
+                        height: position.height,
+                    },
+                    tx_index: position.tx_index,
+                });
+                return Ok(locations);
+            }
+        }
+
+        // A hole between the providers (no store, or one still building) is
+        // the validator's: a transaction it mined there is placed by its block.
+        if self.coverage.gap_from().is_none() || !self.coverage.source_fills {
+            return Ok(locations);
+        }
+        let source = self.fetch.source();
+        let Some(found) = fetch::miss(source.get_transaction(txid).await)? else {
             return Ok(locations);
         };
-        // The store answers with a height; a position names a block, so
-        // complete it with the hash at that height, which it must hold.
-        let hash = self
-            .reader
-            .block_hash(position.height)
-            .await
-            .map_err(store_err)?
-            .ok_or_else(|| unpinned(position.height))?;
-        locations.best_chain = Some(ChainTxPosition {
-            block: BlockRef {
-                hash,
-                height: position.height,
-            },
-            tx_index: position.tx_index,
-        });
+        let zaino_primitives::types::TransactionLocation::BestChain(height) = found.location else {
+            return Ok(locations);
+        };
+        if !matches!(
+            self.coverage.provider_at(height),
+            Ok(Some(Provider::Source))
+        ) {
+            return Ok(locations);
+        }
+        let Some(block) = fetch::miss(source.get_block(height).await)? else {
+            return Ok(locations);
+        };
+        locations.best_chain = (0u32..)
+            .zip(block.transactions())
+            .find(|(_, transaction)| transaction.txid == txid)
+            .map(|(tx_index, _)| ChainTxPosition {
+                block: BlockRef {
+                    hash: block.header.hash,
+                    height,
+                },
+                tx_index,
+            });
         Ok(locations)
     }
 }

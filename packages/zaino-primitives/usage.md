@@ -285,8 +285,8 @@ and why the three are distinct.
 
 `to_be_bytes` renders the 32 big-endian byte form and `from_be_bytes` reads it
 back, refusing an over-width or all-zero value with `ChainWorkBytesError`; the
-store's row is that form. Nothing reads chainwork off the wire, since Zebra does
-not report it. For an integer you already hold, use
+store's row is that form, and so is zcashd's `chainwork` (Zebra reports none).
+For an integer you already hold, use
 `AbsoluteChainWork::new(NonZeroU128)` or `SingleBlockWork::new(NonZeroU128)`.
 
 The `types::work` module documentation states the full algebra, including what
@@ -365,9 +365,11 @@ presents:
 let displayed = { let mut b = <[u8; 32]>::from(hash); b.reverse(); hex::encode(b) };
 ```
 
-Tree roots and nonces are **not** reversed for display. If you are unsure which
-a field is, check the wire module that serves it — `wire/treestate.rs` and
-`wire/subtrees.rs` each state their choice and pin it with a test.
+Treestate and subtree roots are **not** reversed for display. A block header's
+`blockcommitments`, `finalsaplingroot` and nonce are, by zebrad's rules:
+`rpc::HeaderDisplay::new` renders the three for `getblockheader` and
+`getblock`. If you are unsure which a field is, check the wire module that
+serves it — each states its choice and pins it with a test.
 
 ## The network kind and a regtest schedule
 

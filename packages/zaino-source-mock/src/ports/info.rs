@@ -236,7 +236,6 @@ impl zaino_source::OneShotGetBlockHeader for MockChain {
             return refused(GetBlockHeaderError::BlockNotFound(hash));
         };
         let header = &block.block.header;
-        let genesis = u32::from(block.height()) == 0;
         Ok(BlockHeaderVerbose {
             hash,
             confirmations: confirmations(&served, block),
@@ -251,7 +250,8 @@ impl zaino_source::OneShotGetBlockHeader for MockChain {
             block_commitments: Some(header.block_commitments),
             final_sapling_root: block.tree_roots.sapling.as_ref().map(|info| info.root),
             chainwork: chainwork(&served, block),
-            previous_block_hash: (!genesis).then_some(header.prev_hash),
+            // as zebrad: every block's parent, genesis's all-zero one included
+            previous_block_hash: Some(header.prev_hash),
             next_block_hash: served.next_of(block).map(MockBlock::hash),
         })
     }
@@ -340,6 +340,7 @@ impl zaino_source::OneShotGetBlockDeltas for MockChain {
             nonce: header.nonce,
             bits: header.bits,
             difficulty: difficulty(header.bits.as_bits(), network),
+            chainwork: chainwork(&served, block),
             previous_block_hash: (u32::from(block.height()) > 0).then_some(header.prev_hash),
             next_block_hash: served.next_of(block).map(MockBlock::hash),
         })

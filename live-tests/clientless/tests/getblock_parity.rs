@@ -8,8 +8,7 @@ use anyhow::Result;
 use rstest::rstest;
 use serde_json::json;
 use zaino_testutils::{
-    indexer::rpc_error, rpc::assert_rpc_parity, Backend, ChainCache, Validator as _, Zainod,
-    Zebrad,
+    indexer::rpc_error, rpc::assert_rpc_parity, Backend, ChainCache, Validator as _, Zainod, Zebrad,
 };
 
 const READY: Duration = Duration::from_secs(180);
@@ -25,7 +24,12 @@ async fn getblock_is_zebrads_answer(#[case] backend: Backend) -> Result<()> {
     let tip = cache.manifest.fixture.height;
     indexer.wait_for_block(tip, READY).await?;
 
-    let mut heights: Vec<u32> = cache.manifest.events.iter().map(|event| event.height).collect();
+    let mut heights: Vec<u32> = cache
+        .manifest
+        .events
+        .iter()
+        .map(|event| event.height)
+        .collect();
     heights.extend([0, 1, tip]);
     heights.sort_unstable();
     heights.dedup();
@@ -47,14 +51,8 @@ async fn getblock_is_zebrads_answer(#[case] backend: Backend) -> Result<()> {
                     .as_str()
                     .expect("a verbose block names its hash")
                     .to_owned();
-                assert_rpc_parity(
-                    "getblock",
-                    &format!("[\"{hash}\", 1]"),
-                    vrpc,
-                    &served,
-                    &[],
-                )
-                .await?;
+                assert_rpc_parity("getblock", &format!("[\"{hash}\", 1]"), vrpc, &served, &[])
+                    .await?;
             }
         }
     }

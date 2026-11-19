@@ -31,12 +31,12 @@ use zaino_primitives::types::{
         FundingStream, InputDelta, LocalAddress, LockboxStream, MiningInfo, NetworkEntry,
         NetworkInfo, NodeInfo, OutputDelta, PeerInfo, SpentInfo, StandardFee, TxOut,
     },
-    AddressBalance, AddressDelta, BlockCommitments, BlockConfirmations, BlockHash, BlockchainInfo,
-    CompactDifficulty, ConsensusBranchId, ConsensusBranchIds, Height, MerkleRoot, Network,
-    NetworkUpgradeInfo, NetworkUpgradeStatus, Script, SignedZatoshis, SubtreeRoot, TransactionId,
-    TransactionLocation, TransparentAddress, TransparentAddressError, TreeRoot, TreeRootInfo,
-    TreeRoots, TreeSize, TreeSizeOutOfRange, Treestate, TxConfirmations, Utxo, ValuePoolBalance,
-    Zatoshis, ZatoshisFlowSum,
+    AbsoluteChainWork, AddressBalance, AddressDelta, BlockCommitments, BlockConfirmations,
+    BlockHash, BlockchainInfo, CompactDifficulty, ConsensusBranchId, ConsensusBranchIds, Height,
+    MerkleRoot, Network, NetworkUpgradeInfo, NetworkUpgradeStatus, Script, SignedZatoshis,
+    SubtreeRoot, TransactionId, TransactionLocation, TransparentAddress, TransparentAddressError,
+    TreeRoot, TreeRootInfo, TreeRoots, TreeSize, TreeSizeOutOfRange, Treestate, TxConfirmations,
+    Utxo, ValuePoolBalance, Zatoshis, ZatoshisFlowSum,
 };
 use zaino_source::{MempoolTxMeta, TransactionResponse};
 
@@ -139,9 +139,10 @@ fn as_tx_confirmations(value: &serde_json::Value) -> Result<TxConfirmations, Par
 // type they want. `reversed` and `natural` are private to this section and are
 // never called from a response parser.
 //
-// Verified against zebra's own serde (`zebra-rpc`'s `BlockHeaderObject`):
-// `block::Hash` and `merkle::Root` reverse on decode, whereas the plain
-// `[u8; 32]` fields — blockcommitments, finalsaplingroot, nonce — do not.
+// Verified against zebrad's `get_block_header` (`zebra-rpc` `methods.rs`):
+// hashes, the merkle root, the nonce and `finalsaplingroot` are written
+// reversed; `blockcommitments` is the header's bytes before Sapling and
+// reversed from it. Domain values are the header's own bytes.
 // ---------------------------------------------------------------------------
 
 /// Decode a 32-byte value written byte-reversed (RPC display order).
@@ -167,9 +168,30 @@ fn as_merkle_root(value: &serde_json::Value) -> Result<MerkleRoot, ParseError> {
     reversed(value).map(MerkleRoot::from)
 }
 
-/// A block commitments digest. Natural order.
-fn as_block_commitments(value: &serde_json::Value) -> Result<BlockCommitments, ParseError> {
-    natural(value).map(BlockCommitments::from)
+/// `finalsaplingroot`: reversed on the wire; all zeros below Sapling
+/// activation, where there is no root.
+fn as_final_sapling_root(value: &serde_json::Value) -> Result<Option<TreeRoot>, ParseError> {
+    let bytes = reversed(value)?;
+    Ok((bytes != [0; 32]).then(|| TreeRoot::new(bytes)))
+}
+
+/// A header or block reply's `(blockcommitments, finalsaplingroot)`. The
+/// commitments are the header's bytes before Sapling and reversed from it.
+fn header_commitments(
+    value: &serde_json::Value,
+) -> Result<(Option<BlockCommitments>, Option<TreeRoot>), ParseError> {
+    let root = opt_field(value, "finalsaplingroot")
+        .map(as_final_sapling_root)
+        .transpose()?
+        .flatten();
+    let commitments = opt_field(value, "blockcommitments")
+        .map(|bytes| match root {
+            Some(_) => reversed(bytes),
+            None => natural(bytes),
+        })
+        .transpose()?
+        .map(BlockCommitments::from);
+    Ok((commitments, root))
 }
 
 /// A commitment tree root. Natural order.
@@ -177,9 +199,44 @@ fn as_tree_root(value: &serde_json::Value) -> Result<TreeRoot, ParseError> {
     natural(value).map(TreeRoot::new)
 }
 
-/// An Equihash nonce. Natural order.
+/// An Equihash nonce. Reversed on the wire.
 fn as_nonce(value: &serde_json::Value) -> Result<[u8; 32], ParseError> {
-    natural(value)
+    reversed(value)
+}
+
+/// `chainwork`: big-endian hex of up to 32 bytes (zcashd). Absent, or
+/// zebrad's `0`, is none.
+fn opt_chainwork(value: &serde_json::Value) -> Result<Option<AbsoluteChainWork>, ParseError> {
+    let Some(work) = opt_field(value, "chainwork") else {
+        return Ok(None);
+    };
+    let mut bytes = [0u8; 32];
+    match work {
+        serde_json::Value::Number(_) => {
+            let low = as_u64(work)?.to_be_bytes();
+            for (slot, byte) in bytes.iter_mut().rev().zip(low.iter().rev()) {
+                *slot = *byte;
+            }
+        }
+        _ => {
+            let decoded = hex::decode(as_str(work)?).map_err(|e| ParseError::Hex(e.to_string()))?;
+            if decoded.len() > bytes.len() {
+                return Err(ParseError::WrongLength {
+                    expected: bytes.len(),
+                    got: decoded.len(),
+                });
+            }
+            for (slot, byte) in bytes.iter_mut().rev().zip(decoded.iter().rev()) {
+                *slot = *byte;
+            }
+        }
+    }
+    if bytes == [0; 32] {
+        return Ok(None);
+    }
+    AbsoluteChainWork::from_be_bytes(bytes)
+        .map(Some)
+        .map_err(ParseError::ChainWork)
 }
 
 /// Convert a ZEC-denominated amount to exact zatoshis.
@@ -348,6 +405,10 @@ pub(crate) enum ParseError {
     #[error("deserialize: {0}")]
     Deserialize(String),
 
+    /// A `chainwork` over 128 bits.
+    #[error("chainwork: {0}")]
+    ChainWork(zaino_primitives::types::ChainWorkBytesError),
+
     /// A mempool listing declared more entries than we are willing to decode.
     #[error("{kind} mempool listing too large: {len} entries > {max}")]
     ListingTooLarge {
@@ -410,6 +471,7 @@ fn parse_chain_tip_status(value: Option<&serde_json::Value>) -> ChainTipStatus {
 pub(crate) fn parse_block_header_verbose(
     value: &serde_json::Value,
 ) -> Result<BlockHeaderVerbose, ParseError> {
+    let (block_commitments, final_sapling_root) = header_commitments(value)?;
     Ok(BlockHeaderVerbose {
         hash: parse_block_hash(field(value, "hash")?)?,
         confirmations: as_block_confirmations(field(value, "confirmations")?)?,
@@ -424,15 +486,9 @@ pub(crate) fn parse_block_header_verbose(
             .unwrap_or_default(),
         bits: parse_compact_difficulty(field(value, "bits")?)?,
         difficulty: as_f64(field(value, "difficulty")?)?,
-        block_commitments: opt_field(value, "blockcommitments")
-            .map(as_block_commitments)
-            .transpose()?,
-        final_sapling_root: opt_field(value, "finalsaplingroot")
-            .map(as_tree_root)
-            .transpose()?,
-        // Not read: Zebra omits `chainwork` from `getblockheader` and does not
-        // plan to track it (ZcashFoundation/zebra#7109).
-        chainwork: None,
+        block_commitments,
+        final_sapling_root,
+        chainwork: opt_chainwork(value)?,
         previous_block_hash: opt_field(value, "previousblockhash")
             .map(parse_block_hash)
             .transpose()?,
@@ -862,15 +918,8 @@ pub(crate) fn parse_block_tree_roots(
             .map(|size| Ok(TreeSize::try_from(as_u64(size)?)?))
             .transpose()
     };
-    let sapling = match (opt_field(value, "finalsaplingroot"), size("sapling")?) {
-        (Some(root), Some(size)) => {
-            let mut bytes = natural(root)?;
-            bytes.reverse();
-            Some(TreeRootInfo {
-                root: TreeRoot::new(bytes),
-                size,
-            })
-        }
+    let sapling = match (header_commitments(value)?.1, size("sapling")?) {
+        (Some(root), Some(size)) => Some(TreeRootInfo { root, size }),
         _ => None,
     };
     let orchard = match (opt_field(value, "finalorchardroot"), size("orchard")?) {
@@ -891,7 +940,7 @@ pub(crate) fn parse_block_tree_roots(
 /// Ironwood always, Sapling and Orchard only where the block reply had none.
 /// Those are hashed from the serialised `finalState` frontier, which also
 /// gives the size; `finalRoot` is never read, since Zebra sends none. A pool
-/// present with no `finalState` is an empty tree, not an absent pool. Hashing
+/// with no `finalState` is not active at the block: absent. Hashing
 /// a frontier to its root is the expensive step, so it runs only here.
 pub(crate) fn complete_tree_roots(
     block: BlockTreeRoots,
@@ -936,9 +985,9 @@ fn pool_final_state(pool: Option<&serde_json::Value>) -> Result<Option<Vec<u8>>,
         Some(state) => Ok(Some(
             hex::decode(as_str(state)?).map_err(|e| ParseError::Hex(e.to_string()))?,
         )),
-        // The pool is present but empty — a well-defined state, not an absent
-        // pool, so it still yields a root below.
-        None => Ok(Some(Vec::new())),
+        // no tree: the pool is not active at this block (zebrad and zcashd
+        // both send an active pool's tree, empty included)
+        None => Ok(None),
     }
 }
 
@@ -1007,10 +1056,7 @@ pub(crate) fn parse_blockchain_info(
         best_block_hash: parse_block_hash(field(value, "bestblockhash")?)?,
         difficulty: as_f64(field(value, "difficulty")?)?,
         verification_progress: as_f64(field(value, "verificationprogress")?)?,
-        // Not read: Zebra hardcodes `chainwork` to zero in `getblockchaininfo`
-        // and does not plan to track it (ZcashFoundation/zebra#7109). A reply
-        // without the key parses too, since the value is never consulted.
-        chain_work: None,
+        chain_work: opt_chainwork(value)?,
         pruned: opt_field(value, "pruned")
             .map(as_bool)
             .transpose()?
@@ -1134,6 +1180,7 @@ pub(crate) fn parse_block_deltas(value: &serde_json::Value) -> Result<BlockDelta
         nonce: as_nonce(field(value, "nonce")?)?,
         bits: parse_compact_difficulty(field(value, "bits")?)?,
         difficulty: as_f64(field(value, "difficulty")?)?,
+        chainwork: opt_chainwork(value)?,
         previous_block_hash: opt_field(value, "previousblockhash")
             .map(parse_block_hash)
             .transpose()?,
@@ -1316,19 +1363,59 @@ mod tests {
         );
     }
 
+    /// zebrad's `get_block_header`: the nonce and `finalsaplingroot` reversed;
+    /// `blockcommitments` reversed from Sapling, the header's bytes before
+    /// it, where the root is all zeros and is no root.
     #[test]
-    fn commitments_roots_and_nonces_keep_their_natural_order() {
+    fn header_fields_follow_zebrads_orders() {
         let value = json!(ASYMMETRIC_HEX);
-
-        assert_eq!(
-            as_block_commitments(&value).expect("commitments"),
-            BlockCommitments::from(asymmetric_bytes())
-        );
         assert_eq!(
             as_tree_root(&value).expect("tree root"),
             TreeRoot::new(asymmetric_bytes())
         );
-        assert_eq!(as_nonce(&value).expect("nonce"), asymmetric_bytes());
+        assert_eq!(as_nonce(&value).expect("nonce"), reversed_bytes());
+
+        let sapling = json!({
+            "blockcommitments": ASYMMETRIC_HEX,
+            "finalsaplingroot": ASYMMETRIC_HEX,
+        });
+        assert_eq!(
+            header_commitments(&sapling).expect("parsed"),
+            (
+                Some(BlockCommitments::from(reversed_bytes())),
+                Some(TreeRoot::new(reversed_bytes()))
+            )
+        );
+        let before = json!({
+            "blockcommitments": ASYMMETRIC_HEX,
+            "finalsaplingroot": "00".repeat(32),
+        });
+        assert_eq!(
+            header_commitments(&before).expect("parsed"),
+            (Some(BlockCommitments::from(asymmetric_bytes())), None)
+        );
+    }
+
+    /// zcashd's 64-digit hex is read; absent, and zebrad's `0`, are none; a
+    /// value over 128 bits is refused.
+    #[test]
+    fn chainwork_is_read_when_sent() {
+        let work = |value: serde_json::Value| opt_chainwork(&json!({ "chainwork": value }));
+        let expected = AbsoluteChainWork::new(
+            core::num::NonZeroU128::new(0x0102_0304).expect("nonzero literal"),
+        );
+        assert_eq!(
+            work(json!(format!("{:064x}", 0x0102_0304))).expect("parsed"),
+            Some(expected)
+        );
+        assert_eq!(work(json!("01020304")).expect("parsed"), Some(expected));
+        assert_eq!(work(json!(0)).expect("parsed"), None);
+        assert_eq!(work(json!("00".repeat(32))).expect("parsed"), None);
+        assert_eq!(opt_chainwork(&json!({})).expect("parsed"), None);
+        assert!(matches!(
+            work(json!("01".repeat(32))),
+            Err(ParseError::ChainWork(_))
+        ));
     }
 
     /// A reported tree size is accepted up to `u32::MAX` and a full depth-32
@@ -1457,22 +1544,28 @@ mod tests {
         );
     }
 
-    /// A response shaped the way the nominal fields suggest — carrying
-    /// `finalRoot` but no `finalState` — must not be silently read as a root.
+    /// A pool below its activation carries no `finalState` (zebrad sends
+    /// empty `commitments`, zcashd a `finalRoot` alone): absent, never an
+    /// empty tree, in the roots and in the treestate alike.
     #[test]
-    fn a_pool_without_final_state_is_still_an_empty_tree() {
-        let root_only = json!({
+    fn a_pool_without_final_state_is_absent() {
+        let below = json!({
             "hash": TREESTATE_HASH,
+            "height": 1,
+            "time": 1,
             "sapling": { "commitments": { "finalRoot": "ab".repeat(32) } },
+            "orchard": { "commitments": {} },
         });
 
-        let roots = complete_tree_roots(bare_block(), &root_only).expect("parses");
-        let sapling = roots.sapling.expect("pool present");
-
+        let roots = complete_tree_roots(bare_block(), &below).expect("parses");
         assert_eq!(
-            sapling.size,
-            TreeSize::ZERO,
-            "size comes from the tree, and there is no tree here"
+            (roots.sapling, roots.orchard, roots.ironwood),
+            (None, None, None)
+        );
+        let treestate = parse_treestate(&below).expect("parses");
+        assert_eq!(
+            (treestate.sapling, treestate.orchard, treestate.ironwood),
+            (None, None, None)
         );
     }
 

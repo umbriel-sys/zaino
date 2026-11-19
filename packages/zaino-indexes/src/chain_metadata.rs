@@ -47,7 +47,8 @@ const ORCHARD_PRESENT: Declared<Range<usize>> = fixed_range(&POOLS, 3);
 const IRONWOOD_PRESENT: Declared<Range<usize>> = fixed_range(&POOLS, 6);
 
 /// The schema: one fixed record per height.
-pub const SCHEMA: Schema = Schema::new(NAME, 1, &[NamespaceLayout::sequence(METADATA, &POOLS)]);
+// 2: as `tree_state`'s (F4): roots of pools below activation; rebuilt.
+pub const SCHEMA: Schema = Schema::new(NAME, 2, &[NamespaceLayout::sequence(METADATA, &POOLS)]);
 
 /// I-08.
 pub struct ChainMetadata;
@@ -274,13 +275,13 @@ mod tests {
         assert!(reader.roots(above).expect("read").is_none());
     }
 
-    /// The schema digest every `chain_metadata_1` directory carries.
+    /// The schema digest every `chain_metadata_2` directory carries.
     #[test]
     fn the_schema_digest_is_golden() {
         const GOLDEN: [u8; 32] = [
-            0x17, 0xcf, 0x0c, 0x68, 0x45, 0xa6, 0x0b, 0xd7, 0x37, 0x4f, 0xe3, 0x79, 0xbf, 0xdb,
-            0x45, 0x6e, 0x94, 0x69, 0x60, 0x88, 0x9f, 0x4f, 0x04, 0x7f, 0x27, 0x60, 0x7b, 0x7e,
-            0xfc, 0xce, 0x94, 0x1c,
+            0x4a, 0x33, 0xf5, 0xa2, 0xa1, 0xa3, 0x4e, 0xdb, 0x6a, 0x31, 0x2b, 0xba, 0x2f, 0xdc,
+            0xc1, 0xcb, 0xa4, 0x09, 0xcd, 0xc8, 0xa3, 0xeb, 0x2f, 0x16, 0xc7, 0xeb, 0x74, 0x27,
+            0x32, 0x70, 0x9c, 0x2f,
         ];
         let digest = SCHEMA.digest().expect("declared");
         assert_eq!(
@@ -289,7 +290,7 @@ mod tests {
             "{:02x?}",
             digest.as_bytes()
         );
-        assert_eq!(SCHEMA.dir_name(), "chain_metadata_1");
+        assert_eq!(SCHEMA.dir_name(), "chain_metadata_2");
     }
 
     /// Every declaration is valid: each pool's flag and size where the

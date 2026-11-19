@@ -1,19 +1,17 @@
 //! The chain index: the service (ChainView, the chain head, the store and
 //! the mempool), held under ChainIndex's legacy surface (D6-09).
 
-use std::str::FromStr as _;
 use std::sync::Arc;
 
 use crate::legacy::chain::FinalisedStateMode;
 use crate::legacy::status::{NamedAtomicStatus, Status, StatusType};
-use zaino_chain::{BlockRead as _, ForkReconcile as _, Locator};
+use zaino_chain::{ForkReconcile as _, Locator};
 use zaino_chain_store_service::{
     ChainStoreServiceConfig, IndexesConfig, IngestConfig, NamedSet, OnCorruption,
 };
 use zaino_component::{ComponentStatus, Health, Lifecycle};
 use zaino_persistence_lsm_tree::{fs::RealFs, LsmConfig, LsmTreeStorage};
 use zaino_service::{DiskStore, Mode, Service, ServiceConfig, Store};
-use zebra_state::HashOrHeight;
 
 use zaino_service::ServiceSource;
 
@@ -294,6 +292,24 @@ impl<V: ChainIndexSourcePorts + ServiceSource> NodeBackedChainIndex<V> {
     pub fn status(&self) -> StatusType {
         combined_status(self.status.load(), &self.service)
     }
+
+    /// Waits until the chain head's window has reached the validator's tip
+    /// (its first advance). The store is not waited on: it builds in the
+    /// background and ChainView answers from the validator meanwhile.
+    pub(crate) async fn wait_for_head(&self) -> Result<(), ChainIndexError> {
+        loop {
+            let head = self.service.statuses().head;
+            match (head.lifecycle, head.health) {
+                (Lifecycle::Ready | Lifecycle::Closing, _) => return Ok(()),
+                (Lifecycle::Offline, _) | (_, Health::Critical | Health::Offline) => {
+                    return Err(ChainIndexError::internal(format!(
+                        "the chain head did not start: {head:?}"
+                    )))
+                }
+                _ => tokio::time::sleep(std::time::Duration::from_millis(100)).await,
+            }
+        }
+    }
 }
 
 /// Which backend answers finalised-state reads.
@@ -422,25 +438,6 @@ impl<V: ChainIndexSourcePorts + ServiceSource> NodeBackedChainIndexSubscriber<V>
             .fork_point(&Locator::new(vec![types::domain_hash(hash)]))
             .await?
             .is_some())
-    }
-
-    /// Whether the hash-or-height string names a block this index knows.
-    pub(crate) async fn hash_or_height_known_for_treestate(
-        &self,
-        snapshot: &ChainIndexSnapshot<V>,
-        hash_or_height: &str,
-    ) -> Result<bool, ChainIndexError> {
-        let hash_or_height = HashOrHeight::from_str(hash_or_height).map_err(|error| {
-            ChainIndexError::internal(format!("invalid hash or height: {error}"))
-        })?;
-        let known = match hash_or_height {
-            HashOrHeight::Hash(hash) => Self::block_hash_known(snapshot, hash.into()).await?,
-            HashOrHeight::Height(height) => match types::domain_height(height.into()) {
-                Some(height) => snapshot.block_hash(height).await?.is_some(),
-                None => false,
-            },
-        };
-        Ok(known)
     }
 }
 

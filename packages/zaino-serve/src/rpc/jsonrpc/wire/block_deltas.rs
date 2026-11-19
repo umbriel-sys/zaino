@@ -17,9 +17,11 @@ impl BlockDeltas {
             merkle_root: display_hex(deltas.merkle_root.into()),
             time: i64::from(deltas.time),
             median_time: i64::from(deltas.median_time),
-            nonce: hex::encode(deltas.nonce),
+            // reversed, as zcashd's `blockToDeltasJSON` writes it
+            nonce: hex::encode(deltas.nonce.iter().rev().copied().collect::<Vec<u8>>()),
             bits: format!("{:08x}", deltas.bits.as_bits()),
             difficulty: deltas.difficulty,
+            chainwork: deltas.chainwork.map(|work| hex::encode(work.to_be_bytes())),
             previous_block_hash: deltas.previous_block_hash.map(|h| display_hex(h.into())),
             next_block_hash: deltas.next_block_hash.map(|h| display_hex(h.into())),
             deltas: deltas
@@ -100,8 +102,10 @@ pub struct BlockDeltas {
     /// Difficulty corresponding to `bits` (relative to minimum difficulty, e.g. `1.0`).
     pub difficulty: f64,
 
-    // `chainwork` would be here, but Zebra does not plan to support it
-    // pub chainwork: Vec<u8>,
+    /// Cumulative chain work at this block (hex); omitted where not known.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub chainwork: Option<String>,
+
     /// Previous block hash as hex, or `None` for genesis.
     #[serde(skip_serializing_if = "Option::is_none", rename = "previousblockhash")]
     pub previous_block_hash: Option<String>,
@@ -217,9 +221,12 @@ mod tests {
             }],
             time: 1_700_000_000,
             median_time: 1_699_999_000,
-            nonce: [0xcc; 32],
+            nonce: ASYMMETRIC,
             bits: domain::CompactDifficulty::try_from_bits(0x1d00_ffff).expect("valid nBits"),
             difficulty: 1.0,
+            chainwork: Some(domain::AbsoluteChainWork::new(
+                core::num::NonZeroU128::new(0x0102).expect("nonzero literal"),
+            )),
             previous_block_hash: Some(domain::BlockHash::from([0xdd; 32])),
             next_block_hash: None,
         }
@@ -236,8 +243,18 @@ mod tests {
         assert_eq!(json["hash"], hex::encode(display_order));
         assert_eq!(json["deltas"][0]["txid"], hex::encode(display_order));
 
-        // Nonces are opaque header bytes, not identifiers: not reversed.
-        assert_eq!(json["nonce"], hex::encode([0xcc; 32]));
+        // zcashd writes the nonce reversed, and the chain work as 64 digits
+        assert_eq!(json["nonce"], hex::encode(display_order));
+        assert_eq!(json["chainwork"], format!("{:064x}", 0x0102));
+        let unknown = domain::rpc::BlockDeltas {
+            chainwork: None,
+            ..sample()
+        };
+        let unknown = serde_json::to_value(BlockDeltas::from_domain(unknown)).unwrap();
+        assert!(
+            unknown.get("chainwork").is_none(),
+            "unknown work is omitted"
+        );
         assert_eq!(json["bits"], "1d00ffff");
         assert_eq!(json["mediantime"], 1_699_999_000i64);
         assert_eq!(json["merkleroot"], hex::encode([0xaa; 32]));

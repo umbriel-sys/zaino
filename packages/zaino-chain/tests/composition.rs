@@ -860,7 +860,8 @@ async fn validator_answers_pass_through() {
 // ***** Transactions *****
 
 /// Where a transaction was mined: the store answers below the window, the
-/// head above it, and only the head knows a competing branch.
+/// validator in the hole between them, the head above it, and only the head
+/// knows a competing branch.
 #[tokio::test]
 async fn transaction_locations_come_from_the_tier_holding_the_block() {
     let rig = caught_up().await;
@@ -873,7 +874,7 @@ async fn transaction_locations_come_from_the_tier_holding_the_block() {
         },
         tx_index: zaino_primitives::types::TxIndex::from(index),
     };
-    for at in [50, IN_WINDOW] {
+    for at in [50, IN_HOLE, IN_WINDOW] {
         let tx = tx_at(&rig.chain, at, 1);
         let locations = snapshot
             .transaction_locations(tx.txid)

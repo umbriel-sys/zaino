@@ -66,8 +66,8 @@ by ChainView. Built on top:
 
 | Read | Path |
 | --- | --- |
-| `block_header(at)` | composed from the indexed block (header, Sapling root, chainwork); the validator fills holes through ChainView |
-| `block_deltas(hash)` | composed from the indexed block and `previous_outputs`; the validator's `getblockdeltas` where prevouts are not local |
+| `block_header(at)` | composed from the indexed block (header, Sapling root, chainwork) as zebrad composes it, genesis's all-zero parent named; the validator fills holes through ChainView |
+| `block_deltas(hash)` | composed from the indexed block and `previous_outputs`, with its chainwork where the store has built it; the validator's `getblockdeltas` where prevouts are not local |
 | `spent_info(outpoint)` | the spend index (I-09 and the head); the validator otherwise, `NotServed` if it lacks the method |
 | `txout_set_info()` | I-11 and the head; `NotServed` without them, ChainView's `Building` while the store has not reached the window, a fault if the head's set failed |
 | `raw_transaction(txid, block)` | ChainView's, only from `block` when given |

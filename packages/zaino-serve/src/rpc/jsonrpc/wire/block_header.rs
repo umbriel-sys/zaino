@@ -120,19 +120,24 @@ impl VerboseBlockHeader {
     /// Note the two hash encodings side by side. `hash` is a
     /// `zebra_chain::block::Hash`, whose `hex` serde impl already reverses into
     /// display order; the neighbouring hashes are plain strings, so they are
-    /// reversed here explicitly. `nonce` and `solution` are *not* reversed —
-    /// they are opaque header bytes, not identifiers.
+    /// reversed here explicitly. The commitments, Sapling root and nonce
+    /// follow zebrad (`HeaderDisplay`); `solution` is not reversed.
     pub fn from_domain(header: zaino_primitives::types::rpc::BlockHeaderVerbose) -> Self {
+        let display = zaino_primitives::types::rpc::HeaderDisplay::new(
+            header.block_commitments,
+            header.final_sapling_root,
+            header.nonce,
+        );
         Self {
             hash: zebra_chain::block::Hash(header.hash.into()),
             confirmations: header.confirmations.to_rpc_i64(),
             height: header.height.into(),
             version: header.version,
             merkle_root: zebra_chain::block::merkle::Root(header.merkle_root.into()),
-            block_commitments: header.block_commitments.map(<[u8; 32]>::from),
-            final_sapling_root: header.final_sapling_root.map(<[u8; 32]>::from),
+            block_commitments: display.block_commitments,
+            final_sapling_root: Some(display.final_sapling_root),
             time: i64::from(header.time),
-            nonce: hex::encode(header.nonce),
+            nonce: hex::encode(display.nonce),
             solution: hex::encode(header.solution),
             bits: format!("{:08x}", header.bits.as_bits()),
             difficulty: header.difficulty,
@@ -172,12 +177,12 @@ mod from_domain_tests {
             version: 4,
             merkle_root: domain::MerkleRoot::from([0xaa; 32]),
             time: 1_700_000_000,
-            nonce: [0xcc; 32],
+            nonce: ASYMMETRIC,
             solution: vec![0xde, 0xad, 0xbe, 0xef],
             bits: domain::CompactDifficulty::try_from_bits(0x1d00_ffff).expect("valid nBits"),
             difficulty: 1.0,
-            block_commitments: Some(domain::BlockCommitments::from([0x11; 32])),
-            final_sapling_root: Some(domain::TreeRoot::from([0x22; 32])),
+            block_commitments: Some(domain::BlockCommitments::from(ASYMMETRIC)),
+            final_sapling_root: Some(domain::TreeRoot::from(ASYMMETRIC)),
             chainwork: Some(domain::AbsoluteChainWork::new(CHAINWORK)),
             previous_block_hash: Some(domain::BlockHash::from(ASYMMETRIC)),
             next_block_hash: None,
@@ -200,18 +205,29 @@ mod from_domain_tests {
         assert_eq!(json["previousblockhash"], expected);
     }
 
-    /// Tree roots, nonces, commitments and chainwork are not identifiers, so
-    /// they are emitted in their natural byte order — reversing them would be a
-    /// silent corruption that still looks like valid hex.
+    /// As zebrad's `get_block_header`: from Sapling the nonce, Sapling root
+    /// and commitments are reversed; the solution and chainwork are not.
     #[test]
-    fn non_identifier_bytes_are_not_reversed() {
+    fn header_bytes_follow_zebrads_orders() {
         let json = serde_json::to_value(GetBlockHeader::verbose_from_domain(sample())).unwrap();
 
-        assert_eq!(json["nonce"], hex::encode([0xcc; 32]));
+        let mut reversed = ASYMMETRIC;
+        reversed.reverse();
+        assert_eq!(json["nonce"], hex::encode(reversed));
         assert_eq!(json["solution"], "deadbeef");
         assert_eq!(json["merkleroot"], hex::encode([0xaa; 32]));
-        assert_eq!(json["finalsaplingroot"], hex::encode([0x22; 32]));
-        assert_eq!(json["blockcommitments"], hex::encode([0x11; 32]));
+        assert_eq!(json["finalsaplingroot"], hex::encode(reversed));
+        assert_eq!(json["blockcommitments"], hex::encode(reversed));
+
+        // before Sapling: a zero root, and the header's own commitment bytes
+        let before = domain::rpc::BlockHeaderVerbose {
+            final_sapling_root: None,
+            ..sample()
+        };
+        let json = serde_json::to_value(GetBlockHeader::verbose_from_domain(before)).unwrap();
+        assert_eq!(json["finalsaplingroot"], "00".repeat(32));
+        assert_eq!(json["blockcommitments"], hex::encode(ASYMMETRIC));
+        let json = serde_json::to_value(GetBlockHeader::verbose_from_domain(sample())).unwrap();
         // The wire form is the 128-bit value left-padded to 256 bits, in
         // natural (big-endian) order — a reversal would scramble the tail.
         assert_eq!(

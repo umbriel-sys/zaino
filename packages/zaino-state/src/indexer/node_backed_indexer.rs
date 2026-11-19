@@ -3,7 +3,7 @@
 use crate::chain_index::chain_view::BestTip as _;
 use futures::StreamExt;
 use hex::FromHex;
-use std::{io::Cursor, str::FromStr, time};
+use std::{io::Cursor, time};
 use tokio::time::timeout;
 use tracing::{info, instrument, warn};
 use zaino_chain::ForkReconcile;
@@ -158,6 +158,11 @@ impl ZcashService for NodeBackedIndexerService<ZebraValidator> {
         )
         .await
         .map_err(|error| NodeBackedIndexerServiceError::Critical(error.to_string()))?;
+        // the head at the validator's tip before serving; never the store's build
+        indexer
+            .wait_for_head()
+            .await
+            .map_err(|error| NodeBackedIndexerServiceError::Critical(error.to_string()))?;
 
         Ok(Self {
             indexer,
@@ -923,37 +928,8 @@ impl<V: ChainIndexSourcePorts + ServiceSource> ZcashIndexer
         &self,
         hash_or_height: String,
     ) -> Result<zaino_primitives::types::Treestate, Self::Error> {
-        let snapshot = self.indexer.snapshot_nonfinalized_state();
-        if !self
-            .indexer
-            .hash_or_height_known_for_treestate(&snapshot, &hash_or_height)
-            .await?
-        {
-            #[allow(deprecated)]
-            return Err(NodeBackedIndexerServiceError::RpcError(
-                crate::error::LegacyRpcError::new(
-                    zebra_rpc::server::error::LegacyCode::InvalidParameter,
-                    "Failed to fetch block data.",
-                ),
-            ));
-        }
-
-        let at = match HashOrHeight::from_str(&hash_or_height)? {
-            HashOrHeight::Hash(hash) => {
-                zaino_chain::BlockId::Hash(zaino_primitives::types::BlockHash::from(hash.0))
-            }
-            HashOrHeight::Height(height) => zaino_chain::BlockId::Height(
-                zaino_primitives::types::Height::try_from(height.0).map_err(|e| {
-                    NodeBackedIndexerServiceError::TonicStatusError(tonic::Status::internal(
-                        format!("block height out of range: {e}"),
-                    ))
-                })?,
-            ),
-        };
-        match zaino_chain::TreestateRead::treestate(&snapshot, at).await {
-            Ok(Some(treestate)) => Ok(treestate),
-            _ => Ok(self.indexer.get_treestate_by_id(hash_or_height).await?),
-        }
+        // ChainView's answer; a block it does not hold is zebrad's −8
+        Ok(self.indexer.get_treestate_by_id(hash_or_height).await?)
     }
 
     /// Returns information about a range of Sapling, Orchard, or Ironwood subtrees.

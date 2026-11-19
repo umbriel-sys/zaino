@@ -57,6 +57,16 @@ async fn block_headers_are_composed_from_the_indexed_block() {
             .expect("the validator's");
         expected.push((h, header));
     }
+    let genesis = snapshot
+        .block_header(BlockId::Height(height(0)))
+        .await
+        .expect("answers")
+        .expect("genesis");
+    assert_eq!(
+        genesis.previous_block_hash,
+        Some(zaino_primitives::types::BlockHash::from([0; 32])),
+        "genesis names its all-zero parent, as zebrad"
+    );
     let asked = chain.calls("get_block_header");
     for (h, expected) in expected {
         for at in [

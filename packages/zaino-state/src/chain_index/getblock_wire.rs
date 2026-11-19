@@ -49,19 +49,21 @@ pub(crate) fn block_to_wire(block: &BlockVerbose) -> Result<GetBlock> {
         "merkleroot".into(),
         display(block.merkle_root.into()).into(),
     );
-    insert_hex_option(
-        &mut object,
-        "blockcommitments",
-        block
-            .block_commitments
-            .map(|commitments| hex::encode(<[u8; 32]>::from(commitments)).into()),
+    let header = zaino_primitives::types::rpc::HeaderDisplay::new(
+        block.block_commitments,
+        block.final_sapling_root,
+        block.nonce,
     );
     insert_hex_option(
         &mut object,
-        "finalsaplingroot",
-        block
-            .final_sapling_root
-            .map(|root| hex::encode(<[u8; 32]>::from(root)).into()),
+        "blockcommitments",
+        header
+            .block_commitments
+            .map(|commitments| hex::encode(commitments).into()),
+    );
+    object.insert(
+        "finalsaplingroot".into(),
+        hex::encode(header.final_sapling_root).into(),
     );
     insert_hex_option(
         &mut object,
@@ -73,7 +75,7 @@ pub(crate) fn block_to_wire(block: &BlockVerbose) -> Result<GetBlock> {
     object.insert("nTx".into(), tx.len().into());
     object.insert("tx".into(), tx.into());
     object.insert("time".into(), block.time.into());
-    object.insert("nonce".into(), hex::encode(block.nonce).into());
+    object.insert("nonce".into(), hex::encode(header.nonce).into());
     object.insert("solution".into(), hex::encode(&block.solution).into());
     object.insert(
         "bits".into(),

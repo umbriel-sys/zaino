@@ -117,14 +117,24 @@ the table, not in a `match` here, so this crate's name stays true.
 
 Block hashes and txids are **byte-reversed** on the wire and internal-order in
 the domain. `hash_to_display_hex` / `txid_to_display_hex` do the outbound
-reversal; `parse.rs` does the inbound one. Tree roots, commitments and nonces
-are **not** reversed — `parse.rs` has a test for each direction, and they are
-there because getting this wrong produces valid-looking hex naming something
-that does not exist.
+reversal; `parse.rs` does the inbound one. Domain values are the header's own
+bytes, so the header fields follow zebrad's `get_block_header` in
+`getblockheader`, `getblock` and `getblockdeltas` alike: the nonce and
+`finalsaplingroot` are reversed (an all-zero root, below Sapling, is no
+root); `blockcommitments` is the header's bytes below Sapling and reversed
+from it. `finalorchardroot` and subtree roots are natural. `parse.rs` pins
+each with a test, because getting this wrong produces valid-looking hex
+naming something that does not exist.
 
-The one exception is deliberate: the commitment-tree root ports read Sapling
-and Orchard roots from the verbose `getblock` reply, where Zebra writes
-`finalsaplingroot` reversed and `finalorchardroot` natural, and undo that so
+`chainwork` is read wherever a node sends it (zcashd); absent, or zebrad's
+`0` in `getblockchaininfo`, is `None`.
+
+In `z_gettreestate` a pool with no `finalState` is not active at the block
+and is absent, in the treestate and in the roots; an active pool's tree is
+always sent, an empty one included.
+
+The commitment-tree root ports read Sapling
+and Orchard roots from the verbose `getblock` reply, so
 both match the root a hashed `z_gettreestate` frontier yields. Only pools the
 block reply lacks (Ironwood always) are hashed from the frontier, which is
 what made every height cost three root computations before.

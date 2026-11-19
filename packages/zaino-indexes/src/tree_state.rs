@@ -71,9 +71,11 @@ const IRONWOOD_MAP: Declared<NamespaceLayout> =
     NamespaceLayout::map(IRONWOOD_NODES, &NODE_KEY, &NODE, false);
 
 /// The schema: per-height sizes, then per pool its nodes and subtree roots.
+// 2: stores built through the RPC adapter held an empty tree for a pool
+// below its activation (F4); rebuilt.
 pub const SCHEMA: Schema = Schema::new(
     NAME,
-    1,
+    2,
     &[
         NamespaceLayout::sequence(SIZES, &POOL_SIZES),
         SAPLING_MAP,
@@ -722,13 +724,13 @@ mod tests {
         );
     }
 
-    /// The schema digest every `tree_state_1` directory carries.
+    /// The schema digest every `tree_state_2` directory carries.
     #[test]
     fn the_schema_digest_is_golden() {
         const GOLDEN: [u8; 32] = [
-            0x91, 0x59, 0x68, 0x32, 0x09, 0x29, 0xa5, 0x8d, 0x59, 0x80, 0x02, 0xbf, 0x06, 0x67,
-            0x79, 0x4c, 0xdf, 0xaa, 0x67, 0x46, 0x2e, 0x9e, 0xd9, 0xce, 0xd3, 0x54, 0x32, 0xe7,
-            0xee, 0x61, 0x08, 0x46,
+            0x44, 0xaf, 0xb3, 0x8a, 0x26, 0x4b, 0x6e, 0x3c, 0xec, 0xb5, 0x9e, 0x7f, 0x90, 0xdb,
+            0x05, 0x22, 0x75, 0xc6, 0x82, 0xff, 0xa3, 0xae, 0xcb, 0xb5, 0x9e, 0x94, 0x55, 0x76,
+            0xd8, 0xa3, 0xdb, 0xee,
         ];
         let digest = SCHEMA.digest().expect("declared");
         assert_eq!(
@@ -737,7 +739,7 @@ mod tests {
             "{:02x?}",
             digest.as_bytes()
         );
-        assert_eq!(SCHEMA.dir_name(), "tree_state_1");
+        assert_eq!(SCHEMA.dir_name(), "tree_state_2");
     }
 
     /// Every declaration is valid.

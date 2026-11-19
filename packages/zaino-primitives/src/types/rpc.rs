@@ -53,7 +53,7 @@ mod tx_out;
 
 pub use address_deltas::{AddressDeltas, AddressDeltasRequest};
 pub use block_deltas::{BlockDelta, BlockDeltas, InputDelta, OutputDelta};
-pub use block_header::BlockHeaderVerbose;
+pub use block_header::{BlockHeaderVerbose, HeaderDisplay};
 pub use block_subsidy::{BlockSubsidy, FundingStream, LockboxStream};
 pub use chain_tip::{ChainTip, ChainTipStatus};
 pub use mining_info::MiningInfo;

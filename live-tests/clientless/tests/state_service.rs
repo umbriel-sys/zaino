@@ -6,8 +6,8 @@ use std::time::Duration;
 use anyhow::{Context, Result};
 use serde_json::{json, Value};
 use zaino_testutils::{
-    assert_json_shape_matches, assert_rpc_parity, Backend, ChainCache, Pool, ShieldedProtocol,
-    Zainod, Zebrad,
+    assert_json_shape_matches, assert_rpc_parity, wait_for_finalised, Backend, ChainCache, Pool,
+    ShieldedProtocol, Zainod, Zebrad,
 };
 
 /// Both indexers resync the non-finalised band above the cached database.
@@ -495,6 +495,9 @@ mod zebra {
             fetch.wait_for_block(tip, READY).await?;
             state.wait_for_block(tip, READY).await?;
             let (start, end) = seam_band(&cache);
+            // compact fees are unset until the store has built the block
+            wait_for_finalised(&fetch, end - 1, READY).await?;
+            wait_for_finalised(&state, end - 1, READY).await?;
             let all_pools: Vec<i32> = [
                 Pool::Transparent,
                 Pool::Sapling,
@@ -545,6 +548,8 @@ mod zebra {
             fetch.wait_for_block(tip, READY).await?;
             state.wait_for_block(tip, READY).await?;
             let (start, end) = seam_band(&cache);
+            wait_for_finalised(&fetch, end - 1, READY).await?;
+            wait_for_finalised(&state, end - 1, READY).await?;
             // TODO(#1088): replace deprecated nullifier-range client usage.
             let blocks = fetch.get_block_range_nullifiers(start, end).await?;
             assert_eq!(

@@ -107,7 +107,8 @@ impl<S: ServiceSource> ServiceSnapshot<S> {
             block_commitments: Some(header.block_commitments),
             final_sapling_root: block.tree_roots.sapling.as_ref().map(|info| info.root),
             chainwork: block.chainwork,
-            previous_block_hash: previous(header.height, header.prev_hash),
+            // zebrad names the parent of every block, genesis's all-zero one included
+            previous_block_hash: Some(header.prev_hash),
             next_block_hash,
         }))
     }
@@ -245,6 +246,7 @@ impl<S: ServiceSource> ServiceSnapshot<S> {
             nonce: header.nonce,
             bits: header.bits,
             difficulty: self.difficulty(header.bits.as_bits()),
+            chainwork: block.chainwork,
             previous_block_hash: previous(header.height, header.prev_hash),
             next_block_hash,
         }))

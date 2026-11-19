@@ -111,6 +111,14 @@ pub struct ChainHeadService<S: ChainHeadBlockSource> {
         feature = "history_tree"
     ))]
     extensions: Option<crate::extension::Enabled>,
+    /// Whether the extensions' first fold has been started: the blocks are
+    /// published, and `Ready`, before it.
+    #[cfg(any(
+        feature = "transactions",
+        feature = "tree_state",
+        feature = "history_tree"
+    ))]
+    folding: std::sync::atomic::AtomicBool,
 }
 
 impl<S: ChainHeadBlockSource> std::fmt::Debug for ChainHeadService<S> {
@@ -261,6 +269,12 @@ impl<S: ChainHeadBlockSource> ChainHeadService<S> {
                 feature = "history_tree"
             ))]
             extensions,
+            #[cfg(any(
+                feature = "transactions",
+                feature = "tree_state",
+                feature = "history_tree"
+            ))]
+            folding: std::sync::atomic::AtomicBool::new(false),
         });
         // Still `Syncing`: the anchor is the window's floor, not its tip, so a
         // reader served now would see a head up to `max_depth` below the
@@ -453,21 +467,41 @@ impl<S: ChainHeadBlockSource> ChainHeadService<S> {
             feature = "tree_state",
             feature = "history_tree"
         ))]
-        let next = match &self.extensions {
+        let (previous, next, disagreement) = match &self.extensions {
             Some(enabled) => {
-                let mut next = next;
+                let first = !self.folding.swap(true, std::sync::atomic::Ordering::AcqRel);
+                let (previous, mut next, disagreement) = if first {
+                    // the blocks are served, and `Ready`, before the first
+                    // fold: starting up never waits on the extensions
+                    self.mark(disagreement);
+                    self.publish_snapshot(&previous, next);
+                    let published = self.current.load_full();
+                    let next = (*published).clone();
+                    (published, next, None)
+                } else {
+                    (previous, next, disagreement)
+                };
                 let slots = crate::extension::advance(enabled, previous.extensions(), &next).await;
                 next.set_extensions(slots);
-                next
+                if first {
+                    self.publish_snapshot(&previous, next);
+                    return Ok(());
+                }
+                (previous, next, disagreement)
             }
-            None => next,
+            None => (previous, next, disagreement),
         };
+        self.mark(disagreement);
+        self.publish_snapshot(&previous, next);
+        Ok(())
+    }
+
+    /// The status of an advance: fresh, or diverged from the validator's tip.
+    fn mark(&self, disagreement: Option<TipDisagreement>) {
         match disagreement {
             Some(disagreement) => self.mark_diverged(disagreement),
             None => self.mark_fresh(),
         }
-        self.publish_snapshot(&previous, next);
-        Ok(())
     }
 
     /// Publishes the [`TickOutcome::Advanced`] transition before the snapshot

@@ -13,15 +13,16 @@ use zaino_primitives::types::{
 };
 
 use super::{
-    as_array, as_block_commitments, as_block_confirmations, as_bool, as_f64, as_height, as_i64,
-    as_merkle_root, as_nonce, as_str, as_tree_root, as_txid, as_u32, as_u64, field, opt_field,
-    parse_block_hash, parse_compact_difficulty, parse_optional_list, parse_value_pool,
+    as_array, as_block_confirmations, as_bool, as_f64, as_height, as_i64, as_merkle_root, as_nonce,
+    as_str, as_tree_root, as_txid, as_u32, as_u64, field, header_commitments, opt_chainwork,
+    opt_field, parse_block_hash, parse_compact_difficulty, parse_optional_list, parse_value_pool,
     pool_tree_size, zatoshis_field, zec_to_zatoshis, ParseError,
 };
 
 /// Parse a verbose `getblock` response.
 pub(crate) fn parse_block_verbose(value: &serde_json::Value) -> Result<BlockVerbose, ParseError> {
     let trees = opt_field(value, "trees");
+    let (block_commitments, final_sapling_root) = header_commitments(value)?;
     Ok(BlockVerbose {
         hash: parse_block_hash(field(value, "hash")?)?,
         confirmations: as_block_confirmations(field(value, "confirmations")?)?,
@@ -29,12 +30,8 @@ pub(crate) fn parse_block_verbose(value: &serde_json::Value) -> Result<BlockVerb
         height: as_height(field(value, "height")?)?,
         version: as_u32(field(value, "version")?)?,
         merkle_root: as_merkle_root(field(value, "merkleroot")?)?,
-        block_commitments: opt_field(value, "blockcommitments")
-            .map(as_block_commitments)
-            .transpose()?,
-        final_sapling_root: opt_field(value, "finalsaplingroot")
-            .map(as_tree_root)
-            .transpose()?,
+        block_commitments,
+        final_sapling_root,
         final_orchard_root: opt_field(value, "finalorchardroot")
             .map(as_tree_root)
             .transpose()?,
@@ -44,8 +41,7 @@ pub(crate) fn parse_block_verbose(value: &serde_json::Value) -> Result<BlockVerb
         solution: bytes(field(value, "solution")?)?,
         bits: parse_compact_difficulty(field(value, "bits")?)?,
         difficulty: as_f64(field(value, "difficulty")?)?,
-        // zebrad omits `chainwork` (ZcashFoundation/zebra#7109)
-        chainwork: None,
+        chainwork: opt_chainwork(value)?,
         chain_supply: opt_field(value, "chainSupply")
             .map(parse_value_pool)
             .transpose()?,

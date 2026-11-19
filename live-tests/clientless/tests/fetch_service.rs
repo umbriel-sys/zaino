@@ -206,7 +206,9 @@ mod get {
                 .to_string();
             for verbose in [false, true] {
                 let params = format!(r#"["{hash}", {verbose}]"#);
-                assert_rpc_parity("getblockheader", &params, vrpc, &irpc, &[]).await?;
+                // zebrad tracks no chain work; zaino serves it once indexed (C1)
+                let volatile: &[&str] = if verbose { &["chainwork"] } else { &[] };
+                assert_rpc_parity("getblockheader", &params, vrpc, &irpc, volatile).await?;
             }
         }
         Ok(())

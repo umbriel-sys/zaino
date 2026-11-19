@@ -255,7 +255,9 @@ head.
 `block_height` and `transaction_locations` distinguish **absent**, **on the best
 chain**, and **on a retained competing branch**. Only the chain head can report
 the third; below its window there is a single chain, so the store's
-best-chain-only index is correct there rather than deficient.
+best-chain-only index is correct there rather than deficient. In a hole
+between them (no store, or one still building) the validator places the
+transaction: its mined height, then its index in that block.
 
 `block_height` returns `None` for a branch hash — it answers about the chain the
 caller is reading. `fork_point` is the branch question, and still finds it.

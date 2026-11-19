@@ -55,7 +55,10 @@ then to `CriticalError` once `max_consecutive_failures` is spent. Stale data wit
 a status saying it is stale is more useful than no data.
 
 Callers wanting readiness poll `status()`, on either handle. There is
-deliberately no `wait_until_ready`.
+deliberately no `wait_until_ready`. `Ready` is the block window at the
+validator's tip: the first tick publishes the blocks, then folds the extensions
+and publishes again, so readiness never waits on an extension (its reads
+answer `NotBuilt` until then).
 
 ## Cancellation, and who owns the writer task
 

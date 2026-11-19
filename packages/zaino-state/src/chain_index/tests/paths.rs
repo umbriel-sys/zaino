@@ -122,6 +122,30 @@ fn asked<T: std::fmt::Debug>(
 /// The reads that are the validator's whatever the store holds.
 async fn validator_reads(rig: &Rig) {
     let hole = rig.hash_at(IN_HOLE);
+    // S-03: ChainView's answer, the validator's in the hole; no block is −8
+    asked(
+        rig.asks(
+            "get_treestate_by_hash",
+            rig.rpc.z_get_treestate(hole.clone()),
+        )
+        .await,
+        "z_gettreestate",
+    );
+    let unknown = rig
+        .rpc
+        .z_get_treestate("ab".repeat(32))
+        .await
+        .expect_err("no such block");
+    let mut link: Option<&(dyn std::error::Error + 'static)> = Some(&unknown);
+    let mut code = None;
+    while let Some(error) = link {
+        if let Some(legacy) = error.downcast_ref::<crate::error::LegacyRpcError>() {
+            code = Some(legacy.code);
+            break;
+        }
+        link = error.source();
+    }
+    assert_eq!(code, Some(-8), "{unknown}");
     asked(
         rig.asks(
             "get_block_verbose_by_hash",
@@ -297,6 +321,40 @@ async fn with_no_store_reads_are_the_validators() {
         crate::error::NodeBackedIndexerServiceError::ChainIndexError(ref error)
             if error.kind() == ChainIndexErrorKind::Unimplemented
     ));
+}
+
+/// Startup waits for the chain head to reach the validator's tip and never
+/// for the store: one that cannot finish building does not hold it up.
+#[tokio::test]
+async fn startup_waits_for_the_head_not_the_store() {
+    let activations = Activations::default();
+    let source = mock_source(&activations, chain_blocks());
+    source
+        .source()
+        .fail_ports(&["get_treestate"], None, zaino_source::FailureMode::Auth);
+    let dir = tempfile::tempdir().expect("a temp dir");
+    let index = NodeBackedChainIndex::new_with_chain_head_config(
+        source,
+        index_config(&dir, &activations),
+        crate::chain_index::chain_head::config(),
+    )
+    .await
+    .expect("the index starts");
+
+    tokio::time::timeout(Duration::from_secs(60), index.wait_for_head())
+        .await
+        .expect("the head arrives")
+        .expect("the head starts");
+
+    let reader = index.subscriber();
+    let head = crate::chain_index::ChainIndex::snapshot_nonfinalized_state(&reader)
+        .best_tip()
+        .height;
+    assert_eq!(u32::from(head), CHAIN_TIP);
+    assert!(
+        index.finalised_tip().map(u32::from) < Some(CHAIN_TIP),
+        "the store is still building"
+    );
 }
 
 /// With the store mid-build, what it holds is local and the hole is the

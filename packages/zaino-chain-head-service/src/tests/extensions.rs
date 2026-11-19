@@ -185,6 +185,8 @@ struct Below {
     chain: MockChain,
     failing: AtomicBool,
     tip: Mutex<Option<BlockRef>>,
+    /// While true, the txout set's seed does not answer.
+    held: tokio::sync::watch::Sender<bool>,
 }
 
 impl StoreTip for Below {
@@ -257,6 +259,8 @@ impl RemainingOutputs for Below {
 
 impl TxOutSetSeed for Below {
     async fn accumulator_at(&self, root: BlockRef) -> Result<TxOutSetAccumulator, SeedError> {
+        let mut held = self.held.subscribe();
+        held.wait_for(|held| !held).await.expect("the sender lives");
         self.guard(root)?;
         Ok(folded::<tx_out_set::TxOutSet>(&self.chain, u32::from(root.height)).accumulator)
     }
@@ -309,11 +313,19 @@ impl Harness {
     /// Anchored `max_depth` below the tip, the store's tip at `root_height`,
     /// advanced once to the tip.
     async fn new(chain: MockChain, max_depth: u32, root_height: u32) -> Self {
+        let harness = Self::anchored(chain, max_depth, root_height).await;
+        harness.service.advance_once().await.expect("advances");
+        harness
+    }
+
+    /// As [`new`](Self::new), not yet advanced.
+    async fn anchored(chain: MockChain, max_depth: u32, root_height: u32) -> Self {
         let root_block = chain.block_at(root_height).expect("root held");
         let below = Arc::new(Below {
             chain: chain.clone(),
             failing: AtomicBool::new(false),
             tip: Mutex::new(Some(reference(&root_block))),
+            held: tokio::sync::watch::Sender::new(false),
         });
         let service = ChainHeadService::builder(
             Arc::new(chain.clone()),
@@ -330,7 +342,6 @@ impl Harness {
         .spawn_without_writer()
         .await
         .expect("anchors");
-        service.advance_once().await.expect("advances");
         Self {
             chain,
             below,
@@ -1052,6 +1063,38 @@ async fn a_reorg_keeps_branch_views_and_answers_follow_the_trunk() {
             );
         }
     }
+}
+
+/// Startup does not wait on the extensions: the first tick publishes the
+/// blocks, `Ready`, then folds and publishes again.
+#[tokio::test]
+async fn the_blocks_are_ready_before_the_first_fold() {
+    let chain = chain();
+    let tip = tip_height(&chain);
+    let harness = Harness::anchored(chain.clone(), 60, tip - 60).await;
+    harness.below.held.send_replace(true);
+
+    let service = Arc::clone(&harness.service);
+    let tick = tokio::spawn(async move { service.advance_once().await });
+    tokio::time::timeout(std::time::Duration::from_secs(30), async {
+        while !harness.service.status().is_ready() {
+            tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+        }
+    })
+    .await
+    .expect("ready while the fold is held");
+    let blocks = harness.snapshot();
+    assert_eq!(u32::from(blocks.best_tip().height), tip);
+    assert!(matches!(
+        blocks.txout_set().map(drop),
+        Err(ChainHeadError::NotBuilt { .. })
+    ));
+
+    harness.below.held.send_replace(false);
+    tick.await.expect("joins").expect("advances");
+    let folded = harness.snapshot();
+    assert_eq!(folded.epoch(), blocks.epoch(), "the same chain state");
+    folded.txout_set().expect("built");
 }
 
 /// A port that fails darkens the extensions that asked it, the others keep

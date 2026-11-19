@@ -1657,6 +1657,8 @@ impl zaino_source::OneShotGetBlockDeltas for ZebraReadStateAdapter {
                 .header
                 .difficulty_threshold
                 .relative_to_network(&self.network),
+            // zebra tracks no chain work
+            chainwork: None,
             previous_block_hash: Some(BlockHash::from(block.header.previous_block_hash.0)),
             next_block_hash,
         })
