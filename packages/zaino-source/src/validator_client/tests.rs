@@ -280,6 +280,9 @@ mod generated {
             -> zaino_primitives::types::rpc::NodeInfo, crate::GetNodeInfoError;
         GetPeerInfo / OneShotGetPeerInfo :: get_peer_info()
             -> Vec<zaino_primitives::types::rpc::PeerInfo>, crate::GetPeerInfoError;
+        GetNetworkInfo / OneShotGetNetworkInfo :: get_network_info()
+            -> zaino_primitives::types::rpc::NetworkInfo, std::convert::Infallible;
+        Ping / OneShotPing :: ping() -> (), std::convert::Infallible;
         GetRawBlockHeader / OneShotGetRawBlockHeader :: get_raw_block_header(
             hash: BlockHash = hash(7)
         ) -> Vec<u8>, crate::GetBlockHeaderError;

@@ -95,6 +95,14 @@ pub fn difficulty(bits: u32, pow_limit_bits: u32) -> f64 {
     ratio
 }
 
+/// The most a block's time may exceed its median time past, in seconds
+/// (zebra's `BLOCK_MAX_TIME_SINCE_MEDIAN`, zcashd's `nTime <= MTP + 90 min`).
+pub const BLOCK_MAX_TIME_SINCE_MEDIAN: u32 = 90 * 60;
+
+/// The height from which a testnet enforces [`BLOCK_MAX_TIME_SINCE_MEDIAN`]
+/// (zebra treats Regtest as a testnet); Mainnet enforces it at every height.
+pub const TESTNET_MAX_TIME_START_HEIGHT: u32 = 653_606;
+
 /// Blocks a median time is taken over: protocol §7.7.3, `PoWMedianBlockSpan`.
 ///
 /// No zebra agreement test: zebra-state keeps its `POW_MEDIAN_BLOCK_SPAN`

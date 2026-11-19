@@ -113,6 +113,7 @@ async fn a_synthetic_chain_keeps_the_whole_contract() {
         .await
         .expect("address index");
     contract::chain_info(&chain).await.expect("chain info");
+    contract::node_status(&chain).await.expect("node status");
     chain.serve_to(7);
     contract::mempool(&chain).await.expect("mempool");
 }

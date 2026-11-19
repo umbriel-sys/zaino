@@ -6372,6 +6372,7 @@ dependencies = [
  "bytes",
  "futures",
  "hex",
+ "proptest",
  "thiserror 2.0.20",
  "tokio",
  "tokio-util",

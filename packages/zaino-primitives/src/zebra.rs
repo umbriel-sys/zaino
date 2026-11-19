@@ -318,6 +318,15 @@ mod consensus_agreement {
         );
     }
 
+    /// The height a testnet starts enforcing the block time drift.
+    #[test]
+    fn testnet_max_time_start_height_agrees() {
+        assert_eq!(
+            zaino_consensus::TESTNET_MAX_TIME_START_HEIGHT,
+            zebra_chain::parameters::TESTNET_MAX_TIME_START_HEIGHT.0
+        );
+    }
+
     /// The proof-of-work limits as zebra states them, per network.
     #[test]
     fn pow_limits_agree() {

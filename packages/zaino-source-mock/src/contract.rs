@@ -540,6 +540,32 @@ where
     })
 }
 
+/// `ping` answers; `getnetworkinfo` agrees with `getinfo` on the node's
+/// identity, connections and relay fee.
+pub async fn node_status<S>(source: &S) -> Result<(), Broken>
+where
+    S: zaino_source::OneShotPing
+        + zaino_source::OneShotGetNetworkInfo
+        + zaino_source::OneShotGetNodeInfo,
+{
+    answered("ping", source.ping().await)?;
+    let network = answered("network info", source.get_network_info().await)?;
+    let node = answered("node info", source.get_node_info().await)?;
+    ensure(
+        (
+            network.version,
+            &network.subversion,
+            network.protocol_version,
+        ) == (node.version, &node.subversion, node.protocol_version),
+        || "network info names another node".to_owned(),
+    )?;
+    ensure(
+        network.connections == node.connections && network.relay_fee == node.relay_fee,
+        || "network info's connections or relay fee differ from getinfo's".to_owned(),
+    )?;
+    Ok(())
+}
+
 /// `getblockchaininfo` names the best tip and its supply is the pools' sum;
 /// verbose blocks link forward and count confirmations from the tip.
 pub async fn chain_info<S>(source: &S) -> Result<(), Broken>

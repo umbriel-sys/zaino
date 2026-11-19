@@ -57,6 +57,7 @@ mod get_mempool_metadata;
 mod get_mempool_source_tip;
 mod get_mempool_txids;
 mod get_mining_info;
+mod get_network_info;
 mod get_network_sol_ps;
 mod get_node_info;
 mod get_peer_info;
@@ -71,6 +72,7 @@ mod get_treestate;
 mod get_treestate_by_hash;
 mod get_tx_out;
 mod lifecycle;
+mod ping;
 mod polled_chain_tip;
 mod send_raw_transaction;
 mod subscribe_blocks;
@@ -107,6 +109,7 @@ pub use get_mempool_metadata::{GetMempoolMetadataError, MempoolTxMeta, OneShotGe
 pub use get_mempool_source_tip::OneShotGetMempoolSourceTip;
 pub use get_mempool_txids::{GetMempoolTxidsError, OneShotGetMempoolTxids};
 pub use get_mining_info::{GetMiningInfoError, OneShotGetMiningInfo};
+pub use get_network_info::OneShotGetNetworkInfo;
 pub use get_network_sol_ps::{GetNetworkSolPsError, OneShotGetNetworkSolPs};
 pub use get_node_info::{GetNodeInfoError, OneShotGetNodeInfo};
 pub use get_peer_info::{GetPeerInfoError, OneShotGetPeerInfo};
@@ -123,6 +126,7 @@ pub use get_treestate::{GetTreestate, GetTreestateError, OneShotGetTreestate};
 pub use get_treestate_by_hash::{GetTreestateByHashError, OneShotGetTreestateByHash};
 pub use get_tx_out::{GetTxOutError, OneShotGetTxOut};
 pub use lifecycle::SourceLifecycle;
+pub use ping::OneShotPing;
 pub use polled_chain_tip::PolledChainTip;
 pub use send_raw_transaction::{OneShotSendRawTransaction, SendRawTransactionError};
 pub use subscribe_blocks::SubscribeBlocks;
@@ -152,6 +156,7 @@ pub use get_mempool_metadata::GetMempoolMetadata;
 pub use get_mempool_source_tip::GetMempoolSourceTip;
 pub use get_mempool_txids::GetMempoolTxids;
 pub use get_mining_info::GetMiningInfo;
+pub use get_network_info::GetNetworkInfo;
 pub use get_network_sol_ps::GetNetworkSolPs;
 pub use get_node_info::GetNodeInfo;
 pub use get_peer_info::GetPeerInfo;
@@ -164,6 +169,7 @@ pub use get_subtree_roots::GetSubtreeRoots;
 pub use get_transaction::GetTransaction;
 pub use get_treestate_by_hash::GetTreestateByHash;
 pub use get_tx_out::GetTxOut;
+pub use ping::Ping;
 
 /// The contract every single-attempt source adapter satisfies.
 ///

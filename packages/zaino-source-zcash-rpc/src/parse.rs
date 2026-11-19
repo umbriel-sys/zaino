@@ -28,8 +28,8 @@ use incrementalmerkletree::frontier::CommitmentTree;
 use zaino_primitives::types::{
     rpc::{
         BlockDelta, BlockDeltas, BlockHeaderVerbose, BlockSubsidy, ChainTip, ChainTipStatus,
-        FundingStream, InputDelta, LockboxStream, MiningInfo, NodeInfo, OutputDelta, PeerInfo,
-        ScriptPubKey, SpentInfo, StandardFee, TxOut,
+        FundingStream, InputDelta, LocalAddress, LockboxStream, MiningInfo, NetworkEntry,
+        NetworkInfo, NodeInfo, OutputDelta, PeerInfo, ScriptPubKey, SpentInfo, StandardFee, TxOut,
     },
     AddressBalance, AddressDelta, BlockCommitments, BlockConfirmations, BlockHash, BlockTreeSizes,
     BlockVerbose, BlockchainInfo, CompactDifficulty, ConsensusBranchId, ConsensusBranchIds, Height,
@@ -537,6 +537,46 @@ pub(crate) fn parse_peer_info(value: &serde_json::Value) -> Result<Vec<PeerInfo>
             })
         })
         .collect()
+}
+
+/// Parse a `getnetworkinfo` response (zebrad 7's shape: every field present).
+pub(crate) fn parse_network_info(value: &serde_json::Value) -> Result<NetworkInfo, ParseError> {
+    Ok(NetworkInfo {
+        version: as_u64(field(value, "version")?)?,
+        subversion: as_str(field(value, "subversion")?)?.to_owned(),
+        protocol_version: as_u32(field(value, "protocolversion")?)?,
+        local_services: as_str(field(value, "localservices")?)?.to_owned(),
+        time_offset: as_i64(field(value, "timeoffset")?)?,
+        connections: as_u64(field(value, "connections")?)?,
+        networks: as_array(field(value, "networks")?)?
+            .iter()
+            .map(|network| {
+                Ok(NetworkEntry {
+                    name: as_str(field(network, "name")?)?.to_owned(),
+                    limited: as_bool(field(network, "limited")?)?,
+                    reachable: as_bool(field(network, "reachable")?)?,
+                    proxy: as_str(field(network, "proxy")?)?.to_owned(),
+                    proxy_randomize_credentials: as_bool(field(
+                        network,
+                        "proxy_randomize_credentials",
+                    )?)?,
+                })
+            })
+            .collect::<Result<_, ParseError>>()?,
+        relay_fee: zec_to_zatoshis(as_f64(field(value, "relayfee")?)?)?,
+        local_addresses: as_array(field(value, "localaddresses")?)?
+            .iter()
+            .map(|address| {
+                let port = as_u64(field(address, "port")?)?;
+                Ok(LocalAddress {
+                    address: as_str(field(address, "address")?)?.to_owned(),
+                    port: u16::try_from(port).map_err(|_| ParseError::Overflow(port))?,
+                    score: as_u32(field(address, "score")?)?,
+                })
+            })
+            .collect::<Result<_, ParseError>>()?,
+        warnings: as_str(field(value, "warnings")?)?.to_owned(),
+    })
 }
 
 pub(crate) fn as_array(value: &serde_json::Value) -> Result<&Vec<serde_json::Value>, ParseError> {
@@ -1227,6 +1267,50 @@ mod tests {
             }
         );
         assert!(parse_standard_fee(&json!({ "version": 0 })).is_err());
+    }
+
+    /// Pins zebrad 7's `getnetworkinfo` shape: the relay fee's ZEC float as
+    /// exact zatoshis (1e-6 ZEC = 100 zat); a missing field is refused.
+    #[test]
+    fn network_info_parses_zebrad_shape() {
+        let mut value = json!({
+            "version": 7_000_050,
+            "subversion": "/Zebra:7.0.0/",
+            "protocolversion": 170_160,
+            "localservices": "0000000000000001",
+            "timeoffset": 0,
+            "connections": 44,
+            "networks": [
+                {"name": "ipv4", "limited": false, "reachable": true, "proxy": "", "proxy_randomize_credentials": false},
+                {"name": "onion", "limited": false, "reachable": false, "proxy": "", "proxy_randomize_credentials": false}
+            ],
+            "relayfee": 1e-6,
+            "localaddresses": [{"address": "203.0.113.1", "port": 8233, "score": 2}],
+            "warnings": ""
+        });
+        let info = parse_network_info(&value).expect("zebrad shape parses");
+        assert_eq!(
+            (
+                info.version,
+                info.subversion.as_str(),
+                info.protocol_version
+            ),
+            (7_000_050, "/Zebra:7.0.0/", 170_160)
+        );
+        assert_eq!((info.time_offset, info.connections), (0, 44));
+        assert_eq!(info.networks.len(), 2);
+        assert!(!info.networks[1].reachable);
+        assert_eq!(info.relay_fee, Zatoshis::new(100).expect("in range"));
+        assert_eq!(
+            info.local_addresses,
+            vec![LocalAddress {
+                address: "203.0.113.1".to_owned(),
+                port: 8233,
+                score: 2
+            }]
+        );
+        value.as_object_mut().expect("an object").remove("warnings");
+        assert!(parse_network_info(&value).is_err());
     }
 
     /// A value whose reversal is unmistakable: it reads one way forwards and

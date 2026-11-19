@@ -1067,6 +1067,23 @@ impl zaino_source::OneShotGetPeerInfo for ZcashRpcAdapter {
     }
 }
 
+impl zaino_source::OneShotGetNetworkInfo for ZcashRpcAdapter {
+    async fn get_network_info(
+        &self,
+    ) -> Result<zaino_primitives::types::rpc::NetworkInfo, QueryError<std::convert::Infallible>>
+    {
+        self.call_parsed("getnetworkinfo", vec![], parse::parse_network_info)
+            .await
+    }
+}
+
+impl zaino_source::OneShotPing for ZcashRpcAdapter {
+    async fn ping(&self) -> Result<(), QueryError<std::convert::Infallible>> {
+        // answered with `null`, which carries nothing
+        self.call_parsed("ping", vec![], |_| Ok(())).await
+    }
+}
+
 impl zaino_source::OneShotGetMiningInfo for ZcashRpcAdapter {
     async fn get_mining_info(
         &self,

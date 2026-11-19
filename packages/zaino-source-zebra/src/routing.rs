@@ -488,6 +488,20 @@ impl OneShotGetPeerInfo for ZebraValidator {
     }
 }
 
+impl zaino_source::OneShotGetNetworkInfo for ZebraValidator {
+    async fn get_network_info(
+        &self,
+    ) -> Result<rpc::NetworkInfo, QueryError<std::convert::Infallible>> {
+        self.rpc.get_network_info().await
+    }
+}
+
+impl zaino_source::OneShotPing for ZebraValidator {
+    async fn ping(&self) -> Result<(), QueryError<std::convert::Infallible>> {
+        self.rpc.ping().await
+    }
+}
+
 impl OneShotGetMiningInfo for ZebraValidator {
     async fn get_mining_info(&self) -> Result<rpc::MiningInfo, QueryError<GetMiningInfoError>> {
         self.rpc.get_mining_info().await

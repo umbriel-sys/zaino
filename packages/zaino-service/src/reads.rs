@@ -13,8 +13,8 @@ use zaino_chain_store_service::StoreReader;
 use zaino_indexes::IndexId;
 use zaino_persistence_lsm_tree::LsmTreeReader;
 use zaino_primitives::types::rpc::{
-    BlockDelta, BlockDeltas, BlockHeaderVerbose, BlockSubsidy, InputDelta, MiningInfo, NodeInfo,
-    OutputDelta, PeerInfo, SpentInfo, SpentOutpoint, StandardFee, TxOut,
+    BlockDelta, BlockDeltas, BlockHeaderVerbose, BlockSubsidy, InputDelta, MiningInfo, NetworkInfo,
+    NodeInfo, OutputDelta, PeerInfo, SpentInfo, SpentOutpoint, StandardFee, TxOut,
 };
 use zaino_primitives::types::{
     BlockConfirmations, BlockHash, BlockRef, BlockVerbose, BlockchainInfo, Difficulty,
@@ -40,7 +40,7 @@ type Result<T> = core::result::Result<T, ServiceError>;
 pub struct ServiceSnapshot<S: ServiceSource> {
     chain: ChainSnapshot<S>,
     source: Arc<S>,
-    network: Network,
+    pub(crate) network: Network,
     /// The tip-agnostic mempool set.
     pub(crate) mempool: zaino_mempool_service::MempoolSubscriber,
     /// The mempool coherent with a chain tip.
@@ -346,6 +346,16 @@ impl<S: ServiceSource> ServiceSnapshot<S> {
     /// The validator's peers.
     pub async fn peer_info(&self) -> Result<Vec<PeerInfo>> {
         passthrough(self.source.get_peer_info().await)
+    }
+
+    /// The validator's network view.
+    pub async fn network_info(&self) -> Result<NetworkInfo> {
+        passthrough(self.source.get_network_info().await)
+    }
+
+    /// Whether the validator answers.
+    pub async fn ping(&self) -> Result<()> {
+        passthrough(self.source.ping().await)
     }
 
     /// The validator's mining info.

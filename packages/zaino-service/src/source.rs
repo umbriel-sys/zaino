@@ -19,12 +19,14 @@ pub trait ServiceSource:
     + zaino_source::OneShotGetChainTips
     + zaino_source::OneShotGetDifficulty
     + zaino_source::OneShotGetMiningInfo
+    + zaino_source::OneShotGetNetworkInfo
     + zaino_source::OneShotGetNetworkSolPs
     + zaino_source::OneShotGetNodeInfo
     + zaino_source::OneShotGetPeerInfo
     + zaino_source::OneShotGetRawBlockHeader
     + zaino_source::OneShotGetSpentInfo
     + zaino_source::OneShotGetTxOut
+    + zaino_source::OneShotPing
     + zaino_source::OneShotSendRawTransaction
     + zaino_source::SourceLifecycle
     + zaino_source::ValidatorSource<NonDomain = zaino_source::NonDomainError>
@@ -48,12 +50,14 @@ impl<T> ServiceSource for T where
         + zaino_source::OneShotGetChainTips
         + zaino_source::OneShotGetDifficulty
         + zaino_source::OneShotGetMiningInfo
+        + zaino_source::OneShotGetNetworkInfo
         + zaino_source::OneShotGetNetworkSolPs
         + zaino_source::OneShotGetNodeInfo
         + zaino_source::OneShotGetPeerInfo
         + zaino_source::OneShotGetRawBlockHeader
         + zaino_source::OneShotGetSpentInfo
         + zaino_source::OneShotGetTxOut
+        + zaino_source::OneShotPing
         + zaino_source::OneShotSendRawTransaction
         + zaino_source::SourceLifecycle
         + zaino_source::ValidatorSource<NonDomain = zaino_source::NonDomainError>

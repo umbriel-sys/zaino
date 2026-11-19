@@ -74,7 +74,9 @@ by ChainView. Built on top:
 | `address_utxos(addresses, page)` | ChainView's page and the tip it describes |
 | `raw_block_header`, `block_verbose` | the validator, by the hash the snapshot holds |
 | `block_subsidy(height)` | the validator, at the tip when `None` |
-| `blockchain_info`, `node_info`, `peer_info`, `mining_info`, `difficulty_at_tip`, `network_sol_ps`, `standard_fee`, `tx_out`, `send_raw_transaction` | the validator |
+| `block_hash(index)` | Zaino's headers; `index` from genesis, or from the tip when negative (`-1` is the tip), as zebrad reads it |
+| `block_hashes(low, high)` | Zaino's headers: the blocks whose own time is in `[low, high)`, by time then hash. A median-time search brackets the heights (the drift rule per network); selected by `nTime`, since zcashd's logical times are not indexed, so a transport refuses `logicalTimes` |
+| `blockchain_info`, `node_info`, `peer_info`, `network_info`, `ping`, `mining_info`, `difficulty_at_tip`, `network_sol_ps`, `standard_fee`, `tx_out`, `send_raw_transaction` | the validator |
 
 The mempool reads (D6-02) never ask the validator:
 

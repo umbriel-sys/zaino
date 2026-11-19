@@ -5,7 +5,7 @@ use zaino_primitives::types::{
     branch_at,
     rpc::{
         BlockDelta, BlockDeltas, BlockHeaderVerbose, BlockSubsidy, InputDelta, MiningInfo,
-        NodeInfo, OutputDelta, PeerInfo, StandardFee,
+        NetworkEntry, NetworkInfo, NodeInfo, OutputDelta, PeerInfo, StandardFee,
     },
     AbsoluteChainWork, BlockConfirmations, BlockHash, BlockTreeSizes, BlockVerbose, BlockchainInfo,
     ConsensusBranchId, ConsensusBranchIds, Difficulty, EquihashSolution, Height, Network,
@@ -443,6 +443,46 @@ impl zaino_source::OneShotGetPeerInfo for MockChain {
     async fn get_peer_info(&self) -> Result<Vec<PeerInfo>, QueryError<GetPeerInfoError>> {
         let served = self.enter("get_peer_info", CallArg::None).await?;
         Ok(served.facts().peers.clone())
+    }
+}
+
+impl zaino_source::OneShotGetNetworkInfo for MockChain {
+    /// As zebrad 7 answers: the node's identity, fee and peers from its
+    /// facts, and zebrad's fixed services, offset, networks and empty
+    /// addresses and warnings.
+    async fn get_network_info(&self) -> Result<NetworkInfo, QueryError<std::convert::Infallible>> {
+        let served = self.enter("get_network_info", CallArg::None).await?;
+        let facts = served.facts();
+        let network = |name: &str, reachable| NetworkEntry {
+            name: name.to_owned(),
+            limited: false,
+            reachable,
+            proxy: String::new(),
+            proxy_randomize_credentials: false,
+        };
+        Ok(NetworkInfo {
+            version: facts.version,
+            subversion: facts.subversion.clone(),
+            protocol_version: facts.protocol_version,
+            local_services: "0000000000000001".to_owned(),
+            time_offset: 0,
+            connections: u64::try_from(facts.peers.len()).unwrap_or(u64::MAX),
+            networks: vec![
+                network("ipv4", true),
+                network("ipv6", true),
+                network("onion", false),
+            ],
+            relay_fee: facts.relay_fee,
+            local_addresses: Vec::new(),
+            warnings: String::new(),
+        })
+    }
+}
+
+impl zaino_source::OneShotPing for MockChain {
+    async fn ping(&self) -> Result<(), QueryError<std::convert::Infallible>> {
+        self.enter("ping", CallArg::None).await?;
+        Ok(())
     }
 }
 
