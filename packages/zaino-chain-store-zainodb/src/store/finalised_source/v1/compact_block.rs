@@ -1481,6 +1481,7 @@ fn compact_tx(
             .unwrap_or_default(),
         orchard_actions: orchard.map(domain_actions).unwrap_or_default(),
         ironwood_actions: ironwood.map(domain_actions).unwrap_or_default(),
+        fee: None,
     })
 }
 
@@ -1759,6 +1760,7 @@ mod compact_tx_to_wire_tests {
             sapling_outputs: Vec::new(),
             orchard_actions: vec![(&action(1)).into()],
             ironwood_actions: vec![(&action(2)).into()],
+            fee: None,
         }
     }
 

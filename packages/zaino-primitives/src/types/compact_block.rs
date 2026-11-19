@@ -17,7 +17,7 @@
 use super::{
     BlockHash, BlockTime, ChainMetadata, CompactCiphertext, CompactDifficulty, EphemeralKey,
     NoteCommitment, Nullifier, OrchardAction, SaplingOutput, TransactionId, TransparentInput,
-    TransparentOutput,
+    TransparentOutput, Zatoshis,
 };
 
 /// An Orchard-shaped action (Orchard or Ironwood) as a compact transaction
@@ -99,6 +99,9 @@ pub struct PreIndexCompactTx {
     pub orchard_actions: Vec<CompactAction>,
     /// Ironwood actions (NU6.3) — same shape as Orchard, separate pool.
     pub ironwood_actions: Vec<CompactAction>,
+    /// The fee: zero for the coinbase; `None` where the provider cannot know
+    /// it (a block parsed without the outputs its inputs spend).
+    pub fee: Option<Zatoshis>,
 }
 
 impl From<&super::Block> for PreIndexCompactBlock {
@@ -133,6 +136,8 @@ impl From<&super::transaction::Transaction> for PreIndexCompactTx {
                 .iter()
                 .map(CompactAction::from)
                 .collect(),
+            // a parsed transaction does not hold the outputs its inputs spend
+            fee: None,
         }
     }
 }

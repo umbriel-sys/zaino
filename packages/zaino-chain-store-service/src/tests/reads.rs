@@ -52,8 +52,13 @@ fn mock_blocks(chain: &MockChain) -> Vec<zaino_source_mock::MockBlock> {
 }
 
 /// `mock`'s block as a compact block holding what `pools` asks for, its tree
-/// sizes from the chain's roots (a block carries none).
-fn compact(mock: &zaino_source_mock::MockBlock, pools: PoolFilter) -> CompactBlock {
+/// sizes from the chain's roots (a block carries none) and each fee from
+/// `chain`.
+fn compact(
+    mock: &zaino_source_mock::MockBlock,
+    pools: PoolFilter,
+    chain: &MockChain,
+) -> CompactBlock {
     let block = &mock.block;
     let size = |info: &Option<zaino_primitives::types::TreeRootInfo>| {
         info.as_ref()
@@ -67,8 +72,20 @@ fn compact(mock: &zaino_source_mock::MockBlock, pools: PoolFilter) -> CompactBlo
     let transactions = block
         .transactions()
         .iter()
-        .map(|tx| {
+        .enumerate()
+        .map(|(index, tx)| {
             let mut compact = PreIndexCompactTx::from(tx);
+            compact.fee = chain.fee_at(u32::from(block.header.height), index);
+            if !pools.includes_outputs() {
+                compact.sapling_outputs.clear();
+                for action in compact
+                    .orchard_actions
+                    .iter_mut()
+                    .chain(compact.ironwood_actions.iter_mut())
+                {
+                    action.output = None;
+                }
+            }
             if !pools.includes_transparent() {
                 compact.transparent_inputs.clear();
                 compact.transparent_outputs.clear();
@@ -340,8 +357,13 @@ async fn compact_blocks_match_the_chain_for_every_pool_filter() {
         PoolFilter::none().with_pool(ShieldedPool::Sapling),
         PoolFilter::none().with_pool(ShieldedPool::Orchard),
         PoolFilter::none().with_pool(ShieldedPool::Ironwood),
+        PoolFilter::default().nullifiers_only(),
+        PoolFilter::all().nullifiers_only(),
     ] {
-        let expected: Vec<CompactBlock> = all.iter().map(|block| compact(block, pools)).collect();
+        let expected: Vec<CompactBlock> = all
+            .iter()
+            .map(|block| compact(block, pools, &chain))
+            .collect();
         let chunk = reader
             .compact_chunk(height(0), tip, pools)
             .await

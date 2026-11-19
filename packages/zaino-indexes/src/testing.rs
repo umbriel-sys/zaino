@@ -52,6 +52,7 @@ pub(crate) fn tx(n: u32) -> FoldTx {
         sapling_outputs: Vec::new(),
         orchard_actions: Vec::new(),
         ironwood_actions: Vec::new(),
+        fee: None,
     };
     FoldTx::try_new(compact, PoolBalances::default(), Some(Vec::new())).expect("no inputs")
 }

@@ -528,12 +528,17 @@ async fn a_block_is_reachable_by_height_and_by_hash() {
 }
 
 /// An indexed block is the same block whichever provider answered: header,
-/// transactions and tree roots match the chain; only the chainwork differs.
+/// transactions and tree roots match the chain; only the chainwork differs,
+/// and the fee, which the validator cannot know and Zaino's indexes can.
 #[tokio::test]
 async fn every_provider_serves_the_same_indexed_block() {
     let rig = syncing().await;
     let snapshot = rig.view().snapshot();
-    for (who, at) in [("store", 50), ("validator", IN_HOLE), ("head", IN_WINDOW)] {
+    for (who, at, fees) in [
+        ("store", 50, true),
+        ("validator", IN_HOLE, false),
+        ("head", IN_WINDOW, false),
+    ] {
         let served = snapshot
             .block(BlockId::Height(height(at)))
             .await
@@ -550,7 +555,11 @@ async fn every_provider_serves_the_same_indexed_block() {
                 .block
                 .transactions()
                 .iter()
-                .map(PreIndexCompactTx::from)
+                .enumerate()
+                .map(|(index, tx)| PreIndexCompactTx {
+                    fee: fees.then(|| rig.chain.fee_at(at, index).expect("on the chain")),
+                    ..PreIndexCompactTx::from(tx)
+                })
                 .collect::<Vec<_>>(),
             "{who}: transactions at {at}"
         );
@@ -1167,6 +1176,32 @@ async fn previous_outputs_refuse_to_span_a_hole() {
             .await,
         Err(ChainViewError::NotServiceable(_))
     ));
+}
+
+/// The store answers every compact transaction's fee from I-05, equal to the
+/// chain's, across blocks that spend.
+#[tokio::test]
+async fn the_store_answers_each_transactions_fee() {
+    let rig = caught_up().await;
+    let blocks: Vec<_> = rig
+        .view()
+        .snapshot()
+        .stream_compact(height(101), height(FLOOR - 1), PoolFilter::all())
+        .try_collect::<Vec<_>>()
+        .await
+        .expect("serviceable")
+        .into_iter()
+        .flatten()
+        .collect();
+    let mut paying = 0;
+    for block in &blocks {
+        for (index, served) in block.transactions.iter().enumerate() {
+            let fee = rig.chain.fee_at(block.height, index).expect("on the chain");
+            assert_eq!(served.fee, Some(fee), "{} tx {index}", block.height);
+            paying += usize::from(u64::from(fee) > 0);
+        }
+    }
+    assert!(paying > 0, "the range has transactions that pay a fee");
 }
 
 /// The output `outpoint` names, read off the chain's blocks.

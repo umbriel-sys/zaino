@@ -229,6 +229,34 @@ fn every_block_shape_passes_full_verification() {
     );
 }
 
+/// A spend's fee is what the builder pays, the coinbase's zero, and a missing
+/// transaction has none.
+#[test]
+fn a_transactions_fee_is_read_off_the_chain() {
+    let chain = ChainBuilder::new()
+        .matured()
+        .block(BlockSpec::spends(3).chained(2))
+        .build();
+    let at = 101;
+    let block = chain.block_at(at).expect("the spending block");
+    let count = block.block.transactions().len();
+    assert!(count > 3, "{count} transactions");
+    assert_eq!(
+        chain.fee_at(at, 0),
+        Some(zaino_primitives::types::Zatoshis::ZERO),
+        "the coinbase"
+    );
+    for index in 1..count {
+        assert_eq!(
+            chain.fee_at(at, index),
+            Some(zaino_primitives::types::Zatoshis::new(crate::builder::FEE).expect("small")),
+            "spend {index}"
+        );
+    }
+    assert_eq!(chain.fee_at(at, count), None, "no such transaction");
+    assert_eq!(chain.fee_at(at + 1, 0), None, "no such block");
+}
+
 /// Every spend is one consensus allows: of an output that exists and is
 /// unspent, a coinbase output only 100 blocks deep, the genesis coinbase's
 /// never; spends reach ordinary outputs one block deep and earlier ones in

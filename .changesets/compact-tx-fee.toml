@@ -1,0 +1,21 @@
+[[changes]]
+crate = "zaino-primitives"
+kind = "breaking"
+description = """
+`PreIndexCompactTx` carries its `fee: Option<Zatoshis>`: zero for the \
+coinbase, `None` from a parsed block, which lacks the outputs its inputs \
+spend."""
+
+[[changes]]
+crate = "zaino-chain-store-service"
+kind = "fix"
+description = """
+Compact reads answer each transaction's fee from I-05, where it was decoded \
+and dropped."""
+
+[[changes]]
+crate = "zaino-source-mock"
+kind = "feature"
+description = """
+`MockChain::fee_at(height, index)`: a transaction's fee from the chain \
+alone, the oracle for served fees."""

@@ -6,7 +6,8 @@ use std::sync::{Arc, Mutex, MutexGuard};
 
 use tokio::sync::watch;
 use zaino_primitives::types::{
-    BlockHash, Height, Network, Transaction, TransactionId, TransactionLocation,
+    BlockHash, Height, Network, Transaction, TransactionId, TransactionLocation, TransparentOutput,
+    Zatoshis,
 };
 use zaino_source::{FailureMode, NonDomainError, QueryError, SendRawTransactionError};
 
@@ -329,6 +330,57 @@ impl MockChain {
         let state = self.lock();
         let hash = state.best.get(usize::try_from(height).ok()?)?;
         state.known.get(hash).map(|block| (**block).clone())
+    }
+
+    /// The fee of transaction `index` of the best block at `height`, from the
+    /// chain alone: what its inputs spend, less its transparent outputs, plus
+    /// every pool's value balance; zero for the coinbase. `None` for no such
+    /// transaction, or an input spending an output the best chain lacks.
+    pub fn fee_at(&self, height: u32, index: usize) -> Option<Zatoshis> {
+        let state = self.lock();
+        let hash = state.best.get(usize::try_from(height).ok()?)?;
+        let block = state.known.get(hash)?;
+        let tx = block.block.transactions().get(index)?;
+        if index == 0 {
+            return Some(Zatoshis::ZERO);
+        }
+        let value = |output: &TransparentOutput| i128::from(u64::from(output.value));
+        let mut total: i128 = 0;
+        for input in &tx.transparent.inputs {
+            let spent = state
+                .txids
+                .get(&input.prev_txid)?
+                .iter()
+                .filter(|(hash, _)| state.best.contains(hash))
+                .find_map(|(hash, slot)| {
+                    let creator = state.known.get(hash)?;
+                    let tx = creator
+                        .block
+                        .transactions()
+                        .get(usize::try_from(*slot).ok()?)?;
+                    tx.transparent
+                        .outputs
+                        .get(usize::try_from(input.prev_index).ok()?)
+                        .map(value)
+                })?;
+            total = total.checked_add(spent)?;
+        }
+        for output in &tx.transparent.outputs {
+            total = total.checked_sub(value(output))?;
+        }
+        let balances = tx.pool_balances();
+        for balance in [
+            balances.sprout,
+            balances.sapling,
+            balances.orchard,
+            balances.ironwood,
+        ]
+        .into_iter()
+        .flatten()
+        {
+            total = total.checked_add(i128::from(balance.as_i64()))?;
+        }
+        Zatoshis::new(u64::try_from(total).ok()?).ok()
     }
 
     /// The served tip.

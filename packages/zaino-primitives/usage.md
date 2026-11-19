@@ -73,7 +73,9 @@ use zaino_primitives::types::rpc::{BlockDeltas, MiningInfo, NodeInfo, PeerInfo};
 - `types` — compact blocks: `CompactBlock` / `PreIndexCompactTx`, whose
   actions are `CompactAction { nullifier, output: Option<ActionOutput> }`
   (`None` where a nullifiers-only read left the output unread; a parsed
-  action converts with `Some`), and `PoolFilter`, which pools a compact read
+  action converts with `Some`); each compact transaction's `fee` (zero for the
+  coinbase, `None` from a parsed block, which lacks the outputs its inputs
+  spend); and `PoolFilter`, which pools a compact read
   includes and whether it reads outputs or only nullifiers.
 - `types::rpc` — the response shapes for passthrough RPCs, in domain
   vocabulary rather than any interface's: `BlockDeltas`, `BlockchainInfo`,

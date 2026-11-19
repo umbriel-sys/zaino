@@ -32,7 +32,7 @@ pub const FAN: u32 = 8;
 /// Blocks a coinbase output waits before it can be spent (consensus).
 pub const COINBASE_MATURITY: u32 = 100;
 /// What each spend pays in fees.
-const FEE: u64 = 1_000;
+pub(crate) const FEE: u64 = 1_000;
 /// Coinbase output `n` pays this plus `n` zatoshis: each output distinct.
 pub const COINBASE_OUTPUT: u64 = 100_000;
 /// The script every coinbase output pays (P2PKH, key hash `0x11..`).

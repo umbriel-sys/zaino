@@ -420,6 +420,7 @@ impl<R: BackendReader> Snapshot<R> {
                         .by_ref()
                         .take(take(tx.ironwood_actions))
                         .collect(),
+                    fee: Some(tx.fee),
                 }
             })
             .collect();

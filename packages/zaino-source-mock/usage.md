@@ -79,6 +79,9 @@ another:
   `set_failing(bool)`; quirks: `answer_stale_roots(n)`.
 - `script_send(bytes, answer)`: `send_raw_transaction` validates nothing and
   answers as scripted (unscripted bytes are `Rejected`).
+- `fee_at(height, index)`: a best-chain transaction's fee from the chain
+  alone (what its inputs spend, less its transparent outputs, plus every
+  pool's value balance; zero for the coinbase), the oracle for served fees.
 - `call_log()` (every `Call { port, arg }` in order), `calls("get_block")`,
   `sent()`, `shutdown_called()`: what was asked.
 - `peak_in_flight()`: the most calls ever in flight at once. Each call yields
