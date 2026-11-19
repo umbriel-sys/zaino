@@ -23,8 +23,7 @@
 
 use zaino_chain_store::PoolFilter;
 use zaino_primitives::types::{
-    ChainMetadata, CompactBlock, Height, PreIndexCompactBlock, PreIndexCompactTx, ShieldedPool,
-    TreeRoots, TreeSize,
+    ChainMetadata, CompactBlock, Height, PreIndexCompactBlock, TreeRoots, TreeSize,
 };
 
 use crate::composer::coverage::Segment;
@@ -186,7 +185,7 @@ pub(crate) fn compact_from_pre_index(
     let transactions = pre_index
         .transactions
         .into_iter()
-        .map(|tx| filter_tx(tx, pools))
+        .map(|tx| tx.filtered(pools))
         .collect();
 
     CompactBlock {
@@ -211,37 +210,6 @@ pub(crate) fn metadata_from_roots(roots: &TreeRoots) -> ChainMetadata {
 
 fn size_of(info: Option<&zaino_primitives::types::TreeRootInfo>) -> TreeSize {
     info.map_or(TreeSize::ZERO, |info| info.size)
-}
-
-/// Clears the pools the caller did not ask for.
-pub(crate) fn filter_tx(mut tx: PreIndexCompactTx, pools: PoolFilter) -> PreIndexCompactTx {
-    if !pools.includes_transparent() {
-        tx.transparent_inputs.clear();
-        tx.transparent_outputs.clear();
-    }
-    if !pools.includes(ShieldedPool::Sapling) {
-        tx.sapling_nullifiers.clear();
-        tx.sapling_outputs.clear();
-    }
-    if !pools.includes(ShieldedPool::Orchard) {
-        tx.orchard_actions.clear();
-    }
-    if !pools.includes(ShieldedPool::Ironwood) {
-        tx.ironwood_actions.clear();
-    }
-    if !pools.includes_outputs() {
-        // a transaction's outputs fit its size cap many times over in a u16
-        tx.sapling_outputs_unread = u16::try_from(tx.sapling_outputs.len()).unwrap_or(u16::MAX);
-        tx.sapling_outputs.clear();
-        for action in tx
-            .orchard_actions
-            .iter_mut()
-            .chain(tx.ironwood_actions.iter_mut())
-        {
-            action.output = None;
-        }
-    }
-    tx
 }
 
 // ***** The walk *****

@@ -27,9 +27,11 @@ Pass the filter the block was read under. Both forms follow the same rules:
   each remaining transaction's position in the block, so the coinbase stays
   `index == 0`. A nullifiers-only read's unread Sapling outputs count as
   something (`sapling_outputs_unread`), so such a transaction is served
-  empty, as lightwalletd serves it.
-- `fee` is the domain fee, saturated to the wire's `u32` (D-60). An unknown
-  fee is left unset (`0`).
+  empty, as lightwalletd serves it. The rule is
+  `PreIndexCompactTx::has_pool_data`. `whole_compact_block_to_wire` keeps
+  every transaction instead: what a single-block read serves.
+- `fee` is the domain fee. An unknown fee, or one over the wire's `u32`, is
+  left unset (`0`), never saturated (D-60 (c)).
 - Under `PoolFilter::nullifiers_only`, tree sizes are zero, because the
   protocol's nullifier responses include none. Every other block carries its
   real sizes.

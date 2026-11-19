@@ -1648,9 +1648,10 @@ async fn compact_blocks_carry_fees_and_nullifier_blocks_keep_their_shape() {
             height: u64::from(height),
             hash: Vec::new(),
         };
+        // one block is lightwalletd's whole block pruned: every transaction kept
         assert_eq!(
             service.get_block_nullifiers(id).await.expect("serves"),
-            legacy,
+            legacy_nullifiers(full),
             "{height}"
         );
         expected.push(legacy);

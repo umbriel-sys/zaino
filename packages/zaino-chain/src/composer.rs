@@ -1257,7 +1257,7 @@ where
                             .block
                             .transactions()
                             .iter()
-                            .map(|tx| stream::filter_tx(PreIndexCompactTx::from(tx), pools))
+                            .map(|tx| PreIndexCompactTx::from(tx).filtered(pools))
                             .collect(),
                     };
                     Ok(CompactBlock {

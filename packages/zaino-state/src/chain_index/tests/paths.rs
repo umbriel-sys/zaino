@@ -440,6 +440,208 @@ async fn taddress_requests_are_read_as_lightwalletd_reads_them() {
     assert_eq!(streamed, once);
 }
 
+/// One block is the whole block: every pool and every transaction (#18), a
+/// nullifier read keeping each with only its nullifiers (#19). A range past
+/// the tip names the first height it could not serve (#17).
+#[tokio::test]
+#[allow(deprecated)]
+async fn single_blocks_are_whole_and_a_range_names_the_first_missing_height() {
+    use futures::StreamExt as _;
+    use zaino_proto::proto::service::BlockRange;
+    let rig = rig(true).await;
+    let block = |height: u32| BlockId {
+        height: u64::from(height),
+        hash: Vec::new(),
+    };
+    let transactions = rig
+        .chain
+        .block_at(IN_HOLE)
+        .expect("served")
+        .block
+        .transactions()
+        .len();
+    assert!(transactions > 1);
+
+    let whole = rig.rpc.get_block(block(IN_HOLE)).await.expect("answered");
+    assert_eq!(whole.vtx.len(), transactions);
+    assert!(
+        whole
+            .vtx
+            .first()
+            .is_some_and(|coinbase| !coinbase.vout.is_empty()),
+        "transparent data is served"
+    );
+    let nullifiers = rig
+        .rpc
+        .get_block_nullifiers(block(IN_HOLE))
+        .await
+        .expect("answered");
+    assert_eq!(nullifiers.vtx.len(), transactions);
+    assert!(nullifiers
+        .vtx
+        .iter()
+        .all(|tx| tx.vout.is_empty() && tx.vin.is_empty() && tx.outputs.is_empty()));
+
+    for (start, first_missing) in [
+        (CHAIN_TIP - 1, CHAIN_TIP + 1),
+        (CHAIN_TIP + 3, CHAIN_TIP + 3),
+    ] {
+        let range = BlockRange {
+            start: Some(block(start)),
+            end: Some(block(CHAIN_TIP + 5)),
+            pool_types: Vec::new(),
+        };
+        let served: Vec<_> = rig
+            .rpc
+            .get_block_range(range)
+            .await
+            .expect("opens")
+            .collect()
+            .await;
+        let refusal = served
+            .last()
+            .and_then(|last| last.as_ref().err())
+            .expect("ends in a refusal");
+        assert_eq!(refusal.code(), tonic::Code::OutOfRange);
+        assert!(
+            refusal.message().contains(&format!("[{first_missing}]")),
+            "{}",
+            refusal.message()
+        );
+        assert_eq!(
+            served.len(),
+            usize::try_from(first_missing - start).expect("fits") + 1
+        );
+    }
+}
+
+/// `SendTransaction` as lightwalletd answers it (#38): the quoted txid, a
+/// rejection as an OK reply with the validator's code and message, an
+/// unreachable validator `UNAVAILABLE`. `GetStandardFee` unreachable is
+/// `UNAVAILABLE`, and `Ping` is `FAILED_PRECONDITION` (#59).
+#[tokio::test]
+async fn sends_fees_and_ping_answer_as_lightwalletd_does() {
+    use zaino_proto::proto::service::{Duration as PingInterval, RawTransaction};
+    use zaino_source::{FailureMode, SendRawTransactionError};
+    let rig = rig(true).await;
+    let code =
+        |error: crate::error::NodeBackedIndexerServiceError| tonic::Status::from(error).code();
+    let send = |bytes: Vec<u8>| {
+        rig.rpc.send_transaction(RawTransaction {
+            data: bytes.into(),
+            height: 0,
+        })
+    };
+
+    let txid = zaino_primitives::types::TransactionId::from([7; 32]);
+    rig.chain.script_send(vec![1], Ok(txid));
+    let accepted = send(vec![1]).await.expect("answered");
+    assert_eq!(
+        (accepted.error_code, accepted.error_message),
+        (0, format!("\"{txid}\""))
+    );
+
+    let rejection = SendRawTransactionError::RejectedByPolicy("low fee".into());
+    rig.chain.script_send(vec![2], Err(rejection.clone()));
+    let rejected = send(vec![2]).await.expect("a rejection is an OK reply");
+    assert_eq!(
+        (i64::from(rejected.error_code), rejected.error_message),
+        (rejection.legacy_code(), rejection.message().to_owned())
+    );
+
+    rig.chain
+        .fail_ports(&["send_raw_transaction"], Some(1), FailureMode::Connection);
+    let unreachable = send(vec![1]).await.expect_err("unreachable");
+    assert_eq!(code(unreachable), tonic::Code::Unavailable);
+
+    rig.chain
+        .fail_ports(&["get_standard_fee"], Some(1), FailureMode::Connection);
+    let unreachable = crate::LightWalletIndexer::get_standard_fee(&rig.rpc)
+        .await
+        .expect_err("unreachable");
+    assert_eq!(code(unreachable), tonic::Code::Unavailable);
+    crate::LightWalletIndexer::get_standard_fee(&rig.rpc)
+        .await
+        .expect("answered");
+
+    let disabled = rig
+        .rpc
+        .ping(PingInterval { interval_us: 1 })
+        .await
+        .expect_err("not enabled");
+    assert_eq!(code(disabled), tonic::Code::FailedPrecondition);
+}
+
+/// `GetMempoolTx` reads `pool_types` as lightwalletd does (#44): none is the
+/// shielded pools, an invalid one is refused, and a transaction with nothing
+/// in the pools asked for is dropped.
+#[tokio::test]
+async fn mempool_transactions_are_filtered_by_pool() {
+    use futures::StreamExt as _;
+    use zaino_proto::proto::service::{GetMempoolTxRequest, PoolType};
+    use zaino_source::OneShotGetTransaction as _;
+    let rig = rig(true).await;
+    let transparent = rig
+        .chain
+        .block_at(IN_HOLE)
+        .expect("served")
+        .block
+        .transactions()
+        .iter()
+        .find(|tx| tx.sapling.outputs.is_empty() && tx.orchard.actions.is_empty())
+        .expect("a transparent-only transaction")
+        .clone();
+    let bytes = rig
+        .chain
+        .get_transaction(transparent.txid)
+        .await
+        .expect("known")
+        .bytes;
+    rig.chain
+        .set_mempool(zaino_source_mock::Mempool::Explicit(vec![(
+            transparent,
+            Some(bytes),
+        )]));
+    let listed = |pool_types: Vec<i32>| {
+        let rpc = rig.rpc.clone();
+        async move {
+            let stream = rpc
+                .get_mempool_tx(GetMempoolTxRequest {
+                    exclude_txid_suffixes: Vec::new(),
+                    pool_types,
+                })
+                .await?;
+            Ok::<_, crate::error::NodeBackedIndexerServiceError>(stream.collect::<Vec<_>>().await)
+        }
+    };
+    let transparent_pool = vec![PoolType::Transparent as i32];
+    poll_until(
+        "the mempool holds the transaction",
+        Duration::from_secs(30),
+        Duration::from_millis(25),
+        || async {
+            let held = listed(transparent_pool.clone()).await.ok()?;
+            (held.len() == 1).then_some(())
+        },
+    )
+    .await;
+
+    assert!(
+        listed(Vec::new()).await.expect("answered").is_empty(),
+        "nothing in the shielded pools: dropped"
+    );
+    let served = listed(transparent_pool).await.expect("answered");
+    assert!(matches!(served.as_slice(), [Ok(tx)] if !tx.vout.is_empty()));
+    let refused = listed(vec![PoolType::Invalid as i32])
+        .await
+        .map(drop)
+        .expect_err("an invalid pool");
+    assert_eq!(
+        tonic::Status::from(refused).code(),
+        tonic::Code::InvalidArgument
+    );
+}
+
 /// With the store mid-build, what it holds is local and the hole is the
 /// validator's; the txout set is retryable.
 #[tokio::test(flavor = "multi_thread")]

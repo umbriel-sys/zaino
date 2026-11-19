@@ -47,6 +47,17 @@ chain). Notable shapes:
 - `sendrawtransaction` keeps the validator's rejection code and message
   (−22, −25, −26, −27); invalid hex is −22 before the validator is asked.
 - `GetTransaction` for an unknown txid is `NotFound`.
+- `GetBlock` is the whole block: every pool and every transaction;
+  `GetBlockNullifiers` keeps every transaction with only its nullifiers. A
+  `GetBlockRange` past the tip serves to the tip, then `OutOfRange` naming the
+  first height it could not serve.
+- `SendTransaction` answers as lightwalletd: the JSON-quoted txid on success; a
+  rejection is an OK reply with the validator's code and message; an
+  unreachable validator is `Unavailable`.
+- `GetMempoolTx` reads `pool_types` (none: the shielded pools; an invalid pool
+  is `InvalidArgument`) and drops a transaction with nothing in them.
+- `GetStandardFee` refuses a zero fee (`Internal`) and is `Unavailable` when
+  the validator is unreachable; `Ping` is `FailedPrecondition` (never enabled).
 - `getaddresstxids` and `getaddressdeltas` read their height range as zebrad
   does: an absent start is genesis, an absent or zero end the tip, both clamp
   to the tip; a start above the end is −32602 with zebrad's message.

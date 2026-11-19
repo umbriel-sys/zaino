@@ -8,7 +8,7 @@
 //! Wire rules, shared by the conversion and the writer:
 //! - transactions with nothing in a requested pool are dropped; `index` keeps
 //!   each survivor's position in the dense domain block;
-//! - `fee` is the domain fee saturated to `u32`, unset (0) where unknown;
+//! - `fee` is the domain fee, unset (0) where unknown or over `u32`;
 //! - a block read under [`PoolFilter::nullifiers_only`] carries zero tree
 //!   sizes (the protocol's nullifier responses include none); every other
 //!   block carries its real sizes.
@@ -24,6 +24,21 @@ use crate::proto::utils::PoolTypeFilter;
 
 /// A domain compact block read under `pools`, as the protocol's message.
 pub fn compact_block_to_wire(block: &CompactBlock, pools: PoolFilter) -> proto::CompactBlock {
+    block_to_wire(block, pools, served(block))
+}
+
+/// As [`compact_block_to_wire`] with every transaction kept, one with
+/// nothing in `pools` included: what a single-block read serves
+/// (lightwalletd's `GetBlock` and `GetBlockNullifiers`).
+pub fn whole_compact_block_to_wire(block: &CompactBlock, pools: PoolFilter) -> proto::CompactBlock {
+    block_to_wire(block, pools, block.transactions.iter().enumerate())
+}
+
+fn block_to_wire<'a>(
+    block: &CompactBlock,
+    pools: PoolFilter,
+    transactions: impl Iterator<Item = (usize, &'a PreIndexCompactTx)>,
+) -> proto::CompactBlock {
     let [sapling, orchard, ironwood] = tree_sizes(&block.chain_metadata, pools);
     proto::CompactBlock {
         height: u64::from(block.height),
@@ -31,7 +46,7 @@ pub fn compact_block_to_wire(block: &CompactBlock, pools: PoolFilter) -> proto::
         prev_hash: <[u8; 32]>::from(block.prev_hash).to_vec(),
         time: block.time,
         header: Vec::new(),
-        vtx: served(block)
+        vtx: transactions
             .map(|(index, tx)| compact_tx_to_wire(index, tx))
             .collect(),
         chain_metadata: Some(proto::ChainMetadata {
@@ -271,19 +286,7 @@ fn served(block: &CompactBlock) -> impl Iterator<Item = (usize, &PreIndexCompact
         .transactions
         .iter()
         .enumerate()
-        .filter(|(_, tx)| has_pool_data(tx))
-}
-
-/// Whether a transaction has anything in a pool the block was read for,
-/// outputs a nullifiers-only read left out included (lightwalletd parity).
-fn has_pool_data(tx: &PreIndexCompactTx) -> bool {
-    tx.sapling_outputs_unread > 0
-        || !tx.transparent_inputs.is_empty()
-        || !tx.transparent_outputs.is_empty()
-        || !tx.sapling_nullifiers.is_empty()
-        || !tx.sapling_outputs.is_empty()
-        || !tx.orchard_actions.is_empty()
-        || !tx.ironwood_actions.is_empty()
+        .filter(|(_, tx)| tx.has_pool_data())
 }
 
 /// Sapling, Orchard and Ironwood tree sizes as the wire carries them.
@@ -298,10 +301,11 @@ fn tree_sizes(metadata: &ChainMetadata, pools: PoolFilter) -> [u32; 3] {
     }
 }
 
-/// The fee saturated to the wire's `u32` (D-60); 0, proto3's unset, where
-/// unknown.
+/// The fee on the wire's `u32`; 0, proto3's unset, where unknown or over
+/// `u32` (D-60 (c)): never a saturated, wrong amount.
 fn fee(fee: Option<Zatoshis>) -> u32 {
-    fee.map_or(0, |fee| u32::try_from(u64::from(fee)).unwrap_or(u32::MAX))
+    fee.and_then(|fee| u32::try_from(u64::from(fee)).ok())
+        .unwrap_or(0)
 }
 
 fn varint_field(tag: u32, value: u64, out: &mut Vec<u8>) {
@@ -546,9 +550,10 @@ mod tests {
         proto::CompactBlock::decode(written(block, pools).as_slice()).expect("decodes")
     }
 
-    /// Fees: the domain fee, saturated to `u32`; unknown is unset (0).
+    /// Fees: the domain fee; unknown, or over `u32`, is unset (0), never
+    /// saturated.
     #[test]
-    fn fees_are_served_saturated_and_unknown_is_unset() {
+    fn a_fee_unknown_or_over_u32_is_unset() {
         let over = u64::from(u32::MAX) + 1;
         let block = block_of(vec![
             tx_with(Some(1_000), 1),
@@ -560,7 +565,7 @@ mod tests {
             .iter()
             .map(|tx| tx.fee)
             .collect();
-        assert_eq!(fees, vec![1_000, u32::MAX, 0]);
+        assert_eq!(fees, vec![1_000, 0, 0]);
         let unknown = compact_tx_to_wire(2, &block.transactions[2]).encode_to_vec();
         assert!(
             !unknown.contains(&0x18),
@@ -602,6 +607,22 @@ mod tests {
                 fee: 5,
                 ..Default::default()
             }]
+        );
+    }
+
+    /// A single-block read keeps every transaction, one with nothing in the
+    /// pools read included, at its index (lightwalletd's `GetBlock`).
+    #[test]
+    fn a_whole_block_keeps_every_transaction() {
+        let block = block_of(vec![tx_with(None, 0), tx_with(None, 2), tx_with(None, 0)]);
+        let pools = PoolFilter::all().nullifiers_only();
+        let indexes = |wire: proto::CompactBlock| -> Vec<u64> {
+            wire.vtx.iter().map(|tx| tx.index).collect()
+        };
+        assert_eq!(indexes(compact_block_to_wire(&block, pools)), vec![1]);
+        assert_eq!(
+            indexes(whole_compact_block_to_wire(&block, pools)),
+            vec![0, 1, 2]
         );
     }
 

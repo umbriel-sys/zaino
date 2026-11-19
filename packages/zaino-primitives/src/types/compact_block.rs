@@ -107,6 +107,55 @@ pub struct PreIndexCompactTx {
     pub sapling_outputs_unread: u16,
 }
 
+impl PreIndexCompactTx {
+    /// With the pools `pools` leaves out cleared; under a nullifiers-only
+    /// filter the shielded outputs too, their count kept.
+    pub fn filtered(mut self, pools: super::PoolFilter) -> Self {
+        use super::ShieldedPool;
+        if !pools.includes_transparent() {
+            self.transparent_inputs.clear();
+            self.transparent_outputs.clear();
+        }
+        if !pools.includes(ShieldedPool::Sapling) {
+            self.sapling_nullifiers.clear();
+            self.sapling_outputs.clear();
+        }
+        if !pools.includes(ShieldedPool::Orchard) {
+            self.orchard_actions.clear();
+        }
+        if !pools.includes(ShieldedPool::Ironwood) {
+            self.ironwood_actions.clear();
+        }
+        if !pools.includes_outputs() {
+            // a transaction's outputs fit its size cap many times over in a u16
+            self.sapling_outputs_unread =
+                u16::try_from(self.sapling_outputs.len()).unwrap_or(u16::MAX);
+            self.sapling_outputs.clear();
+            for action in self
+                .orchard_actions
+                .iter_mut()
+                .chain(self.ironwood_actions.iter_mut())
+            {
+                action.output = None;
+            }
+        }
+        self
+    }
+
+    /// Whether anything is left in a pool the transaction was read for,
+    /// outputs a nullifiers-only read left out included (lightwalletd
+    /// serves such a transaction empty, and drops one with nothing).
+    pub fn has_pool_data(&self) -> bool {
+        self.sapling_outputs_unread > 0
+            || !self.transparent_inputs.is_empty()
+            || !self.transparent_outputs.is_empty()
+            || !self.sapling_nullifiers.is_empty()
+            || !self.sapling_outputs.is_empty()
+            || !self.orchard_actions.is_empty()
+            || !self.ironwood_actions.is_empty()
+    }
+}
+
 impl From<&super::Block> for PreIndexCompactBlock {
     fn from(block: &super::Block) -> Self {
         Self {

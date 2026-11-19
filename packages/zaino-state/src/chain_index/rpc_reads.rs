@@ -9,7 +9,9 @@ use zaino_primitives::types::rpc::{
 };
 use zaino_primitives::types::{BlockVerbosity, PoolFilter};
 use zaino_primitives::types::{MempoolInfo, TxOutSetInfo};
-use zaino_proto::compact::{compact_block_to_wire, pool_filter_from_wire};
+use zaino_proto::compact::{
+    compact_block_to_wire, pool_filter_from_wire, whole_compact_block_to_wire,
+};
 use zaino_proto::proto::compact_formats::CompactBlock;
 use zaino_proto::proto::utils::PoolTypeFilter;
 use zaino_service::ServiceSource;
@@ -39,11 +41,14 @@ fn validator<T>(result: BlockchainSourceResult<T>) -> Result<T, ChainIndexError>
 
 impl<V: ChainIndexSourcePorts + ServiceSource> NodeBackedChainIndexSubscriber<V> {
     /// The compact block at `height` under `pools`; `None` past the tip.
+    /// `whole` keeps every transaction (a single-block read), else those
+    /// with nothing in `pools` are dropped (a range's filter).
     pub(crate) async fn compact_block(
         &self,
         snapshot: &ChainIndexSnapshot<V>,
         height: types::Height,
         pools: PoolFilter,
+        whole: bool,
     ) -> Result<Option<CompactBlock>, ChainIndexError> {
         let Some(at) = domain_height(height).filter(|at| *at <= snapshot.best_tip().height) else {
             return Ok(None);
@@ -52,7 +57,10 @@ impl<V: ChainIndexSourcePorts + ServiceSource> NodeBackedChainIndexSubscriber<V>
             .compact_block(at, pools)
             .await?
             .ok_or_else(|| ChainIndexError::database_hole(height, None))?;
-        Ok(Some(compact_block_to_wire(&block, pools)))
+        Ok(Some(match whole {
+            true => whole_compact_block_to_wire(&block, pools),
+            false => compact_block_to_wire(&block, pools),
+        }))
     }
 
     /// The compact blocks from `start_height` to `end_height` under `pools`.
@@ -103,7 +111,9 @@ impl<V: ChainIndexSourcePorts + ServiceSource> NodeBackedChainIndexSubscriber<V>
                 && sender
                     .send(Err(tonic::Status::out_of_range(format!(
                         "Error: Height out of range [{}]. Height requested is greater than the best chain tip [{}].",
-                        end_height.0, tip,
+                        // the first height not served, as lightwalletd names it
+                        start_height.0.max(tip.saturating_add(1)),
+                        tip,
                     ))))
                     .await
                     .is_err()
@@ -124,7 +134,7 @@ impl<V: ChainIndexSourcePorts + ServiceSource> ChainIndexRpcExt
         height: types::Height,
         pool_types: PoolTypeFilter,
     ) -> Result<Option<CompactBlock>, Self::Error> {
-        self.compact_block(snapshot, height, pool_filter_from_wire(&pool_types))
+        self.compact_block(snapshot, height, pool_filter_from_wire(&pool_types), false)
             .await
     }
 

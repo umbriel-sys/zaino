@@ -1,0 +1,29 @@
+[[changes]]
+crate = "zaino-state"
+kind = "breaking"
+description = """
+gRPC parity with lightwalletd. `GetBlock` serves the whole block, every pool \
+and every transaction, and `GetBlockNullifiers` every transaction with only \
+its nullifiers (#18, #19). A `GetBlockRange` past the tip names the first \
+height it could not serve (#17). `SendTransaction` returns the JSON-quoted \
+txid, answers a rejection as an OK reply with the validator's code and \
+message, and is `Unavailable` when the validator is unreachable (#38). \
+`GetMempoolTx` reads `pool_types`, refuses an invalid pool and drops a \
+transaction with nothing in the pools asked for (#44). `GetStandardFee` \
+refuses a zero fee and is `Unavailable` when unreachable; `Ping` is \
+`FailedPrecondition` (#59)."""
+
+[[changes]]
+crate = "zaino-proto"
+kind = "breaking"
+description = """
+A compact fee over `u32` is sent unset (0), no longer saturated (C5, D-60 \
+(c)). New `compact::whole_compact_block_to_wire`: the block with every \
+transaction kept, as a single-block read serves it."""
+
+[[changes]]
+crate = "zaino-primitives"
+kind = "feature"
+description = """
+`PreIndexCompactTx::filtered(pools)` clears the pools a filter leaves out and \
+`has_pool_data` says whether anything is left to serve."""

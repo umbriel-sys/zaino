@@ -124,10 +124,15 @@ async fn seam_blocks_are_identical_whichever_side_serves_them() -> Result<()> {
              to its own side (floor {floor})"
         );
 
+        // GetBlock is the whole block: a one-height range over every pool
+        let whole = indexer
+            .get_block_range_with_pools(*height, *height, vec![1, 2, 3, 4])
+            .await?;
         let single = indexer.get_block(*height).await?;
         assert_eq!(
-            &single, from_span,
-            "height {height} differs between GetBlock and a seam-spanning GetBlockRange \
+            Some(&single),
+            whole.first(),
+            "height {height} differs between GetBlock and an every-pool GetBlockRange \
              (floor {floor})"
         );
     }

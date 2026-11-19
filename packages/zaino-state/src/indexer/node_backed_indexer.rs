@@ -278,6 +278,54 @@ fn served_pools(
     }
 }
 
+/// An error's causes, itself first.
+fn causes(
+    error: &NodeBackedIndexerServiceError,
+) -> impl Iterator<Item = &(dyn std::error::Error + 'static)> {
+    std::iter::successors(Some(error as &(dyn std::error::Error + 'static)), |error| {
+        error.source()
+    })
+}
+
+/// The legacy code and message a refusal carries, the validator's own for a
+/// rejected submission.
+fn legacy_rejection(error: &NodeBackedIndexerServiceError) -> Option<(i32, String)> {
+    let rejection =
+        causes(error).find_map(|cause| cause.downcast_ref::<crate::error::LegacyRpcError>())?;
+    Some((
+        i32::try_from(rejection.code).ok()?,
+        rejection.message.clone(),
+    ))
+}
+
+/// Whether the validator could not be reached (a transport failure, not an
+/// answer).
+fn unreachable(error: &NodeBackedIndexerServiceError) -> bool {
+    causes(error).any(|cause| {
+        cause
+            .downcast_ref::<zaino_source::NonDomainError>()
+            .is_some_and(|failure| {
+                matches!(
+                    failure.mode,
+                    zaino_source::FailureMode::Connection | zaino_source::FailureMode::Timeout
+                )
+            })
+    })
+}
+
+/// The fee on the wire; a zero fee, which no sane validator reports, is
+/// refused, as lightwalletd refuses it.
+fn nonzero_standard_fee(
+    fee: &StandardFee,
+) -> Result<zaino_proto::proto::service::StandardFee, tonic::Status> {
+    if fee.fee_per_action == zaino_primitives::types::Zatoshis::ZERO {
+        return Err(tonic::Status::internal(
+            "Error: the validator reported a zero standard fee.",
+        ));
+    }
+    Ok(crate::chain_index::wire_types::standard_fee_to_wire(fee))
+}
+
 fn no_such_transaction() -> NodeBackedIndexerServiceError {
     NodeBackedIndexerServiceError::RpcError(crate::error::LegacyRpcError::new(
         zebra_rpc::server::error::LegacyCode::InvalidAddressOrKey,
@@ -501,12 +549,14 @@ impl<V: ChainIndexSourcePorts + ServiceSource> NodeBackedIndexerServiceSubscribe
             }
         };
 
-        // `BlockID` has no `poolTypes`; unfiltered is served the legacy set, as
-        // `GetBlockRange` serves an empty one.
-        let pools = served_pools(&PoolTypeFilter::default(), nullifiers_only);
+        // `BlockID` has no `poolTypes`: one block is the whole block, every
+        // pool and every transaction, as lightwalletd serves it (#18, #19);
+        // a nullifier read keeps each transaction with only its nullifiers.
+        let every_pool = PoolTypeFilter::includes_all();
+        let pools = served_pools(&every_pool, nullifiers_only);
         let block = self
             .indexer
-            .compact_block(&snapshot, types::Height(height), pools)
+            .compact_block(&snapshot, types::Height(height), pools, true)
             .await;
         let failure = match block {
             Ok(Some(block)) => return Ok(block),
@@ -1257,15 +1307,25 @@ impl<V: ChainIndexSourcePorts + ServiceSource> LightWalletIndexer
 
     /// Submit the given transaction to the Zcash network
     async fn send_transaction(&self, request: RawTransaction) -> Result<SendResponse, Self::Error> {
-        let hex_tx = hex::encode(request.data);
-        let tx_output = self.send_raw_transaction(hex_tx).await?;
-
-        Ok(SendResponse {
-            error_code: 0,
-            // The domain hash's `Display` is already RPC display order, the
-            // same as the wire type's was.
-            error_message: tx_output.to_string(),
-        })
+        // as lightwalletd (#38): the quoted txid on success; a rejection is an
+        // OK reply carrying the validator's code and message; unreachable is
+        // `UNAVAILABLE`
+        match self.send_raw_transaction(hex::encode(request.data)).await {
+            Ok(txid) => Ok(SendResponse {
+                error_code: 0,
+                error_message: format!("\"{txid}\""),
+            }),
+            Err(error) => match (legacy_rejection(&error), unreachable(&error)) {
+                (Some((error_code, error_message)), _) => Ok(SendResponse {
+                    error_code,
+                    error_message,
+                }),
+                (None, true) => Err(NodeBackedIndexerServiceError::TonicStatusError(
+                    tonic::Status::unavailable(error.to_string()),
+                )),
+                (None, false) => Err(error),
+            },
+        }
     }
 
     // Return the transactions corresponding to the given t-address within the given block range
@@ -1408,6 +1468,15 @@ impl<V: ChainIndexSourcePorts + ServiceSource> LightWalletIndexer
         // and count checks it hand-rolled now live with the matcher that
         // enforces them.
         let exclude_txids = request.exclude_txid_suffixes.clone();
+        // as lightwalletd: no pools is the shielded ones, an invalid pool is
+        // refused, and a transaction with nothing in them is dropped (#44)
+        let pools = PoolTypeFilter::new_from_slice(&request.pool_types)
+            .map(|filter| zaino_proto::compact::pool_filter_from_wire(&filter))
+            .map_err(|error| {
+                NodeBackedIndexerServiceError::from(
+                    zaino_proto::proto::utils::GetBlockRangeError::PoolTypeArgumentError(error),
+                )
+            })?;
 
         let mempool = self.indexer.clone();
         Ok(CompactTransactionStream::new(super::spawn_timed_stream(
@@ -1439,12 +1508,17 @@ impl<V: ChainIndexSourcePorts + ServiceSource> LightWalletIndexer
                                     .map_err(|e| tonic::Status::unknown(e.to_string()))
                             })
                             .map(|transaction| {
-                                // A mempool transaction is in no block, so index 0.
-                                zaino_proto::compact::compact_tx_to_wire(
-                                    0,
-                                    &zaino_primitives::types::PreIndexCompactTx::from(&transaction),
-                                )
+                                zaino_primitives::types::PreIndexCompactTx::from(&transaction)
+                                    .filtered(pools)
                             });
+                            let compact = match compact {
+                                Ok(transaction) if !transaction.has_pool_data() => continue,
+                                // A mempool transaction is in no block, so index 0.
+                                Ok(transaction) => {
+                                    Ok(zaino_proto::compact::compact_tx_to_wire(0, &transaction))
+                                }
+                                Err(status) => Err(status),
+                            };
 
                             if channel_tx.send(compact).await.is_err() {
                                 break;
@@ -1722,20 +1796,44 @@ impl<V: ChainIndexSourcePorts + ServiceSource> LightWalletIndexer
     async fn get_standard_fee(
         &self,
     ) -> Result<zaino_proto::proto::service::StandardFee, Self::Error> {
-        let fee = ZcashIndexer::get_standard_fee(self).await?;
-        Ok(crate::chain_index::wire_types::standard_fee_to_wire(&fee))
+        // as lightwalletd (#59): unreachable is `UNAVAILABLE`, and a zero fee,
+        // which no sane validator reports, is refused
+        let status = NodeBackedIndexerServiceError::TonicStatusError;
+        let fee = ZcashIndexer::get_standard_fee(self)
+            .await
+            .map_err(|error| match unreachable(&error) {
+                true => status(tonic::Status::unavailable(error.to_string())),
+                false => error,
+            })?;
+        nonzero_standard_fee(&fee).map_err(status)
     }
 
-    /// Testing-only, requires lightwalletd --ping-very-insecure (do not enable in production)
-    ///
-    /// NOTE: Currently unimplemented in Zaino.
+    /// Testing-only in lightwalletd, behind `--ping-very-insecure`; Zaino
+    /// never enables it, and answers as lightwalletd does when disabled.
     async fn ping(&self, _request: Duration) -> Result<PingResponse, Self::Error> {
         Err(NodeBackedIndexerServiceError::TonicStatusError(
-            tonic::Status::unimplemented(
-                "Ping not yet implemented. If you require this RPC \
-            please open an issue or PR at the Zaino github \
-            (https://github.com/zingolabs/zaino.git).",
-            ),
+            tonic::Status::failed_precondition("Error: Ping is not enabled."),
         ))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{nonzero_standard_fee, StandardFee};
+    use zaino_primitives::types::Zatoshis;
+
+    /// A zero standard fee is refused; any other is served.
+    #[test]
+    fn a_zero_standard_fee_is_refused() {
+        let fee = |zatoshis| StandardFee {
+            fee_per_action: Zatoshis::new(zatoshis).expect("in range"),
+            version: 0,
+        };
+        let refused = nonzero_standard_fee(&fee(0)).expect_err("zero");
+        assert_eq!(refused.code(), tonic::Code::Internal);
+        assert_eq!(
+            nonzero_standard_fee(&fee(5_000)).expect("served").fee_zat,
+            5_000
+        );
     }
 }

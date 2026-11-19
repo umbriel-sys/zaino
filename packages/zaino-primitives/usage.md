@@ -81,6 +81,8 @@ use zaino_primitives::types::rpc::{BlockDeltas, MiningInfo, NodeInfo, PeerInfo};
   read of an included pool left out (0 otherwise); and `PoolFilter`, which
   pools a compact read
   includes and whether it reads outputs or only nullifiers.
+  `PreIndexCompactTx::filtered(pools)` clears what a filter leaves out and
+  `has_pool_data` says whether anything is left to serve.
 - `types::rpc` — the response shapes for passthrough RPCs, in domain
   vocabulary rather than any interface's: `BlockDeltas`, `BlockchainInfo`,
   `ChainTip`, `MiningInfo`, `NodeInfo`, `PeerInfo`, `SpentInfo`, `TxOut`,
