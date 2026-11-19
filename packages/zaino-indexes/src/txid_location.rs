@@ -4,9 +4,9 @@ use zaino_persistence::{BackendReader, Namespace, WriteOp};
 use zaino_primitives::types::{BlockRef, BlockTxPosition, TransactionId};
 
 use crate::block::FoldBlock;
-use crate::codec::{self, position_bytes, POSITION_BYTES};
+use crate::codec::{self, position_bytes};
 use crate::index::{check_extends, Fold, FoldError, Index};
-use crate::layout::{declared, Field, Layout, LayoutError};
+use crate::layout::{Declared, Field, Layout, LayoutError};
 use crate::schema::{NamespaceLayout, Schema};
 
 /// The index's name: its directory and the name dependants use.
@@ -14,22 +14,16 @@ pub const NAME: &str = "txid_location";
 
 const LOCATIONS: Namespace = Namespace::new("txid_location");
 
-declared! {
-    /// A txid as a map key.
-    pub const TXID: Layout = Layout::new("txid", 1, &[Field::fixed("txid", 32)]);
-}
-declared! {
-    /// Where a transaction was mined: height then index, big-endian.
-    pub const POSITION: Layout = Layout::new(
-        "tx_position",
-        1,
-        &[Field::fixed("height", 4), Field::fixed("tx_index", 2)],
-    );
-}
-declared! {
-    /// Unique: txids are distinct (coinbases carry their height, BIP 34).
-    const BY_TXID: NamespaceLayout = NamespaceLayout::unique_map(LOCATIONS, &TXID, &POSITION);
-}
+/// A txid as a map key.
+pub const TXID: Declared<Layout> = Layout::new("txid", 1, &[Field::fixed("txid", 32)]);
+/// Where a transaction was mined: height then index, big-endian.
+pub const POSITION: Declared<Layout> = Layout::new(
+    "tx_position",
+    1,
+    &[Field::fixed("height", 4), Field::fixed("tx_index", 2)],
+);
+/// Unique: txids are distinct (coinbases carry their height, BIP 34).
+const BY_TXID: Declared<NamespaceLayout> = NamespaceLayout::unique_map(LOCATIONS, &TXID, &POSITION);
 
 /// The schema: one map, txid → position.
 pub const SCHEMA: Schema = Schema::new(NAME, 1, &[BY_TXID]);
@@ -111,14 +105,13 @@ impl<'a, R: BackendReader> Reader<'a, R> {
     }
 }
 
-const _: () = assert!(POSITION.fixed_len() == POSITION_BYTES);
-
 #[cfg(test)]
 mod tests {
     use zaino_persistence::{Backend as _, SchemaDigest};
     use zaino_primitives::types::Height;
 
     use super::*;
+    use crate::codec::POSITION_BYTES;
     use crate::testing::{backend, busy, fold_all};
 
     /// Every folded txid reads back at its position, singly and batched;
@@ -173,12 +166,21 @@ mod tests {
             0x06, 0x7b, 0x17, 0xf0, 0x01, 0xb8, 0x4f, 0x5d, 0x31, 0xf9, 0x44, 0x4c, 0xe9, 0xe5,
             0x3a, 0x69, 0x7b, 0x18,
         ];
+        let digest = SCHEMA.digest().expect("declared");
         assert_eq!(
-            SCHEMA.digest(),
+            digest,
             SchemaDigest::new(GOLDEN),
             "{:02x?}",
-            SCHEMA.digest().as_bytes()
+            digest.as_bytes()
         );
         assert_eq!(SCHEMA.dir_name(), "txid_location_1");
+    }
+
+    /// Every declaration is valid, and the position is the codec's width.
+    #[test]
+    fn every_declaration_is_valid() {
+        assert_eq!(TXID.expect("declared").fixed_len(), 32);
+        assert_eq!(POSITION.expect("declared").fixed_len(), POSITION_BYTES);
+        BY_TXID.expect("declared");
     }
 }

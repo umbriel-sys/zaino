@@ -12,7 +12,9 @@ use zaino_chain_store::{
 };
 use zaino_component::{ComponentStatus, StatusSource};
 use zaino_indexes::{FoldError, IndexId, IndexState};
-use zaino_persistence::{Backend, BackendReader, Identity, OpenError, ReadError, Storage};
+use zaino_persistence::{
+    Backend, BackendReader, Identity, NamespaceSpec, OpenError, ReadError, Storage,
+};
 use zaino_primitives::types::{BlockHash, BlockRef, Height, Network, NetworkUpgradeInfo};
 
 use crate::config::{network_name, ChainStoreServiceConfig, IngestConfig, OnCorruption};
@@ -1054,13 +1056,26 @@ impl Damage {
 }
 
 /// What `id`'s directory is stamped with on `network`.
-pub(crate) fn identity(id: IndexId, network: &str) -> Identity<'_> {
+pub(crate) fn identity(id: IndexId, network: &str) -> Result<Identity<'_>, OpenError> {
     let schema = id.schema();
-    Identity {
+    Ok(Identity {
         name: schema.name,
         chain: network,
         format: schema.format,
-        schema: schema.digest(),
+        schema: schema.digest().map_err(undeclared)?,
+    })
+}
+
+/// The namespace specs `id` is opened with.
+pub(crate) fn specs(id: IndexId) -> Result<Vec<NamespaceSpec>, OpenError> {
+    id.schema().specs().map_err(undeclared)
+}
+
+/// An index whose layouts this build cannot declare.
+fn undeclared(error: zaino_indexes::LayoutError) -> OpenError {
+    OpenError::Unavailable {
+        operation: "declare the index's layouts",
+        source: Box::new(error),
     }
 }
 
@@ -1070,8 +1085,10 @@ fn try_open<St: Storage>(
     id: IndexId,
     network: &str,
 ) -> Result<Open<St::Backend>, Damage> {
+    let identity = identity(id, network).map_err(Damage::Unavailable)?;
+    let specs = specs(id).map_err(Damage::Unavailable)?;
     let backend = storage
-        .open(dir, identity(id, network), &id.schema().specs())
+        .open(dir, identity, &specs)
         .map_err(|error| match error {
             OpenError::Mismatch(_) => Damage::Mismatch(error),
             OpenError::Corrupted(cause) => Damage::Corrupted(cause),

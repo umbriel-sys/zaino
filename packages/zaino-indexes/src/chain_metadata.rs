@@ -13,7 +13,7 @@ use zaino_primitives::types::{
 use crate::block::FoldBlock;
 use crate::codec::{array, le_u32};
 use crate::index::{check_extends, Fold, FoldError, Index};
-use crate::layout::{declared, Field, Layout};
+use crate::layout::{fixed_range, Declared, Field, Layout};
 use crate::schema::{NamespaceLayout, Schema};
 
 /// The index's name: its directory and the name dependants use.
@@ -21,32 +21,30 @@ pub const NAME: &str = "chain_metadata";
 
 const METADATA: Namespace = Namespace::new("chain_metadata");
 
-declared! {
-    /// Per pool, in [`ShieldedPool::ALL`] order: present (0 or 1), root, size.
-    pub const POOLS: Layout = Layout::new(
-        "pool_trees",
-        1,
-        &[
-            Field::fixed("sapling_present", 1),
-            Field::fixed("sapling_root", 32),
-            Field::fixed("sapling_size", 4),
-            Field::fixed("orchard_present", 1),
-            Field::fixed("orchard_root", 32),
-            Field::fixed("orchard_size", 4),
-            Field::fixed("ironwood_present", 1),
-            Field::fixed("ironwood_root", 32),
-            Field::fixed("ironwood_size", 4),
-        ],
-    );
-}
+/// Per pool, in [`ShieldedPool::ALL`] order: present (0 or 1), root, size.
+pub const POOLS: Declared<Layout> = Layout::new(
+    "pool_trees",
+    1,
+    &[
+        Field::fixed("sapling_present", 1),
+        Field::fixed("sapling_root", 32),
+        Field::fixed("sapling_size", 4),
+        Field::fixed("orchard_present", 1),
+        Field::fixed("orchard_root", 32),
+        Field::fixed("orchard_size", 4),
+        Field::fixed("ironwood_present", 1),
+        Field::fixed("ironwood_root", 32),
+        Field::fixed("ironwood_size", 4),
+    ],
+);
 /// Fields per pool: present, root, size.
 const PER_POOL: usize = 3;
-declared! { const SAPLING_SIZE: Range<usize> = POOLS.fixed_range(2); }
-declared! { const ORCHARD_SIZE: Range<usize> = POOLS.fixed_range(5); }
-declared! { const IRONWOOD_SIZE: Range<usize> = POOLS.fixed_range(8); }
-declared! { const SAPLING_PRESENT: Range<usize> = POOLS.fixed_range(0); }
-declared! { const ORCHARD_PRESENT: Range<usize> = POOLS.fixed_range(3); }
-declared! { const IRONWOOD_PRESENT: Range<usize> = POOLS.fixed_range(6); }
+const SAPLING_SIZE: Declared<Range<usize>> = fixed_range(&POOLS, 2);
+const ORCHARD_SIZE: Declared<Range<usize>> = fixed_range(&POOLS, 5);
+const IRONWOOD_SIZE: Declared<Range<usize>> = fixed_range(&POOLS, 8);
+const SAPLING_PRESENT: Declared<Range<usize>> = fixed_range(&POOLS, 0);
+const ORCHARD_PRESENT: Declared<Range<usize>> = fixed_range(&POOLS, 3);
+const IRONWOOD_PRESENT: Declared<Range<usize>> = fixed_range(&POOLS, 6);
 
 /// The schema: one fixed record per height.
 pub const SCHEMA: Schema = Schema::new(NAME, 1, &[NamespaceLayout::sequence(METADATA, &POOLS)]);
@@ -87,7 +85,7 @@ impl Index for ChainMetadata {
             ops: vec![WriteOp::Put {
                 namespace: METADATA,
                 key: key(reference.height),
-                value: POOLS.encode(&fields)?,
+                value: POOLS?.encode(&fields)?,
             }],
             next: State { tip: reference },
         })
@@ -121,9 +119,9 @@ impl<'a, R: BackendReader> Reader<'a, R> {
         pool: ShieldedPool,
     ) -> Result<Option<Option<TreeSize>>, FoldError> {
         let (present_at, size_at) = match pool {
-            ShieldedPool::Sapling => (SAPLING_PRESENT, SAPLING_SIZE),
-            ShieldedPool::Orchard => (ORCHARD_PRESENT, ORCHARD_SIZE),
-            ShieldedPool::Ironwood => (IRONWOOD_PRESENT, IRONWOOD_SIZE),
+            ShieldedPool::Sapling => (SAPLING_PRESENT?, SAPLING_SIZE?),
+            ShieldedPool::Orchard => (ORCHARD_PRESENT?, ORCHARD_SIZE?),
+            ShieldedPool::Ironwood => (IRONWOOD_PRESENT?, IRONWOOD_SIZE?),
         };
         let key = key(height);
         let Some(flag) = self.backend.get_bytes(METADATA, &key, present_at)? else {
@@ -173,9 +171,10 @@ fn pool_fields(info: Option<&TreeRootInfo>) -> ([u8; 1], [u8; 32], [u8; 4]) {
 
 /// Every pool's root and size a stored record holds.
 fn decode_roots(record: &[u8]) -> Result<TreeRoots, FoldError> {
+    let layout = POOLS?;
     let pool = |pool: ShieldedPool| -> Result<Option<TreeRootInfo>, FoldError> {
         let first = pool_index(pool).saturating_mul(PER_POOL);
-        let field = |offset: usize| POOLS.field(record, first.saturating_add(offset));
+        let field = |offset: usize| layout.field(record, first.saturating_add(offset));
         if !present(field(0)?)? {
             return Ok(None);
         }
@@ -283,12 +282,30 @@ mod tests {
             0x45, 0x6e, 0x94, 0x69, 0x60, 0x88, 0x9f, 0x4f, 0x04, 0x7f, 0x27, 0x60, 0x7b, 0x7e,
             0xfc, 0xce, 0x94, 0x1c,
         ];
+        let digest = SCHEMA.digest().expect("declared");
         assert_eq!(
-            SCHEMA.digest(),
+            digest,
             SchemaDigest::new(GOLDEN),
             "{:02x?}",
-            SCHEMA.digest().as_bytes()
+            digest.as_bytes()
         );
         assert_eq!(SCHEMA.dir_name(), "chain_metadata_1");
+    }
+
+    /// Every declaration is valid: each pool's flag and size where the
+    /// record puts them.
+    #[test]
+    fn every_declaration_is_valid() {
+        assert_eq!(POOLS.expect("declared").fixed_len(), 3 * 37);
+        for (range, at) in [
+            (SAPLING_PRESENT, 0..1),
+            (SAPLING_SIZE, 33..37),
+            (ORCHARD_PRESENT, 37..38),
+            (ORCHARD_SIZE, 70..74),
+            (IRONWOOD_PRESENT, 74..75),
+            (IRONWOOD_SIZE, 107..111),
+        ] {
+            assert_eq!(range, Ok(at));
+        }
     }
 }

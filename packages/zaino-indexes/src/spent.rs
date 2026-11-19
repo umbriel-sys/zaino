@@ -6,7 +6,7 @@ use zaino_primitives::types::{BlockRef, BlockTxPosition, Outpoint};
 use crate::block::FoldBlock;
 use crate::codec::{self, outpoint_bytes, position_bytes, OUTPOINT_BYTES, POSITION_BYTES};
 use crate::index::{check_extends, Fold, FoldError, Index};
-use crate::layout::{declared, Field, Layout, LayoutError};
+use crate::layout::{Declared, Field, Layout, LayoutError};
 use crate::schema::{NamespaceLayout, Schema};
 
 /// The index's name: its directory and the name dependants use.
@@ -14,33 +14,26 @@ pub const NAME: &str = "spent";
 
 const SPENT: Namespace = Namespace::new("spent");
 
-declared! {
-    /// An outpoint as a map key: txid, then output index big-endian.
-    pub const OUTPOINT: Layout = Layout::new(
-        "outpoint",
-        1,
-        &[Field::fixed("txid", 32), Field::fixed("index", 4)],
-    );
-}
-declared! {
-    /// The spending input: height `u32`, tx index and input index `u16`
-    /// (D-62), big-endian.
-    pub const SPENDER: Layout = Layout::new(
-        "spender",
-        1,
-        &[
-            Field::fixed("height", 4),
-            Field::fixed("tx_index", 2),
-            Field::fixed("input", 2),
-        ],
-    );
-}
-declared! {
-    /// Unique: consensus spends an outpoint once.
-    const BY_OUTPOINT: NamespaceLayout = NamespaceLayout::unique_map(SPENT, &OUTPOINT, &SPENDER);
-}
-const _: () = assert!(OUTPOINT.fixed_len() == OUTPOINT_BYTES);
-const _: () = assert!(SPENDER.fixed_len() == POSITION_BYTES + 2);
+/// An outpoint as a map key: txid, then output index big-endian.
+pub const OUTPOINT: Declared<Layout> = Layout::new(
+    "outpoint",
+    1,
+    &[Field::fixed("txid", 32), Field::fixed("index", 4)],
+);
+/// The spending input: height `u32`, tx index and input index `u16`
+/// (D-62), big-endian.
+pub const SPENDER: Declared<Layout> = Layout::new(
+    "spender",
+    1,
+    &[
+        Field::fixed("height", 4),
+        Field::fixed("tx_index", 2),
+        Field::fixed("input", 2),
+    ],
+);
+/// Unique: consensus spends an outpoint once.
+const BY_OUTPOINT: Declared<NamespaceLayout> =
+    NamespaceLayout::unique_map(SPENT, &OUTPOINT, &SPENDER);
 
 /// The schema: one map, outpoint → spender.
 pub const SCHEMA: Schema = Schema::new(NAME, 1, &[BY_OUTPOINT]);
@@ -81,7 +74,7 @@ impl Index for Spent {
         for (tx_index, tx) in (0u32..).zip(block.transactions()) {
             let position = BlockTxPosition::new(reference.height, tx_index);
             for (input, spent) in (0u32..).zip(&tx.compact().transparent_inputs) {
-                let mut value = Vec::with_capacity(SPENDER.fixed_len());
+                let mut value = Vec::with_capacity(SPENDER?.fixed_len());
                 value.extend_from_slice(&position_bytes(position)?);
                 value.extend_from_slice(&codec::narrow("input", input)?.to_be_bytes());
                 ops.push(WriteOp::Put {
@@ -134,12 +127,13 @@ impl<'a, R: BackendReader> Reader<'a, R> {
 }
 
 fn spender(bytes: &[u8]) -> Result<Spender, FoldError> {
+    let expected = SPENDER?.fixed_len();
     let (position, input) =
         bytes
             .split_at_checked(POSITION_BYTES)
             .ok_or(LayoutError::FieldWidth {
                 field: "spender",
-                expected: SPENDER.fixed_len(),
+                expected,
                 actual: bytes.len(),
             })?;
     Ok(Spender {
@@ -229,12 +223,21 @@ mod tests {
             0xf7, 0xc8, 0x64, 0x04, 0xc2, 0xbd, 0xdc, 0x88, 0x5f, 0x50, 0x06, 0xc6, 0x2f, 0x47,
             0x51, 0x6d, 0x49, 0x59,
         ];
+        let digest = SCHEMA.digest().expect("declared");
         assert_eq!(
-            SCHEMA.digest(),
+            digest,
             SchemaDigest::new(GOLDEN),
             "{:02x?}",
-            SCHEMA.digest().as_bytes()
+            digest.as_bytes()
         );
         assert_eq!(SCHEMA.dir_name(), "spent_1");
+    }
+
+    /// Every declaration is valid, at the codec's widths.
+    #[test]
+    fn every_declaration_is_valid() {
+        assert_eq!(OUTPOINT.expect("declared").fixed_len(), OUTPOINT_BYTES);
+        assert_eq!(SPENDER.expect("declared").fixed_len(), POSITION_BYTES + 2);
+        BY_OUTPOINT.expect("declared");
     }
 }

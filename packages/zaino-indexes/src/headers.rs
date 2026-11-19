@@ -11,7 +11,7 @@ use zaino_primitives::types::{
 use crate::block::FoldBlock;
 use crate::codec::{self, array, le_u32};
 use crate::index::{check_extends, Fold, FoldError, Index};
-use crate::layout::{declared, Field, Layout};
+use crate::layout::{fixed_range, Declared, Field, Layout};
 use crate::schema::{NamespaceLayout, Schema};
 
 /// The index's name: its directory and the name dependants use.
@@ -20,27 +20,25 @@ pub const NAME: &str = "headers";
 const HEADERS: Namespace = Namespace::new("headers");
 const HEIGHTS: Namespace = Namespace::new("heights");
 
-declared! {
-    /// A header at its height, with the chain work through it and the
-    /// block's serialized size.
-    pub const HEADER: Layout = Layout::new(
-        "header",
-        2,
-        &[
-            Field::fixed("hash", 32),
-            Field::fixed("version", 4),
-            Field::fixed("prev_hash", 32),
-            Field::fixed("time", 4),
-            Field::fixed("merkle_root", 32),
-            Field::fixed("block_commitments", 32),
-            Field::fixed("bits", 4),
-            Field::fixed("nonce", 32),
-            Field::fixed("chainwork", 32),
-            Field::fixed("size", 4),
-            Field::var("solution"),
-        ],
-    );
-}
+/// A header at its height, with the chain work through it and the
+/// block's serialized size.
+pub const HEADER: Declared<Layout> = Layout::new(
+    "header",
+    2,
+    &[
+        Field::fixed("hash", 32),
+        Field::fixed("version", 4),
+        Field::fixed("prev_hash", 32),
+        Field::fixed("time", 4),
+        Field::fixed("merkle_root", 32),
+        Field::fixed("block_commitments", 32),
+        Field::fixed("bits", 4),
+        Field::fixed("nonce", 32),
+        Field::fixed("chainwork", 32),
+        Field::fixed("size", 4),
+        Field::var("solution"),
+    ],
+);
 const HASH: usize = 0;
 const VERSION: usize = 1;
 const PREV_HASH: usize = 2;
@@ -52,23 +50,17 @@ const NONCE: usize = 7;
 const CHAINWORK: usize = 8;
 const SIZE: usize = 9;
 const SOLUTION: usize = 10;
-declared! { const HASH_RANGE: Range<usize> = HEADER.fixed_range(HASH); }
-declared! { const CHAINWORK_RANGE: Range<usize> = HEADER.fixed_range(CHAINWORK); }
-declared! { const SIZE_RANGE: Range<usize> = HEADER.fixed_range(SIZE); }
+const HASH_RANGE: Declared<Range<usize>> = fixed_range(&HEADER, HASH);
+const CHAINWORK_RANGE: Declared<Range<usize>> = fixed_range(&HEADER, CHAINWORK);
+const SIZE_RANGE: Declared<Range<usize>> = fixed_range(&HEADER, SIZE);
 
-declared! {
-    /// A block hash as a map key.
-    pub const BLOCK_HASH: Layout = Layout::new("block_hash", 1, &[Field::fixed("hash", 32)]);
-}
-declared! {
-    /// A height as a map value.
-    pub const HEIGHT: Layout = Layout::new("height", 1, &[Field::fixed("height", 4)]);
-}
-declared! {
-    /// Unique: a block hash names one block.
-    const HEIGHTS_BY_HASH: NamespaceLayout =
-        NamespaceLayout::unique_map(HEIGHTS, &BLOCK_HASH, &HEIGHT);
-}
+/// A block hash as a map key.
+pub const BLOCK_HASH: Declared<Layout> = Layout::new("block_hash", 1, &[Field::fixed("hash", 32)]);
+/// A height as a map value.
+pub const HEIGHT: Declared<Layout> = Layout::new("height", 1, &[Field::fixed("height", 4)]);
+/// Unique: a block hash names one block.
+const HEIGHTS_BY_HASH: Declared<NamespaceLayout> =
+    NamespaceLayout::unique_map(HEIGHTS, &BLOCK_HASH, &HEIGHT);
 
 /// The schema: `headers` by height, `heights` by hash.
 pub const SCHEMA: Schema = Schema::new(
@@ -114,7 +106,7 @@ impl Index for Headers {
             Some(state) => state.chainwork.accumulate(work)?,
             None => AbsoluteChainWork::genesis(work),
         };
-        let record = HEADER.encode(&[
+        let record = HEADER?.encode(&[
             &<[u8; 32]>::from(header.hash),
             &header.version.to_le_bytes(),
             &<[u8; 32]>::from(header.prev_hash),
@@ -177,7 +169,7 @@ impl<'a, R: BackendReader> Reader<'a, R> {
     pub fn hash(&self, height: Height) -> Result<Option<BlockHash>, FoldError> {
         let Some(bytes) =
             self.backend
-                .get_bytes(HEADERS, &sequence_key(u64::from(height)), HASH_RANGE)?
+                .get_bytes(HEADERS, &sequence_key(u64::from(height)), HASH_RANGE?)?
         else {
             return Ok(None);
         };
@@ -188,7 +180,7 @@ impl<'a, R: BackendReader> Reader<'a, R> {
     pub fn chainwork(&self, height: Height) -> Result<Option<AbsoluteChainWork>, FoldError> {
         let Some(bytes) =
             self.backend
-                .get_bytes(HEADERS, &sequence_key(u64::from(height)), CHAINWORK_RANGE)?
+                .get_bytes(HEADERS, &sequence_key(u64::from(height)), CHAINWORK_RANGE?)?
         else {
             return Ok(None);
         };
@@ -201,7 +193,7 @@ impl<'a, R: BackendReader> Reader<'a, R> {
     pub fn size(&self, height: Height) -> Result<Option<u32>, FoldError> {
         let Some(bytes) =
             self.backend
-                .get_bytes(HEADERS, &sequence_key(u64::from(height)), SIZE_RANGE)?
+                .get_bytes(HEADERS, &sequence_key(u64::from(height)), SIZE_RANGE?)?
         else {
             return Ok(None);
         };
@@ -220,7 +212,8 @@ impl<'a, R: BackendReader> Reader<'a, R> {
 
 /// The header a stored record holds at `height`.
 fn decode_header(record: &[u8], height: Height) -> Result<BlockHeader, FoldError> {
-    let field = |index: usize| HEADER.field(record, index);
+    let layout = HEADER?;
+    let field = |index: usize| layout.field(record, index);
     let bits = le_u32(field(BITS)?, "bits")?;
     let solution = field(SOLUTION)?;
     let solution = match (
@@ -354,12 +347,25 @@ mod tests {
             0x31, 0x23, 0x75, 0x0f, 0xea, 0x77, 0x8e, 0xc1, 0x6b, 0x02, 0x8c, 0x17, 0x18, 0xe8,
             0x0f, 0x51, 0xf6, 0x7d,
         ];
+        let digest = SCHEMA.digest().expect("declared");
         assert_eq!(
-            SCHEMA.digest(),
+            digest,
             SchemaDigest::new(GOLDEN),
             "{:02x?}",
-            SCHEMA.digest().as_bytes()
+            digest.as_bytes()
         );
         assert_eq!(SCHEMA.dir_name(), "headers_2");
+    }
+
+    /// Every declaration is valid, the field ranges where the header puts
+    /// them.
+    #[test]
+    fn every_declaration_is_valid() {
+        assert_eq!(HASH_RANGE, Ok(0..32));
+        assert_eq!(CHAINWORK_RANGE, Ok(172..204));
+        assert_eq!(SIZE_RANGE, Ok(204..208));
+        assert_eq!(BLOCK_HASH.expect("declared").fixed_len(), 32);
+        assert_eq!(HEIGHT.expect("declared").fixed_len(), 4);
+        HEIGHTS_BY_HASH.expect("declared");
     }
 }

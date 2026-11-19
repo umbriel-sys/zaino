@@ -27,7 +27,7 @@ use zaino_primitives::types::{
 use crate::block::{FoldBlock, FoldTx};
 use crate::codec::{self, array, elements, le_u32, le_u64};
 use crate::index::{check_extends, Fold, FoldError, Index};
-use crate::layout::{declared, Field, Layout, LayoutError};
+use crate::layout::{Declared, Field, Layout, LayoutError};
 use crate::schema::{NamespaceLayout, Schema};
 
 /// The index's name: its directory and the name dependants use.
@@ -41,7 +41,6 @@ const ORCHARD_OUT: Namespace = Namespace::new("orchard_out");
 const IRONWOOD_NF: Namespace = Namespace::new("ironwood_nf");
 const IRONWOOD_OUT: Namespace = Namespace::new("ironwood_out");
 
-const NULLIFIER_BYTES: usize = 32;
 const OUTPUT_BYTES: usize = 32 + 32 + CompactCiphertext::LENGTH;
 /// Per transaction: four `u16` counts, then the `u64` fee.
 const TX_BYTES: usize = 16;
@@ -51,39 +50,32 @@ const CHUNK: NonZeroUsize = match NonZeroUsize::new(64 * 1024) {
     None => NonZeroUsize::MIN,
 };
 
-declared! {
-    /// Per height: column starts, transaction count, then per-tx layouts.
-    pub const BLOCK_LAYOUT: Layout = Layout::new(
-        "compact_layout",
-        1,
-        &[
-            Field::fixed("sapling_nf_start", 4),
-            Field::fixed("sapling_out_start", 4),
-            Field::fixed("orchard_start", 4),
-            Field::fixed("ironwood_start", 4),
-            Field::fixed("count", 4),
-            Field::var("txs"),
-        ],
-    );
-}
-declared! {
-    /// A nullifier.
-    pub const NULLIFIER: Layout = Layout::new("nullifier", 1, &[Field::fixed("nullifier", 32)]);
-}
-declared! {
-    /// A note's compact output: commitment, ephemeral key, ciphertext head.
-    pub const OUTPUT: Layout = Layout::new(
-        "compact_output",
-        1,
-        &[
-            Field::fixed("commitment", 32),
-            Field::fixed("ephemeral_key", 32),
-            Field::fixed("ciphertext", CompactCiphertext::LENGTH),
-        ],
-    );
-}
-const _: () = assert!(OUTPUT.fixed_len() == OUTPUT_BYTES);
-const _: () = assert!(NULLIFIER.fixed_len() == NULLIFIER_BYTES);
+/// Per height: column starts, transaction count, then per-tx layouts.
+pub const BLOCK_LAYOUT: Declared<Layout> = Layout::new(
+    "compact_layout",
+    1,
+    &[
+        Field::fixed("sapling_nf_start", 4),
+        Field::fixed("sapling_out_start", 4),
+        Field::fixed("orchard_start", 4),
+        Field::fixed("ironwood_start", 4),
+        Field::fixed("count", 4),
+        Field::var("txs"),
+    ],
+);
+/// A nullifier.
+pub const NULLIFIER: Declared<Layout> =
+    Layout::new("nullifier", 1, &[Field::fixed("nullifier", 32)]);
+/// A note's compact output: commitment, ephemeral key, ciphertext head.
+pub const OUTPUT: Declared<Layout> = Layout::new(
+    "compact_output",
+    1,
+    &[
+        Field::fixed("commitment", 32),
+        Field::fixed("ephemeral_key", 32),
+        Field::fixed("ciphertext", CompactCiphertext::LENGTH),
+    ],
+);
 const COUNT: usize = 4;
 const TXS: usize = 5;
 
@@ -245,7 +237,7 @@ impl Index for CompactBlock {
             txs.extend_from_slice(&tx_bytes(&layout));
         }
         let reference = block.reference();
-        let record = BLOCK_LAYOUT.encode(&[
+        let record = BLOCK_LAYOUT?.encode(&[
             &starts.sapling_spends.to_le_bytes(),
             &starts.sapling_outputs.to_le_bytes(),
             &starts.orchard_actions.to_le_bytes(),
@@ -546,7 +538,8 @@ fn output_bytes(
 fn output_parts(
     bytes: &[u8],
 ) -> Result<(NoteCommitment, EphemeralKey, CompactCiphertext), FoldError> {
-    let field = |index| OUTPUT.field(bytes, index);
+    let layout = OUTPUT?;
+    let field = |index| layout.field(bytes, index);
     Ok((
         NoteCommitment::from(array::<32>(field(0)?, "commitment")?),
         EphemeralKey::from(array::<32>(field(1)?, "ephemeral_key")?),
@@ -575,8 +568,9 @@ fn tx_bytes(tx: &TxLayout) -> [u8; TX_BYTES] {
 
 /// The layout a stored record holds.
 fn block_layout(record: &[u8]) -> Result<BlockLayout, FoldError> {
+    let layout = BLOCK_LAYOUT?;
     let start = |field: usize| -> Result<u32, FoldError> {
-        Ok(le_u32(BLOCK_LAYOUT.field(record, field)?, "start")?)
+        Ok(le_u32(layout.field(record, field)?, "start")?)
     };
     let starts = ColumnStarts {
         sapling_spends: start(0)?,
@@ -584,8 +578,8 @@ fn block_layout(record: &[u8]) -> Result<BlockLayout, FoldError> {
         orchard_actions: start(2)?,
         ironwood_actions: start(3)?,
     };
-    let count = le_u32(BLOCK_LAYOUT.field(record, COUNT)?, "count")?;
-    let txs = elements(NAME, count, BLOCK_LAYOUT.field(record, TXS)?, TX_BYTES)?
+    let count = le_u32(layout.field(record, COUNT)?, "count")?;
+    let txs = elements(NAME, count, layout.field(record, TXS)?, TX_BYTES)?
         .map(tx_layout)
         .collect::<Result<Vec<_>, _>>()?;
     Ok(BlockLayout { starts, txs })
@@ -881,12 +875,21 @@ mod tests {
             0xf4, 0x58, 0xfc, 0xb5, 0x85, 0x55, 0x80, 0x79, 0x5e, 0xa6, 0xf0, 0xa0, 0xf2, 0x1c,
             0x31, 0x82, 0x91, 0x1f,
         ];
+        let digest = SCHEMA.digest().expect("declared");
         assert_eq!(
-            SCHEMA.digest(),
+            digest,
             SchemaDigest::new(GOLDEN),
             "{:02x?}",
-            SCHEMA.digest().as_bytes()
+            digest.as_bytes()
         );
         assert_eq!(SCHEMA.dir_name(), "compact_block_1");
+    }
+
+    /// Every declaration is valid, at the element widths the columns use.
+    #[test]
+    fn every_declaration_is_valid() {
+        BLOCK_LAYOUT.expect("declared");
+        assert_eq!(NULLIFIER.expect("declared").fixed_len(), 32);
+        assert_eq!(OUTPUT.expect("declared").fixed_len(), OUTPUT_BYTES);
     }
 }

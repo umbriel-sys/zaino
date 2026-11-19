@@ -24,7 +24,7 @@ use crate::codec::{
     var_list, OUTPOINT_BYTES,
 };
 use crate::index::{check_extends, Fold, FoldError, Index};
-use crate::layout::{declared, Field, Layout, LayoutError};
+use crate::layout::{Declared, Field, Layout, LayoutError};
 use crate::schema::{NamespaceLayout, Schema};
 
 /// The index's name: its directory and the name dependants use.
@@ -40,37 +40,28 @@ const SPAN_BYTES: usize = 8;
 /// Bytes of an output's value, ahead of its script.
 const VALUE_BYTES: usize = 8;
 
-declared! {
-    /// Per transaction, cumulative input and output counts.
-    pub const LAYOUT: Layout = Layout::new(
-        "t_layout",
-        1,
-        &[Field::fixed("count", 4), Field::var("spans")],
-    );
-}
-declared! {
-    /// Every input's prevout, in block order.
-    pub const INPUTS: Layout = Layout::new(
-        "t_in",
-        1,
-        &[Field::fixed("count", 4), Field::var("prevouts")],
-    );
-}
-declared! {
-    /// Every output, in block order: offsets then (value, script) items.
-    pub const OUTPUTS: Layout = Layout::new(
-        "t_out",
-        1,
-        &[Field::fixed("count", 4), Field::var("outputs")],
-    );
-}
+/// Per transaction, cumulative input and output counts.
+pub const LAYOUT: Declared<Layout> = Layout::new(
+    "t_layout",
+    1,
+    &[Field::fixed("count", 4), Field::var("spans")],
+);
+/// Every input's prevout, in block order.
+pub const INPUTS: Declared<Layout> = Layout::new(
+    "t_in",
+    1,
+    &[Field::fixed("count", 4), Field::var("prevouts")],
+);
+/// Every output, in block order: offsets then (value, script) items.
+pub const OUTPUTS: Declared<Layout> = Layout::new(
+    "t_out",
+    1,
+    &[Field::fixed("count", 4), Field::var("outputs")],
+);
 const COUNT: usize = 0;
 const LIST: usize = 1;
 /// Where every column's list starts: after its 4-byte count.
 const LIST_START: usize = 4;
-const _: () = assert!(LAYOUT.fixed_len() == LIST_START);
-const _: () = assert!(INPUTS.fixed_len() == LIST_START);
-const _: () = assert!(OUTPUTS.fixed_len() == LIST_START);
 
 /// The schema: the three columns.
 pub const SCHEMA: Schema = Schema::new(
@@ -144,14 +135,17 @@ impl Index for Transparent {
         };
         Ok(Fold {
             ops: vec![
-                put(T_LAYOUT, LAYOUT.encode(&[&tx_count.to_le_bytes(), &spans])?),
+                put(
+                    T_LAYOUT,
+                    LAYOUT?.encode(&[&tx_count.to_le_bytes(), &spans])?,
+                ),
                 put(
                     T_IN,
-                    INPUTS.encode(&[&codec::count(inputs_through)?.to_le_bytes(), &prevouts])?,
+                    INPUTS?.encode(&[&codec::count(inputs_through)?.to_le_bytes(), &prevouts])?,
                 ),
                 put(
                     T_OUT,
-                    OUTPUTS.encode(&[
+                    OUTPUTS?.encode(&[
                         &codec::count(outputs_through)?.to_le_bytes(),
                         &var_list(&items)?,
                     ])?,
@@ -192,22 +186,22 @@ impl<'a, R: BackendReader> Reader<'a, R> {
         };
         let spans = elements(
             NAME,
-            record_count(&LAYOUT, &layout)?,
-            LAYOUT.field(&layout, LIST)?,
+            record_count(&LAYOUT?, &layout)?,
+            LAYOUT?.field(&layout, LIST)?,
             SPAN_BYTES,
         )?;
         let prevouts = elements(
             NAME,
-            record_count(&INPUTS, &inputs)?,
-            INPUTS.field(&inputs, LIST)?,
+            record_count(&INPUTS?, &inputs)?,
+            INPUTS?.field(&inputs, LIST)?,
             OUTPOINT_BYTES,
         )?
         .map(prevout)
         .collect::<Result<Vec<_>, _>>()?;
         let outputs = var_items(
             NAME,
-            record_count(&OUTPUTS, &outputs)?,
-            OUTPUTS.field(&outputs, LIST)?,
+            record_count(&OUTPUTS?, &outputs)?,
+            OUTPUTS?.field(&outputs, LIST)?,
         )?
         .into_iter()
         .map(output)
@@ -265,8 +259,8 @@ impl<'a, R: BackendReader> Reader<'a, R> {
             let items = self.backend.with_value(T_LAYOUT, &key, |layout| {
                 let spans: Vec<&[u8]> = elements(
                     NAME,
-                    record_count(&LAYOUT, layout)?,
-                    LAYOUT.field(layout, LIST)?,
+                    record_count(&LAYOUT?, layout)?,
+                    LAYOUT?.field(layout, LIST)?,
                     SPAN_BYTES,
                 )?
                 .collect();
@@ -304,8 +298,8 @@ impl<'a, R: BackendReader> Reader<'a, R> {
             let read = self.backend.with_value(T_OUT, &key, |record| {
                 let list = var_items(
                     NAME,
-                    record_count(&OUTPUTS, record)?,
-                    OUTPUTS.field(record, LIST)?,
+                    record_count(&OUTPUTS?, record)?,
+                    OUTPUTS?.field(record, LIST)?,
                 )?;
                 items
                     .iter()
@@ -343,7 +337,7 @@ impl<'a, R: BackendReader> Reader<'a, R> {
         vout: OutputIndex,
     ) -> Result<Option<TransparentOutput>, FoldError> {
         let key = key(position.height);
-        let Some(tx_count) = self.count(T_LAYOUT, &LAYOUT, &key)? else {
+        let Some(tx_count) = self.count(T_LAYOUT, &LAYOUT?, &key)? else {
             return Ok(None);
         };
         if position.tx_index >= tx_count {
@@ -351,7 +345,7 @@ impl<'a, R: BackendReader> Reader<'a, R> {
         }
         let tx_index = usize::try_from(position.tx_index).map_err(|_| LayoutError::Overflow)?;
         let first = tx_index.saturating_sub(1);
-        let wanted = LAYOUT.element_range(LIST, first, SPAN_BYTES)?;
+        let wanted = LAYOUT?.element_range(LIST, first, SPAN_BYTES)?;
         let range = match tx_index {
             0 => wanted,
             _ => wanted.start..wanted.end.saturating_add(SPAN_BYTES),
@@ -367,7 +361,7 @@ impl<'a, R: BackendReader> Reader<'a, R> {
         let Some(item) = before.checked_add(vout).filter(|item| *item < through) else {
             return Ok(None);
         };
-        let Some(output_count) = self.count(T_OUT, &OUTPUTS, &key)? else {
+        let Some(output_count) = self.count(T_OUT, &OUTPUTS?, &key)? else {
             return Err(FoldError::continuity(
                 NAME,
                 format!("outputs missing at {}", position.height),
@@ -583,12 +577,21 @@ mod tests {
             0xdc, 0x88, 0x2d, 0x13, 0x44, 0x07, 0x90, 0x0e, 0x67, 0x6a, 0x9f, 0x42, 0xdd, 0x29,
             0xa9, 0x49, 0x9d, 0x1a,
         ];
+        let digest = SCHEMA.digest().expect("declared");
         assert_eq!(
-            SCHEMA.digest(),
+            digest,
             SchemaDigest::new(GOLDEN),
             "{:02x?}",
-            SCHEMA.digest().as_bytes()
+            digest.as_bytes()
         );
         assert_eq!(SCHEMA.dir_name(), "transparent_1");
+    }
+
+    /// Every declaration is valid, each column's list after its count.
+    #[test]
+    fn every_declaration_is_valid() {
+        for layout in [LAYOUT, INPUTS, OUTPUTS] {
+            assert_eq!(layout.expect("declared").fixed_len(), LIST_START);
+        }
     }
 }

@@ -108,6 +108,63 @@ async fn the_lightclient_set_names_what_it_lacks() {
     service.shutdown().await.expect("stops");
 }
 
+/// The zcash RPC set answers its indexes locally and compact blocks from the
+/// validator; an empty set is a store that answers nothing itself.
+#[tokio::test]
+async fn the_zcash_rpc_and_empty_sets_serve_what_they_build() {
+    let fs = SimFs::new();
+    let service = Service::spawn(
+        Arc::new(chain()),
+        config(disk(&fs, NamedSet::ZcashRpc, Mode::Primary)),
+    )
+    .await
+    .expect("spawns");
+    let local = |capability| {
+        matches!(
+            service.manifest().get(chain_capability(capability)),
+            Provision::Local(Some(_))
+        )
+    };
+    assert!(
+        eventually(|| [
+            ChainCapability::TxOutSet,
+            ChainCapability::AddressHistory,
+            ChainCapability::SpendStatus,
+            ChainCapability::Treestate,
+        ]
+        .into_iter()
+        .all(local))
+        .await,
+        "{:?}",
+        service.manifest()
+    );
+    assert_eq!(
+        service
+            .manifest()
+            .get(chain_capability(ChainCapability::CompactBlocks)),
+        Provision::Validator
+    );
+    service.shutdown().await.expect("stops");
+
+    let fs = SimFs::new();
+    let empty = Service::spawn(
+        Arc::new(chain()),
+        config(disk(&fs, NamedSet::Empty, Mode::Primary)),
+    )
+    .await
+    .expect("spawns");
+    let manifest = empty.manifest();
+    assert_eq!(
+        manifest.get(chain_capability(ChainCapability::CompactBlocks)),
+        Provision::Validator
+    );
+    assert_eq!(
+        manifest.get(chain_capability(ChainCapability::TxOutSet)),
+        Provision::Unavailable(Some(IndexId::TxOutSet))
+    );
+    empty.shutdown().await.expect("stops");
+}
+
 /// A linked service reads the store another process builds, with its own
 /// head and mempool.
 #[tokio::test]

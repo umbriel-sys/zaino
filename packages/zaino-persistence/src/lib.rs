@@ -51,5 +51,4 @@ pub use verify::{NamespaceFootprint, Problem, Unit, Verification};
 )]
 pub mod conformance;
 #[cfg(feature = "testing")]
-#[allow(clippy::indexing_slicing, clippy::arithmetic_side_effects)]
 pub mod in_memory;

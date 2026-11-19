@@ -53,7 +53,10 @@ impl<I: Index> Folded<I> {
     /// Seeded at `root` with the index's state there: the root's view holds
     /// no rows.
     pub(crate) fn seeded(root: BlockRef, state: I::State) -> Result<Self, Failure> {
-        let specs: Arc<[NamespaceSpec]> = I::SCHEMA.specs().into();
+        let specs: Arc<[NamespaceSpec]> = I::SCHEMA
+            .specs()
+            .map_err(|error| Failure::of("schema", error))?
+            .into();
         let overlay =
             Overlay::new(&specs, Some(root)).map_err(|error| Failure::of("overlay", error))?;
         let mut views = HashMap::new();

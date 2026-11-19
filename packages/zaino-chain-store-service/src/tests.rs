@@ -286,7 +286,7 @@ fn foreign(storage: &InMemoryStorage, name: &str) {
         .open(
             &indexes_dir().join(name),
             identity,
-            &IndexId::Txids.schema().specs(),
+            &IndexId::Txids.schema().specs().expect("declared"),
         )
         .expect("created");
 }

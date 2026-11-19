@@ -221,6 +221,7 @@ mistakes its design is trying to prevent.
 - [`zaino-proto`](./packages/zaino-proto/usage.md): the light-wallet types, and the compact-block conversion and direct writer every serving crate shares.
 - [`zaino-chain`](./packages/zaino-chain/usage.md): ChainView's ports, how coverage decides which provider answers, and what a hole between the tiers degrades versus what it refuses.
 - [`zaino-service`](./packages/zaino-service/usage.md): the one configurable service, its store modes, and the manifest of who answers each capability.
+- [`zaino-state`](./packages/zaino-state/usage.md): the legacy indexer surface on the service, and its legacy vocabulary.
 - [`zaino-serve`](./packages/zaino-serve/usage.md): served RPCs.
 - [`zainod`](./packages/zainod/usage.md): the admin listener — what goes on `/metrics`, `/metrics` (quantities) vs `/readyz` (per-component health & modes).
 

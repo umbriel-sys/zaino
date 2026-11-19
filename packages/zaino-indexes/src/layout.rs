@@ -44,20 +44,17 @@ impl Field {
 /// Bytes of one end offset in a record's directory.
 const OFFSET: usize = 4;
 
-/// Declares a `const` from a fallible `const fn`: an invalid layout, range or
-/// namespace fails the build. It emits the item itself, so the check can only
-/// ever run at compile time.
-macro_rules! declared {
-    ($(#[$meta:meta])* $vis:vis const $name:ident: $ty:ty = $declaration:expr;) => {
-        $(#[$meta])*
-        $vis const $name: $ty = match $declaration {
-            Ok(declared) => declared,
-            #[allow(clippy::panic)]
-            Err(_) => panic!(concat!("invalid ", stringify!($name))),
-        };
-    };
+/// A declared layout: an invalid declaration is an error at each use, and
+/// each index tests its declarations (D6-15).
+pub type Declared<T> = Result<T, LayoutError>;
+
+/// A fixed field's bytes in a declared layout.
+pub const fn fixed_range(layout: &Declared<Layout>, field: usize) -> Declared<Range<usize>> {
+    match layout {
+        Ok(layout) => layout.fixed_range(field),
+        Err(error) => Err(*error),
+    }
 }
-pub(crate) use declared;
 
 /// A record type's layout, versioned.
 ///
@@ -386,7 +383,7 @@ impl Layout {
 
 /// A layout that cannot be declared, a record that does not fit its layout,
 /// or a field asked of the wrong kind.
-#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
 pub enum LayoutError {
     /// A layout with no fields.
     #[error("{layout}: no fields")]
@@ -488,59 +485,81 @@ pub enum LayoutError {
 mod tests {
     use super::*;
 
-    declared! {
-        const FIXED: Layout = Layout::new(
-            "fixed",
-            1,
-            &[Field::fixed("height", 4), Field::fixed("index", 2)],
-        );
+    const FIXED: Declared<Layout> = Layout::new(
+        "fixed",
+        1,
+        &[Field::fixed("height", 4), Field::fixed("index", 2)],
+    );
+    const TAIL: Declared<Layout> =
+        Layout::new("tail", 1, &[Field::fixed("count", 2), Field::var("bytes")]);
+    const TWO: Declared<Layout> = Layout::new(
+        "two",
+        1,
+        &[
+            Field::fixed("height", 4),
+            Field::var("script"),
+            Field::var("memo"),
+        ],
+    );
+
+    fn fixed() -> Layout {
+        FIXED.expect("declared")
     }
-    declared! {
-        const TAIL: Layout =
-            Layout::new("tail", 1, &[Field::fixed("count", 2), Field::var("bytes")]);
+
+    fn tail() -> Layout {
+        TAIL.expect("declared")
     }
-    declared! {
-        const TWO: Layout = Layout::new(
-            "two",
-            1,
-            &[Field::fixed("height", 4), Field::var("script"), Field::var("memo")],
-        );
+
+    fn two() -> Layout {
+        TWO.expect("declared")
     }
 
     /// Fixed offsets are constant and known without a record; the width a
     /// namespace declares follows the fields.
     #[test]
     fn fixed_fields_sit_at_constant_offsets() {
-        declared! { const INDEX: Range<usize> = FIXED.fixed_range(1); }
-        assert_eq!(FIXED.fixed_range(0), Ok(0..4));
-        assert_eq!(INDEX, 4..6);
-        assert_eq!(FIXED.width(), Width::Fixed(NonZeroU32::new(6).expect("6")));
-        assert_eq!(FIXED.directory_len(), 0);
-        assert_eq!(TAIL.width(), Width::Variable);
-        assert_eq!(TAIL.fixed_width(), None);
-        assert_eq!(TAIL.directory_len(), 0, "one variable field: no directory");
-        assert_eq!(TWO.directory_len(), 8);
-        assert_eq!(TWO.directory_range(), 4..12);
+        const INDEX: Declared<Range<usize>> = fixed_range(&FIXED, 1);
+        assert_eq!(fixed().fixed_range(0), Ok(0..4));
+        assert_eq!(INDEX, Ok(4..6));
         assert_eq!(
-            FIXED.fixed_range(2),
+            fixed_range(&Layout::new("empty", 1, &[]), 0),
+            Err(LayoutError::Empty { layout: "empty" }),
+            "an invalid declaration's range is its error"
+        );
+        assert_eq!(
+            fixed().width(),
+            Width::Fixed(NonZeroU32::new(6).expect("6"))
+        );
+        assert_eq!(fixed().directory_len(), 0);
+        assert_eq!(tail().width(), Width::Variable);
+        assert_eq!(tail().fixed_width(), None);
+        assert_eq!(
+            tail().directory_len(),
+            0,
+            "one variable field: no directory"
+        );
+        assert_eq!(two().directory_len(), 8);
+        assert_eq!(two().directory_range(), 4..12);
+        assert_eq!(
+            fixed().fixed_range(2),
             Err(LayoutError::NoSuchField { field: 2 })
         );
         assert_eq!(
-            TAIL.fixed_range(1),
+            tail().fixed_range(1),
             Err(LayoutError::NotFixed { field: "bytes" })
         );
-        assert_eq!(TAIL.element_range(1, 3, 32), Ok(98..130));
+        assert_eq!(tail().element_range(1, 3, 32), Ok(98..130));
         assert_eq!(
-            TWO.element_range(1, 0, 32),
+            two().element_range(1, 0, 32),
             Err(LayoutError::NotTrailing { field: "script" })
         );
         assert_eq!(
-            TAIL.element_range(1, usize::MAX, 32),
+            tail().element_range(1, usize::MAX, 32),
             Err(LayoutError::Overflow)
         );
     }
 
-    /// What `declared!` refuses at compile time, `new` reports by name.
+    /// An invalid declaration is reported by name.
     #[test]
     fn invalid_declarations_are_refused() {
         const ZERO: &[Field] = &[Field::fixed("nothing", 0)];
@@ -565,30 +584,32 @@ mod tests {
     /// the directory where there is one.
     #[test]
     fn fields_round_trip_through_encode() {
-        let fixed = FIXED
+        let fixed_record = fixed()
             .encode(&[&[1, 2, 3, 4], &[5, 6]])
             .expect("widths match");
-        assert_eq!(fixed, [1, 2, 3, 4, 5, 6]);
-        assert_eq!(FIXED.field(&fixed, 1).expect("index"), &[5, 6]);
+        assert_eq!(fixed_record, [1, 2, 3, 4, 5, 6]);
+        assert_eq!(fixed().field(&fixed_record, 1).expect("index"), &[5, 6]);
 
-        let tail = TAIL.encode(&[&[0, 1], b"hello"]).expect("encodes");
-        assert_eq!(tail, [0, 1, b'h', b'e', b'l', b'l', b'o']);
-        assert_eq!(TAIL.field(&tail, 1).expect("bytes"), b"hello");
-        let empty = TAIL.encode(&[&[0, 1], &[]]).expect("encodes");
-        assert!(TAIL.field(&empty, 1).expect("bytes").is_empty());
+        let tail_record = tail().encode(&[&[0, 1], b"hello"]).expect("encodes");
+        assert_eq!(tail_record, [0, 1, b'h', b'e', b'l', b'l', b'o']);
+        assert_eq!(tail().field(&tail_record, 1).expect("bytes"), b"hello");
+        let empty = tail().encode(&[&[0, 1], &[]]).expect("encodes");
+        assert!(tail().field(&empty, 1).expect("bytes").is_empty());
 
-        let two = TWO.encode(&[&[9; 4], b"abc", b""]).expect("encodes");
+        let two_record = two().encode(&[&[9; 4], b"abc", b""]).expect("encodes");
         let mut expected = vec![9; 4];
         expected.extend_from_slice(&15u32.to_le_bytes());
         expected.extend_from_slice(&15u32.to_le_bytes());
         expected.extend_from_slice(b"abc");
-        assert_eq!(two, expected);
-        assert_eq!(TWO.field(&two, 0).expect("height"), &[9; 4]);
-        assert_eq!(TWO.field(&two, 1).expect("script"), b"abc");
-        assert_eq!(TWO.field(&two, 2).expect("memo"), b"");
-        let directory = &two[TWO.directory_range()];
+        assert_eq!(two_record, expected);
+        assert_eq!(two().field(&two_record, 0).expect("height"), &[9; 4]);
+        assert_eq!(two().field(&two_record, 1).expect("script"), b"abc");
+        assert_eq!(two().field(&two_record, 2).expect("memo"), b"");
+        let directory = &two_record[two().directory_range()];
         assert_eq!(
-            TWO.var_range(2, directory, two.len()).expect("memo"),
+            two()
+                .var_range(2, directory, two_record.len())
+                .expect("memo"),
             15..15
         );
     }
@@ -598,7 +619,7 @@ mod tests {
     #[test]
     fn misfits_are_refused_by_name() {
         assert_eq!(
-            FIXED.encode(&[&[1, 2, 3], &[5, 6]]),
+            fixed().encode(&[&[1, 2, 3], &[5, 6]]),
             Err(LayoutError::FieldWidth {
                 field: "height",
                 expected: 4,
@@ -606,14 +627,14 @@ mod tests {
             })
         );
         assert_eq!(
-            FIXED.encode(&[&[1, 2, 3, 4]]),
+            fixed().encode(&[&[1, 2, 3, 4]]),
             Err(LayoutError::FieldCount {
                 expected: 2,
                 actual: 1
             })
         );
         assert_eq!(
-            FIXED.field(&[1, 2, 3, 4, 5], 1),
+            fixed().field(&[1, 2, 3, 4, 5], 1),
             Err(LayoutError::Truncated {
                 field: "index",
                 needed: 6,
@@ -621,34 +642,34 @@ mod tests {
             })
         );
         assert_eq!(
-            TWO.field(&[9; 6], 1),
+            two().field(&[9; 6], 1),
             Err(LayoutError::Truncated {
                 field: "script",
                 needed: 12,
                 len: 6
             })
         );
-        let mut backwards = TWO.encode(&[&[9; 4], b"abc", b"d"]).expect("encodes");
+        let mut backwards = two().encode(&[&[9; 4], b"abc", b"d"]).expect("encodes");
         assert_eq!(backwards.len(), 16);
         backwards[4..8].copy_from_slice(&17u32.to_le_bytes());
         assert_eq!(
-            TWO.field(&backwards, 2),
+            two().field(&backwards, 2),
             Err(LayoutError::Directory { field: "memo" }),
             "script's end past memo's"
         );
-        let mut past = TWO.encode(&[&[9; 4], b"abc", b"d"]).expect("encodes");
+        let mut past = two().encode(&[&[9; 4], b"abc", b"d"]).expect("encodes");
         past[8..12].copy_from_slice(&17u32.to_le_bytes());
         assert_eq!(
-            TWO.field(&past, 2),
+            two().field(&past, 2),
             Err(LayoutError::Directory { field: "memo" }),
             "memo's end past the record"
         );
         assert_eq!(
-            TWO.var_range(0, &[], 4),
+            two().var_range(0, &[], 4),
             Err(LayoutError::NotVariable { field: "height" })
         );
         assert_eq!(
-            FIXED.field(&[0; 6], 2),
+            fixed().field(&[0; 6], 2),
             Err(LayoutError::NoSuchField { field: 2 })
         );
     }

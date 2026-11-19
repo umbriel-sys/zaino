@@ -25,7 +25,7 @@ use zaino_primitives::types::{
 use crate::block::FoldBlock;
 use crate::codec::{self, le_u64, POSITION_BYTES};
 use crate::index::{check_extends, Fold, FoldError, Index};
-use crate::layout::{declared, Field, Layout, LayoutError};
+use crate::layout::{Declared, Field, Layout, LayoutError};
 use crate::schema::{NamespaceLayout, Schema};
 
 /// The index's name: its directory and the name dependants use.
@@ -33,33 +33,28 @@ pub const NAME: &str = "address_history";
 
 const EVENTS: Namespace = Namespace::new("address_history");
 
-declared! {
-    /// An event's key.
-    pub const EVENT_KEY: Layout = Layout::new(
-        "address_event_key",
-        1,
-        &[
-            Field::fixed("address_hash", 20),
-            Field::fixed("script_type", 1),
-            Field::fixed("height", 4),
-            Field::fixed("tx_index", 2),
-            Field::fixed("io_index", 4),
-            Field::fixed("kind", 1),
-        ],
-    );
-}
-declared! {
-    /// An event's amount, `u64` little-endian.
-    pub const EVENT_VALUE: Layout = Layout::new("address_event_value", 1, &[Field::fixed("value", 8)]);
-}
-declared! {
-    /// Unique: the key carries the event's height, transaction, io index and kind.
-    const BY_ADDRESS: NamespaceLayout = NamespaceLayout::unique_map(EVENTS, &EVENT_KEY, &EVENT_VALUE);
-}
+/// An event's key.
+pub const EVENT_KEY: Declared<Layout> = Layout::new(
+    "address_event_key",
+    1,
+    &[
+        Field::fixed("address_hash", 20),
+        Field::fixed("script_type", 1),
+        Field::fixed("height", 4),
+        Field::fixed("tx_index", 2),
+        Field::fixed("io_index", 4),
+        Field::fixed("kind", 1),
+    ],
+);
+/// An event's amount, `u64` little-endian.
+pub const EVENT_VALUE: Declared<Layout> =
+    Layout::new("address_event_value", 1, &[Field::fixed("value", 8)]);
+/// Unique: the key carries the event's height, transaction, io index and kind.
+const BY_ADDRESS: Declared<NamespaceLayout> =
+    NamespaceLayout::unique_map(EVENTS, &EVENT_KEY, &EVENT_VALUE);
 /// Bytes naming an address: hash then script type.
 const ADDRESS_BYTES: usize = 21;
 const KEY_BYTES: usize = 32;
-const _: () = assert!(EVENT_KEY.fixed_len() == KEY_BYTES);
 
 /// The schema: one map of events.
 pub const SCHEMA: Schema = Schema::new(NAME, 1, &[BY_ADDRESS]);
@@ -379,12 +374,21 @@ mod tests {
             0x91, 0x0e, 0xca, 0xbf, 0x75, 0x09, 0x2c, 0x51, 0x20, 0x12, 0x8f, 0x36, 0x05, 0x28,
             0x30, 0x78, 0xc1, 0x32,
         ];
+        let digest = SCHEMA.digest().expect("declared");
         assert_eq!(
-            SCHEMA.digest(),
+            digest,
             SchemaDigest::new(GOLDEN),
             "{:02x?}",
-            SCHEMA.digest().as_bytes()
+            digest.as_bytes()
         );
         assert_eq!(SCHEMA.dir_name(), "address_history_1");
+    }
+
+    /// Every declaration is valid, the key at the width `event_key` writes.
+    #[test]
+    fn every_declaration_is_valid() {
+        assert_eq!(EVENT_KEY.expect("declared").fixed_len(), KEY_BYTES);
+        assert_eq!(EVENT_VALUE.expect("declared").fixed_len(), 8);
+        BY_ADDRESS.expect("declared");
     }
 }

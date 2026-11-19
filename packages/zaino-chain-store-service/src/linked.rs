@@ -21,8 +21,8 @@ use crate::reader::StoreReader;
 use crate::record::{status_of, PrimaryRecord, PrimaryState, RecordError};
 use crate::set::{IndexSet, SetError};
 use crate::store::{
-    capabilities_of, holding_of, identity, parent_of, parents, serviceability_of, watermark_of,
-    Serviceability,
+    capabilities_of, holding_of, identity, parent_of, parents, serviceability_of, specs,
+    watermark_of, Serviceability,
 };
 
 /// The store's primary, as a linked reader last saw it.
@@ -99,8 +99,8 @@ impl<St: Storage> LinkedChainStore<St> {
         let mut indexes = Vec::new();
         for id in set.build_order() {
             let dir = parent_of(&parents, id).join(id.schema().dir_name());
-            let backend = storage
-                .open_read_only(&dir, identity(id, network), &id.schema().specs())
+            let backend = identity(id, network)
+                .and_then(|identity| storage.open_read_only(&dir, identity, &specs(id)?))
                 .map_err(|source| LinkedError::Storage {
                     index: id.name(),
                     source,

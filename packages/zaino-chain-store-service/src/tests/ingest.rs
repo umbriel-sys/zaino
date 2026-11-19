@@ -20,7 +20,7 @@ use super::{boot, chain, config, height, indexes_dir, schedule, tip_of};
 use crate::assemble::assemble;
 use crate::config::{ChainStoreServiceConfig, IngestConfig};
 use crate::set::NamedSet;
-use crate::store::identity;
+use crate::store::{identity, specs};
 
 /// Every namespace of every index: key → value.
 pub(super) type Contents = BTreeMap<(IndexId, &'static str), Vec<(RawKey, RawValue)>>;
@@ -52,7 +52,8 @@ pub(super) async fn oracle(chain: &MockChain, ids: &[IndexId], tip: Height) -> C
     let mut indexes: Vec<_> = ids
         .iter()
         .map(|id| {
-            let backend = InMemoryBackend::new(&id.schema().specs()).expect("specs");
+            let specs = id.schema().specs().expect("declared");
+            let backend = InMemoryBackend::new(&specs).expect("specs");
             (*id, backend, None)
         })
         .collect();
@@ -110,6 +111,7 @@ where
     let reader = backend.reader().expect("reader");
     id.schema()
         .specs()
+        .expect("declared")
         .iter()
         .map(|spec| {
             let rows = reader.scan(spec.namespace).expect("scanned");
@@ -127,7 +129,11 @@ where
         .flat_map(|id| {
             let dir = indexes_dir().join(id.schema().dir_name());
             let backend = storage
-                .open(&dir, identity(*id, "regtest"), &id.schema().specs())
+                .open(
+                    &dir,
+                    identity(*id, "regtest").expect("declared"),
+                    &specs(*id).expect("declared"),
+                )
                 .expect("the store's own directory");
             contents(*id, &backend)
         })

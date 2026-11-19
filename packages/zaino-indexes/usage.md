@@ -16,20 +16,18 @@ field, placed right after the fixed section. A field is therefore always one
 slice, with no decoding of its neighbours, and no CompactSize prefixes.
 
 ```rust
-use zaino_indexes::{Field, Layout, LayoutError};
+use zaino_indexes::{Declared, Field, Layout, LayoutError};
 
-const EVENT: Layout = match Layout::new(
+const EVENT: Declared<Layout> = Layout::new(
     "address_event",
     1,
     &[Field::fixed("value", 8), Field::fixed("kind", 1)],
-) {
-    Ok(layout) => layout,
-    Err(_) => panic!("invalid layout"), // const: a build error, never at runtime
-};
+);
 const VALUE: usize = 0;
-let range = EVENT.fixed_range(VALUE)?;        // 0..8
-let record = EVENT.encode(&[&[0; 8], &[1]])?; // widths checked
-let value = EVENT.field(&record, VALUE)?;     // one slice
+let event = EVENT?;                           // an invalid declaration is an error here
+let range = event.fixed_range(VALUE)?;        // 0..8
+let record = event.encode(&[&[0; 8], &[1]])?; // widths checked
+let value = event.field(&record, VALUE)?;     // one slice
 # Ok::<(), LayoutError>(())
 ```
 
@@ -40,9 +38,13 @@ is a `LayoutError` naming the field, never a slice of a neighbour.
 `Layout::new`, `fixed_range` and `NamespaceLayout::map` are fallible
 `const fn`s: an empty layout, a zero-width fixed field, a fixed field after
 a variable one, a section past `u32`, or a map over a variable-width layout
-is a `LayoutError`. Declared as consts (inside the crate through
-`declared!`, which emits the const item) a mistake fails the build, and no
-runtime path panics. `version` is bumped with any change to the fields and
+is a `LayoutError`. Declarations are `Declared<T>` consts (`Result<T,
+LayoutError>`), composed in const context (`NamespaceLayout` takes
+`&Declared<Layout>`, `fixed_range(&LAYOUT, field)` a declared layout's
+range) and applied with `?` where used, so a mistake is a typed error at use,
+never a panic. Each index has a test that every declaration is valid, and
+`Schema::specs` and `Schema::digest` return the first invalid one. `version`
+is bumped with any change to the fields and
 old layouts stay in the code as consts, so a future in-place migration is
 "slice by V1, encode by V2".
 

@@ -166,8 +166,8 @@ impl Backend for InMemoryBackend {
 fn held_bytes(held: &Held) -> u64 {
     held.entries
         .iter()
-        .map(|(k, v)| (k.len() + v.len()) as u64)
-        .sum()
+        .map(|(k, v)| (k.len() as u64).saturating_add(v.len() as u64))
+        .fold(0, u64::saturating_add)
 }
 
 /// Read handle for the in-memory backend: the state when it was opened.

@@ -158,7 +158,7 @@ fn fold_from<I: Index>(
     state: Option<I::State>,
     blocks: &[FoldBlock],
 ) -> (InMemoryBackend, Option<I::State>) {
-    let backend = InMemoryBackend::new(&I::SCHEMA.specs()).expect("specs");
+    let backend = InMemoryBackend::new(&I::SCHEMA.specs().expect("declared")).expect("specs");
     let mut state = state;
     for block in blocks {
         let fold = I::fold(state.as_ref(), block).expect("folds");
@@ -593,7 +593,10 @@ fn assert_views_are_folds(
             Some(txid_location::State { tip: root }),
             from_root,
         );
-        for spec in txid_location::TxidLocation::SCHEMA.specs() {
+        for spec in txid_location::TxidLocation::SCHEMA
+            .specs()
+            .expect("declared")
+        {
             assert_eq!(
                 rows(&locations.overlay, spec.namespace),
                 rows(&expected.reader().expect("reader"), spec.namespace),
@@ -603,7 +606,7 @@ fn assert_views_are_folds(
         }
         let spenders = transactions.spent.view(&block.hash()).expect("a view");
         let (expected, _) = fold_from::<spent::Spent>(Some(spent::State { tip: root }), from_root);
-        for spec in spent::Spent::SCHEMA.specs() {
+        for spec in spent::Spent::SCHEMA.specs().expect("declared") {
             assert_eq!(
                 rows(&spenders.overlay, spec.namespace),
                 rows(&expected.reader().expect("reader"), spec.namespace),
@@ -616,7 +619,10 @@ fn assert_views_are_folds(
             Some(address_history::State { tip: root }),
             from_root,
         );
-        for spec in address_history::AddressHistory::SCHEMA.specs() {
+        for spec in address_history::AddressHistory::SCHEMA
+            .specs()
+            .expect("declared")
+        {
             assert_eq!(
                 rows(&events.overlay, spec.namespace),
                 rows(&expected.reader().expect("reader"), spec.namespace),

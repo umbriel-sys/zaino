@@ -616,19 +616,14 @@ impl<
 /// the `Direct` connection owns a `ReadStateService` that the generic source
 /// abstraction does not expose.
 impl NodeBackedIndexerServiceSubscriber<ZebraValidatorSource> {
-    /// The backing Zebra [`zebra_state::ReadStateService`] (`Direct` connection only).
+    /// The backing Zebra [`zebra_state::ReadStateService`]; `None` over an RPC
+    /// connection.
     ///
     /// Test-only escape hatch: live tests recompute expected chain data directly off the
     /// `ReadStateService`. Production code goes through the `ChainIndex` API.
     #[cfg(feature = "test_dependencies")]
-    // test support (feature `test_dependencies`, never in production builds)
-    #[allow(clippy::expect_used)]
-    pub fn read_state_service(&self) -> zebra_state::ReadStateService {
-        self.indexer
-            .source()
-            .read_state_service()
-            .expect("read_state_service requires the Direct connection")
-            .clone()
+    pub fn read_state_service(&self) -> Option<zebra_state::ReadStateService> {
+        self.indexer.source().read_state_service().cloned()
     }
 
     /// The indexer's mempool subscriber.

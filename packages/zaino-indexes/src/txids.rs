@@ -12,7 +12,7 @@ use zaino_primitives::types::{Height, TransactionId};
 use crate::block::FoldBlock;
 use crate::codec::{self, elements, le_u32, txid};
 use crate::index::{check_extends, Fold, FoldError, Index};
-use crate::layout::{declared, Field, Layout, LayoutError};
+use crate::layout::{fixed_range, Declared, Field, Layout, LayoutError};
 use crate::schema::{NamespaceLayout, Schema};
 
 /// The index's name: its directory and the name dependants use.
@@ -21,17 +21,15 @@ pub const NAME: &str = "txids";
 const TXIDS: Namespace = Namespace::new("txids");
 const TXID_BYTES: usize = 32;
 
-declared! {
-    /// A block's transaction count, then its txids at a 32-byte stride.
-    pub const BLOCK_TXIDS: Layout = Layout::new(
-        "block_txids",
-        1,
-        &[Field::fixed("count", 4), Field::var("txids")],
-    );
-}
+/// A block's transaction count, then its txids at a 32-byte stride.
+pub const BLOCK_TXIDS: Declared<Layout> = Layout::new(
+    "block_txids",
+    1,
+    &[Field::fixed("count", 4), Field::var("txids")],
+);
 const COUNT: usize = 0;
 const LIST: usize = 1;
-declared! { const COUNT_RANGE: Range<usize> = BLOCK_TXIDS.fixed_range(COUNT); }
+const COUNT_RANGE: Declared<Range<usize>> = fixed_range(&BLOCK_TXIDS, COUNT);
 
 /// The schema: one record per height.
 pub const SCHEMA: Schema = Schema::new(NAME, 1, &[NamespaceLayout::sequence(TXIDS, &BLOCK_TXIDS)]);
@@ -70,7 +68,7 @@ impl Index for Txids {
             .iter()
             .flat_map(|tx| <[u8; TXID_BYTES]>::from(tx.compact().txid))
             .collect::<Vec<u8>>();
-        let record = BLOCK_TXIDS.encode(&[&count.to_le_bytes(), &list])?;
+        let record = BLOCK_TXIDS?.encode(&[&count.to_le_bytes(), &list])?;
         let reference = block.reference();
         Ok(Fold {
             ops: vec![WriteOp::Put {
@@ -104,7 +102,7 @@ impl<'a, R: BackendReader> Reader<'a, R> {
 
     /// How many transactions the block at `height` holds.
     pub fn tx_count(&self, height: Height) -> Result<Option<u32>, FoldError> {
-        let Some(bytes) = self.backend.get_bytes(TXIDS, &key(height), COUNT_RANGE)? else {
+        let Some(bytes) = self.backend.get_bytes(TXIDS, &key(height), COUNT_RANGE?)? else {
             return Ok(None);
         };
         Ok(Some(le_u32(&bytes, "count")?))
@@ -117,7 +115,7 @@ impl<'a, R: BackendReader> Reader<'a, R> {
             _ => return Ok(None),
         }
         let index = usize::try_from(index).map_err(|_| LayoutError::Overflow)?;
-        let range = BLOCK_TXIDS.element_range(LIST, index, TXID_BYTES)?;
+        let range = BLOCK_TXIDS?.element_range(LIST, index, TXID_BYTES)?;
         let Some(bytes) = self.backend.get_bytes(TXIDS, &key(height), range)? else {
             return Ok(None);
         };
@@ -131,8 +129,9 @@ fn key(height: Height) -> Vec<u8> {
 
 /// The txids a stored record holds.
 fn decode_txids(record: &[u8]) -> Result<Vec<TransactionId>, FoldError> {
-    let count = le_u32(BLOCK_TXIDS.field(record, COUNT)?, "count")?;
-    elements(NAME, count, BLOCK_TXIDS.field(record, LIST)?, TXID_BYTES)?
+    let layout = BLOCK_TXIDS?;
+    let count = le_u32(layout.field(record, COUNT)?, "count")?;
+    elements(NAME, count, layout.field(record, LIST)?, TXID_BYTES)?
         .map(|bytes| txid(bytes).map_err(FoldError::from))
         .collect()
 }
@@ -206,12 +205,20 @@ mod tests {
             0xe2, 0xa8, 0xb3, 0x62, 0x38, 0x02, 0x43, 0x34, 0x10, 0xf1, 0xba, 0x5f, 0x44, 0x73,
             0x76, 0x28, 0x71, 0x41,
         ];
+        let digest = SCHEMA.digest().expect("declared");
         assert_eq!(
-            SCHEMA.digest(),
+            digest,
             SchemaDigest::new(GOLDEN),
             "{:02x?}",
-            SCHEMA.digest().as_bytes()
+            digest.as_bytes()
         );
         assert_eq!(SCHEMA.dir_name(), "txids_1");
+    }
+
+    /// Every declaration is valid, the count ahead of the list.
+    #[test]
+    fn every_declaration_is_valid() {
+        BLOCK_TXIDS.expect("declared");
+        assert_eq!(COUNT_RANGE, Ok(0..4));
     }
 }

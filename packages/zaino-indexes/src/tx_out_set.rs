@@ -21,7 +21,7 @@ use zaino_primitives::types::{BlockRef, Height, Outpoint, TransactionId};
 use crate::block::{is_genesis, FoldBlock};
 use crate::codec::{self, array, le_u64};
 use crate::index::{check_extends, Fold, FoldError, Index};
-use crate::layout::{declared, Field, Layout};
+use crate::layout::{Declared, Field, Layout};
 use crate::schema::{NamespaceLayout, Schema};
 
 /// The index's name: its directory and the name dependants use.
@@ -30,39 +30,30 @@ pub const NAME: &str = "tx_out_set";
 const ACCUMULATOR: Namespace = Namespace::new("accumulator");
 const REMAINING: Namespace = Namespace::new("remaining");
 
-declared! {
-    /// The accumulator after a height: transactions, outputs, bytes, total
-    /// (`u64` little-endian each), then the commitment.
-    pub const TOTALS: Layout = Layout::new(
-        "tx_out_set_totals",
-        1,
-        &[
-            Field::fixed("transactions", 8),
-            Field::fixed("outputs", 8),
-            Field::fixed("bytes", 8),
-            Field::fixed("total", 8),
-            Field::fixed("hash", 32),
-        ],
-    );
-}
-declared! {
-    /// A transaction's remaining counted outputs: txid, count big-endian.
-    pub const REMAINING_KEY: Layout = Layout::new(
-        "tx_remaining",
-        1,
-        &[Field::fixed("txid", 32), Field::fixed("remaining", 4)],
-    );
-}
-declared! {
-    /// The row's (empty) value.
-    pub const PRESENT: Layout = Layout::new("present", 1, &[Field::fixed("present", 1)]);
-}
-declared! {
-    const REMAINING_ROWS: NamespaceLayout =
-        NamespaceLayout::map(REMAINING, &REMAINING_KEY, &PRESENT, true);
-}
+/// The accumulator after a height: transactions, outputs, bytes, total
+/// (`u64` little-endian each), then the commitment.
+pub const TOTALS: Declared<Layout> = Layout::new(
+    "tx_out_set_totals",
+    1,
+    &[
+        Field::fixed("transactions", 8),
+        Field::fixed("outputs", 8),
+        Field::fixed("bytes", 8),
+        Field::fixed("total", 8),
+        Field::fixed("hash", 32),
+    ],
+);
+/// A transaction's remaining counted outputs: txid, count big-endian.
+pub const REMAINING_KEY: Declared<Layout> = Layout::new(
+    "tx_remaining",
+    1,
+    &[Field::fixed("txid", 32), Field::fixed("remaining", 4)],
+);
+/// The row's (empty) value.
+pub const PRESENT: Declared<Layout> = Layout::new("present", 1, &[Field::fixed("present", 1)]);
+const REMAINING_ROWS: Declared<NamespaceLayout> =
+    NamespaceLayout::map(REMAINING, &REMAINING_KEY, &PRESENT, true);
 const KEY_BYTES: usize = 36;
-const _: () = assert!(REMAINING_KEY.fixed_len() == KEY_BYTES);
 /// Bytes a resume scan visits per chunk.
 const CHUNK: NonZeroUsize = match NonZeroUsize::new(1 << 20) {
     Some(chunk) => chunk,
@@ -259,7 +250,7 @@ impl Index for TxOutSet {
         ops.push(WriteOp::Put {
             namespace: ACCUMULATOR,
             key: sequence_key(u64::from(reference.height)),
-            value: TOTALS.encode(&[
+            value: TOTALS?.encode(&[
                 &accumulator.transactions.to_le_bytes(),
                 &accumulator.transaction_outputs.to_le_bytes(),
                 &accumulator.bytes_serialized.to_le_bytes(),
@@ -298,7 +289,8 @@ impl<'a, R: BackendReader> Reader<'a, R> {
         else {
             return Ok(None);
         };
-        let field = |index| TOTALS.field(&record, index);
+        let layout = TOTALS?;
+        let field = |index| layout.field(&record, index);
         Ok(Some(TxOutSetAccumulator {
             transactions: le_u64(field(0)?, "transactions")?,
             transaction_outputs: le_u64(field(1)?, "outputs")?,
@@ -593,12 +585,22 @@ mod tests {
             0xd9, 0x81, 0x86, 0x83, 0x19, 0xad, 0x10, 0xb3, 0x59, 0x5f, 0x90, 0x25, 0x2b, 0x00,
             0xf3, 0x9f, 0x86, 0x36,
         ];
+        let digest = SCHEMA.digest().expect("declared");
         assert_eq!(
-            SCHEMA.digest(),
+            digest,
             SchemaDigest::new(GOLDEN),
             "{:02x?}",
-            SCHEMA.digest().as_bytes()
+            digest.as_bytes()
         );
         assert_eq!(SCHEMA.dir_name(), "tx_out_set_1");
+    }
+
+    /// Every declaration is valid, the key at the width `key` writes.
+    #[test]
+    fn every_declaration_is_valid() {
+        assert_eq!(TOTALS.expect("declared").fixed_len(), 64);
+        assert_eq!(REMAINING_KEY.expect("declared").fixed_len(), KEY_BYTES);
+        assert_eq!(PRESENT.expect("declared").fixed_len(), 1);
+        REMAINING_ROWS.expect("declared");
     }
 }

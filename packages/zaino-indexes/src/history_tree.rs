@@ -25,7 +25,7 @@ use zcash_history::{Entry, EntryLink, NodeData, NodeDataV2, NodeDataV3, Tree, Ve
 use crate::block::{pool_root, FoldBlock};
 use crate::codec::{le_u32, le_u64};
 use crate::index::{check_extends, Fold, FoldError, Index};
-use crate::layout::{declared, Field, Layout, LayoutError};
+use crate::layout::{fixed_range, Declared, Field, Layout, LayoutError};
 use crate::schema::{NamespaceLayout, Schema};
 
 /// The index's name: its directory and the name dependants use.
@@ -34,26 +34,22 @@ pub const NAME: &str = "history_tree";
 const NODES: Namespace = Namespace::new("nodes");
 const HEIGHTS: Namespace = Namespace::new("heights");
 
-declared! {
-    /// One MMR entry, as `zcash_history` writes it.
-    pub const ENTRY: Layout = Layout::new("history_entry", 1, &[Field::var("entry")]);
-}
-declared! {
-    /// Per height: branch id (0 before Overwinter), epoch start in `nodes`,
-    /// epoch length after the block (0 without a history tree).
-    pub const HEIGHT_RECORD: Layout = Layout::new(
-        "history_height",
-        1,
-        &[
-            Field::fixed("branch", 4),
-            Field::fixed("epoch_start", 8),
-            Field::fixed("length", 4),
-        ],
-    );
-}
-declared! { const BRANCH: Range<usize> = HEIGHT_RECORD.fixed_range(0); }
-declared! { const START: Range<usize> = HEIGHT_RECORD.fixed_range(1); }
-declared! { const LENGTH: Range<usize> = HEIGHT_RECORD.fixed_range(2); }
+/// One MMR entry, as `zcash_history` writes it.
+pub const ENTRY: Declared<Layout> = Layout::new("history_entry", 1, &[Field::var("entry")]);
+/// Per height: branch id (0 before Overwinter), epoch start in `nodes`,
+/// epoch length after the block (0 without a history tree).
+pub const HEIGHT_RECORD: Declared<Layout> = Layout::new(
+    "history_height",
+    1,
+    &[
+        Field::fixed("branch", 4),
+        Field::fixed("epoch_start", 8),
+        Field::fixed("length", 4),
+    ],
+);
+const BRANCH: Declared<Range<usize>> = fixed_range(&HEIGHT_RECORD, 0);
+const START: Declared<Range<usize>> = fixed_range(&HEIGHT_RECORD, 1);
+const LENGTH: Declared<Range<usize>> = fixed_range(&HEIGHT_RECORD, 2);
 
 /// The schema: the node sequence and the per-height record.
 pub const SCHEMA: Schema = Schema::new(
@@ -215,7 +211,7 @@ impl Index for HistoryTree {
         let (start, length) = epoch
             .as_ref()
             .map_or((0, 0), |epoch| (epoch.start, epoch.length));
-        let record = HEIGHT_RECORD.encode(&[
+        let record = HEIGHT_RECORD?.encode(&[
             &branch.unwrap_or(0).to_le_bytes(),
             &start.to_le_bytes(),
             &length.to_le_bytes(),
@@ -483,7 +479,7 @@ impl<'a, R: BackendReader> Reader<'a, R> {
         let key = sequence_key(u64::from(height));
         let field = |range: Range<usize>| self.backend.get_bytes(HEIGHTS, &key, range);
         let (Some(branch), Some(start), Some(length)) =
-            (field(BRANCH)?, field(START)?, field(LENGTH)?)
+            (field(BRANCH?)?, field(START?)?, field(LENGTH?)?)
         else {
             return Ok(None);
         };
@@ -535,9 +531,10 @@ impl<'a, R: BackendReader> Reader<'a, R> {
         let key = start
             .checked_add(u64::from(position))
             .ok_or(LayoutError::Overflow)?;
+        let layout = ENTRY?;
         self.backend
             .with_value(NODES, &sequence_key(key), |record| {
-                ENTRY.field(record, 0).map(<[u8]>::to_vec)
+                layout.field(record, 0).map(<[u8]>::to_vec)
             })?
             .ok_or_else(|| FoldError::continuity(NAME, format!("node {key} missing")))?
             .map_err(FoldError::from)
@@ -879,12 +876,22 @@ mod tests {
             0x57, 0x5b, 0x38, 0x3b, 0x22, 0x55, 0x15, 0x37, 0xd4, 0x5b, 0x98, 0xe6, 0x79, 0xb4,
             0xe7, 0x51, 0x2b, 0x4f,
         ];
+        let digest = SCHEMA.digest().expect("declared");
         assert_eq!(
-            SCHEMA.digest(),
+            digest,
             SchemaDigest::new(GOLDEN),
             "{:02x?}",
-            SCHEMA.digest().as_bytes()
+            digest.as_bytes()
         );
         assert_eq!(SCHEMA.dir_name(), "history_tree_1");
+    }
+
+    /// Every declaration is valid, the height record's fields in order.
+    #[test]
+    fn every_declaration_is_valid() {
+        ENTRY.expect("declared");
+        assert_eq!(BRANCH, Ok(0..4));
+        assert_eq!(START, Ok(4..12));
+        assert_eq!(LENGTH, Ok(12..16));
     }
 }

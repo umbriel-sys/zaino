@@ -19,7 +19,7 @@ use zaino_primitives::types::{BlockRef, CompactAction, Height, ShieldedPool};
 use crate::block::{pool_root, FoldBlock, NoteFrontier};
 use crate::codec::{self, array, le_u32};
 use crate::index::{check_extends, Fold, FoldError, Index};
-use crate::layout::{declared, Field, Layout, LayoutError};
+use crate::layout::{Declared, Field, Layout, LayoutError};
 use crate::schema::{NamespaceLayout, Schema};
 
 /// The index's name: its directory and the name dependants use.
@@ -36,44 +36,39 @@ const SAPLING_SUBTREES: Namespace = Namespace::new("sapling_subtrees");
 const ORCHARD_SUBTREES: Namespace = Namespace::new("orchard_subtrees");
 const IRONWOOD_SUBTREES: Namespace = Namespace::new("ironwood_subtrees");
 
-declared! {
-    /// Per height, per pool in [`ShieldedPool::ALL`] order: present, size.
-    pub const POOL_SIZES: Layout = Layout::new(
-        "pool_sizes",
-        1,
-        &[
-            Field::fixed("sapling_present", 1),
-            Field::fixed("sapling_size", 4),
-            Field::fixed("orchard_present", 1),
-            Field::fixed("orchard_size", 4),
-            Field::fixed("ironwood_present", 1),
-            Field::fixed("ironwood_size", 4),
-        ],
-    );
-}
-declared! {
-    /// A node's address: level, then index big-endian.
-    pub const NODE_KEY: Layout = Layout::new(
-        "node_key",
-        1,
-        &[Field::fixed("level", 1), Field::fixed("index", 4)],
-    );
-}
-declared! {
-    /// A tree node or leaf.
-    pub const NODE: Layout = Layout::new("tree_node", 1, &[Field::fixed("node", 32)]);
-}
-declared! {
-    /// A completed subtree: its root and the height that completed it.
-    pub const SUBTREE: Layout = Layout::new(
-        "subtree_root",
-        1,
-        &[Field::fixed("root", 32), Field::fixed("height", 4)],
-    );
-}
-declared! { const SAPLING_MAP: NamespaceLayout = NamespaceLayout::map(SAPLING_NODES, &NODE_KEY, &NODE, false); }
-declared! { const ORCHARD_MAP: NamespaceLayout = NamespaceLayout::map(ORCHARD_NODES, &NODE_KEY, &NODE, false); }
-declared! { const IRONWOOD_MAP: NamespaceLayout = NamespaceLayout::map(IRONWOOD_NODES, &NODE_KEY, &NODE, false); }
+/// Per height, per pool in [`ShieldedPool::ALL`] order: present, size.
+pub const POOL_SIZES: Declared<Layout> = Layout::new(
+    "pool_sizes",
+    1,
+    &[
+        Field::fixed("sapling_present", 1),
+        Field::fixed("sapling_size", 4),
+        Field::fixed("orchard_present", 1),
+        Field::fixed("orchard_size", 4),
+        Field::fixed("ironwood_present", 1),
+        Field::fixed("ironwood_size", 4),
+    ],
+);
+/// A node's address: level, then index big-endian.
+pub const NODE_KEY: Declared<Layout> = Layout::new(
+    "node_key",
+    1,
+    &[Field::fixed("level", 1), Field::fixed("index", 4)],
+);
+/// A tree node or leaf.
+pub const NODE: Declared<Layout> = Layout::new("tree_node", 1, &[Field::fixed("node", 32)]);
+/// A completed subtree: its root and the height that completed it.
+pub const SUBTREE: Declared<Layout> = Layout::new(
+    "subtree_root",
+    1,
+    &[Field::fixed("root", 32), Field::fixed("height", 4)],
+);
+const SAPLING_MAP: Declared<NamespaceLayout> =
+    NamespaceLayout::map(SAPLING_NODES, &NODE_KEY, &NODE, false);
+const ORCHARD_MAP: Declared<NamespaceLayout> =
+    NamespaceLayout::map(ORCHARD_NODES, &NODE_KEY, &NODE, false);
+const IRONWOOD_MAP: Declared<NamespaceLayout> =
+    NamespaceLayout::map(IRONWOOD_NODES, &NODE_KEY, &NODE, false);
 
 /// The schema: per-height sizes, then per pool its nodes and subtree roots.
 pub const SCHEMA: Schema = Schema::new(
@@ -157,7 +152,7 @@ impl Index for TreeState {
         let reference = block.reference();
         let mut pools = state.map_or([None, None, None], |state| state.pools.clone());
         let mut ops = Vec::new();
-        let mut sizes = Vec::with_capacity(POOL_SIZES.fixed_len());
+        let mut sizes = Vec::with_capacity(POOL_SIZES?.fixed_len());
         for (slot, pool) in pools.iter_mut().zip(ShieldedPool::ALL) {
             let next = fold_pool(pool, slot.take(), block, reference.height, &mut ops)?;
             match &next {
@@ -388,11 +383,12 @@ fn nodes_namespace(pool: ShieldedPool) -> Namespace {
 
 /// Each pool's size a stored record holds.
 fn decode_sizes(record: &[u8]) -> Result<[Option<u32>; 3], FoldError> {
+    let layout = POOL_SIZES?;
     let pool = |first: usize| -> Result<Option<u32>, FoldError> {
-        match array::<1>(POOL_SIZES.field(record, first)?, "present")? {
+        match array::<1>(layout.field(record, first)?, "present")? {
             [0] => Ok(None),
             [1] => Ok(Some(le_u32(
-                POOL_SIZES.field(record, first.saturating_add(1))?,
+                layout.field(record, first.saturating_add(1))?,
                 "size",
             )?)),
             [flag] => Err(FoldError::continuity(NAME, format!("present flag {flag}"))),
@@ -475,6 +471,7 @@ impl<'a, R: BackendReader> Reader<'a, R> {
         start: u64,
         limit: u64,
     ) -> Result<Vec<SubtreeRoot>, FoldError> {
+        let layout = SUBTREE?;
         let mut roots = Vec::new();
         for index in start..start.saturating_add(limit) {
             let Some(root) = self.backend.with_value(
@@ -482,10 +479,10 @@ impl<'a, R: BackendReader> Reader<'a, R> {
                 &sequence_key(index),
                 |record| -> Result<SubtreeRoot, FoldError> {
                     Ok(SubtreeRoot {
-                        root: array::<32>(SUBTREE.field(record, 0)?, "root")?,
+                        root: array::<32>(layout.field(record, 0)?, "root")?,
                         completed: codec::height(
                             NAME,
-                            le_u32(SUBTREE.field(record, 1)?, "height")?,
+                            le_u32(layout.field(record, 1)?, "height")?,
                         )?,
                     })
                 },
@@ -733,12 +730,25 @@ mod tests {
             0x79, 0x4c, 0xdf, 0xaa, 0x67, 0x46, 0x2e, 0x9e, 0xd9, 0xce, 0xd3, 0x54, 0x32, 0xe7,
             0xee, 0x61, 0x08, 0x46,
         ];
+        let digest = SCHEMA.digest().expect("declared");
         assert_eq!(
-            SCHEMA.digest(),
+            digest,
             SchemaDigest::new(GOLDEN),
             "{:02x?}",
-            SCHEMA.digest().as_bytes()
+            digest.as_bytes()
         );
         assert_eq!(SCHEMA.dir_name(), "tree_state_1");
+    }
+
+    /// Every declaration is valid.
+    #[test]
+    fn every_declaration_is_valid() {
+        assert_eq!(POOL_SIZES.expect("declared").fixed_len(), 15);
+        assert_eq!(NODE_KEY.expect("declared").fixed_len(), 5);
+        assert_eq!(NODE.expect("declared").fixed_len(), 32);
+        assert_eq!(SUBTREE.expect("declared").fixed_len(), 36);
+        for map in [SAPLING_MAP, ORCHARD_MAP, IRONWOOD_MAP] {
+            map.expect("declared");
+        }
     }
 }

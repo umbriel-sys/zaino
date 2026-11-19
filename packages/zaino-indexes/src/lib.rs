@@ -44,6 +44,6 @@ pub use block::{
 };
 pub use id::{IndexId, IndexState};
 pub use index::{Fold, FoldError, Index};
-pub use layout::{Field, FieldWidth, Layout, LayoutError};
+pub use layout::{fixed_range, Declared, Field, FieldWidth, Layout, LayoutError};
 pub use schema::{NamespaceLayout, Schema};
 pub use tree_state::PoolFrontier;

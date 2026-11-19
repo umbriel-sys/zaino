@@ -6,7 +6,9 @@ use blake2::Blake2b;
 
 use zaino_persistence::{Namespace, NamespaceKind, NamespaceSpec, SchemaDigest, Width};
 
-use crate::layout::{Layout, LayoutError};
+use core::num::NonZeroU32;
+
+use crate::layout::{Declared, Layout, LayoutError};
 
 /// One namespace and the layouts of what it holds.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -21,28 +23,31 @@ pub struct NamespaceLayout {
 
 impl NamespaceLayout {
     /// A sequence of `record`s.
-    pub const fn sequence(namespace: Namespace, record: &'static Layout) -> Self {
-        Self {
+    pub const fn sequence(
+        namespace: Namespace,
+        record: &'static Declared<Layout>,
+    ) -> Declared<Self> {
+        let record = match record {
+            Ok(record) => record,
+            Err(error) => return Err(*error),
+        };
+        Ok(Self {
             spec: NamespaceSpec::sequence(namespace, record.width()),
             key: None,
             value: record,
-        }
+        })
     }
 
     /// A map of `key`s to `value`s, both of which must be fixed-width.
     pub const fn map(
         namespace: Namespace,
-        key: &'static Layout,
-        value: &'static Layout,
+        key: &'static Declared<Layout>,
+        value: &'static Declared<Layout>,
         deletes: bool,
-    ) -> Result<Self, LayoutError> {
-        let Some(key_width) = key.fixed_width() else {
-            return Err(LayoutError::NotFixedWidth { layout: key.name() });
-        };
-        let Some(value_width) = value.fixed_width() else {
-            return Err(LayoutError::NotFixedWidth {
-                layout: value.name(),
-            });
+    ) -> Declared<Self> {
+        let (key, value, key_width, value_width) = match fixed_pair(key, value) {
+            Ok(pair) => pair,
+            Err(error) => return Err(error),
         };
         Ok(Self {
             spec: NamespaceSpec::map(namespace, key_width, value_width, deletes),
@@ -55,16 +60,12 @@ impl NamespaceLayout {
     /// backend need not look each one up before inserting it (no deletes).
     pub const fn unique_map(
         namespace: Namespace,
-        key: &'static Layout,
-        value: &'static Layout,
-    ) -> Result<Self, LayoutError> {
-        let Some(key_width) = key.fixed_width() else {
-            return Err(LayoutError::NotFixedWidth { layout: key.name() });
-        };
-        let Some(value_width) = value.fixed_width() else {
-            return Err(LayoutError::NotFixedWidth {
-                layout: value.name(),
-            });
+        key: &'static Declared<Layout>,
+        value: &'static Declared<Layout>,
+    ) -> Declared<Self> {
+        let (key, value, key_width, value_width) = match fixed_pair(key, value) {
+            Ok(pair) => pair,
+            Err(error) => return Err(error),
         };
         Ok(Self {
             spec: NamespaceSpec::unique_map(namespace, key_width, value_width),
@@ -72,6 +73,31 @@ impl NamespaceLayout {
             value,
         })
     }
+}
+
+/// A map's key and value layouts, both declared and fixed-width, with their
+/// widths.
+const fn fixed_pair(
+    key: &'static Declared<Layout>,
+    value: &'static Declared<Layout>,
+) -> Declared<(&'static Layout, &'static Layout, NonZeroU32, NonZeroU32)> {
+    let key = match key {
+        Ok(key) => key,
+        Err(error) => return Err(*error),
+    };
+    let value = match value {
+        Ok(value) => value,
+        Err(error) => return Err(*error),
+    };
+    let Some(key_width) = key.fixed_width() else {
+        return Err(LayoutError::NotFixedWidth { layout: key.name() });
+    };
+    let Some(value_width) = value.fixed_width() else {
+        return Err(LayoutError::NotFixedWidth {
+            layout: value.name(),
+        });
+    };
+    Ok((key, value, key_width, value_width))
 }
 
 /// An index's disk schema.
@@ -85,8 +111,8 @@ pub struct Schema {
     pub name: &'static str,
     /// The layout version in the directory's name and manifest.
     pub format: u16,
-    /// Every namespace the index holds.
-    pub namespaces: &'static [NamespaceLayout],
+    /// Every namespace the index holds, as declared.
+    pub namespaces: &'static [Declared<NamespaceLayout>],
 }
 
 impl Schema {
@@ -94,7 +120,7 @@ impl Schema {
     pub const fn new(
         name: &'static str,
         format: u16,
-        namespaces: &'static [NamespaceLayout],
+        namespaces: &'static [Declared<NamespaceLayout>],
     ) -> Self {
         Self {
             name,
@@ -103,9 +129,14 @@ impl Schema {
         }
     }
 
+    /// Every namespace, each declaration checked.
+    pub fn layouts(&self) -> Declared<Vec<NamespaceLayout>> {
+        self.namespaces.iter().copied().collect()
+    }
+
     /// The namespace specs a backend is opened with, in declared order.
-    pub fn specs(&self) -> Vec<NamespaceSpec> {
-        self.namespaces.iter().map(|ns| ns.spec).collect()
+    pub fn specs(&self) -> Declared<Vec<NamespaceSpec>> {
+        Ok(self.layouts()?.iter().map(|ns| ns.spec).collect())
     }
 
     /// The directory the index lives in under the store's `indexes/`.
@@ -115,13 +146,14 @@ impl Schema {
 
     /// BLAKE2b-256 over the name, the format, and every namespace's name,
     /// kind, widths and layouts.
-    pub fn digest(&self) -> SchemaDigest {
+    pub fn digest(&self) -> Declared<SchemaDigest> {
+        let namespaces = self.layouts()?;
         let mut hasher = Blake2b::<U32>::new();
         Update::update(&mut hasher, b"zaino-indexes schema 1");
         update_str(&mut hasher, self.name);
         Update::update(&mut hasher, &self.format.to_le_bytes());
-        Update::update(&mut hasher, &(self.namespaces.len() as u64).to_le_bytes());
-        for namespace in self.namespaces {
+        Update::update(&mut hasher, &(namespaces.len() as u64).to_le_bytes());
+        for namespace in &namespaces {
             update_str(&mut hasher, namespace.spec.namespace.as_str());
             match namespace.spec.kind {
                 NamespaceKind::Sequence { record } => {
@@ -149,7 +181,7 @@ impl Schema {
             }
             namespace.value.digest_into(&mut hasher);
         }
-        SchemaDigest::new(hasher.finalize().into())
+        Ok(SchemaDigest::new(hasher.finalize().into()))
     }
 }
 
@@ -172,28 +204,35 @@ fn update_width(hasher: &mut impl Update, width: Width) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::layout::{declared, Field};
+    use crate::layout::Field;
 
-    declared! { const HEIGHT: Layout = Layout::new("height", 1, &[Field::fixed("height", 4)]); }
-    declared! {
-        const EVENT: Layout =
-            Layout::new("event", 1, &[Field::fixed("value", 8), Field::fixed("kind", 1)]);
-    }
-    declared! { const BLOCK: Layout = Layout::new("block", 2, &[Field::var("bytes")]); }
-    declared! {
-        const WIDER: Layout =
-            Layout::new("event", 1, &[Field::fixed("value", 8), Field::fixed("kind", 2)]);
-    }
-    declared! {
-        const NEWER: Layout =
-            Layout::new("event", 2, &[Field::fixed("value", 8), Field::fixed("kind", 1)]);
-    }
-    const BLOCKS: NamespaceLayout = NamespaceLayout::sequence(Namespace::new("blocks"), &BLOCK);
+    const HEIGHT: Declared<Layout> = Layout::new("height", 1, &[Field::fixed("height", 4)]);
+    const EVENT: Declared<Layout> = Layout::new(
+        "event",
+        1,
+        &[Field::fixed("value", 8), Field::fixed("kind", 1)],
+    );
+    const BLOCK: Declared<Layout> = Layout::new("block", 2, &[Field::var("bytes")]);
+    const WIDER: Declared<Layout> = Layout::new(
+        "event",
+        1,
+        &[Field::fixed("value", 8), Field::fixed("kind", 2)],
+    );
+    const NEWER: Declared<Layout> = Layout::new(
+        "event",
+        2,
+        &[Field::fixed("value", 8), Field::fixed("kind", 1)],
+    );
+    const EMPTY: Declared<Layout> = Layout::new("empty", 1, &[]);
+    const BLOCKS: Declared<NamespaceLayout> =
+        NamespaceLayout::sequence(Namespace::new("blocks"), &BLOCK);
     const EVENTS: Namespace = Namespace::new("events");
-    declared! { const EVENTS_NS: NamespaceLayout = NamespaceLayout::map(EVENTS, &HEIGHT, &EVENT, true); }
-    declared! { const WIDER_NS: NamespaceLayout = NamespaceLayout::map(EVENTS, &HEIGHT, &WIDER, true); }
-    declared! { const NEWER_NS: NamespaceLayout = NamespaceLayout::map(EVENTS, &HEIGHT, &NEWER, true); }
-    declared! { const NO_DELETES: NamespaceLayout = NamespaceLayout::map(EVENTS, &HEIGHT, &EVENT, false); }
+    const EVENTS_NS: Declared<NamespaceLayout> =
+        NamespaceLayout::map(EVENTS, &HEIGHT, &EVENT, true);
+    const WIDER_NS: Declared<NamespaceLayout> = NamespaceLayout::map(EVENTS, &HEIGHT, &WIDER, true);
+    const NEWER_NS: Declared<NamespaceLayout> = NamespaceLayout::map(EVENTS, &HEIGHT, &NEWER, true);
+    const NO_DELETES: Declared<NamespaceLayout> =
+        NamespaceLayout::map(EVENTS, &HEIGHT, &EVENT, false);
     const SCHEMA: Schema = Schema::new("sample", 3, &[BLOCKS, EVENTS_NS]);
 
     /// A map over a variable-width layout is refused by name.
@@ -203,6 +242,19 @@ mod tests {
             NamespaceLayout::map(Namespace::new("events"), &BLOCK, &EVENT, true),
             Err(LayoutError::NotFixedWidth { layout: "block" })
         );
+    }
+
+    /// An invalid declaration is an error wherever it is used: in the
+    /// namespace built on it, and in the schema's specs and digest.
+    #[test]
+    fn an_invalid_declaration_is_an_error_at_use() {
+        const BROKEN: Declared<NamespaceLayout> =
+            NamespaceLayout::sequence(Namespace::new("broken"), &EMPTY);
+        let empty = LayoutError::Empty { layout: "empty" };
+        assert_eq!(BROKEN, Err(empty));
+        let schema = Schema::new("broken", 1, &[BLOCKS, BROKEN]);
+        assert_eq!(schema.specs(), Err(empty));
+        assert_eq!(schema.digest(), Err(empty));
     }
 
     /// The digest is pinned: a change to any name, width, version or kind
@@ -215,11 +267,12 @@ mod tests {
             0xeb, 0xc3, 0xb0, 0x0f, 0x41, 0xe3, 0xfa, 0x7b, 0x21, 0x2a, 0xf1, 0xed, 0xff, 0xd3,
             0x8a, 0x13, 0xa4, 0xf0,
         ];
+        let digest = SCHEMA.digest().expect("declared");
         assert_eq!(
-            SCHEMA.digest(),
+            digest,
             SchemaDigest::new(GOLDEN),
             "{:02x?}",
-            SCHEMA.digest().as_bytes()
+            digest.as_bytes()
         );
 
         let moved = [
@@ -230,7 +283,7 @@ mod tests {
             Schema::new("sample", 3, &[BLOCKS, NO_DELETES]),
         ];
         for schema in moved {
-            assert_ne!(schema.digest(), SCHEMA.digest(), "{schema:?}");
+            assert_ne!(schema.digest().expect("declared"), digest, "{schema:?}");
         }
     }
 
@@ -238,7 +291,7 @@ mod tests {
     /// is named by format.
     #[test]
     fn specs_and_directory_follow_the_layouts() {
-        let specs = SCHEMA.specs();
+        let specs = SCHEMA.specs().expect("declared");
         assert_eq!(
             specs[0].kind,
             NamespaceKind::Sequence {

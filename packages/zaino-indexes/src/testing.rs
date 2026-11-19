@@ -104,7 +104,7 @@ pub(crate) fn block_with(n: u32, transactions: Vec<FoldTx>) -> FoldBlock {
 
 /// An empty backend declaring `schema`'s namespaces.
 pub(crate) fn backend(schema: &Schema) -> InMemoryBackend {
-    InMemoryBackend::new(&schema.specs()).expect("fixture specs")
+    InMemoryBackend::new(&schema.specs().expect("declared")).expect("fixture specs")
 }
 
 /// Folds `blocks` into `backend` one commit each, as a writer would, and
