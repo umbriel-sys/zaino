@@ -184,7 +184,8 @@ An index rebuilding or held back (unverified) is not announced.
 primary builds: no lock, sweep, rebuild or write. `refresh()` reads the
 record and whether the primary is running, then moves each index to its
 announced durable tip. `poll(interval)` refreshes on the blocking pool until
-the returned `Polling` drops. It answers like the primary
+the returned `Polling` stops or drops; a failed refresh makes the status
+`Recoverable` with its reason until one succeeds. It answers like the primary
 (`subscribe_watermark`, `serviceability`, `capabilities`). It adds
 `primary()` / `subscribe_primary()`, a `PrimaryStatus` of `running`, `state`
 and `target`, so a reader can tell a building primary from a stalled, failed

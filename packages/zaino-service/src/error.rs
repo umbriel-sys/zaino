@@ -87,9 +87,6 @@ pub enum ServiceError {
     /// The store's sync stopped.
     #[error("the store's sync stopped")]
     SyncStopped,
-    /// A component stopped before every index answered locally.
-    #[error("a component stopped before every index answered locally")]
-    ComponentStopped,
 }
 
 impl ServiceError {

@@ -119,7 +119,7 @@ query's failure as refused or unreachable.
 Every other cause has its own variant: `InvalidRange`, `MissingBlock`,
 `MissingPrevout`, `AmountOutOfRange`, `HeightOverflow`, `SpendCountMismatch`
 and `MinedAndInMempool` are faults or invalid requests; `MempoolIncoherent`,
-`MempoolStreamLagged`, `SyncStopped` and `ComponentStopped` are retryable.
+`MempoolStreamLagged` and `SyncStopped` are retryable.
 ChainView's refusals arrive in `Chain`: `NotServed`, `NotBuilt` and
 `ValidatorDisabled` are final, `Building` retryable.
 

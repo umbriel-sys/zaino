@@ -76,7 +76,7 @@ pub struct Service<S: ServiceSource> {
     store: EngineStore<S>,
     head: Arc<ChainHeadService<S>>,
     sync: Option<Arc<ChainViewSync>>,
-    _linked: Option<Polling>,
+    linked: Option<Polling>,
     pub(crate) mempool: Arc<Mempool<S>>,
     pub(crate) coherence: Arc<Coherence>,
     /// Held so streams can borrow it for the service's lifetime.
@@ -169,7 +169,7 @@ impl<S: ServiceSource> Service<S> {
             store,
             head,
             sync,
-            _linked: linked,
+            linked,
             mempool,
             coherent: coherence.subscriber(),
             coherence,
@@ -306,6 +306,9 @@ impl<S: ServiceSource> Service<S> {
         self.head.shutdown();
         if let Some(sync) = &self.sync {
             sync.shutdown();
+        }
+        if let Some(linked) = &self.linked {
+            linked.stop();
         }
         zaino_source::SourceLifecycle::shutdown(self.source.as_ref());
     }

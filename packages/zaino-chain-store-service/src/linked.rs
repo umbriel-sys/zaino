@@ -11,7 +11,7 @@ use std::time::Duration;
 use tokio::sync::watch;
 use tokio::task::JoinHandle;
 use zaino_chain_store::{ChainStoreService, StoreCapabilities, StoreWatermark};
-use zaino_component::{ComponentStatus, StatusSource};
+use zaino_component::{ComponentStatus, Health, StatusSource};
 use zaino_indexes::IndexId;
 use zaino_persistence::{OpenError, ReadOnlyBackend, RefreshError, Storage};
 use zaino_primitives::types::{BlockRef, Height, Network};
@@ -77,6 +77,8 @@ struct Linked<St: Storage> {
     watermark: watch::Sender<StoreWatermark>,
     serviceability: watch::Sender<BTreeMap<IndexId, Serviceability>>,
     primary: watch::Sender<PrimaryStatus>,
+    /// Why the last refresh failed; `None` once one succeeds.
+    refresh_failure: watch::Sender<Option<String>>,
 }
 
 /// A store built by another process's primary, read-only.
@@ -122,6 +124,7 @@ impl<St: Storage> LinkedChainStore<St> {
                 watermark: watch::channel(StoreWatermark::empty()).0,
                 serviceability: watch::channel(absent).0,
                 primary: watch::channel(PrimaryStatus::default()).0,
+                refresh_failure: watch::channel(None).0,
             }),
         })
     }
@@ -133,11 +136,12 @@ impl<St: Storage> LinkedChainStore<St> {
     /// index that cannot follow is not served and reported, after the rest
     /// are refreshed.
     pub fn refresh(&self) -> Result<(), LinkedError> {
-        self.inner.refresh()
+        self.inner.refresh_recorded()
     }
 
     /// Refreshes every `interval` on the runtime's blocking pool until the
-    /// returned handle drops; a failed refresh is logged and retried.
+    /// returned handle stops or drops; a failed refresh is logged, shown in
+    /// the status, and retried.
     pub fn poll(&self, interval: Duration) -> Polling
     where
         St::ReadOnly: 'static,
@@ -149,10 +153,15 @@ impl<St: Storage> LinkedChainStore<St> {
             loop {
                 ticker.tick().await;
                 let linked = Arc::clone(&inner);
-                match tokio::task::spawn_blocking(move || linked.refresh()).await {
+                match tokio::task::spawn_blocking(move || linked.refresh_recorded()).await {
                     Ok(Ok(())) => {}
                     Ok(Err(error)) => tracing::warn!(%error, "linked store refresh failed"),
-                    Err(error) => tracing::warn!(%error, "linked store refresh panicked"),
+                    Err(error) => {
+                        tracing::warn!(%error, "linked store refresh panicked");
+                        inner
+                            .refresh_failure
+                            .send_replace(Some(format!("refresh panicked: {error}")));
+                    }
                 }
             }
         });
@@ -254,7 +263,14 @@ impl<St: Storage> StatusSource for LinkedChainStore<St> {
             (false, Some(PrimaryState::Halted(message))) => PrimaryState::Halted(message),
             (false, _) => PrimaryState::Stopped,
         };
-        status_of(&state, tip, primary.target)
+        let mut status = status_of(&state, tip, primary.target);
+        if let Some(failure) = self.inner.refresh_failure.borrow().clone() {
+            if status.health == Health::Healthy {
+                status.health = Health::Recoverable;
+            }
+            status.reason = Some(format!("refresh failed: {failure}"));
+        }
+        status
     }
 }
 
@@ -276,6 +292,14 @@ where
 }
 
 impl<St: Storage> Linked<St> {
+    /// [`refresh`](Self::refresh), its outcome recorded for the status.
+    fn refresh_recorded(&self) -> Result<(), LinkedError> {
+        let result = self.refresh();
+        self.refresh_failure
+            .send_replace(result.as_ref().err().map(ToString::to_string));
+        result
+    }
+
     fn refresh(&self) -> Result<(), LinkedError> {
         let store = |source| LinkedError::Storage {
             index: "store",
@@ -352,6 +376,13 @@ impl<St: Storage> Linked<St> {
 /// The poll task of [`LinkedChainStore::poll`]; dropping it stops polling.
 pub struct Polling {
     task: JoinHandle<()>,
+}
+
+impl Polling {
+    /// Stops polling.
+    pub fn stop(&self) {
+        self.task.abort();
+    }
 }
 
 impl Drop for Polling {

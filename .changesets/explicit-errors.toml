@@ -24,7 +24,7 @@ description = """
 `ServiceError::Inconsistent` and `Stale` are replaced by one variant per \
 cause: `InvalidRange`, `MissingBlock`, `MissingPrevout`, `AmountOutOfRange`, \
 `HeightOverflow`, `SpendCountMismatch`, `MinedAndInMempool`, \
-`MempoolIncoherent`, `MempoolStreamLagged`, `SyncStopped`, `ComponentStopped`. \
+`MempoolIncoherent`, `MempoolStreamLagged`, `SyncStopped`. \
 `getspentinfo` refuses a spend answer of the wrong shape instead of asking \
 the validator."""
 

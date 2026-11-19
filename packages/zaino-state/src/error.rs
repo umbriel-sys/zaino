@@ -478,10 +478,8 @@ impl From<zaino_service::ServiceError> for ChainIndexError {
             error @ Error::InvalidRange { .. } => {
                 ChainIndexError::with_source(ChainIndexErrorKind::InvalidArgument, error)
             }
-            error @ (Error::MempoolIncoherent
-            | Error::MempoolStreamLagged
-            | Error::SyncStopped
-            | Error::ComponentStopped) => {
+            error
+            @ (Error::MempoolIncoherent | Error::MempoolStreamLagged | Error::SyncStopped) => {
                 ChainIndexError::with_source(ChainIndexErrorKind::Unavailable, error)
             }
             error @ (Error::MissingBlock(_)

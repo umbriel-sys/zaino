@@ -43,7 +43,8 @@ impl<M: Mempool, N: NfsEpochObserver> super::CoherenceService<M, N> {
             && prev.set.mempool_generation() == core.mempool_generation()
             && prev.observed_tips == observed
         {
-            self.status.set(Lifecycle::Ready, Health::Healthy);
+            self.status
+                .set_unless_closing(Lifecycle::Ready, Health::Healthy);
             return;
         }
 
@@ -83,7 +84,8 @@ impl<M: Mempool, N: NfsEpochObserver> super::CoherenceService<M, N> {
             }),
         );
 
-        self.status.set(Lifecycle::Ready, Health::Healthy);
+        self.status
+            .set_unless_closing(Lifecycle::Ready, Health::Healthy);
     }
 
     pub(super) fn freeze(
@@ -120,7 +122,8 @@ impl<M: Mempool, N: NfsEpochObserver> super::CoherenceService<M, N> {
         if matches!(prev.mode, MempoolMode::Frozen { reason: r, .. } if r == reason)
             && prev.observed_tips == observed
         {
-            self.status.set(Lifecycle::Syncing, Health::Healthy);
+            self.status
+                .set_unless_closing(Lifecycle::Syncing, Health::Healthy);
             return;
         }
 
@@ -153,7 +156,8 @@ impl<M: Mempool, N: NfsEpochObserver> super::CoherenceService<M, N> {
                 reason,
             }),
         );
-        self.status.set(Lifecycle::Syncing, Health::Healthy);
+        self.status
+            .set_unless_closing(Lifecycle::Syncing, Health::Healthy);
     }
 
     pub(super) fn publish_closing(&self) {

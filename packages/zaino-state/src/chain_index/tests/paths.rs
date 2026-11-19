@@ -28,7 +28,7 @@ const IN_STORE: u32 = 5;
 struct Rig {
     chain: MockChain,
     rpc: NodeBackedIndexerServiceSubscriber<MockChain>,
-    _index: NodeBackedChainIndex<MockChain>,
+    index: NodeBackedChainIndex<MockChain>,
     _dir: tempfile::TempDir,
 }
 
@@ -76,7 +76,7 @@ async fn rig(ephemeral: bool) -> Rig {
     Rig {
         chain,
         rpc: NodeBackedIndexerServiceSubscriber::new_for_test(reader, regtest()),
-        _index: index,
+        index,
         _dir: dir,
     }
 }
@@ -304,6 +304,15 @@ async fn with_no_store_reads_are_the_validators() {
 #[tokio::test(flavor = "multi_thread")]
 async fn with_the_store_mid_build_the_hole_is_the_validators() {
     let rig = rig(false).await;
+    assert_eq!(
+        rig.index.status(),
+        crate::legacy::status::StatusType::RecoverableError,
+        "the held build is failing"
+    );
+    assert_eq!(
+        rig.index.finalised_state_mode(),
+        crate::FinalisedStateMode::EphemeralSyncing
+    );
     local_reads(&rig).await;
     validator_reads(&rig).await;
     reads_over_the_hole(&rig).await;

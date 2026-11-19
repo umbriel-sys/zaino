@@ -123,7 +123,8 @@ impl<S: MempoolSource> super::MempoolService<S> {
             },
         );
 
-        self.status.set(Lifecycle::Ready, Health::Healthy);
+        self.status
+            .set_unless_closing(Lifecycle::Ready, Health::Healthy);
     }
 
     /// Re-publish the current set under a new tag / completeness, reusing every
@@ -155,7 +156,8 @@ impl<S: MempoolSource> super::MempoolService<S> {
                 sequence: next_sequence,
             },
         );
-        self.status.set(Lifecycle::Ready, Health::Healthy);
+        self.status
+            .set_unless_closing(Lifecycle::Ready, Health::Healthy);
     }
 
     /// Log the edge back out of source-error degradation.
@@ -218,7 +220,8 @@ impl<S: MempoolSource> super::MempoolService<S> {
                 error,
                 "mempool still degraded; set remains incomplete"
             );
-            self.status.set(Lifecycle::Syncing, Health::Healthy);
+            self.status
+                .degraded_unless_closing(Lifecycle::Syncing, degraded_reason(cause, &error));
             return;
         }
 
@@ -248,7 +251,8 @@ impl<S: MempoolSource> super::MempoolService<S> {
                 sequence: next_sequence,
             },
         );
-        self.status.set(Lifecycle::Syncing, Health::Healthy);
+        self.status
+            .degraded_unless_closing(Lifecycle::Syncing, degraded_reason(cause, &error));
     }
 
     pub(super) fn publish_closing(&self) {
@@ -261,5 +265,13 @@ impl<S: MempoolSource> super::MempoolService<S> {
             },
         );
         self.status.set(Lifecycle::Closing, Health::Healthy);
+    }
+}
+
+/// Why the mempool serves an incomplete set.
+fn degraded_reason(cause: &str, error: &Option<String>) -> String {
+    match error {
+        Some(error) => format!("mempool source failed ({cause}): {error}"),
+        None => format!("mempool source failed ({cause})"),
     }
 }

@@ -206,6 +206,21 @@ impl StatusCell {
             true
         });
     }
+
+    /// Moves to `lifecycle`, [`Health::Recoverable`] with `reason`, unless
+    /// the component is closing.
+    pub fn degraded_unless_closing(&self, lifecycle: Lifecycle, reason: impl Into<String>) {
+        let reason = reason.into();
+        self.sender.send_if_modified(|status| {
+            if status.lifecycle == Lifecycle::Closing {
+                return false;
+            }
+            status.lifecycle = lifecycle;
+            status.health = Health::Recoverable;
+            status.reason = Some(reason);
+            true
+        });
+    }
 }
 
 impl StatusSource for StatusCell {
@@ -238,9 +253,14 @@ mod tests {
         assert!(handle.status().is_ready());
         assert!(watcher.has_changed().expect("open"));
         watcher.mark_unchanged();
+        cell.degraded_unless_closing(Lifecycle::Syncing, "source down");
+        assert_eq!(handle.status().health, Health::Recoverable);
+        assert_eq!(handle.status().reason.as_deref(), Some("source down"));
         cell.set(Lifecycle::Closing, Health::Healthy);
         cell.set_unless_closing(Lifecycle::Ready, Health::Healthy);
+        cell.degraded_unless_closing(Lifecycle::Syncing, "after close");
         assert_eq!(handle.status().lifecycle, Lifecycle::Closing);
+        assert_eq!(handle.status().reason, None);
         assert!(!handle.status().is_ready());
         assert!(handle.status().is_live());
         cell.set(Lifecycle::Offline, Health::Critical);

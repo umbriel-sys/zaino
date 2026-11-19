@@ -548,7 +548,31 @@ mod core {
         })
         .await;
         assert_eq!(snapshot.tx_count(), 1); // prior set preserved, never frozen away
+        let status = service.status();
+        assert_eq!(status.health, zaino_component::Health::Recoverable);
+        assert!(
+            status
+                .reason
+                .as_deref()
+                .is_some_and(|reason| reason.contains("validator unreachable")),
+            "{status:?}"
+        );
         service.close();
+    }
+
+    /// Closing holds: a poll in flight at `close` that then fails does not
+    /// move the status off `Closing`.
+    #[tokio::test]
+    async fn a_failure_after_close_leaves_the_status_closing() {
+        let (service, subscriber, _source) =
+            spawn_core(100, 0xAB, vec![mtx(1, 100)], fast_config());
+        wait_for(&subscriber, |s| s.tx_count() == 1).await;
+        service.close();
+        service.report_source_error("in flight at close");
+        assert_eq!(
+            service.status().lifecycle,
+            zaino_component::Lifecycle::Closing
+        );
     }
 
     #[tokio::test]

@@ -12,7 +12,7 @@ use zaino_chain_store_service::{
 };
 use zaino_component::{ComponentStatus, Health, Lifecycle};
 use zaino_persistence_lsm_tree::{fs::RealFs, LsmConfig, LsmTreeStorage};
-use zaino_service::{DiskStore, Mode, Provision, Service, ServiceConfig, Store};
+use zaino_service::{DiskStore, Mode, Service, ServiceConfig, Store};
 use zebra_state::HashOrHeight;
 
 use zaino_service::ServiceSource;
@@ -39,36 +39,44 @@ pub(crate) fn combine_component_statuses(
     own: StatusType,
     finalised: StatusType,
     mempool: StatusType,
+    coherence: StatusType,
     chain_head: StatusType,
 ) -> StatusType {
-    own.combine(finalised).combine(mempool).combine(chain_head)
+    own.combine(finalised)
+        .combine(mempool)
+        .combine(coherence)
+        .combine(chain_head)
 }
 
-/// The index's status: its own, folded with the service's components.
+/// The index's serving status: its own, folded with the service's
+/// components. A store still building serves through the validator, so its
+/// build shows in `finalised_state_mode`, the manifest and the metrics, not
+/// here.
 fn combined_status(
     own: StatusType,
     service: &Service<impl zaino_service::ServiceSource>,
 ) -> StatusType {
     let statuses = service.statuses();
+    let store = statuses
+        .sync
+        .into_iter()
+        .fold(serving(statuses.store), |store, sync| {
+            store.combine(serving(sync))
+        });
     combine_component_statuses(
         own,
-        store_status(fused(statuses.store), statuses.sync, service.is_caught_up()),
+        store,
         fused(statuses.mempool),
+        fused(statuses.coherence),
         fused(statuses.head),
     )
 }
 
-/// The store's status, with the health of the sync feeding it: `Syncing`
-/// until it has caught up with the chain head's floor.
-fn store_status(store: StatusType, sync: Option<ComponentStatus>, caught_up: bool) -> StatusType {
-    let store = match caught_up {
-        true => store,
-        false => store.combine(StatusType::Syncing),
-    };
-    match sync.map(|sync| sync.health) {
-        Some(Health::Critical) => store.combine(StatusType::CriticalError),
-        Some(Health::Recoverable) => store.combine(StatusType::RecoverableError),
-        _ => store,
+/// A store component's status as serving health: building is serving.
+fn serving(status: ComponentStatus) -> StatusType {
+    match (status.health, status.lifecycle) {
+        (Health::Healthy, Lifecycle::Spawning | Lifecycle::Syncing) => StatusType::Ready,
+        _ => fused(status),
     }
 }
 
@@ -221,35 +229,19 @@ impl<V: ChainIndexSourcePorts + ServiceSource> NodeBackedChainIndex<V> {
         })
     }
 
-    /// Resolves once the store has caught up and every index it builds
-    /// answers locally, the head's half included (D6-10); `Err` if a
-    /// component stops or closes first.
-    pub(crate) async fn wait_until_local(&self) -> Result<(), zaino_service::ServiceError> {
-        self.service.caught_up().await?;
-        loop {
-            let building = self
-                .service
-                .manifest()
-                .iter()
-                .any(|(_, provision)| matches!(provision, Provision::Building { .. }));
-            if !building {
-                return Ok(());
-            }
-            let statuses = self.service.statuses();
-            if statuses
-                .all()
-                .any(|status| !status.is_live() || status.lifecycle == Lifecycle::Closing)
-            {
-                return Err(zaino_service::ServiceError::ComponentStopped);
-            }
-            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-        }
-    }
-
     /// The store's committed tip, for tests that watch the seam advance.
     #[cfg(test)]
     pub(crate) fn finalised_tip(&self) -> Option<zaino_primitives::types::Height> {
         self.service.store_tip()
+    }
+
+    /// Whether every index the store builds answers locally, for tests.
+    #[cfg(test)]
+    pub(crate) fn all_local(&self) -> bool {
+        self.service.is_caught_up()
+            && !self.service.manifest().iter().any(|(_, provision)| {
+                matches!(provision, zaino_service::Provision::Building { .. })
+            })
     }
 
     /// Creates a [`NodeBackedChainIndexSubscriber`] from self,
@@ -460,10 +452,41 @@ impl<V: ChainIndexSourcePorts + ServiceSource> Status for NodeBackedChainIndexSu
 
 #[cfg(test)]
 mod tests {
-    use super::{legacy_knobs_set, service_config};
+    use super::{legacy_knobs_set, service_config, serving};
     use crate::config::ChainIndexConfig;
     use crate::legacy::config::{CacheConfig, DatabaseConfig, StorageConfig};
+    use crate::legacy::status::StatusType;
+    use zaino_component::{ComponentName, ComponentStatus, Health, Lifecycle};
     use zaino_service::Store;
+
+    /// A store still building serves (through the validator): its build is
+    /// not the index's health; a failing one is.
+    #[test]
+    fn a_building_store_is_serving() {
+        let store = |lifecycle, health| {
+            serving(ComponentStatus::new(
+                ComponentName("chain store"),
+                lifecycle,
+                health,
+            ))
+        };
+        assert_eq!(
+            store(Lifecycle::Syncing, Health::Healthy),
+            StatusType::Ready
+        );
+        assert_eq!(
+            store(Lifecycle::Spawning, Health::Healthy),
+            StatusType::Ready
+        );
+        assert_eq!(
+            store(Lifecycle::Syncing, Health::Recoverable),
+            StatusType::RecoverableError
+        );
+        assert_eq!(
+            store(Lifecycle::Closing, Health::Healthy),
+            StatusType::Closing
+        );
+    }
 
     fn config(ephemeral: bool, storage: StorageConfig) -> ChainIndexConfig {
         ChainIndexConfig {

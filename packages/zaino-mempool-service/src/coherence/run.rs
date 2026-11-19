@@ -41,7 +41,8 @@ impl<M: Mempool, N: NfsEpochObserver> super::CoherenceService<M, N> {
     /// rather than in per-reconcile spans.
     #[tracing::instrument(name = "mempool_coherence_loop", skip_all)]
     pub(super) async fn run(self: Arc<Self>) {
-        self.status.set(Lifecycle::Syncing, Health::Healthy);
+        self.status
+            .set_unless_closing(Lifecycle::Syncing, Health::Healthy);
 
         let mut updates = self.mempool.subscribe_updates();
         // The NS tip advances on Zaino's own sync, which does not always coincide

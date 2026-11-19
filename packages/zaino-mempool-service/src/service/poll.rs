@@ -81,7 +81,8 @@ impl<S: MempoolSource> super::MempoolService<S> {
         fields(poll_interval_ms = self.config.poll_interval().as_millis()),
     )]
     pub(super) async fn run(self: Arc<Self>) {
-        self.status.set(Lifecycle::Syncing, Health::Healthy);
+        self.status
+            .set_unless_closing(Lifecycle::Syncing, Health::Healthy);
 
         let mut interval = tokio::time::interval(self.config.poll_interval());
         interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
@@ -312,7 +313,8 @@ impl<S: MempoolSource> super::MempoolService<S> {
                 self.publish_snapshot(current, Some(tip_before), Vec::new(), Vec::new(), state);
             }
         } else {
-            self.status.set(Lifecycle::Ready, Health::Healthy);
+            self.status
+                .set_unless_closing(Lifecycle::Ready, Health::Healthy);
         }
     }
 

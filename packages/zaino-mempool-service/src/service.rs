@@ -135,6 +135,12 @@ impl<S: MempoolSource> MempoolService<S> {
         self.status.status()
     }
 
+    /// A poll's source failure, as an in-flight poll reports it.
+    #[cfg(test)]
+    pub(crate) fn report_source_error(&self, cause: &'static str) {
+        self.publish_source_error(cause, None);
+    }
+
     /// The current mempool memory bound (max total ZIP-401 cost), in bytes.
     pub fn max_cost_bytes(&self) -> u64 {
         self.config.max_cost_bytes()

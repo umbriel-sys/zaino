@@ -159,33 +159,11 @@ impl ZcashService for NodeBackedIndexerService<ZebraValidator> {
         .await
         .map_err(|error| NodeBackedIndexerServiceError::Critical(error.to_string()))?;
 
-        let service = Self {
+        Ok(Self {
             indexer,
             data,
             config: config.common,
-        };
-
-        // wait for sync to complete, return error on sync fail.
-        loop {
-            match service.status() {
-                StatusType::Ready | StatusType::Closing => break,
-                StatusType::CriticalError => {
-                    return Err(NodeBackedIndexerServiceError::Critical(
-                        "ChainIndex initial sync failed, check full log for details.".to_string(),
-                    ));
-                }
-                _ => {
-                    tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
-                }
-            }
-        }
-        service
-            .indexer
-            .wait_until_local()
-            .await
-            .map_err(|error| NodeBackedIndexerServiceError::Critical(error.to_string()))?;
-
-        Ok(service)
+        })
     }
 
     /// Returns a [`NodeBackedIndexerServiceSubscriber`].

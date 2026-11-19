@@ -208,12 +208,9 @@ async fn wait_until_synced(
         || async {
             let head = u32::from(reader.snapshot_nonfinalized_state().best_tip().height);
             let finalised = indexer.finalised_tip().map(u32::from);
-            (head == tip && finalised.is_some_and(|height| height >= floor)).then_some(())
+            (head == tip && finalised.is_some_and(|height| height >= floor) && indexer.all_local())
+                .then_some(())
         },
     )
     .await;
-    indexer
-        .wait_until_local()
-        .await
-        .expect("every index answers locally");
 }

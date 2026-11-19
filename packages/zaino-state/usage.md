@@ -16,11 +16,11 @@ production) and spawns one `zaino_service::Service` over its validator:
 - otherwise a primary store at `storage.database.path` building every index
   but `history_tree`.
 
-`NodeBackedIndexerService::spawn` waits until the store has caught up and
-every index it builds answers locally, the chain head's half included, so the
-first request is served as later ones are. `status()` stays `Syncing` until
-the store has caught up; `finalised_state_mode()` says whether the store or
-the validator answers finalised reads.
+`NodeBackedIndexerService::spawn` does not wait for the store: the service
+serves at once, from the validator where an index is still building.
+`status()` reports serving health (every component, the mempool's coherence
+layer included); build progress is `finalised_state_mode()`, the service's
+manifest and the store metrics.
 
 The old store's tuning (`storage.database.size`, `sync_write_batch_size`,
 `accumulator_rebuild_memory_size`, `sync_checkpoint_interval`,

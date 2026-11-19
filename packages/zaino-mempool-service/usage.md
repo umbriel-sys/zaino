@@ -28,7 +28,9 @@ let mempool = core.subscriber(); // cheap, cloneable read handle
 ```
 
 `core.close()` publishes a final `Closing` update and stops the task;
-`core.status()` reports health.
+`core.status()` reports health: `Recoverable`, with the cause, while the
+source fails and the last set is served incomplete. Closing holds against a
+poll still in flight.
 
 ### Capacity control
 

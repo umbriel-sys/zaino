@@ -1,0 +1,35 @@
+[[changes]]
+crate = "zaino-state"
+kind = "breaking"
+description = """
+`NodeBackedIndexerService::spawn` no longer waits for the store to build: \
+the service serves at once, from the validator where an index is building \
+(S-04). `status()` reports serving health and folds the mempool's coherence \
+layer; a store still building is serving, build progress is \
+`finalised_state_mode()`, the manifest and the metrics."""
+
+[[changes]]
+crate = "zaino-component"
+kind = "feature"
+description = """
+`StatusCell::degraded_unless_closing`: `Recoverable` with a reason, unless \
+closing."""
+
+[[changes]]
+crate = "zaino-chain-store-service"
+kind = "fix"
+description = """
+`Polling::stop` ends a linked store's refresh; a failed refresh makes the \
+linked store's status `Recoverable` with its reason until one succeeds."""
+
+[[changes]]
+crate = "zaino-service"
+kind = "fix"
+description = "`Service::stop` stops a linked store's refresh."
+
+[[changes]]
+crate = "zaino-mempool-service"
+kind = "fix"
+description = """
+A failing source makes the mempool `Recoverable` with its cause (was \
+`Healthy`); no transition after `close` overwrites `Closing`."""

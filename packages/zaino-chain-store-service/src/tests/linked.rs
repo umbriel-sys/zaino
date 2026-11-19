@@ -87,6 +87,55 @@ async fn a_linked_store_serves_what_the_primary_made_durable() {
     );
 }
 
+/// A refresh that fails is in the status, with its reason, until one
+/// succeeds.
+#[tokio::test]
+async fn a_failed_refresh_degrades_the_status_until_one_succeeds() {
+    use zaino_component::{Health, StatusSource as _};
+    let (storage, chain) = (InMemoryStorage::new(), chain());
+    let config = config(&PLAIN);
+    let linked = linked(&config, &storage);
+    {
+        let mut lock = storage
+            .lock(&config.root.join("regtest"))
+            .expect("the store's lock");
+        storage
+            .write_record(&mut lock, b"not a record")
+            .expect("written");
+    }
+    assert!(linked.refresh().is_err(), "an unreadable record");
+    let degraded = linked.status();
+    assert_ne!(degraded.health, Health::Healthy);
+    assert!(
+        degraded
+            .reason
+            .as_deref()
+            .is_some_and(|reason| reason.starts_with("refresh failed")),
+        "{degraded:?}"
+    );
+
+    let _primary = boot(&config, &storage, &chain).await.expect("boots");
+    linked.refresh().expect("refreshed");
+    assert_eq!(linked.status().health, Health::Healthy);
+}
+
+/// Stopping the poll ends it, though the handle is still held.
+#[tokio::test(start_paused = true)]
+async fn a_stopped_poll_refreshes_no_more() {
+    let (storage, chain) = (InMemoryStorage::new(), chain());
+    let config = config(&PLAIN);
+    let linked = linked(&config, &storage);
+    let polling = linked.poll(Duration::from_millis(10));
+    polling.stop();
+    let _primary = boot(&config, &storage, &chain).await.expect("boots");
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    assert_eq!(
+        linked.primary(),
+        PrimaryStatus::default(),
+        "no refresh after the stop"
+    );
+}
+
 #[tokio::test]
 async fn the_record_reports_a_stalled_build_and_its_recovery() {
     let (storage, chain) = (InMemoryStorage::new(), chain());

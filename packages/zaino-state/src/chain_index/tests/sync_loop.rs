@@ -95,24 +95,29 @@ fn the_fold_accounts_for_every_component() {
     let ready = StatusType::Ready;
 
     assert_eq!(
-        combine_component_statuses(ready, ready, ready, StatusType::CriticalError),
+        combine_component_statuses(ready, ready, ready, ready, StatusType::CriticalError),
         StatusType::CriticalError,
         "a chain head that has given up must not be reported as Ready"
     );
     assert_eq!(
-        combine_component_statuses(ready, ready, ready, StatusType::RecoverableError),
+        combine_component_statuses(ready, ready, ready, ready, StatusType::RecoverableError),
         StatusType::RecoverableError,
     );
     assert_eq!(
-        combine_component_statuses(ready, StatusType::Syncing, ready, ready),
+        combine_component_statuses(ready, StatusType::Syncing, ready, ready, ready),
         StatusType::Syncing,
     );
     assert_eq!(
-        combine_component_statuses(ready, ready, StatusType::RecoverableError, ready),
+        combine_component_statuses(ready, ready, StatusType::RecoverableError, ready, ready),
         StatusType::RecoverableError,
     );
     assert_eq!(
-        combine_component_statuses(ready, ready, ready, ready),
+        combine_component_statuses(ready, ready, ready, StatusType::RecoverableError, ready),
+        StatusType::RecoverableError,
+        "a degraded coherence layer is not Ready"
+    );
+    assert_eq!(
+        combine_component_statuses(ready, ready, ready, ready, ready),
         ready,
         "all components healthy is the only way to report Ready"
     );
