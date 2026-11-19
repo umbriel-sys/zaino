@@ -153,8 +153,8 @@ mod generated {
     use crate::scripted::call;
     use zaino_primitives::types::{
         rpc::SpentOutpoint, AddressBalance, AddressDelta, Block, BlockHash, BlockVerbose,
-        BlockchainInfo, Difficulty, Height, OutputIndex, PreIndexCompactBlock, ShieldedPool,
-        SubtreeRoot, TransactionId, TreeRoots, Treestate, Utxo,
+        BlockVerbosity, BlockchainInfo, Difficulty, Height, OutputIndex, PreIndexCompactBlock,
+        ShieldedPool, SubtreeRoot, TransactionId, TreeRoots, Treestate, Utxo,
     };
 
     /// The client after its adapter failed twice, transiently, then fatally.
@@ -245,10 +245,13 @@ mod generated {
             -> zaino_primitives::types::rpc::BlockHeaderVerbose, crate::GetBlockHeaderError;
         GetBlockSubsidy / OneShotGetBlockSubsidy :: get_block_subsidy(height: Height = height(7))
             -> zaino_primitives::types::rpc::BlockSubsidy, crate::GetBlockSubsidyError;
-        GetBlockVerbose / OneShotGetBlockVerbose :: get_block_verbose(height: Height = height(7))
-            -> BlockVerbose, crate::get_block_verbose::GetBlockVerboseError;
+        GetBlockVerbose / OneShotGetBlockVerbose :: get_block_verbose(
+            height: Height = height(7),
+            verbosity: BlockVerbosity = BlockVerbosity::TransactionsWithPrevouts
+        ) -> BlockVerbose, crate::get_block_verbose::GetBlockVerboseError;
         GetBlockVerboseByHash / OneShotGetBlockVerboseByHash :: get_block_verbose_by_hash(
-            hash: BlockHash = hash(7)
+            hash: BlockHash = hash(7),
+            verbosity: BlockVerbosity = BlockVerbosity::Transactions
         ) -> BlockVerbose, crate::get_block_verbose::GetBlockVerboseError;
         GetChainTips / OneShotGetChainTips :: get_chain_tips()
             -> Vec<zaino_primitives::types::rpc::ChainTip>, crate::GetChainTipsError;

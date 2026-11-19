@@ -18,9 +18,9 @@ use zaino_primitives::types::rpc::{
     StandardFee, TxOut,
 };
 use zaino_primitives::types::{
-    BlockConfirmations, BlockHash, BlockRef, BlockVerbose, BlockchainInfo, Difficulty,
-    EquihashSolution, Height, Network, Outpoint, OutputIndex, SignedZatoshis, TransactionId,
-    TransparentAddress, TxOutSetInfo, Utxo, Zatoshis,
+    BlockConfirmations, BlockHash, BlockRef, BlockVerbose, BlockVerbosity, BlockchainInfo,
+    Difficulty, EquihashSolution, Height, Network, Outpoint, OutputIndex, SignedZatoshis,
+    TransactionId, TransparentAddress, TxOutSetInfo, Utxo, Zatoshis,
 };
 use zaino_source::{
     GetBlockDeltasError, GetBlockHeaderError, GetBlockVerboseError, GetSpentInfoError, QueryError,
@@ -123,18 +123,35 @@ impl<S: ServiceSource> ServiceSnapshot<S> {
         })
     }
 
-    /// The block's chain facts (`getblock` verbosity 1: value pools, supply,
-    /// tree sizes), from the validator by the hash this snapshot holds.
-    pub async fn block_verbose(&self, at: BlockId) -> Result<Option<BlockVerbose>> {
+    /// The validator's verbose `getblock` at `verbosity`, by the hash this
+    /// snapshot holds.
+    pub async fn block_verbose(
+        &self,
+        at: BlockId,
+        verbosity: BlockVerbosity,
+    ) -> Result<Option<BlockVerbose>> {
         let Some(hash) = self.pinned(at).await? else {
             return Ok(None);
         };
-        found(self.source.get_block_verbose_by_hash(hash).await, |error| {
-            matches!(
-                error,
-                GetBlockVerboseError::BlockNotFound(_) | GetBlockVerboseError::HeightNotFound(_)
-            )
-        })
+        found(
+            self.source.get_block_verbose_by_hash(hash, verbosity).await,
+            |error| {
+                matches!(
+                    error,
+                    GetBlockVerboseError::BlockNotFound(_)
+                        | GetBlockVerboseError::HeightNotFound(_)
+                )
+            },
+        )
+    }
+
+    /// The validator's serialized block (`getblock` verbosity 0), by the hash
+    /// this snapshot holds.
+    pub async fn raw_block(&self, at: BlockId) -> Result<Option<Vec<u8>>> {
+        let Some(hash) = self.pinned(at).await? else {
+            return Ok(None);
+        };
+        Ok(self.chain.raw_block(BlockId::Hash(hash)).await?)
     }
 
     /// `getblockdeltas` for a best-chain block: composed from the indexed

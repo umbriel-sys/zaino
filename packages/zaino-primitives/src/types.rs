@@ -54,7 +54,7 @@ pub use block_commitments::BlockCommitments;
 pub use block_hash::BlockHash;
 pub use block_ref::BlockRef;
 pub use block_tx_position::BlockTxPosition;
-pub use block_verbose::{BlockTreeSizes, BlockVerbose};
+pub use block_verbose::{BlockTransactions, BlockTreeSizes, BlockVerbose, BlockVerbosity};
 pub use blockchain_info::{BlockchainInfo, ValuePoolBalance};
 pub use chain_state_epoch::ChainStateEpoch;
 pub use compact_block::{

@@ -250,8 +250,6 @@ impl NodeBackedIndexerServiceConfig {
 pub struct ChainIndexConfig {
     /// Storage configuration (cache and database)
     pub storage: StorageConfig,
-    /// Database version selected to be run.
-    pub db_version: u32,
     /// The runtime network, carrying the activation schedule adopted from
     /// the validator (zaino#1076) — or, in fixtures that are their own
     /// chain, the fixture's schedule.
@@ -280,8 +278,6 @@ impl ChainIndexConfig {
     ) -> Self {
         Self {
             storage: common.storage.clone(),
-            // TODO: update zaino configs to include db version.
-            db_version: 1,
             network,
             ephemeral: common.ephemeral_finalised_state,
             mempool: common.mempool.clone(),

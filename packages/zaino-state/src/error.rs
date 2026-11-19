@@ -392,9 +392,6 @@ impl From<zaino_chain_head::ChainHeadError> for ChainIndexError {
 /// An error occurred while constructing a ChainIndex.
 #[derive(Debug, thiserror::Error)]
 pub enum InitError {
-    /// The connected node returned data that could not be used.
-    #[error("validator returned invalid data: {0}")]
-    InvalidNodeData(Box<dyn std::error::Error + Send + Sync + 'static>),
     /// The service did not start.
     #[error(transparent)]
     ServiceInitialisationError(#[from] zaino_service::SpawnError),
@@ -472,12 +469,9 @@ impl From<zaino_service::ServiceError> for ChainIndexError {
                     _,
                 >::NonDomain(error)))
             }
-            Error::ValidatorRejected(error) => {
-                ChainIndexError::backing_validator(err(zaino_source::QueryError::<
-                    _,
-                    zaino_source::NonDomainError,
-                >::Domain(error)))
-            }
+            Error::ValidatorRejected(error) => ChainIndexError::backing_validator(
+                crate::chain_index::validator_source::rejected_err(error),
+            ),
             error @ Error::NotServed { .. } => {
                 ChainIndexError::with_source(ChainIndexErrorKind::Unimplemented, error)
             }

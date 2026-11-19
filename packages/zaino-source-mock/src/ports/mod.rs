@@ -8,6 +8,7 @@ mod ledger;
 mod mempool;
 mod outputs;
 mod trees;
+mod tx_objects;
 
 pub(crate) use ledger::address_of;
 use zaino_source::{FailureMode, NonDomainError, QueryError};

@@ -29,16 +29,21 @@ use zaino_primitives::types::{
     rpc::{
         BlockDelta, BlockDeltas, BlockHeaderVerbose, BlockSubsidy, ChainTip, ChainTipStatus,
         FundingStream, InputDelta, LocalAddress, LockboxStream, MiningInfo, NetworkEntry,
-        NetworkInfo, NodeInfo, OutputDelta, PeerInfo, ScriptPubKey, SpentInfo, StandardFee, TxOut,
+        NetworkInfo, NodeInfo, OutputDelta, PeerInfo, SpentInfo, StandardFee, TxOut,
     },
-    AddressBalance, AddressDelta, BlockCommitments, BlockConfirmations, BlockHash, BlockTreeSizes,
-    BlockVerbose, BlockchainInfo, CompactDifficulty, ConsensusBranchId, ConsensusBranchIds, Height,
-    MerkleRoot, Network, NetworkUpgradeInfo, NetworkUpgradeStatus, Script, SignedZatoshis,
-    SubtreeRoot, TransactionId, TransactionLocation, TransparentAddress, TransparentAddressError,
-    TreeRoot, TreeRootInfo, TreeRoots, TreeSize, TreeSizeOutOfRange, Treestate, TxConfirmations,
-    Utxo, ValuePoolBalance, Zatoshis, ZatoshisFlowSum,
+    AddressBalance, AddressDelta, BlockCommitments, BlockConfirmations, BlockHash, BlockchainInfo,
+    CompactDifficulty, ConsensusBranchId, ConsensusBranchIds, Height, MerkleRoot, Network,
+    NetworkUpgradeInfo, NetworkUpgradeStatus, Script, SignedZatoshis, SubtreeRoot, TransactionId,
+    TransactionLocation, TransparentAddress, TransparentAddressError, TreeRoot, TreeRootInfo,
+    TreeRoots, TreeSize, TreeSizeOutOfRange, Treestate, TxConfirmations, Utxo, ValuePoolBalance,
+    Zatoshis, ZatoshisFlowSum,
 };
 use zaino_source::{MempoolTxMeta, TransactionResponse};
+
+mod getblock;
+
+use getblock::parse_script_pub_key;
+pub(crate) use getblock::{parse_block_verbose, parse_transaction_verbose};
 
 // ---------------------------------------------------------------------------
 // Scalar helpers
@@ -651,7 +656,6 @@ pub(crate) fn parse_tx_out(value: &serde_json::Value) -> Result<Option<TxOut>, P
     if value.is_null() {
         return Ok(None);
     }
-    let script = field(value, "scriptPubKey")?;
     Ok(Some(TxOut {
         best_block: parse_block_hash(field(value, "bestblock")?)?,
         confirmations: as_tx_confirmations(field(value, "confirmations")?)?,
@@ -660,22 +664,7 @@ pub(crate) fn parse_tx_out(value: &serde_json::Value) -> Result<Option<TxOut>, P
             .map(as_bool)
             .transpose()?
             .unwrap_or(false),
-        script_pub_key: ScriptPubKey {
-            script: Script::new(
-                hex::decode(as_str(field(script, "hex")?)?)
-                    .map_err(|e| ParseError::Hex(e.to_string()))?,
-            ),
-            asm: opt_field(script, "asm")
-                .map(|v| as_str(v).map(str::to_owned))
-                .transpose()?,
-            script_type: opt_field(script, "type")
-                .map(|v| as_str(v).map(str::to_owned))
-                .transpose()?,
-            required_signatures: opt_field(script, "reqSigs").map(as_u32).transpose()?,
-            addresses: parse_optional_list(script, "addresses", |v| {
-                Ok(TransparentAddress::try_new(as_str(v)?)?)
-            })?,
-        },
+        script_pub_key: parse_script_pub_key(field(value, "scriptPubKey")?)?,
     }))
 }
 
@@ -1108,34 +1097,6 @@ fn parse_upgrades(
             })
         })
         .collect()
-}
-
-/// Parse the chain-state fields of a verbose `getblock` response.
-///
-/// Reads only what cannot be derived from the block's own bytes — see
-/// [`BlockVerbose`]. Everything else in the response is deliberately ignored
-/// here rather than duplicated into a second source of the same fact.
-pub(crate) fn parse_block_verbose(value: &serde_json::Value) -> Result<BlockVerbose, ParseError> {
-    let trees = opt_field(value, "trees");
-    Ok(BlockVerbose {
-        confirmations: as_block_confirmations(field(value, "confirmations")?)?,
-        difficulty: as_f64(field(value, "difficulty")?)?,
-        // Not read: Zebra omits `chainwork` from `getblock` and does not plan
-        // to track it (ZcashFoundation/zebra#7109).
-        chainwork: None,
-        chain_supply: opt_field(value, "chainSupply")
-            .map(parse_value_pool)
-            .transpose()?,
-        value_pools: parse_optional_list(value, "valuePools", parse_value_pool)?,
-        tree_sizes: BlockTreeSizes {
-            sapling: pool_tree_size(trees, "sapling")?,
-            orchard: pool_tree_size(trees, "orchard")?,
-            ironwood: pool_tree_size(trees, "ironwood")?,
-        },
-        next_block_hash: opt_field(value, "nextblockhash")
-            .map(parse_block_hash)
-            .transpose()?,
-    })
 }
 
 /// One pool's cumulative tree size from the `trees` object.

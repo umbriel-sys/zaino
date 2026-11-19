@@ -48,6 +48,7 @@ mod peer_info;
 mod spent_info;
 mod standard_fee;
 mod subtree_roots;
+mod transaction_verbose;
 mod tx_out;
 
 pub use address_deltas::{AddressDeltas, AddressDeltasRequest};
@@ -62,4 +63,8 @@ pub use peer_info::PeerInfo;
 pub use spent_info::{SpentInfo, SpentOutpoint};
 pub use standard_fee::StandardFee;
 pub use subtree_roots::SubtreeRoots;
+pub use transaction_verbose::{
+    InputVerbose, JoinSplitVerbose, OrchardActionVerbose, OrchardFlagsVerbose, OrchardVerbose,
+    OutputVerbose, PrevoutVerbose, SaplingOutputVerbose, SaplingSpendVerbose, TransactionVerbose,
+};
 pub use tx_out::{ScriptPubKey, TxOut};

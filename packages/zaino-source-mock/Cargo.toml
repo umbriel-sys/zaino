@@ -14,7 +14,7 @@ categories = { workspace = true }
 
 [dependencies]
 zaino-source = { workspace = true }
-zaino-primitives = { workspace = true }
+zaino-primitives = { workspace = true, features = ["zebra"] }
 blake2 = { workspace = true }
 hex = { workspace = true }
 zcash_address = { workspace = true }
@@ -28,6 +28,10 @@ group = "0.14"
 incrementalmerkletree.workspace = true
 sapling-crypto.workspace = true
 orchard.workspace = true
+zebra-chain.workspace = true
+zebra-rpc.workspace = true
+chrono.workspace = true
+serde_json.workspace = true
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["macros", "rt"] }

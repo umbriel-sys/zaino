@@ -414,8 +414,9 @@ impl OneShotGetBlockVerbose for ZebraValidator {
     async fn get_block_verbose(
         &self,
         height: Height,
+        verbosity: zaino_primitives::types::BlockVerbosity,
     ) -> Result<BlockVerbose, QueryError<GetBlockVerboseError>> {
-        self.rpc.get_block_verbose(height).await
+        self.rpc.get_block_verbose(height, verbosity).await
     }
 }
 
@@ -423,8 +424,9 @@ impl OneShotGetBlockVerboseByHash for ZebraValidator {
     async fn get_block_verbose_by_hash(
         &self,
         hash: BlockHash,
+        verbosity: zaino_primitives::types::BlockVerbosity,
     ) -> Result<BlockVerbose, QueryError<GetBlockVerboseError>> {
-        self.rpc.get_block_verbose_by_hash(hash).await
+        self.rpc.get_block_verbose_by_hash(hash, verbosity).await
     }
 }
 

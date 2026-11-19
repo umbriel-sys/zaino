@@ -7,10 +7,10 @@ use zaino_primitives::types::{
         BlockDelta, BlockDeltas, BlockHeaderVerbose, BlockSubsidy, InputDelta, MiningInfo,
         NetworkEntry, NetworkInfo, NodeInfo, OutputDelta, PeerInfo, StandardFee,
     },
-    AbsoluteChainWork, BlockConfirmations, BlockHash, BlockTreeSizes, BlockVerbose, BlockchainInfo,
-    ConsensusBranchId, ConsensusBranchIds, Difficulty, EquihashSolution, Height, Network,
-    NetworkUpgradeInfo, NetworkUpgradeStatus, SignedZatoshis, TransparentAddress, TreeSize,
-    ValuePoolBalance, Zatoshis,
+    AbsoluteChainWork, BlockConfirmations, BlockHash, BlockTransactions, BlockTreeSizes,
+    BlockVerbose, BlockVerbosity, BlockchainInfo, ConsensusBranchId, ConsensusBranchIds,
+    Difficulty, EquihashSolution, Height, Network, NetworkUpgradeInfo, NetworkUpgradeStatus,
+    SignedZatoshis, TransparentAddress, TreeSize, ValuePoolBalance, Zatoshis,
 };
 use zaino_source::{
     GetBlockDeltasError, GetBlockHeaderError, GetBlockSubsidyError, GetBlockVerboseError,
@@ -125,9 +125,11 @@ fn tree_sizes(block: &MockBlock) -> BlockTreeSizes {
     }
 }
 
+/// zebrad's `getblock` at `verbosity`.
 fn verbose<E: std::fmt::Debug + std::fmt::Display>(
     served: &Served<'_>,
     block: &MockBlock,
+    verbosity: BlockVerbosity,
 ) -> Result<BlockVerbose, QueryError<E>> {
     // value pools along a side chain would need its own ledger: best chain only
     let (supply, balances) = match served.is_best(block.hash()) {
@@ -137,27 +139,72 @@ fn verbose<E: std::fmt::Debug + std::fmt::Display>(
         }
         false => (None, Vec::new()),
     };
+    let confirmations = confirmations(served, block);
+    let header = &block.block.header;
+    let transactions = match verbosity {
+        BlockVerbosity::TransactionIds => BlockTransactions::Ids(
+            block
+                .block
+                .transactions()
+                .iter()
+                .map(|tx| tx.txid)
+                .collect(),
+        ),
+        BlockVerbosity::Transactions | BlockVerbosity::TransactionsWithPrevouts => {
+            BlockTransactions::Objects(super::tx_objects::transaction_objects(
+                served,
+                block,
+                verbosity,
+                confirmations.to_rpc_i64(),
+            )?)
+        }
+    };
     Ok(BlockVerbose {
-        confirmations: confirmations(served, block),
-        difficulty: difficulty(block.block.header.bits.as_bits(), served.facts().network),
+        hash: block.hash(),
+        confirmations,
+        size: block
+            .raw
+            .as_ref()
+            .and_then(|raw| u64::try_from(raw.block.len()).ok()),
+        height: block.height(),
+        version: header.version,
+        merkle_root: header.merkle_root,
+        block_commitments: Some(header.block_commitments),
+        final_sapling_root: block.tree_roots.sapling.as_ref().map(|info| info.root),
+        final_orchard_root: block.tree_roots.orchard.as_ref().map(|info| info.root),
+        transactions,
+        time: header.time,
+        nonce: header.nonce,
+        solution: solution(&header.solution),
+        bits: header.bits,
+        difficulty: difficulty(header.bits.as_bits(), served.facts().network),
         chainwork: chainwork(served, block),
         chain_supply: supply,
         value_pools: balances,
         tree_sizes: tree_sizes(block),
+        previous_block_hash: Some(header.prev_hash),
         next_block_hash: served.next_of(block).map(MockBlock::hash),
     })
+}
+
+fn solution(solution: &EquihashSolution) -> Vec<u8> {
+    match solution {
+        EquihashSolution::Standard(bytes) => bytes.to_vec(),
+        EquihashSolution::Regtest(bytes) => bytes.to_vec(),
+    }
 }
 
 impl zaino_source::OneShotGetBlockVerbose for MockChain {
     async fn get_block_verbose(
         &self,
         height: Height,
+        verbosity: BlockVerbosity,
     ) -> Result<BlockVerbose, QueryError<GetBlockVerboseError>> {
         let served = self
             .enter("get_block_verbose", CallArg::Height(height))
             .await?;
         match served.at(height) {
-            Some(block) => verbose(&served, block),
+            Some(block) => verbose(&served, block, verbosity),
             None => refused(GetBlockVerboseError::HeightNotFound(height)),
         }
     }
@@ -167,12 +214,13 @@ impl zaino_source::OneShotGetBlockVerboseByHash for MockChain {
     async fn get_block_verbose_by_hash(
         &self,
         hash: BlockHash,
+        verbosity: BlockVerbosity,
     ) -> Result<BlockVerbose, QueryError<GetBlockVerboseError>> {
         let served = self
             .enter("get_block_verbose_by_hash", CallArg::Hash(hash))
             .await?;
         match served.by_hash(hash) {
-            Some(block) => verbose(&served, block),
+            Some(block) => verbose(&served, block, verbosity),
             None => refused(GetBlockVerboseError::BlockNotFound(hash)),
         }
     }
@@ -197,10 +245,7 @@ impl zaino_source::OneShotGetBlockHeader for MockChain {
             merkle_root: header.merkle_root,
             time: header.time,
             nonce: header.nonce,
-            solution: match &header.solution {
-                EquihashSolution::Standard(bytes) => bytes.to_vec(),
-                EquihashSolution::Regtest(bytes) => bytes.to_vec(),
-            },
+            solution: solution(&header.solution),
             bits: header.bits,
             difficulty: difficulty(header.bits.as_bits(), served.facts().network),
             block_commitments: Some(header.block_commitments),

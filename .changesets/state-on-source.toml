@@ -1,0 +1,52 @@
+[[changes]]
+crate = "zaino-state"
+kind = "breaking"
+description = """
+`BlockchainSource` and the `WithChainHeadSource`, `WithChainStoreSource` and \
+`WithChainViewSource` traits are deleted (S-06), with the `chain_index::chain_store` \
+module. `NodeBackedChainIndex`, its subscriber, `NodeBackedIndexerService` and its \
+subscriber are generic over the `zaino-source` validator `V` (default \
+`ZebraValidator`); `NodeBackedChainIndex::new` takes a `ValidatorSource<V>`. \
+Every legacy read goes through the service. `getblock` is the validator's \
+answer at verbosity 0 to 3, by the hash the snapshot holds; another verbosity \
+is −8. `InitError::InvalidNodeData` (S-07) and `ChainIndexConfig::db_version` \
+(S-08) are removed."""
+
+[[changes]]
+crate = "zaino-primitives"
+kind = "breaking"
+description = """
+`BlockVerbose` carries the validator's whole verbose `getblock` answer: \
+header fields, size, roots, transactions (`BlockTransactions::Ids` or \
+`Objects`), value pools and links. New `BlockVerbosity` and \
+`rpc::TransactionVerbose` with its input, output, shielded and Orchard parts."""
+
+[[changes]]
+crate = "zaino-source"
+kind = "breaking"
+description = """
+`OneShotGetBlockVerbose::get_block_verbose` and \
+`OneShotGetBlockVerboseByHash::get_block_verbose_by_hash` take a \
+`BlockVerbosity` and return the validator's whole `getblock` answer."""
+
+[[changes]]
+crate = "zaino-source-zcash-rpc"
+kind = "feature"
+description = """
+The adapter reads `getblock` at verbosity 1 to 3 in full; \
+`parse_transaction_object` reads one transaction object as the adapter does."""
+
+[[changes]]
+crate = "zaino-source-mock"
+kind = "feature"
+description = """
+Verbose `getblock` at verbosity 2 and 3 is rendered by zebra-rpc's \
+`TransactionObject` builder over the served best chain and read through the \
+adapter's parser; the `chain_info` contract checks every verbosity."""
+
+[[changes]]
+crate = "zaino-service"
+kind = "breaking"
+description = """
+`ServiceSnapshot::block_verbose` takes a `BlockVerbosity`; new \
+`ServiceSnapshot::raw_block`."""

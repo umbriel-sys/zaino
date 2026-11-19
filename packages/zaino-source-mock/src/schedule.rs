@@ -175,6 +175,21 @@ impl Activations {
         }
     }
 
+    /// The schedule a validator reported.
+    pub(crate) fn of_upgrades(upgrades: &[NetworkUpgradeInfo]) -> Self {
+        Self {
+            heights: Upgrade::ALL
+                .into_iter()
+                .filter_map(|upgrade| {
+                    upgrades
+                        .iter()
+                        .find(|info| info.name == upgrade.name())
+                        .map(|info| (upgrade, u32::from(info.activation_height)))
+                })
+                .collect(),
+        }
+    }
+
     /// The schedule as a validator reports it (status set against the tip
     /// when answered).
     pub fn upgrades(&self) -> Vec<NetworkUpgradeInfo> {

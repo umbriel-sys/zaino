@@ -32,3 +32,15 @@ capability requests and the mock's network upgrades. The shape is shared; \
 nothing else is, and the crates do not depend on each other. zainodb is \
 deleted in Stage 6, which removes the group.
 """
+
+[[ignore]]
+fingerprint = "5434ff95b44fc0d3"
+members = [
+    "parse_sapling_spend",
+    "parse_sapling_output",
+]
+reason = """
+Two `getblock` object readers, each building its own six-field type from its \
+own JSON keys. The shape is shared; the fields and types are not, so a shared \
+helper would only take the key names as arguments.
+"""

@@ -4,6 +4,7 @@ use crate::chain_index::chain_view::BestTip as _;
 mod chain_head;
 mod eras;
 mod mockchain_tests;
+mod paths;
 mod poll;
 mod sync_loop;
 
@@ -125,7 +126,6 @@ fn index_config(dir: &TempDir, activations: &Activations) -> ChainIndexConfig {
         },
         ephemeral: false,
         mempool: Default::default(),
-        db_version: 1,
         network: activations.activation_heights().to_regtest_network(),
     }
 }
@@ -133,8 +133,8 @@ fn index_config(dir: &TempDir, activations: &Activations) -> ChainIndexConfig {
 /// A synced index and what it was built from.
 struct Synced {
     blocks: Vec<MockBlock>,
-    indexer: NodeBackedChainIndex<MockSource>,
-    reader: NodeBackedChainIndexSubscriber<MockSource>,
+    indexer: NodeBackedChainIndex<MockChain>,
+    reader: NodeBackedChainIndexSubscriber<MockChain>,
     source: MockSource,
     _dir: TempDir,
 }
@@ -196,8 +196,8 @@ async fn synced_on(
 /// Waits until the chain head serves `tip` and the finalised state holds
 /// everything below the seam.
 async fn wait_until_synced(
-    indexer: &NodeBackedChainIndex<MockSource>,
-    reader: &NodeBackedChainIndexSubscriber<MockSource>,
+    indexer: &NodeBackedChainIndex<MockChain>,
+    reader: &NodeBackedChainIndexSubscriber<MockChain>,
     tip: u32,
 ) {
     let floor = finalized_height_floor(tip).0;

@@ -23,20 +23,14 @@ use zebra_rpc::{
     methods::GetBlock,
 };
 
-/// ChainIndex's side of the ChainHead boundary: handing ChainHead a validator.
-pub mod chain_head;
-/// ChainIndex's side of the ChainStore boundary: handing the finalised store a
-/// validator.
-pub mod chain_store;
-/// ChainIndex's side of the ChainView boundary: handing ChainView a validator,
-/// and composing it.
-pub mod chain_view;
+mod chain_head;
+pub(crate) mod chain_view;
+mod getblock_wire;
 mod network_adoption;
 mod node_backed;
 mod reads;
 mod rpc_reads;
-/// ChainIndex's driven port onto the validator. Temporary scaffolding — see
-/// the module docs.
+/// The validator source's error and location vocabulary.
 pub mod source;
 pub mod source_ports;
 /// The legacy type vocabulary and its conversions.

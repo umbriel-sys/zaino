@@ -7,8 +7,10 @@ The legacy indexer surface (`ChainIndex`, `ZcashIndexer`, `LightWalletIndexer`,
 
 ## What runs underneath
 
-`NodeBackedChainIndex::new` spawns one `zaino_service::Service` over the
-source's validator:
+`NodeBackedChainIndex<V>` is generic over the `zaino-source` validator `V`
+(default `ZebraValidator`). `NodeBackedChainIndex::new` takes a
+`ValidatorSource<V>` (`ZebraValidatorSource::spawn_rpc` / `spawn_direct` in
+production) and spawns one `zaino_service::Service` over its validator:
 
 - `ephemeral = true`: no store; the validator answers below the chain head.
 - otherwise a primary store at `storage.database.path` building every index
@@ -37,7 +39,8 @@ chain). Notable shapes:
   index, tree sizes are 0, as lightwalletd serves them.
 - `GetLightdInfo` reports Sapling's activation and the next pending upgrade
   (`upgradeName` empty and `upgradeHeight` 0 when none).
-- `getblock` by height asks the validator by the hash the snapshot holds.
+- `getblock` is the validator's answer at verbosity 0 to 3, asked by the hash
+  the snapshot holds; any other verbosity is −8.
 - `gettxoutsetinfo` answers the set or refuses: `Unimplemented` where it is
   not built, `Unavailable` while building.
 - `sendrawtransaction` keeps the validator's rejection code and message

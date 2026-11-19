@@ -27,6 +27,8 @@ adapter is an optional accelerator, not an alternative.
   nothing else is.
 - `adapter.rs` — the port impls, and the error classification below, which is
   the part most likely to be got wrong.
+- `parse_transaction_object` reads a verbose `getblock` transaction object
+  exactly as the adapter does, so the mock answers through the same parser.
 - `raw_block.rs` — raw block bytes → domain `Block`, with no curve
   arithmetic. It enforces the structure `zcash_primitives` and `zebra-chain`
   check when parsing: lengths, canonical CompactSizes, versions and version

@@ -13,7 +13,8 @@ use std::sync::Arc;
 use futures::{stream, StreamExt as _, TryStreamExt as _};
 use tokio::sync::Semaphore;
 use zaino_primitives::types::{
-    rpc::BlockHeaderVerbose, Block, BlockHash, ChainMetadata, CompactBlock, Height, TreeRoots,
+    rpc::BlockHeaderVerbose, Block, BlockHash, BlockVerbosity, ChainMetadata, CompactBlock, Height,
+    TreeRoots,
 };
 use zaino_source::{NonDomainError, QueryError};
 
@@ -196,7 +197,8 @@ impl<Source: ChainViewSource> Fetcher<Source> {
     ) -> Result<Option<CompactBlock>> {
         let (compact, verbose) = futures::join!(
             self.source.get_pre_index_compact_block(height),
-            self.source.get_block_verbose(height),
+            self.source
+                .get_block_verbose(height, BlockVerbosity::TransactionIds),
         );
 
         let Some(pre_index) = miss(compact)? else {

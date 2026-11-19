@@ -6288,6 +6288,7 @@ name = "zaino-source-mock"
 version = "0.1.0"
 dependencies = [
  "blake2",
+ "chrono",
  "group",
  "hex",
  "incrementalmerkletree",
@@ -6295,6 +6296,7 @@ dependencies = [
  "orchard",
  "pasta_curves",
  "sapling-crypto",
+ "serde_json",
  "tokio",
  "zaino-consensus",
  "zaino-primitives",
@@ -6303,6 +6305,8 @@ dependencies = [
  "zcash_address",
  "zcash_primitives",
  "zcash_protocol",
+ "zebra-chain",
+ "zebra-rpc",
 ]
 
 [[package]]

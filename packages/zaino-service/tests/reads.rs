@@ -10,11 +10,14 @@ use zaino_indexes::IndexId;
 use zaino_primitives::types::rpc::{
     AddressDeltas, AddressDeltasRequest, BlockSubsidy, SpentOutpoint, StandardFee,
 };
-use zaino_primitives::types::{BlockHash, BlockRef, Height, TransparentAddress, Zatoshis};
+use zaino_primitives::types::{
+    BlockHash, BlockRef, BlockVerbosity, Height, TransparentAddress, Zatoshis,
+};
 use zaino_service::{Capability, ServiceError};
 use zaino_source::{
     OneShotGetAddressDeltas as _, OneShotGetBlockDeltas as _, OneShotGetBlockHeader as _,
-    OneShotGetSpentInfo as _, OneShotGetTxOut as _, UtxoPage,
+    OneShotGetBlockVerboseByHash as _, OneShotGetRawBlockByHash as _, OneShotGetSpentInfo as _,
+    OneShotGetTxOut as _, UtxoPage,
 };
 use zaino_source_mock::{CallArg, MockChain, NodeFacts, MINER_SCRIPT};
 
@@ -396,17 +399,38 @@ async fn passthrough_reads_ask_the_validator() {
         "get_raw_block_header",
         &CallArg::Hash(pinned)
     ));
-    assert!(snapshot
-        .block_verbose(BlockId::Height(height(150)))
-        .await
-        .expect("answers")
-        .is_some());
+    for verbosity in [
+        BlockVerbosity::TransactionIds,
+        BlockVerbosity::Transactions,
+        BlockVerbosity::TransactionsWithPrevouts,
+    ] {
+        assert_eq!(
+            snapshot
+                .block_verbose(BlockId::Height(height(150)), verbosity)
+                .await
+                .expect("answers"),
+            Some(
+                chain
+                    .get_block_verbose_by_hash(pinned, verbosity)
+                    .await
+                    .expect("the validator answers")
+            ),
+            "the validator's getblock at {verbosity:?}"
+        );
+    }
     assert!(called_with(
         &chain,
         from,
         "get_block_verbose_by_hash",
         &CallArg::Hash(pinned)
     ));
+    assert_eq!(
+        snapshot
+            .raw_block(BlockId::Height(height(150)))
+            .await
+            .expect("answers"),
+        Some(chain.get_raw_block_by_hash(pinned).await.expect("answers"))
+    );
     assert_eq!(
         snapshot
             .raw_block_header(BlockId::Height(height(TIP + 1)))

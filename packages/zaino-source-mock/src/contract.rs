@@ -11,8 +11,8 @@ use std::collections::BTreeSet;
 use zaino_consensus::branch_id;
 use zaino_primitives::types::{
     rpc::{ChainTipStatus, SpentOutpoint},
-    Block, BlockHash, Height, NetworkUpgradeStatus, ShieldedPool, TransactionId,
-    TransactionLocation,
+    Block, BlockHash, BlockTransactions, BlockVerbosity, Height, NetworkUpgradeStatus,
+    ShieldedPool, TransactionId, TransactionLocation,
 };
 use zaino_source::{
     GetAddressBalanceError, GetAddressDeltasError, GetAddressTxidsError, GetAddressUtxosError,
@@ -592,7 +592,37 @@ where
     let mut next: Option<BlockHash> = None;
     for height in (0..=u32::from(tip)).rev() {
         let height = Height::try_from(height).map_err(|e| e.to_string())?;
-        let verbose = answered("verbose block", source.get_block_verbose(height).await)?;
+        let block = answered("block", source.get_block(height).await)?;
+        let txids: Vec<TransactionId> = block.transactions().iter().map(|tx| tx.txid).collect();
+        for verbosity in [
+            BlockVerbosity::TransactionIds,
+            BlockVerbosity::Transactions,
+            BlockVerbosity::TransactionsWithPrevouts,
+        ] {
+            let verbose = answered(
+                "verbose block",
+                source.get_block_verbose(height, verbosity).await,
+            )?;
+            let listed: Vec<TransactionId> = match &verbose.transactions {
+                BlockTransactions::Ids(ids) => ids.clone(),
+                BlockTransactions::Objects(objects) => {
+                    objects.iter().map(|object| object.txid).collect()
+                }
+            };
+            ensure(
+                verbose.hash == block.header.hash
+                    && verbose.height == height
+                    && verbose.previous_block_hash == Some(block.header.prev_hash)
+                    && listed == txids,
+                || format!("verbose block {height} at {verbosity:?} is not the block"),
+            )?;
+        }
+        let verbose = answered(
+            "verbose block",
+            source
+                .get_block_verbose(height, BlockVerbosity::TransactionIds)
+                .await,
+        )?;
         ensure(verbose.next_block_hash == next, || {
             format!("verbose block {height} does not link forward")
         })?;

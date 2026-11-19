@@ -28,6 +28,10 @@ reads names the block it describes: `get_commitment_tree_roots_by_height`
 returns the answering block's hash alongside the roots, and the consumer
 compares it against the block it holds before combining the two.
 
+A port returns what the validator returns and composes nothing: the getblock
+ports (`get_block_verbose`, `get_block_verbose_by_hash`) take the
+`BlockVerbosity` and answer the validator's whole `getblock`.
+
 ## The error model, which is the point
 
 ```rust

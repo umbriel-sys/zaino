@@ -1,4 +1,4 @@
-use super::{regtest, served_tip, synced, MockSource, MockchainMode, CHAIN_TIP, STANDARD_FEE};
+use super::{regtest, served_tip, synced, MockchainMode, CHAIN_TIP, STANDARD_FEE};
 use crate::chain_index::chain_view::BestTip as _;
 use crate::{
     chain_index::{
@@ -6,22 +6,22 @@ use crate::{
         types::{local_hash, local_txid, BestChainLocation, ChainScope, TransactionHash},
         ChainIndex, ChainIndexRpcExt, NodeBackedChainIndexSubscriber,
     },
-    BlockchainSource as _, Outpoint,
+    Outpoint,
 };
 use std::collections::HashSet;
 use tokio::time::Duration;
 use tokio_stream::StreamExt as _;
 use zaino_primitives::types::rpc::{AddressDeltas, AddressDeltasRequest};
+use zaino_source_mock::MockChain;
 use zaino_source_mock::{MockBlock, RawBlock, Upgrade, MINER_SCRIPT};
 use zebra_chain::serialization::{ZcashDeserializeInto, ZcashSerialize as _};
 use zebra_rpc::client::{GetAddressBalanceRequest, GetAddressTxIdsRequest};
 use zebra_rpc::methods::GetBlock;
-use zebra_state::HashOrHeight;
 
 /// Polls the indexer's nonfinalized-state snapshot until its best-tip height
 /// equals `expected`, or panics after a 10 s budget.
 async fn wait_for_indexer_tip(
-    index_reader: &NodeBackedChainIndexSubscriber<MockSource>,
+    index_reader: &NodeBackedChainIndexSubscriber<MockChain>,
     expected: u32,
 ) {
     poll_until(
@@ -39,7 +39,7 @@ async fn wait_for_indexer_tip(
 /// Polls until the mempool's txid set equals `expected`: the mempool is an
 /// eventually-consistent read model refreshed by its own poll loop.
 async fn wait_for_mempool_txids(
-    index_reader: &NodeBackedChainIndexSubscriber<MockSource>,
+    index_reader: &NodeBackedChainIndexSubscriber<MockChain>,
     expected: &HashSet<TransactionHash>,
 ) {
     poll_until(
@@ -66,7 +66,7 @@ async fn wait_for_mempool_txids(
 /// its txids before the coherence layer reconciles the two tips, so a test of
 /// the coherent reads that waited only for the txids would race the
 /// reconcile. A `Some` stream is the guard the coherent point reads use.
-async fn wait_for_mempool_coherent(index_reader: &NodeBackedChainIndexSubscriber<MockSource>) {
+async fn wait_for_mempool_coherent(index_reader: &NodeBackedChainIndexSubscriber<MockChain>) {
     poll_until(
         "mempool coherence to bless the current tip",
         Duration::from_secs(10),
@@ -456,7 +456,7 @@ async fn get_mempool_transaction_status() {
 
 /// The served mempool's transactions, sorted by id.
 async fn served_mempool(
-    index_reader: &NodeBackedChainIndexSubscriber<MockSource>,
+    index_reader: &NodeBackedChainIndexSubscriber<MockChain>,
     exclude: Vec<Vec<u8>>,
 ) -> Vec<(TransactionHash, Vec<u8>)> {
     let mut served: Vec<_> = index_reader
@@ -750,7 +750,12 @@ async fn get_address_balance() {
     let index = synced(MockchainMode::Static).await;
     let request = || GetAddressBalanceRequest::new(vec![miner_address()]);
 
-    let expected_balance = index.source.get_address_balance(request()).await.unwrap();
+    let expected_balance = zaino_source::OneShotGetAddressBalance::get_address_balance(
+        index.source.source(),
+        vec![miner_address()],
+    )
+    .await
+    .expect("the validator answers");
     let indexer_balance = index.reader.get_address_balance(request()).await.unwrap();
     assert_eq!(indexer_balance, expected_balance);
 
@@ -771,11 +776,18 @@ async fn get_address_txids() {
         GetAddressTxIdsRequest::new(addresses, Some(start), Some(end))
     };
 
-    let expected_txids = index
-        .source
-        .get_address_txids(request(vec![miner_address()], 0, active_height))
+    let expected_txids: Vec<TransactionHash> =
+        zaino_source::OneShotGetAddressTxids::get_address_txids(
+            index.source.source(),
+            vec![miner_address()],
+            zaino_primitives::types::Height::GENESIS,
+            zaino_primitives::types::Height::try_from(active_height).expect("a valid height"),
+        )
         .await
-        .unwrap();
+        .expect("the validator answers")
+        .into_iter()
+        .map(local_txid)
+        .collect();
     let indexer_txids = index
         .reader
         .get_address_txids(request(vec![miner_address()], 0, active_height))
@@ -806,7 +818,13 @@ async fn get_address_utxos() {
     let index = synced(MockchainMode::Static).await;
     let request = || GetAddressBalanceRequest::new(vec![miner_address()]);
 
-    let expected_utxos = index.source.get_address_utxos(request()).await.unwrap();
+    let expected_utxos = zaino_source::OneShotGetAddressUtxos::get_address_utxos(
+        index.source.source(),
+        vec![miner_address()],
+        zaino_source::UtxoPage::default(),
+    )
+    .await
+    .expect("the validator answers");
     let indexer_utxos = index.reader.get_address_utxos(request()).await.unwrap();
     assert!(!indexer_utxos.is_empty());
     assert_eq!(indexer_utxos, expected_utxos);
@@ -979,52 +997,137 @@ async fn get_outpoint_spenders_empty_and_single() {
     );
 }
 
-/// `z_get_block` served through the ChainIndex: verbosity 0 round-trips to
-/// the stored block, and verbosity 1 matches the source and reports the
-/// block's hash / height / txids.
+/// The validator's block at `height`, as zebra reads its bytes.
+async fn zebra_block(index: &super::Synced, height: u32) -> zebra_chain::block::Block {
+    let bytes = zaino_source::OneShotGetRawBlock::get_raw_block(
+        index.source.source(),
+        zaino_primitives::types::Height::try_from(height).expect("a valid height"),
+    )
+    .await
+    .expect("the validator holds the block");
+    bytes
+        .as_slice()
+        .zcash_deserialize_into()
+        .expect("consensus bytes")
+}
+
+/// `getblock` is the validator's answer at every verbosity: 0 its bytes, 2 the
+/// transaction objects zebrad builds, 3 with prevouts and fees, above 3 `-8`.
 #[tokio::test(flavor = "multi_thread")]
 async fn z_get_block() {
     let index = synced(MockchainMode::Static).await;
-    let mockchain = &index.source;
-    let active_height = served_tip(mockchain);
+    let active_height = served_tip(&index.source);
+    let network = super::regtest();
 
     for height in [1u32, active_height / 2, active_height] {
-        let id = HashOrHeight::Height(zebra_chain::block::Height(height));
-        let expected_block = mockchain.get_block(id).await.unwrap().unwrap();
+        let expected = zebra_block(&index, height).await;
 
-        // Verbosity 0: the raw serialized block round-trips to the stored block.
         let GetBlock::Raw(serialized) = index
             .reader
             .z_get_block(height.to_string(), Some(0))
             .await
-            .unwrap()
+            .expect("verbosity 0")
         else {
             panic!("expected a raw block at verbosity 0");
         };
-        let decoded: zebra_chain::block::Block =
-            serialized.as_ref().zcash_deserialize_into().unwrap();
-        assert_eq!(decoded, *expected_block);
+        let decoded: zebra_chain::block::Block = serialized
+            .as_ref()
+            .zcash_deserialize_into()
+            .expect("consensus bytes");
+        assert_eq!(decoded, expected);
 
-        // Verbosity 1: the ChainIndex delegates to the source and the object
-        // reports the block's hash, height, and every txid.
-        let via_index = index
-            .reader
-            .z_get_block(height.to_string(), Some(1))
-            .await
-            .unwrap();
-        let via_source = mockchain.get_block_verbose(id, Some(1)).await.unwrap();
-        let value = serde_json::to_value(&via_index).unwrap();
-        assert_eq!(value, serde_json::to_value(&via_source).unwrap());
+        let ids = serde_json::to_value(
+            index
+                .reader
+                .z_get_block(height.to_string(), Some(1))
+                .await
+                .expect("verbosity 1"),
+        )
+        .expect("serializes");
+        assert_eq!(ids["hash"], expected.hash().to_string());
+        assert_eq!(ids["height"], height);
         assert_eq!(
-            value["hash"].as_str().unwrap(),
-            expected_block.hash().to_string()
+            ids["tx"],
+            serde_json::to_value(
+                expected
+                    .transactions
+                    .iter()
+                    .map(|tx| tx.hash().to_string())
+                    .collect::<Vec<_>>()
+            )
+            .expect("serializes")
         );
-        assert_eq!(value["height"].as_u64().unwrap(), u64::from(height));
-        assert_eq!(
-            value["tx"].as_array().unwrap().len(),
-            expected_block.transactions.len()
-        );
+
+        let objects = serde_json::to_value(
+            index
+                .reader
+                .z_get_block(height.to_string(), Some(2))
+                .await
+                .expect("verbosity 2"),
+        )
+        .expect("serializes");
+        let confirmations = i64::from(active_height - height + 1);
+        for (rendered, tx) in objects["tx"]
+            .as_array()
+            .expect("a transaction list")
+            .iter()
+            .zip(&expected.transactions)
+        {
+            let zebrad = zebra_rpc::client::TransactionObject::from_transaction(
+                tx.clone(),
+                expected.coinbase_height(),
+                Some(confirmations),
+                &network,
+                Some(expected.header.time),
+                Some(expected.hash()),
+                Some(true),
+                tx.hash(),
+            );
+            assert_eq!(
+                *rendered,
+                serde_json::to_value(&zebrad).expect("serializes"),
+                "transaction {} at {height}",
+                tx.hash()
+            );
+        }
+
+        let with_prevouts = serde_json::to_value(
+            index
+                .reader
+                .z_get_block(height.to_string(), Some(3))
+                .await
+                .expect("verbosity 3"),
+        )
+        .expect("serializes");
+        for (rendered, tx) in with_prevouts["tx"]
+            .as_array()
+            .expect("a transaction list")
+            .iter()
+            .zip(&expected.transactions)
+            .filter(|(_, tx)| !tx.is_coinbase() && !tx.inputs().is_empty())
+        {
+            assert!(
+                rendered["vin"]
+                    .as_array()
+                    .expect("inputs")
+                    .iter()
+                    .all(|input| input.get("prevout").is_some()),
+                "every prevout of {} on the best chain",
+                tx.hash()
+            );
+            assert!(rendered.get("fee").is_some(), "the fee of {}", tx.hash());
+        }
     }
+
+    let refused = index
+        .reader
+        .z_get_block(active_height.to_string(), Some(4))
+        .await
+        .expect_err("verbosity 4 is invalid");
+    assert_eq!(
+        legacy_code(&refused),
+        Some(zebra_rpc::server::error::LegacyCode::InvalidParameter as i64)
+    );
 }
 
 /// The display-order hex of a hash, as the RPC identifies blocks.
@@ -1044,8 +1147,7 @@ async fn get_block_header() {
     let active_height = served_tip(mockchain);
 
     for height in [1u32, active_height / 2, active_height] {
-        let id = HashOrHeight::Height(zebra_chain::block::Height(height));
-        let block = mockchain.get_block(id).await.unwrap().unwrap();
+        let block = zebra_block(&index, height).await;
         let hash = block.hash().to_string();
 
         let raw = index
@@ -1078,8 +1180,7 @@ async fn get_block_deltas() {
 
     let mut saw_delta_entries = false;
     for height in [1u32, active_height / 2, active_height] {
-        let id = HashOrHeight::Height(zebra_chain::block::Height(height));
-        let block = mockchain.get_block(id).await.unwrap().unwrap();
+        let block = zebra_block(&index, height).await;
         let hash = block.hash().to_string();
 
         let via_index = index.reader.get_block_deltas(hash.clone()).await.unwrap();
@@ -1110,7 +1211,9 @@ async fn get_difficulty() {
     let index = synced(MockchainMode::Static).await;
 
     let via_index = index.reader.get_difficulty().await.unwrap();
-    let via_source = index.source.get_difficulty().await.unwrap();
+    let via_source = zaino_source::OneShotGetDifficulty::get_difficulty(index.source.source())
+        .await
+        .expect("the validator answers");
     assert_eq!(via_index, via_source);
     assert!(
         via_index > 0.0,

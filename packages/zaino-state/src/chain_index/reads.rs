@@ -9,11 +9,10 @@ use zaino_chain::{
 };
 use zebra_rpc::client::{GetAddressBalanceRequest, GetAddressTxIdsRequest};
 
-use super::chain_head::WithChainHeadSource;
-use super::chain_store::WithChainStoreSource;
-use super::chain_view::{BestTip as _, ChainIndexSnapshot, WithChainViewSource};
+use super::chain_view::{BestTip as _, ChainIndexSnapshot};
 use super::node_backed::NodeBackedChainIndexSubscriber;
-use super::source::{BlockchainSource, BlockchainSourceError, PoolTreestate};
+use super::source::{BlockchainSourceError, PoolTreestate};
+use super::source_ports::ChainIndexSourcePorts;
 use super::types::{
     self, block_index, chain_locations, checked_addresses, domain_hash, domain_height,
     domain_scope, domain_txid, local_hash, local_height, local_txid, BestChainLocation, BlockIndex,
@@ -21,6 +20,7 @@ use super::types::{
 };
 use super::{ChainIndex, ShieldedPool};
 use crate::error::{ChainIndexError, ChainIndexErrorKind};
+use zaino_service::ServiceSource;
 
 /// A chain view's chunked range, one item at a time.
 pub(super) fn flatten<T>(
@@ -41,11 +41,8 @@ fn request_height(height: u32) -> Result<zaino_primitives::types::Height, ChainI
     })
 }
 
-impl<
-        Source: BlockchainSource + WithChainHeadSource + WithChainStoreSource + WithChainViewSource,
-    > ChainIndex for NodeBackedChainIndexSubscriber<Source>
-{
-    type Snapshot = ChainIndexSnapshot<Source>;
+impl<V: ChainIndexSourcePorts + ServiceSource> ChainIndex for NodeBackedChainIndexSubscriber<V> {
+    type Snapshot = ChainIndexSnapshot<V>;
     type Error = ChainIndexError;
 
     fn snapshot_nonfinalized_state(&self) -> Self::Snapshot {

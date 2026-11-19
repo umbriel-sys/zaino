@@ -587,7 +587,13 @@ async fn a_node_without_chainwork_answers_none() {
             blocks.clone(),
         );
         let tip = chain.tip().expect("loaded").hash();
-        let verbose = chain.get_block_verbose(height(2)).await.expect("answered");
+        let verbose = chain
+            .get_block_verbose(
+                height(2),
+                zaino_primitives::types::BlockVerbosity::TransactionIds,
+            )
+            .await
+            .expect("answered");
         let header = chain.get_block_header(tip).await.expect("answered");
         let info = chain.get_blockchain_info().await.expect("answered");
         assert_eq!(verbose.chainwork.is_some(), chainwork);

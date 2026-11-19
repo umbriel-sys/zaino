@@ -30,3 +30,15 @@ mod raw_block;
 
 pub use adapter::{Quirks, ZcashRpcAdapter};
 pub use raw_block::{parse_block, BlockVerification, RawBlockError, GENESIS_COINBASE_SCRIPT_SIG};
+
+/// A verbose `getblock` transaction object the adapter could not read.
+#[derive(Debug, thiserror::Error)]
+#[error(transparent)]
+pub struct TransactionObjectError(parse::ParseError);
+
+/// Reads a verbose `getblock` transaction object exactly as the adapter does.
+pub fn parse_transaction_object(
+    value: &serde_json::Value,
+) -> Result<zaino_primitives::types::rpc::TransactionVerbose, TransactionObjectError> {
+    parse::parse_transaction_verbose(value).map_err(TransactionObjectError)
+}

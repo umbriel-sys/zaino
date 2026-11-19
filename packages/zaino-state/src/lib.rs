@@ -75,10 +75,6 @@ pub use chain_index::{
     ChainIndex, ChainIndexRpcExt, NodeBackedChainIndex, NodeBackedChainIndexSubscriber,
 };
 // Source types for ChainIndex backends
-pub use chain_index::chain_head::WithChainHeadSource;
-pub use chain_index::chain_store::WithChainStoreSource;
-pub use chain_index::chain_view::WithChainViewSource;
-pub use chain_index::source::BlockchainSource;
 pub use chain_index::source_ports::ChainIndexSourcePorts;
 pub use chain_index::validator_source::{ValidatorSource, ZebraValidatorSource};
 // Mempool statistics for `getmempoolinfo`, now `zaino-primitives` vocabulary.

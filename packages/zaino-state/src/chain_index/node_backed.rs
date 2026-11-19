@@ -15,11 +15,13 @@ use zaino_persistence_lsm_tree::{fs::RealFs, LsmConfig, LsmTreeStorage};
 use zaino_service::{DiskStore, Mode, Provision, Service, ServiceConfig, Store};
 use zebra_state::HashOrHeight;
 
-use super::chain_head::{self, WithChainHeadSource};
-use super::chain_store::WithChainStoreSource;
-use super::chain_view::{ChainIndexSnapshot, WithChainViewSource};
-use super::source::BlockchainSource;
+use zaino_service::ServiceSource;
+
+use super::chain_head;
+use super::chain_view::ChainIndexSnapshot;
+use super::source_ports::ChainIndexSourcePorts;
 use super::types;
+use super::validator_source::ValidatorSource;
 use super::ZebraNetwork;
 use crate::error::ChainIndexError;
 
@@ -172,7 +174,7 @@ fn legacy_knobs_set(config: &crate::config::ChainIndexConfig) -> Vec<&'static st
 /// # Construction
 ///
 /// Use [`NodeBackedChainIndex::new()`] with:
-/// - A source implementing [`BlockchainSource`] — in production
+/// - A [`ValidatorSource`] over a `zaino-source` validator — in production
 ///   [`ZebraValidatorSource`](crate::chain_index::validator_source::ZebraValidatorSource),
 ///   built by `spawn_rpc` or `spawn_direct` from the backend config
 /// - A [`ChainIndexConfig`](crate::ChainIndexConfig) containing cache and database settings
@@ -181,35 +183,32 @@ fn legacy_knobs_set(config: &crate::config::ChainIndexConfig) -> Vec<&'static st
 /// [`NodeBackedIndexerService`](crate::NodeBackedIndexerService) does it from
 /// config, and additionally waits for the initial sync to complete.
 pub struct NodeBackedChainIndex<
-    Source: BlockchainSource + WithChainHeadSource + WithChainStoreSource + WithChainViewSource = crate::chain_index::validator_source::ZebraValidatorSource,
+    V: ChainIndexSourcePorts + ServiceSource = zaino_source_zebra::ZebraValidator,
 > {
-    service: Arc<Service<Source::View>>,
+    service: Arc<Service<V>>,
     ephemeral: bool,
     status: NamedAtomicStatus,
     network: ZebraNetwork,
-    source: Source,
+    source: ValidatorSource<V>,
 }
 
-impl<
-        Source: BlockchainSource + WithChainHeadSource + WithChainStoreSource + WithChainViewSource,
-    > NodeBackedChainIndex<Source>
-{
+impl<V: ChainIndexSourcePorts + ServiceSource> NodeBackedChainIndex<V> {
     /// Starts the index: the service, which serves at once and builds the
     /// store in the background.
     pub async fn new(
-        source: Source,
+        source: ValidatorSource<V>,
         config: crate::config::ChainIndexConfig,
     ) -> Result<Self, crate::InitError> {
         Self::new_with_chain_head_config(source, config, chain_head::config()).await
     }
 
     pub(crate) async fn new_with_chain_head_config(
-        source: Source,
+        source: ValidatorSource<V>,
         config: crate::config::ChainIndexConfig,
         chain_head_config: zaino_chain_head::ChainHeadConfig,
     ) -> Result<Self, crate::InitError> {
         let service = Service::spawn(
-            source.chain_view_source(),
+            source.validator(),
             service_config(&config, chain_head_config),
         )
         .await?;
@@ -255,7 +254,7 @@ impl<
 
     /// Creates a [`NodeBackedChainIndexSubscriber`] from self,
     /// a clone-safe, drop-safe, read-only view onto the running indexer.
-    pub fn subscriber(&self) -> NodeBackedChainIndexSubscriber<Source> {
+    pub fn subscriber(&self) -> NodeBackedChainIndexSubscriber<V> {
         NodeBackedChainIndexSubscriber {
             service: Arc::clone(&self.service),
             ephemeral: self.ephemeral,
@@ -271,7 +270,7 @@ impl<
     pub async fn shutdown(&self) -> Result<(), zaino_chain_store::ChainStoreError> {
         self.status.store(StatusType::Closing);
         let stopped = self.service.shutdown().await;
-        self.source.shutdown();
+        zaino_source::SourceLifecycle::shutdown(self.source.source());
         stopped
     }
 
@@ -279,7 +278,7 @@ impl<
     pub(crate) fn shutdown_sync_best_effort(&self) {
         self.status.store(StatusType::Closing);
         self.service.stop();
-        self.source.shutdown();
+        zaino_source::SourceLifecycle::shutdown(self.source.source());
     }
 
     /// How long tip-coherent mempool reads have been frozen, or `None` if live.
@@ -317,10 +316,7 @@ fn state_mode(
     }
 }
 
-impl<
-        Source: BlockchainSource + WithChainHeadSource + WithChainStoreSource + WithChainViewSource,
-    > Drop for NodeBackedChainIndex<Source>
-{
+impl<V: ChainIndexSourcePorts + ServiceSource> Drop for NodeBackedChainIndex<V> {
     /// The full synchronous teardown: subscribers share the service, so its
     /// own drop may come later.
     fn drop(&mut self) {
@@ -329,10 +325,7 @@ impl<
 }
 
 /// Formatted by hand: a derive would demand `Debug` of the validator types.
-impl<
-        Source: BlockchainSource + WithChainHeadSource + WithChainStoreSource + WithChainViewSource,
-    > std::fmt::Debug for NodeBackedChainIndex<Source>
-{
+impl<V: ChainIndexSourcePorts + ServiceSource> std::fmt::Debug for NodeBackedChainIndex<V> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("NodeBackedChainIndex")
             .field("network", &self.network)
@@ -344,21 +337,18 @@ impl<
 ///
 /// [`NodeBackedChainIndexSubscriber`] can safely be cloned and dropped freely.
 pub struct NodeBackedChainIndexSubscriber<
-    Source: BlockchainSource + WithChainHeadSource + WithChainStoreSource + WithChainViewSource = crate::chain_index::validator_source::ZebraValidatorSource,
+    V: ChainIndexSourcePorts + ServiceSource = zaino_source_zebra::ZebraValidator,
 > {
-    pub(super) service: Arc<Service<Source::View>>,
+    pub(super) service: Arc<Service<V>>,
     ephemeral: bool,
     status: NamedAtomicStatus,
     pub(super) network: ZebraNetwork,
-    source: Source,
+    source: ValidatorSource<V>,
 }
 
 /// Cloned by hand: a derive would demand `Clone` of the validator types, which
 /// are shared behind `Arc`s here.
-impl<
-        Source: BlockchainSource + WithChainHeadSource + WithChainStoreSource + WithChainViewSource,
-    > Clone for NodeBackedChainIndexSubscriber<Source>
-{
+impl<V: ChainIndexSourcePorts + ServiceSource> Clone for NodeBackedChainIndexSubscriber<V> {
     fn clone(&self) -> Self {
         Self {
             service: Arc::clone(&self.service),
@@ -370,9 +360,8 @@ impl<
     }
 }
 
-impl<
-        Source: BlockchainSource + WithChainHeadSource + WithChainStoreSource + WithChainViewSource,
-    > std::fmt::Debug for NodeBackedChainIndexSubscriber<Source>
+impl<V: ChainIndexSourcePorts + ServiceSource> std::fmt::Debug
+    for NodeBackedChainIndexSubscriber<V>
 {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("NodeBackedChainIndexSubscriber")
@@ -381,23 +370,20 @@ impl<
     }
 }
 
-impl<
-        Source: BlockchainSource + WithChainHeadSource + WithChainStoreSource + WithChainViewSource,
-    > NodeBackedChainIndexSubscriber<Source>
-{
+impl<V: ChainIndexSourcePorts + ServiceSource> NodeBackedChainIndexSubscriber<V> {
     pub(crate) fn indexed_tip_stream(&self) -> crate::IndexedTipStream {
         crate::stream::indexed_tip_stream(self.service.subscribe_tip())
     }
 
-    pub(crate) fn source(&self) -> &Source {
+    pub(crate) fn source(&self) -> &ValidatorSource<V> {
         &self.source
     }
 
     /// The service's reads over `snapshot`.
     pub(super) fn reads(
         &self,
-        snapshot: &ChainIndexSnapshot<Source>,
-    ) -> zaino_service::ServiceSnapshot<Source::View> {
+        snapshot: &ChainIndexSnapshot<V>,
+    ) -> zaino_service::ServiceSnapshot<V> {
         self.service.with_chain(snapshot.clone())
     }
 
@@ -437,7 +423,7 @@ impl<
 
     /// Whether the chain head (on any branch) or the store holds `hash`.
     pub(super) async fn block_hash_known(
-        snapshot: &ChainIndexSnapshot<Source>,
+        snapshot: &ChainIndexSnapshot<V>,
         hash: types::BlockHash,
     ) -> Result<bool, ChainIndexError> {
         Ok(snapshot
@@ -449,7 +435,7 @@ impl<
     /// Whether the hash-or-height string names a block this index knows.
     pub(crate) async fn hash_or_height_known_for_treestate(
         &self,
-        snapshot: &ChainIndexSnapshot<Source>,
+        snapshot: &ChainIndexSnapshot<V>,
         hash_or_height: &str,
     ) -> Result<bool, ChainIndexError> {
         let hash_or_height = HashOrHeight::from_str(hash_or_height).map_err(|error| {
@@ -466,10 +452,7 @@ impl<
     }
 }
 
-impl<
-        Source: BlockchainSource + WithChainHeadSource + WithChainStoreSource + WithChainViewSource,
-    > Status for NodeBackedChainIndexSubscriber<Source>
-{
+impl<V: ChainIndexSourcePorts + ServiceSource> Status for NodeBackedChainIndexSubscriber<V> {
     fn status(&self) -> StatusType {
         self.combined_status()
     }
@@ -485,7 +468,6 @@ mod tests {
     fn config(ephemeral: bool, storage: StorageConfig) -> ChainIndexConfig {
         ChainIndexConfig {
             storage,
-            db_version: 1,
             network: zebra_chain::parameters::Network::new_regtest(Default::default()),
             ephemeral,
             mempool: Default::default(),

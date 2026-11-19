@@ -84,7 +84,11 @@ use zaino_primitives::types::rpc::{BlockDeltas, MiningInfo, NodeInfo, PeerInfo};
 - `types::rpc` — the response shapes for passthrough RPCs, in domain
   vocabulary rather than any interface's: `BlockDeltas`, `BlockchainInfo`,
   `ChainTip`, `MiningInfo`, `NodeInfo`, `PeerInfo`, `SpentInfo`, `TxOut`,
-  `BlockSubsidy`, `StandardFee`.
+  `BlockSubsidy`, `StandardFee`, and `TransactionVerbose`, a verbose
+  `getblock`'s transaction object.
+- `types::BlockVerbose` — the validator's verbose `getblock` answer, every
+  field, its transactions as ids or `TransactionVerbose` objects per the
+  asked `BlockVerbosity` (1, 2, or 3 with prevouts and fees).
 
 ### Bytes are allowed; JSON is not
 

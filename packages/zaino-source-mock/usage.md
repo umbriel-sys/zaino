@@ -103,6 +103,12 @@ from `gettxout`) or a UTXO, and more. They discover the chain through the
 source checked, so the live suite runs the same checks against zebrad and
 zcashd: a mock that drifts from a real validator fails a test.
 
+A verbose `getblock` at verbosity 2 and 3 renders each transaction with
+zebra-rpc's own `TransactionObject` builder (prevouts from the served best
+chain) and reads it back with the zcash RPC adapter's parser, so the mock
+answers exactly as an adapter reading zebrad does; `chain_info` checks every
+verbosity names the block's hash, height, parent and transactions.
+
 Where zcashd and zebra legitimately differ (zebra omits chain work; its
 difficulty divides by its exact 256-bit limit), the mock answers as zcashd
 does and the contract accepts both. `NodeFacts::chainwork = false` answers
