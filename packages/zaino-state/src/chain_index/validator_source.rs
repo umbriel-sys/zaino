@@ -481,15 +481,23 @@ impl ZebraValidatorSource {
             grpc_address = %direct.validator_grpc_address,
             "Launching Chain Syncer"
         );
-        let (mut read_state_service, _latest_chain_tip, chain_tip_change, sync_task_handle) =
-            zebra_rpc::sync::init_read_state_with_syncer(
-                direct.validator_state_config.clone(),
-                &network,
-                direct.validator_grpc_address,
-            )
+        // zebra leaves its secondary state's temp directory behind: tracked
+        // across the launch and removed with the adapter
+        let opening = tokio::task::spawn_blocking(zaino_source_zebra::Opening::begin)
             .await
             .map_err(|e| invalid(e.to_string()))?
             .map_err(|e| invalid(e.to_string()))?;
+        let launched = zebra_rpc::sync::init_read_state_with_syncer(
+            direct.validator_state_config.clone(),
+            &network,
+            direct.validator_grpc_address,
+        )
+        .await;
+        let secondary = opening.finish().map_err(|e| invalid(e.to_string()))?;
+        let (mut read_state_service, _latest_chain_tip, chain_tip_change, sync_task_handle) =
+            launched
+                .map_err(|e| invalid(e.to_string()))?
+                .map_err(|e| invalid(e.to_string()))?;
 
         tracing::info!("Chain syncer launched");
 
@@ -544,6 +552,7 @@ impl ZebraValidatorSource {
                 read_state_service,
                 &network,
                 Some(Arc::new(sync_task_handle)),
+                secondary,
             ),
         );
 

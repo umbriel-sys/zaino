@@ -621,7 +621,18 @@ where
 
 #[cfg(test)]
 mod tests {
-    use super::{height_range, Height, ServiceError};
+    use super::{height_range, not_local, ChainViewError, Height, ServiceError};
+
+    /// A store still building is not local, as one absent is: both take the
+    /// mempool-then-validator path (`spent_info`, `block_deltas`).
+    #[test]
+    fn a_building_store_is_not_local() {
+        assert!(not_local(&ChainViewError::Building {
+            what: "spends",
+            store_tip: None,
+        }));
+        assert!(not_local(&ChainViewError::NotBuilt("spent")));
+    }
 
     fn height(h: u32) -> Height {
         Height::try_from(h).expect("valid test height")

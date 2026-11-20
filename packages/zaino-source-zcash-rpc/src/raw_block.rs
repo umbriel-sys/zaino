@@ -59,6 +59,24 @@ mod tests {
 
     use super::*;
 
+    /// What zebra's parse refuses is `Upstream`, trailing bytes included
+    /// (its deserializer ignores them).
+    #[test]
+    fn upstream_reports_what_zebra_refuses() {
+        let (_, vector) = MAINNET_BLOCKS.iter().next().expect("a vector");
+        assert!(upstream(vector).is_ok());
+        assert!(matches!(
+            upstream(&vector[..vector.len() - 1]),
+            Err(RawBlockError::Upstream(_))
+        ));
+        let mut trailing = vector.to_vec();
+        trailing.push(0);
+        assert!(matches!(
+            upstream(&trailing),
+            Err(RawBlockError::Upstream(reason)) if reason == "trailing bytes"
+        ));
+    }
+
     /// zebra's own vectors parse alike at every level.
     #[test]
     fn every_vector_passes_every_level_alike() {

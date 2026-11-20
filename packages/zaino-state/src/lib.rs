@@ -85,6 +85,10 @@ pub use error::InitError;
 pub use zaino_chain::{ChainViewSnapshot, ComposerSnapshot};
 pub use zaino_chain_head::{ChainHeadBlock, ChainHeadSnapshot};
 pub use zaino_chain_head_service::PersistentSnapshot;
+
+/// The chain head's snapshot under its 0.10 name.
+#[deprecated(note = "renamed: use `PersistentSnapshot`")]
+pub type MapBackedSnapshot = PersistentSnapshot;
 pub use zaino_primitives::types::MempoolInfo;
 pub use zaino_service::Spend;
 

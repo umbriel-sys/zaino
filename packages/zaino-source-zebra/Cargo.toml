@@ -28,6 +28,7 @@ thiserror.workspace = true
 zaino-consensus.workspace = true
 
 [dev-dependencies]
+tempfile.workspace = true
 zcash_address.workspace = true
 zcash_protocol.workspace = true
 

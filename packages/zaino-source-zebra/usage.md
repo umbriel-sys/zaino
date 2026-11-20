@@ -36,6 +36,14 @@ implement its port) and preference is a routing table (`routing.rs`).
 `Fetch`-only and `State` are now **configurations of one type**, not variants.
 The read-state path is never the only path.
 
+Opening zebra's state read-only makes zebra create a
+`zebra-secondary_state-…` directory under the system temp directory and
+never remove it. The adapter removes it when it drops: `open` tracks it
+itself; a caller launching the service (`from_service`) brackets the launch
+with an `Opening` and passes the resulting `SecondaryStateDirs`. Opens are
+serialised across processes by a lock file in the temp directory, so each
+directory is attributed to the open that made it.
+
 ## The quirk table
 
 `zaino-source-zcash-rpc` reads every reply as the spec defines it and names

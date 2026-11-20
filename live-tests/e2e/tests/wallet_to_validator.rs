@@ -2257,11 +2257,14 @@ mod zebrad {
     /// funding output. The spend block's `InputDelta` must be present and resolve
     /// to the funding output's address and full (negated) value — pre-fix this
     /// input was dropped and `inputs` was empty, so balances overstated funds.
+    #[rstest]
+    #[case::fetch(Backend::Fetch)]
+    #[case::state(Backend::State)]
     #[tokio::test(flavor = "multi_thread")]
-    async fn get_block_deltas_resolves_transparent_spend() -> Result<()> {
+    async fn get_block_deltas_resolves_transparent_spend(#[case] backend: Backend) -> Result<()> {
         let cache = ChainCache::ensure().await?;
         let zebrad = Zebrad::launch(cache.zebrad_config()).await?;
-        let indexer = Zainod::launch(cache.indexer_config(&zebrad, Backend::State)).await?;
+        let indexer = Zainod::launch(cache.indexer_config(&zebrad, backend)).await?;
         let irpc = indexer.json_rpc();
         let vrpc = zebrad.rpc();
         let recipient_taddr = &cache.manifest.recipient.transparent;
@@ -2354,11 +2357,16 @@ mod zebrad {
     /// The fixture's tip block carries only its filler coinbase transaction —
     /// the coinbase input is skipped and `getblockdeltas` fabricates no
     /// transparent input deltas.
+    #[rstest]
+    #[case::fetch(Backend::Fetch)]
+    #[case::state(Backend::State)]
     #[tokio::test(flavor = "multi_thread")]
-    async fn get_block_deltas_coinbase_only_block_has_no_inputs() -> Result<()> {
+    async fn get_block_deltas_coinbase_only_block_has_no_inputs(
+        #[case] backend: Backend,
+    ) -> Result<()> {
         let cache = ChainCache::ensure().await?;
         let zebrad = Zebrad::launch(cache.zebrad_config()).await?;
-        let indexer = Zainod::launch(cache.indexer_config(&zebrad, Backend::State)).await?;
+        let indexer = Zainod::launch(cache.indexer_config(&zebrad, backend)).await?;
         let irpc = indexer.json_rpc();
 
         let tip = cache.manifest.fixture.height;

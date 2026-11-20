@@ -161,6 +161,9 @@ pub struct ZebraReadStateAdapter {
     /// means a different multiple of the minimum on each network, so it cannot
     /// be computed from the tip alone.
     network: Network,
+    /// The temp directories opening `state` created, removed when this
+    /// drops. Last, so the database closes first.
+    _secondary: Option<crate::secondary::SecondaryStateDirs>,
 }
 
 impl ZebraReadStateAdapter {
@@ -174,13 +177,20 @@ impl ZebraReadStateAdapter {
             ..Default::default()
         };
 
-        let (state, _db, _sender) = zebra_state::init_read_only(config, network)
-            .map_err(|e| format!("failed to open zebra state: {e}"))?;
+        let opening = crate::secondary::Opening::begin()
+            .map_err(|e| format!("failed to track zebra's secondary state: {e}"))?;
+        let opened = zebra_state::init_read_only(config, network);
+        let secondary = opening
+            .finish()
+            .map_err(|e| format!("failed to track zebra's secondary state: {e}"))?;
+        let (state, _db, _sender) =
+            opened.map_err(|e| format!("failed to open zebra state: {e}"))?;
 
         Ok(Self {
             state,
             syncer: None,
             network: network.clone(),
+            _secondary: Some(secondary),
         })
     }
 }
@@ -190,16 +200,20 @@ impl ZebraReadStateAdapter {
     ///
     /// The read-only [`open`](Self::open) path starts no syncer and so has no
     /// tip stream; a caller that needs one launches the service itself and
-    /// hands it here, along with the syncer task so this adapter can stop it.
+    /// hands it here, along with the syncer task so this adapter can stop it
+    /// and the secondary directories its launch created (an
+    /// [`Opening`](crate::Opening) around the launch), which this removes.
     pub fn from_service(
         state: ReadStateService,
         network: &Network,
         syncer: Option<std::sync::Arc<tokio::task::JoinHandle<()>>>,
+        secondary: crate::SecondaryStateDirs,
     ) -> Self {
         Self {
             state,
             syncer,
             network: network.clone(),
+            _secondary: Some(secondary),
         }
     }
 }

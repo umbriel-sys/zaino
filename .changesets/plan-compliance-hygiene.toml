@@ -40,4 +40,14 @@ kind = "fix"
 description = """
 gRPC `GetTransaction` no longer reports height 0 for a transaction whose \
 bytes are found but which nothing places: it is `Unavailable`. Height 0 is \
-a mempool transaction only."""
+a mempool transaction only. `MapBackedSnapshot` is back as a deprecated \
+alias of `PersistentSnapshot`."""
+
+[[changes]]
+crate = "zaino-source-zebra"
+kind = "breaking"
+description = """
+The temp directory zebra's read-only state leaves behind \
+(`zebra-secondary_state-…`) is removed when the read-state adapter drops. \
+`ZebraReadStateAdapter::from_service` takes the `SecondaryStateDirs` an \
+`Opening` around the launch returns; `open` tracks its own."""
