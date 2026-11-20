@@ -44,3 +44,8 @@ struct only where an API demands one.
 
 `pool_filter_from_wire` goes one way only: the wire filter cannot say "no
 pools", because an empty set means every shielded pool.
+
+`proto::utils::prune_compact_block(block, &filter)` applies a wire filter to
+an already-encoded `CompactBlock`: it clears the pools the filter leaves out
+and drops a transaction left with nothing. Kept for consumers holding the
+prost struct; reads inside zaino filter at the store.

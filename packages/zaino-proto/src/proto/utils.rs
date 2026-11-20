@@ -1,7 +1,7 @@
 use std::collections::BTreeSet;
 
 use crate::proto::{
-    compact_formats::CompactTx,
+    compact_formats::{CompactBlock, CompactTx},
     service::{BlockId, BlockRange, PoolType},
 };
 #[cfg(feature = "heavy")]
@@ -291,6 +291,58 @@ impl CompactTx {
     }
 }
 
+/// Prunes a compact block of transaction information related to pools the
+/// filter excludes, then omits transactions left with no pool data at all.
+///
+/// An unfiltered request is expressed as [`PoolTypeFilter::default`]; the
+/// request-decode path ([`PoolTypeFilter::new_from_slice`]) produces it for
+/// an empty `poolTypes` field.
+pub fn prune_compact_block(mut block: CompactBlock, filter: &PoolTypeFilter) -> CompactBlock {
+    block.vtx = block
+        .vtx
+        .into_iter()
+        .map(|compact_tx| prune_compact_tx(compact_tx, filter))
+        .filter(CompactTx::has_pool_data)
+        .collect();
+    block
+}
+
+/// Rebuilds one transaction keeping only the data of pools the filter
+/// includes.
+fn prune_compact_tx(compact_tx: CompactTx, filter: &PoolTypeFilter) -> CompactTx {
+    let CompactTx {
+        index,
+        txid,
+        fee,
+        spends,
+        outputs,
+        actions,
+        ironwood_actions,
+        vin,
+        vout,
+    } = compact_tx;
+    CompactTx {
+        index,
+        txid,
+        fee,
+        spends: included_or_empty(filter.includes_sapling(), spends),
+        outputs: included_or_empty(filter.includes_sapling(), outputs),
+        actions: included_or_empty(filter.includes_orchard(), actions),
+        ironwood_actions: included_or_empty(filter.includes_ironwood(), ironwood_actions),
+        vin: included_or_empty(filter.includes_transparent(), vin),
+        vout: included_or_empty(filter.includes_transparent(), vout),
+    }
+}
+
+/// `items` when `included`, the empty vector otherwise.
+fn included_or_empty<T>(included: bool, items: Vec<T>) -> Vec<T> {
+    if included {
+        items
+    } else {
+        Vec::new()
+    }
+}
+
 #[cfg(test)]
 mod test {
     use crate::proto::{
@@ -400,5 +452,45 @@ mod test {
         assert!(filter.includes_sapling());
         assert!(filter.includes_orchard());
         assert!(!filter.includes_transparent());
+    }
+
+    /// `prune_compact_block` clears the pools the filter leaves out and drops
+    /// a transaction left with nothing, keeping the others' indexes.
+    #[test]
+    fn pruning_clears_excluded_pools_and_drops_empty_transactions() {
+        use crate::proto::compact_formats::{CompactBlock, CompactSaplingSpend, CompactTx, TxOut};
+        let spend = CompactSaplingSpend { nf: vec![1; 32] };
+        let out = TxOut {
+            value: 5,
+            script_pub_key: vec![0x6a],
+        };
+        let block = CompactBlock {
+            vtx: vec![
+                CompactTx {
+                    index: 0,
+                    vout: vec![out.clone()],
+                    ..Default::default()
+                },
+                CompactTx {
+                    index: 1,
+                    spends: vec![spend.clone()],
+                    vout: vec![out.clone()],
+                    ..Default::default()
+                },
+            ],
+            ..Default::default()
+        };
+
+        let shielded = super::prune_compact_block(block.clone(), &PoolTypeFilter::default());
+        assert_eq!(
+            shielded.vtx,
+            vec![CompactTx {
+                index: 1,
+                spends: vec![spend],
+                ..Default::default()
+            }]
+        );
+        let all = super::prune_compact_block(block.clone(), &PoolTypeFilter::includes_all());
+        assert_eq!(all, block);
     }
 }
