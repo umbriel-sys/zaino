@@ -29,16 +29,9 @@ adapter is an optional accelerator, not an alternative.
   the part most likely to be got wrong.
 - `parse_transaction_object` reads a verbose `getblock` transaction object
   exactly as the adapter does, so the mock answers through the same parser.
-- `raw_block.rs` — raw block bytes → domain `Block`, with no curve
-  arithmetic. It enforces the structure `zcash_primitives` and `zebra-chain`
-  check when parsing: lengths, canonical CompactSizes, versions and version
-  groups, known branch ids and pool activation, reserved flag bits, value
-  ranges, BIP 34 coinbase heights. It does not check that curve points or
-  field elements are valid: the validator has already verified the block.
-  Txids are computed here (SHA-256d up to v4, ZIP 244 / ZIP 229 from v5). On
-  every block zebra accepts, the result matches `zebra-chain` +
-  `zaino_primitives::zebra`; the tests check this against zebra's block
-  vectors and arbitrary blocks for every upgrade, including v6.
+- `raw_block.rs` — raw block bytes → domain `Block` through
+  [`zaino-encoding`](../zaino-encoding/usage.md)'s decoder, plus the `Full`
+  level's cross-check against zebra's own parse.
 
 ### Block verification
 
@@ -54,11 +47,9 @@ diagnosing one:
 
 Neither level checks proofs, signatures or consensus rules.
 
-The parser is public for other crates reading consensus bytes:
-`parse_block(bytes, verification)` and
-`GENESIS_COINBASE_SCRIPT_SIG` (the one coinbase without a BIP 34 height).
-The merkle root it checks is `zaino_primitives`' `MerkleRoot::of(txids)`.
-`zaino-source-mock` builds its blocks through it.
+`parse_block(bytes, verification)` is public, with the three levels;
+`zaino-source-mock` builds its blocks through it. A crate that only needs
+to decode consensus bytes uses `zaino-encoding` directly.
 
 ## Error classification: the part that matters
 

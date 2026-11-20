@@ -24,20 +24,16 @@ incrementalmerkletree.workspace = true
 zcash_primitives.workspace = true
 sapling-crypto.workspace = true
 tokio = { workspace = true, features = ["rt"] }
-sha2.workspace = true
-blake2b_simd.workspace = true
-zaino-consensus.workspace = true
 zaino-primitives = { workspace = true, features = ["zebra"] }
 orchard.workspace = true
+zaino-encoding.workspace = true
 
 [features]
 tracing = ["dep:tracing"]
 
 [dev-dependencies]
-proptest.workspace = true
 tokio = { workspace = true, features = ["macros", "rt", "net", "io-util"] }
 zcash_primitives = { workspace = true, features = ["test-dependencies"] }
-zcash_protocol.workspace = true
 zebra-chain = { workspace = true, features = ["proptest-impl"] }
 zebra-test.workspace = true
 

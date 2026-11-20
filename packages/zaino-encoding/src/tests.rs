@@ -31,12 +31,8 @@ fn whole<T: ZcashDeserialize>(bytes: &[u8]) -> Option<T> {
     (cursor.position() == bytes.len() as u64).then_some(value)
 }
 
-fn parse(bytes: &[u8]) -> Result<Block, RawBlockError> {
-    parse_at(bytes, BlockVerification::Off)
-}
-
-fn parse_at(bytes: &[u8], verification: BlockVerification) -> Result<Block, RawBlockError> {
-    parse_block(bytes, verification)
+fn parse(bytes: &[u8]) -> Result<Block, DecodeError> {
+    parse_block(bytes, false)
 }
 
 /// What a block compares by: every field, as `Block` and `Transaction` have
@@ -116,7 +112,7 @@ fn trailing_bytes_are_refused() {
         let mut long = bytes.to_vec();
         long.push(0);
         assert!(
-            matches!(parse(&long), Err(RawBlockError::TrailingBytes(1))),
+            matches!(parse(&long), Err(DecodeError::TrailingBytes(1))),
             "{network} {height}"
         );
     }
@@ -395,11 +391,11 @@ fn v4_tx(coinbase: Option<&[u8]>, spends: usize, value_balance: i64) -> Vec<u8> 
     tx
 }
 
-fn read_tx(bytes: &[u8]) -> Result<ParsedTransaction, RawBlockError> {
+fn read_tx(bytes: &[u8]) -> Result<ParsedTransaction, DecodeError> {
     read_tx_checked(bytes, false)
 }
 
-fn read_tx_checked(bytes: &[u8], check_fields: bool) -> Result<ParsedTransaction, RawBlockError> {
+fn read_tx_checked(bytes: &[u8], check_fields: bool) -> Result<ParsedTransaction, DecodeError> {
     let mut r = Reader::new(bytes);
     let parsed = read_transaction(&mut r, check_fields)?;
     r.finish()?;
@@ -488,18 +484,18 @@ fn branch_ids() {
     assert!(read_tx(&shielded_tx(5, SPROUT_BRANCH_ID, None, None)).is_ok());
     assert!(matches!(
         read_tx(&shielded_tx(5, 0x1234_5678, None, None)),
-        Err(RawBlockError::BranchId(0x1234_5678))
+        Err(DecodeError::BranchId(0x1234_5678))
     ));
     assert!(matches!(
         read_tx(&shielded_tx(6, NU6_2, None, None)),
-        Err(RawBlockError::V6BeforeNu6_3(NU6_2))
+        Err(DecodeError::V6BeforeNu6_3(NU6_2))
     ));
     assert!(read_tx(&shielded_tx(6, NU6_3, Some(3), Some(7))).is_ok());
     assert!(read_tx(&shielded_tx(6, NU7, Some(3), Some(7))).is_ok());
     assert!(read_tx(&shielded_tx(5, NU5, Some(3), None)).is_ok());
     assert!(matches!(
         read_tx(&shielded_tx(5, CANOPY, Some(3), None)),
-        Err(RawBlockError::PoolInactive {
+        Err(DecodeError::PoolInactive {
             pool: ShieldedPool::Orchard,
             branch: CANOPY
         })
@@ -524,7 +520,7 @@ fn reserved_flags() {
         assert!(
             matches!(
                 flags(5, Some(bits), None),
-                Err(RawBlockError::Flags {
+                Err(DecodeError::Flags {
                     pool: ShieldedPool::Orchard,
                     ..
                 })
@@ -534,7 +530,7 @@ fn reserved_flags() {
     }
     assert!(matches!(
         flags(6, Some(4), None),
-        Err(RawBlockError::Flags {
+        Err(DecodeError::Flags {
             pool: ShieldedPool::Orchard,
             flags: 4
         })
@@ -545,7 +541,7 @@ fn reserved_flags() {
     );
     assert!(matches!(
         flags(6, None, Some(8)),
-        Err(RawBlockError::Flags {
+        Err(DecodeError::Flags {
             pool: ShieldedPool::Ironwood,
             flags: 8
         })
@@ -561,19 +557,19 @@ fn transaction_versions() {
     };
     assert!(matches!(
         read_tx(&header(0, 0)),
-        Err(RawBlockError::TxVersion(0))
+        Err(DecodeError::TxVersion(0))
     ));
     assert!(matches!(
         read_tx(&header(0x8000_0005, V4_GROUP_ID)),
-        Err(RawBlockError::VersionGroup { version: 5, .. })
+        Err(DecodeError::VersionGroup { version: 5, .. })
     ));
     assert!(matches!(
         read_tx(&header(0x8000_0007, V6_GROUP_ID)),
-        Err(RawBlockError::VersionGroup { version: 7, .. })
+        Err(DecodeError::VersionGroup { version: 7, .. })
     ));
     assert!(matches!(
         read_tx(&header(0x8000_0002, V3_GROUP_ID)),
-        Err(RawBlockError::VersionGroup { version: 2, .. })
+        Err(DecodeError::VersionGroup { version: 2, .. })
     ));
     // Pre-Overwinter, `zcash_primitives` takes any version from 1 (JoinSplits from 2).
     let mut v3 = 3u32.to_le_bytes().to_vec();
@@ -587,12 +583,12 @@ fn sapling_rules() {
     assert!(read_tx(&v4_tx(Some(&coinbase), 0, 0)).is_ok());
     assert!(matches!(
         read_tx(&v4_tx(Some(&coinbase), 1, 0)),
-        Err(RawBlockError::CoinbaseSaplingSpend)
+        Err(DecodeError::CoinbaseSaplingSpend)
     ));
     assert!(read_tx(&v4_tx(None, 1, 5)).is_ok());
     assert!(matches!(
         read_tx(&v4_tx(None, 0, 1)),
-        Err(RawBlockError::UnbalancedEmptySapling)
+        Err(DecodeError::UnbalancedEmptySapling)
     ));
 }
 
@@ -601,23 +597,23 @@ fn compact_sizes() {
     let count = |bytes: &[u8]| Reader::new(bytes).count(1);
     assert!(matches!(
         count(&[0xfd, 0xfc, 0x00]),
-        Err(RawBlockError::NonCanonicalCompactSize(0))
+        Err(DecodeError::NonCanonicalCompactSize(0))
     ));
     assert!(matches!(
         count(&[0xfe, 0xff, 0xff, 0x00, 0x00]),
-        Err(RawBlockError::NonCanonicalCompactSize(0))
+        Err(DecodeError::NonCanonicalCompactSize(0))
     ));
     assert!(matches!(
         count(&[0xff, 0, 0, 0, 0, 1, 0, 0, 0]),
-        Err(RawBlockError::CompactSizeTooLarge(_))
+        Err(DecodeError::CompactSizeTooLarge(_))
     ));
     assert!(matches!(
         count(&[0xfe, 0x01, 0x00, 0x00, 0x02]),
-        Err(RawBlockError::CompactSizeTooLarge(0x0200_0001))
+        Err(DecodeError::CompactSizeTooLarge(0x0200_0001))
     ));
     assert!(matches!(
         count(&[0x02, 0x00]),
-        Err(RawBlockError::CountExceedsData {
+        Err(DecodeError::CountExceedsData {
             count: 2,
             remaining: 1,
             ..
@@ -637,59 +633,45 @@ fn block_rules() {
 
     let mut version = block.clone();
     version[..4].copy_from_slice(&3u32.to_le_bytes());
-    assert!(matches!(
-        parse(&version),
-        Err(RawBlockError::BlockVersion(3))
-    ));
+    assert!(matches!(parse(&version), Err(DecodeError::BlockVersion(3))));
     version[..4].copy_from_slice(&0x8000_0004u32.to_le_bytes());
-    assert!(matches!(
-        parse(&version),
-        Err(RawBlockError::BlockVersion(_))
-    ));
+    assert!(matches!(parse(&version), Err(DecodeError::BlockVersion(_))));
 
     let mut solution = block[..HEADER_LEN - 1347].to_vec();
     solution.extend([100]);
     solution.extend([0; 100]);
     assert!(matches!(
         parse(&solution),
-        Err(RawBlockError::SolutionLength(100))
+        Err(DecodeError::SolutionLength(100))
     ));
 
     assert!(matches!(
         parse(&block_of(&[v4_tx(None, 0, 0)])),
-        Err(RawBlockError::NoCoinbaseHeight)
+        Err(DecodeError::NoCoinbaseHeight)
     ));
     assert!(matches!(
         parse(&block_of(&[])),
-        Err(RawBlockError::NoCoinbaseHeight)
+        Err(DecodeError::NoCoinbaseHeight)
     ));
 
     let too_large = vec![0; zaino_consensus::MAX_BLOCK_BYTES as usize + 1];
     assert!(matches!(
         parse(&too_large),
-        Err(RawBlockError::BlockTooLarge(_))
+        Err(DecodeError::BlockTooLarge(_))
     ));
 }
 
 // Verification levels.
 
-const LEVELS: [BlockVerification; 3] = [
-    BlockVerification::Off,
-    BlockVerification::Light,
-    BlockVerification::Full,
-];
 /// Version and previous hash precede it.
 const MERKLE_ROOT_AT: std::ops::Range<usize> = 36..68;
 
 #[test]
-fn every_vector_passes_every_level_alike() {
+fn every_vector_passes_light_alike() {
     for (network, height, bytes) in vectors() {
         let off = parse(bytes).expect("vector");
-        for level in LEVELS {
-            let checked = parse_at(bytes, level)
-                .unwrap_or_else(|e| panic!("{network} {height} {level:?}: {e}"));
-            assert_eq!(checked, off, "{network} {height} {level:?}");
-        }
+        let light = parse_block(bytes, true).unwrap_or_else(|e| panic!("{network} {height}: {e}"));
+        assert_eq!(light, off, "{network} {height}");
     }
 }
 
@@ -698,11 +680,32 @@ fn light_checks_the_merkle_root() {
     for (network, height, bytes) in vectors() {
         let mut bad = bytes.to_vec();
         bad[MERKLE_ROOT_AT.start] ^= 1;
-        assert!(parse(&bad).is_ok(), "{network} {height}: Off ignores it");
-        for level in [BlockVerification::Light, BlockVerification::Full] {
+        assert!(parse(&bad).is_ok(), "{network} {height}: off ignores it");
+        assert!(
+            matches!(parse_block(&bad, true), Err(DecodeError::MerkleRoot)),
+            "{network} {height}"
+        );
+    }
+}
+
+/// A transaction alone decodes as it does inside its block, and trailing
+/// bytes are refused.
+#[test]
+fn a_transaction_alone_decodes_as_in_its_block() {
+    for (network, height, bytes) in vectors() {
+        let zebra: ZebraBlock = bytes.zcash_deserialize_into().expect("vector");
+        let block = parse(bytes).expect("vector");
+        for (tx, expected) in zebra.transactions.iter().zip(block.transactions()) {
+            let mut alone = tx.zcash_serialize_to_vec().expect("serializes");
+            let parsed = parse_transaction(&alone).expect("decodes alone");
+            assert_eq!(&parsed, expected, "{network} {height}");
+            alone.push(0);
             assert!(
-                matches!(parse_at(&bad, level), Err(RawBlockError::MerkleRoot)),
-                "{network} {height} {level:?}"
+                matches!(
+                    parse_transaction(&alone),
+                    Err(DecodeError::TrailingBytes(1))
+                ),
+                "{network} {height}"
             );
         }
     }
@@ -730,7 +733,7 @@ fn light_checks_field_elements() {
             "{field}: Off ignores it"
         );
         assert!(
-            matches!(read_tx_checked(&tx, true), Err(RawBlockError::NonCanonical(f)) if f == field),
+            matches!(read_tx_checked(&tx, true), Err(DecodeError::NonCanonical(f)) if f == field),
             "{field}"
         );
     }
@@ -740,29 +743,20 @@ fn light_checks_field_elements() {
     assert!(read_tx_checked(&sapling, false).is_ok());
     assert!(matches!(
         read_tx_checked(&sapling, true),
-        Err(RawBlockError::NonCanonical("Sapling anchor"))
+        Err(DecodeError::NonCanonical("Sapling anchor"))
     ));
     assert!(read_tx_checked(&orchard, true).is_ok(), "zero is canonical");
 }
 
-/// `block` with its header's merkle root set to its txids' root.
-fn with_merkle_root(mut block: Vec<u8>) -> Vec<u8> {
+/// Light checks fields, not curve points: zebra refuses a block it accepts.
+#[test]
+fn light_accepts_canonical_fields_that_are_not_points() {
+    use zaino_consensus::branch_id::NU5;
+    let coinbase = v4_tx(Some(&coinbase_script(push_height(2_000_000))), 0, 0);
+    let mut block = block_of(&[coinbase, shielded_tx(5, NU5, Some(3), None)]);
     let parsed = parse(&block).expect("parses");
     let txids = parsed.transactions().iter().map(|tx| tx.txid.into());
     block[MERKLE_ROOT_AT].copy_from_slice(&<[u8; 32]>::from(MerkleRoot::of(txids)));
-    block
-}
-
-#[test]
-fn full_refuses_what_zebra_refuses() {
-    use zaino_consensus::branch_id::NU5;
-    let coinbase = v4_tx(Some(&coinbase_script(push_height(2_000_000))), 0, 0);
-    // An action of zeroed curve points: canonical fields, not a valid action.
-    let block = with_merkle_root(block_of(&[coinbase, shielded_tx(5, NU5, Some(3), None)]));
-    assert!(parse_at(&block, BlockVerification::Light).is_ok());
+    assert!(parse_block(&block, true).is_ok());
     assert!(oracle(&block).is_none(), "zebra refuses it");
-    assert!(matches!(
-        parse_at(&block, BlockVerification::Full),
-        Err(RawBlockError::Upstream(_))
-    ));
 }

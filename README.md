@@ -50,12 +50,13 @@ Currently Zebra's `ReadStateService` only enables direct access to chain data (b
 ## Project Structure
 
 ```
-packages/                          Cargo workspace member crates (27), in dependency order
+packages/                          Cargo workspace member crates (28), in dependency order
   zaino-logging/                     Tracing setup and the panic hook
   zaino-async/                       Low-level async/tokio building blocks: named, panic-rendering tasks
   zaino-component/                   Supervised subsystems: lifecycle, health, and tasks
   zaino-consensus/                   Zcash consensus constants and protocol limits
   zaino-primitives/                  Domain vocabulary (thiserror only; no serde; `zebra` feature: zebra-chain -> domain conversions)
+  zaino-encoding/                    Consensus bytes -> domain blocks and transactions (no node library)
   zaino-address/                     Zcash address classification
   zaino-persistence/                 Driven ports for index persistence (read/write)
   zaino-persistence-lsm-tree/        On-disk persistence backend: positional files, an LSM tree, one manifest commit
@@ -211,6 +212,7 @@ mistakes its design is trying to prevent.
 - [`zaino-component`](./packages/zaino-component/usage.md): the component abstraction, its two independent axes, and the observed/owned line.
 - [`zaino-consensus`](./packages/zaino-consensus/usage.md): the protocol constants, and why they are stated rather than borrowed.
 - [`zaino-primitives`](./packages/zaino-primitives/usage.md): the domain vocabulary, and why it depends on nothing.
+- [`zaino-encoding`](./packages/zaino-encoding/usage.md): the consensus-bytes decoder, and what it does not check.
 - [`zaino-persistence`](./packages/zaino-persistence/usage.md): the storage backend port, and why index code never names a concrete store.
 - [`zaino-persistence-lsm-tree`](./packages/zaino-persistence-lsm-tree/usage.md): the on-disk backend, how to open and tune it, and what a failed write or merge leaves behind.
 - [`zaino-indexes`](./packages/zaino-indexes/usage.md): per-field record layouts, index schemas and the digest a directory is stamped with.

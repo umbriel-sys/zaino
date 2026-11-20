@@ -29,7 +29,8 @@ mod parse;
 mod raw_block;
 
 pub use adapter::{Quirks, ZcashRpcAdapter};
-pub use raw_block::{parse_block, BlockVerification, RawBlockError, GENESIS_COINBASE_SCRIPT_SIG};
+pub use raw_block::{parse_block, BlockVerification, RawBlockError};
+pub use zaino_encoding::GENESIS_COINBASE_SCRIPT_SIG;
 
 /// A verbose `getblock` transaction object the adapter could not read.
 #[derive(Debug, thiserror::Error)]

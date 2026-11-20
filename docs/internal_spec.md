@@ -131,6 +131,11 @@ and each crate's `usage.md` for practical guidance.
   - Depends on `thiserror` and nothing else. No serde: serialization belongs to
     whichever boundary owns the format.
 
+- Decoder (`zaino-encoding`):
+  - Consensus bytes to the domain block and transaction, structure checked,
+    no node library. The zcash RPC adapter decodes blocks through it; the
+    mempool service decodes each transaction once at ingest.
+
 - Ports (`zaino-source`):
   - One trait per question a consumer can ask, each with its own error type.
   - `QueryError` separates a *domain answer* (the validator replied; not

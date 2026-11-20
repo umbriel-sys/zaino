@@ -1,0 +1,17 @@
+[[changes]]
+crate = "zaino-encoding"
+kind = "feature"
+description = """
+New crate: the non-validating decoder from Zcash consensus bytes to the \
+domain `Block` and `Transaction`, moved out of `zaino-source-zcash-rpc` so a \
+crate above the source layer can decode without an adapter or a node library. \
+`parse_block(bytes, light)`, `parse_transaction(bytes)`, `DecodeError`, \
+`GENESIS_COINBASE_SCRIPT_SIG` (C4)."""
+
+[[changes]]
+crate = "zaino-source-zcash-rpc"
+kind = "breaking"
+description = """
+The raw block decoder moved to `zaino-encoding`. `parse_block` and \
+`BlockVerification` are unchanged; `RawBlockError` is now `Decode` (the \
+decoder's `DecodeError`), `Upstream` and `UpstreamMismatch` (C4)."""
