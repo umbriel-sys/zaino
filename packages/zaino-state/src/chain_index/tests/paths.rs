@@ -788,3 +788,116 @@ async fn with_the_store_mid_build_the_hole_is_the_validators() {
             if error.kind() == ChainIndexErrorKind::Unavailable
     ));
 }
+
+/// The reads the other tests leave: each asks the port named, with no store
+/// and with the store mid-build; the tip's block id is the snapshot's.
+#[tokio::test]
+async fn the_remaining_reads_take_their_paths() {
+    use futures::StreamExt as _;
+    use zaino_proto::proto::service::{BlockRange, GetAddressUtxosArg, GetSubtreeRootsArg};
+
+    for ephemeral in [true, false] {
+        let rig = rig(ephemeral).await;
+        let hole = || BlockId {
+            height: u64::from(IN_HOLE),
+            hash: Vec::new(),
+        };
+
+        let latest = rig.rpc.get_latest_block().await.expect("GetLatestBlock");
+        assert_eq!(latest.height, u64::from(CHAIN_TIP));
+
+        asked(
+            rig.asks("get_blockchain_info", rig.rpc.get_lightd_info())
+                .await,
+            "GetLightdInfo",
+        );
+        asked(
+            rig.asks(
+                "get_standard_fee",
+                crate::ZcashIndexer::get_standard_fee(&rig.rpc),
+            )
+            .await,
+            "getstandardfee",
+        );
+        asked(
+            rig.asks(
+                "get_treestate_by_hash",
+                rig.rpc.get_tree_state(BlockId {
+                    height: 0,
+                    hash: {
+                        let mut bytes = hex::decode(rig.hash_at(IN_HOLE)).expect("hex");
+                        bytes.reverse();
+                        bytes
+                    },
+                }),
+            )
+            .await,
+            "GetTreeState",
+        );
+        asked(
+            rig.asks("get_treestate_by_hash", rig.rpc.get_latest_tree_state())
+                .await,
+            "GetLatestTreeState",
+        );
+        asked(
+            rig.asks(
+                "get_subtree_roots",
+                rig.rpc.z_get_subtrees_by_index(
+                    zaino_primitives::types::ShieldedPool::Sapling,
+                    zebra_chain::subtree::NoteCommitmentSubtreeIndex(0),
+                    None,
+                ),
+            )
+            .await,
+            "z_getsubtreesbyindex",
+        );
+        let (asked_roots, roots) = rig
+            .asks("get_subtree_roots", async {
+                let stream = rig
+                    .rpc
+                    .get_subtree_roots(GetSubtreeRootsArg {
+                        start_index: 0,
+                        shielded_protocol: 0,
+                        max_entries: 0,
+                    })
+                    .await
+                    .expect("GetSubtreeRoots");
+                stream.collect::<Vec<_>>().await
+            })
+            .await;
+        assert!(asked_roots, "GetSubtreeRoots asks the validator");
+        assert!(roots.iter().all(Result::is_ok));
+        let (asked_range, range) = rig
+            .asks("get_pre_index_compact_block", async {
+                let stream = rig
+                    .rpc
+                    .get_block_range_nullifiers(BlockRange {
+                        start: Some(hole()),
+                        end: Some(hole()),
+                        pool_types: Vec::new(),
+                    })
+                    .await
+                    .expect("GetBlockRangeNullifiers");
+                stream.collect::<Vec<_>>().await
+            })
+            .await;
+        assert!(asked_range, "GetBlockRangeNullifiers asks the validator");
+        assert_eq!(range.len(), 1);
+        let (asked_utxos, utxos) = rig
+            .asks("get_address_utxos", async {
+                let stream = rig
+                    .rpc
+                    .get_address_utxos_stream(GetAddressUtxosArg {
+                        addresses: vec![miner()],
+                        start_height: 0,
+                        max_entries: 0,
+                    })
+                    .await
+                    .expect("GetAddressUtxosStream");
+                stream.collect::<Vec<_>>().await
+            })
+            .await;
+        assert!(asked_utxos, "GetAddressUtxosStream asks the validator");
+        assert!(!utxos.is_empty());
+    }
+}

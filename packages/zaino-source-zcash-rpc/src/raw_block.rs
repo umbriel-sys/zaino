@@ -77,6 +77,41 @@ mod tests {
         ));
     }
 
+    /// A block whose fields are canonical but whose Sapling value commitment
+    /// is no curve point passes `Light` and is refused by `Full`.
+    #[test]
+    fn full_refuses_what_zebra_refuses() {
+        use zaino_primitives::types::MerkleRoot;
+
+        let (mut block, cmu) = MAINNET_BLOCKS
+            .iter()
+            .chain(TESTNET_BLOCKS.iter())
+            .find_map(|(_, bytes)| {
+                let block = parse_block(bytes, BlockVerification::Off).ok()?;
+                let output = block
+                    .transactions()
+                    .iter()
+                    .find_map(|tx| tx.sapling.outputs.first())?;
+                Some((bytes.to_vec(), <[u8; 32]>::from(output.cmu)))
+            })
+            .expect("a vector with a Sapling output");
+        // an output's value commitment sits just before its note commitment
+        let cmu_at = block
+            .windows(32)
+            .position(|window| window == cmu)
+            .expect("the note commitment is in the bytes");
+        block[cmu_at - 32..cmu_at].fill(0xff);
+        let parsed = parse_block(&block, BlockVerification::Off).expect("structure intact");
+        let txids = parsed.transactions().iter().map(|tx| tx.txid.into());
+        block[36..68].copy_from_slice(&<[u8; 32]>::from(MerkleRoot::of(txids)));
+
+        assert!(parse_block(&block, BlockVerification::Light).is_ok());
+        assert!(matches!(
+            parse_block(&block, BlockVerification::Full),
+            Err(RawBlockError::Upstream(_))
+        ));
+    }
+
     /// zebra's own vectors parse alike at every level.
     #[test]
     fn every_vector_passes_every_level_alike() {
