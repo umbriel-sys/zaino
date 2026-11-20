@@ -173,7 +173,7 @@ mod tests {
     }
 
     mod zatoshis {
-        use crate::rpc::jsonrpc::wire::common::amount::Zatoshis;
+        use crate::serve::jsonrpc::wire::common::amount::Zatoshis;
 
         #[test]
         fn zatoshis_integer_number_is_zats() {
@@ -213,7 +213,7 @@ mod tests {
     }
 
     mod zecamount {
-        use crate::rpc::jsonrpc::wire::common::amount::ZecAmount;
+        use crate::serve::jsonrpc::wire::common::amount::ZecAmount;
 
         #[test]
         fn zecamount_from_float_decimal() {

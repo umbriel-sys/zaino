@@ -96,7 +96,7 @@ pub struct TimeOffsetSeconds(pub i64);
 
 #[cfg(test)]
 mod tests {
-    use crate::rpc::jsonrpc::wire::common::{BlockHeight, MaybeHeight};
+    use crate::serve::jsonrpc::wire::common::{BlockHeight, MaybeHeight};
 
     #[test]
     fn maybeheight_deser_accepts_minus_one_and_null() {

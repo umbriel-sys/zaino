@@ -6063,34 +6063,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "zaino-serve"
-version = "0.9.0"
-dependencies = [
- "futures",
- "hex",
- "indexmap 2.14.2",
- "jsonrpsee",
- "metrics",
- "serde",
- "serde_json",
- "thiserror 2.0.20",
- "tokio",
- "tonic",
- "tower 0.4.13",
- "tracing",
- "zaino-address",
- "zaino-component",
- "zaino-consensus",
- "zaino-primitives",
- "zaino-proto",
- "zaino-rpc",
- "zaino-source",
- "zaino-state",
- "zebra-chain",
- "zebra-rpc",
-]
-
-[[package]]
 name = "zaino-service"
 version = "0.1.0"
 dependencies = [
@@ -6250,7 +6222,6 @@ dependencies = [
  "zaino-primitives",
  "zaino-proto",
  "zaino-rpc",
- "zaino-serve",
  "zaino-state",
  "zainod",
  "zcash_client_backend",
@@ -6269,20 +6240,33 @@ version = "0.10.1"
 dependencies = [
  "clap",
  "config",
+ "futures",
+ "hex",
  "http",
+ "indexmap 2.14.2",
+ "jsonrpsee",
+ "metrics",
  "serde",
+ "serde_json",
  "thiserror 2.0.20",
  "tokio",
  "toml",
+ "tonic",
+ "tower 0.4.13",
  "tracing",
+ "zaino-address",
  "zaino-chain-head-service",
  "zaino-component",
+ "zaino-consensus",
  "zaino-logging",
  "zaino-mempool",
  "zaino-primitives",
+ "zaino-proto",
  "zaino-rpc",
- "zaino-serve",
+ "zaino-source",
  "zaino-state",
+ "zebra-chain",
+ "zebra-rpc",
  "zebra-state",
 ]
 

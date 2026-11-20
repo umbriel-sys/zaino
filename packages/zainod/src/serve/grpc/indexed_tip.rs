@@ -8,13 +8,13 @@ use zaino_proto::proto::indexed_tip::{
 };
 use zaino_state::IndexedTipIndexer;
 
-pub(super) struct IndexedTipService<Indexer> {
+pub(crate) struct IndexedTipService<Indexer> {
     indexer: Indexer,
     shutdown: watch::Receiver<()>,
 }
 
 impl<Indexer> IndexedTipService<Indexer> {
-    pub(super) const fn new(indexer: Indexer, shutdown: watch::Receiver<()>) -> Self {
+    pub(crate) const fn new(indexer: Indexer, shutdown: watch::Receiver<()>) -> Self {
         Self { indexer, shutdown }
     }
 }
@@ -63,7 +63,7 @@ mod tests {
     use zaino_state::IndexedTipIndexer;
 
     use super::IndexedTipService;
-    use crate::server::{config::GrpcServerConfig, grpc::TonicServer};
+    use crate::serve::{config::GrpcServerConfig, grpc::TonicServer};
 
     #[derive(Clone)]
     struct TestIndexer {
@@ -177,7 +177,7 @@ mod tests {
         let (sender, receiver) = tokio::sync::watch::channel(tip(10, 1));
         let listener = TcpListener::bind("127.0.0.1:0")?;
         let address = listener.local_addr()?;
-        let one = crate::server::config::GrpcLimits {
+        let one = crate::serve::config::GrpcLimits {
             concurrency_limit_per_connection: std::num::NonZeroUsize::MIN,
             max_concurrent_streams: std::num::NonZeroU32::MIN,
             ..Default::default()

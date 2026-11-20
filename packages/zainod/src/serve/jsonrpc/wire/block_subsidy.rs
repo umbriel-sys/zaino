@@ -1,6 +1,6 @@
 //! Types associated with the `getblocksubsidy` RPC request.
 
-use crate::rpc::jsonrpc::wire::common::amount::{Zatoshis, ZecAmount};
+use crate::serve::jsonrpc::wire::common::amount::{Zatoshis, ZecAmount};
 use serde::{Deserialize, Deserializer, Serialize};
 use serde_json::Value;
 
@@ -250,7 +250,7 @@ mod from_domain_tests {
 #[cfg(test)]
 mod tests {
 
-    use crate::rpc::jsonrpc::wire::{
+    use crate::serve::jsonrpc::wire::{
         block_subsidy::{BlockSubsidy, GetBlockSubsidy},
         common::amount::Zatoshis,
     };
@@ -387,7 +387,7 @@ mod tests {
 
     #[test]
     fn block_subsidy_full_roundtrip_everything() {
-        use crate::rpc::jsonrpc::wire::{
+        use crate::serve::jsonrpc::wire::{
             block_subsidy::{BlockSubsidy, FundingStream, GetBlockSubsidy, LockBoxStream},
             common::amount::{Zatoshis, ZecAmount},
         };

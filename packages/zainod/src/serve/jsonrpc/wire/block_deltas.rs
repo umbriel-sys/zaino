@@ -2,8 +2,8 @@
 
 use zebra_chain::amount::{Amount, NonNegative};
 
-use crate::rpc::jsonrpc::wire::common::amount;
-use crate::rpc::jsonrpc::wire::display_hex;
+use crate::serve::jsonrpc::wire::common::amount;
+use crate::serve::jsonrpc::wire::display_hex;
 
 impl BlockDeltas {
     /// Renders the domain type as the served JSON shape.

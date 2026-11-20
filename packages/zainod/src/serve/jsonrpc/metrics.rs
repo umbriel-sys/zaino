@@ -11,7 +11,7 @@ use jsonrpsee::{
     MethodResponse,
 };
 
-use crate::metric_names::{
+use crate::serve::metric_names::{
     JSONRPC_ERRORS_TOTAL, JSONRPC_REQUEST_DURATION_SECONDS, SERVE_CODE, SERVE_METHOD,
 };
 

@@ -15,7 +15,10 @@ use zaino_component::{
 /// The name the gRPC server reports status under.
 const NAME: &str = "gRPC";
 
-use crate::server::{config::GrpcServerConfig, error::ServerError};
+use crate::serve::{config::GrpcServerConfig, error::ServerError};
+
+pub(crate) mod indexed_tip;
+pub mod service;
 
 /// LightWallet gRPC server capable of servicing clients over TCP.
 pub struct TonicServer {
@@ -31,7 +34,7 @@ impl TonicServer {
     ///
     /// `routes` is a pre-assembled tonic service router; production
     /// callers build one from an indexer subscriber via
-    /// [`crate::rpc::grpc_routes`]. Decoupling the dispatcher from the
+    /// [`crate::serve::grpc_routes`]. Decoupling the dispatcher from the
     /// transport layer keeps this function focused on bind / TLS /
     /// shutdown and lets the bind-race regression test (see
     /// zingolabs/zaino#1081) pass [`Routes::default`] instead of a full

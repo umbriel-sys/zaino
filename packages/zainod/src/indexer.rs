@@ -3,12 +3,11 @@
 use tokio::time::Instant;
 use tracing::info;
 
+use crate::serve::{
+    config::GrpcServerConfig, grpc::TonicServer, grpc_routes, jsonrpc::JsonRpcServer,
+};
 use zaino_component::{ComponentName, ComponentStatus, Health, Lifecycle};
 use zaino_rpc::probe_node;
-use zaino_serve::{
-    rpc::grpc_routes,
-    server::{config::GrpcServerConfig, grpc::TonicServer, jsonrpc::JsonRpcServer},
-};
 use zaino_state::legacy::status::component_status;
 use zaino_state::{
     IndexerService, LightWalletService, NodeBackedIndexerService, NodeBackedIndexerServiceConfig,

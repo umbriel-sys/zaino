@@ -28,12 +28,12 @@ use std::path::PathBuf;
 use tonic::service::Routes;
 use tonic::transport::{server::TcpIncoming, Certificate, ClientTlsConfig, Endpoint};
 
-use crate::server::config::{GrpcServerConfig, GrpcTls};
-use crate::server::grpc::TonicServer;
+use crate::serve::config::{GrpcServerConfig, GrpcTls};
+use crate::serve::grpc::TonicServer;
 
 fn fixture_path(name: &str) -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("src/server/grpc/tests/fixtures")
+        .join("src/serve/grpc/tests/fixtures")
         .join(name)
 }
 

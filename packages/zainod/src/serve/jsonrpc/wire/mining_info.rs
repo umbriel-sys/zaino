@@ -209,7 +209,7 @@ mod from_domain_tests {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::rpc::jsonrpc::wire::roundtrip;
+    use crate::serve::jsonrpc::wire::roundtrip;
     use serde_json::json;
 
     fn zebrad_json() -> String {

@@ -420,7 +420,7 @@ mod tests {
         mod params {
             use serde_json::{json, Value};
 
-            use crate::rpc::jsonrpc::wire::address_deltas::GetAddressDeltasParams;
+            use crate::serve::jsonrpc::wire::address_deltas::GetAddressDeltasParams;
 
             #[test]
             fn params_deser_filtered_with_camel_case_and_defaults() {
@@ -500,7 +500,7 @@ mod tests {
         mod address_delta {
             use serde_json::Value;
 
-            use crate::rpc::jsonrpc::wire::address_deltas::{
+            use crate::serve::jsonrpc::wire::address_deltas::{
                 tests::sample_delta_with_block_index, AddressDelta,
             };
 
@@ -539,7 +539,7 @@ mod tests {
         mod response {
             use serde_json::{json, Value};
 
-            use crate::rpc::jsonrpc::wire::address_deltas::{
+            use crate::serve::jsonrpc::wire::address_deltas::{
                 tests::sample_delta_with_block_index, BlockInfo, GetAddressDeltasResponse,
             };
 

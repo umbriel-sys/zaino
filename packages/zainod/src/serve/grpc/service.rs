@@ -3,7 +3,7 @@
 use futures::StreamExt;
 use tracing::info;
 
-use crate::rpc::GrpcClient;
+use crate::serve::GrpcClient;
 use zaino_proto::proto::{
     compact_formats::CompactBlock,
     service::{
@@ -135,7 +135,7 @@ fn record_grpc_metrics<T>(
     start: std::time::Instant,
     result: &Result<tonic::Response<T>, tonic::Status>,
 ) {
-    use crate::metric_names::*;
+    use crate::serve::metric_names::*;
     metrics::histogram!(GRPC_REQUEST_DURATION_SECONDS, SERVE_METHOD => method)
         .record(start.elapsed().as_secs_f64());
     if let Err(status) = result {

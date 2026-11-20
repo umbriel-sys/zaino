@@ -26,7 +26,7 @@ impl GetStandardFee {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::rpc::jsonrpc::wire::roundtrip;
+    use crate::serve::jsonrpc::wire::roundtrip;
     use serde_json::json;
 
     /// Pins zebrad's field names: `standard_fee` is a plain zatoshi integer,

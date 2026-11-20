@@ -19,7 +19,7 @@ use std::net::{Ipv4Addr, SocketAddr};
 use tokio::net::TcpListener;
 use tonic::service::Routes;
 
-use crate::server::{config::GrpcServerConfig, grpc::TonicServer};
+use crate::serve::{config::GrpcServerConfig, grpc::TonicServer};
 
 #[tokio::test]
 async fn returns_err_when_port_is_in_use() {

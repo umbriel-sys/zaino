@@ -5,9 +5,9 @@ use std::net::SocketAddr;
 use metrics_exporter_prometheus::{Matcher, PrometheusBuilder};
 
 // Names owned by the emitting crates, so `describe_*` cannot drift from emission
+use crate::serve::metric_names::*;
 use zaino_chain_head_service::metric_names::*;
 use zaino_rpc::metric_names::*;
-use zaino_serve::metric_names::*;
 use zaino_state::mempool_metric_names::*;
 use zaino_state::metric_names::*;
 
@@ -53,7 +53,7 @@ const BUCKETS: &[(&str, &[f64])] = &[
 /// Every counter the workspace emits, with its `# HELP`, from the crate that emits it
 const COUNTERS: &[&[(&str, &str)]] = &[
     zaino_state::metric_names::store::COUNTERS,
-    zaino_serve::metric_names::COUNTERS,
+    crate::serve::metric_names::COUNTERS,
     zaino_rpc::metric_names::COUNTERS,
     zaino_chain_head_service::metric_names::COUNTERS,
     &[(
@@ -75,7 +75,7 @@ const GAUGES: &[&[(&str, &str)]] = &[
 const HISTOGRAMS: &[&[(&str, &str)]] = &[
     zaino_state::metric_names::store::HISTOGRAMS,
     zaino_state::mempool_metric_names::HISTOGRAMS,
-    zaino_serve::metric_names::HISTOGRAMS,
+    crate::serve::metric_names::HISTOGRAMS,
     zaino_rpc::metric_names::HISTOGRAMS,
     zaino_chain_head_service::metric_names::HISTOGRAMS,
 ];

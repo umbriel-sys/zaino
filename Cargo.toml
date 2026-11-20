@@ -26,7 +26,6 @@ members = [
     "packages/zaino-chain",
     "packages/zaino-service",
     "packages/zainod",
-    "packages/zaino-serve",
     "packages/zaino-state",
     "packages/zaino-proto",
     # NOTE: live-tests/ is its own standalone workspace (see
@@ -208,7 +207,6 @@ zaino-chain-store-service = { path = "packages/zaino-chain-store-service", versi
 zaino-chain = { path = "packages/zaino-chain", version = "0.1.0" }
 zaino-proto = { path = "packages/zaino-proto", version = "0.6.1" }
 zaino-state = { path = "packages/zaino-state", version = "0.10.0", default-features = false }
-zaino-serve = { path = "packages/zaino-serve", version = "0.9.0", default-features = false }
 
 
 config = { version = "0.15", default-features = false, features = ["toml"] }

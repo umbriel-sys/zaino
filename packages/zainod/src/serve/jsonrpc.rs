@@ -1,9 +1,13 @@
 //! Zaino's JsonRPC Server Implementation.
 
-use crate::{
-    rpc::{jsonrpc::service::ZcashIndexerRpcServer as _, JsonRpcClient},
-    server::{config::JsonRpcServerConfig, error::ServerError},
+use crate::serve::{
+    config::JsonRpcServerConfig, error::ServerError, jsonrpc::service::ZcashIndexerRpcServer as _,
+    JsonRpcClient,
 };
+
+pub(crate) mod metrics;
+pub mod service;
+pub mod wire;
 
 use zaino_component::{
     ComponentName, ComponentStatus, Health, Lifecycle, StatusCell, StatusSource as _,
@@ -101,14 +105,14 @@ impl JsonRpcServer {
         // against this method set, so a caller cannot mint a series by inventing
         // a name (see `jsonrpc_metrics`)
         let rpc_module = rpc_impl.into_rpc();
-        let method_names: crate::server::jsonrpc_metrics::MethodNames =
+        let method_names: crate::serve::jsonrpc::metrics::MethodNames =
             std::sync::Arc::new(rpc_module.method_names().collect());
 
         // Layer order is load-bearing: first added = outermost, so metrics must sit
         // outside the zcashd compatibility fix to see the code the client receives
         let rpc_middleware = RpcServiceBuilder::new().rpc_logger(1024);
         let rpc_middleware = rpc_middleware.layer_fn(move |service| {
-            crate::server::jsonrpc_metrics::MetricsMiddleware::new(service, method_names.clone())
+            crate::serve::jsonrpc::metrics::MetricsMiddleware::new(service, method_names.clone())
         });
         let rpc_middleware = rpc_middleware.layer_fn(FixRpcResponseMiddleware::new);
 

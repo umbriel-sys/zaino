@@ -1,6 +1,6 @@
 //! Hold error types for the Indexer and related functionality.
 
-use zaino_serve::server::error::ServerError;
+use crate::serve::error::ServerError;
 
 use zaino_state::NodeBackedIndexerServiceError;
 

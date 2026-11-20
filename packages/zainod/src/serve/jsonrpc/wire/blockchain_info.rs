@@ -5,7 +5,7 @@
 //! layer, because this response reshapes value pools into a fixed array and
 //! renames network upgrades by consensus branch id.
 
-use crate::rpc::jsonrpc::wire::common::amount;
+use crate::serve::jsonrpc::wire::common::amount;
 use zaino_primitives::types::{BlockchainInfo, ValuePoolBalance};
 use zebra_chain::parameters::Network;
 use zebra_rpc::methods::GetBlockchainInfoResponse;

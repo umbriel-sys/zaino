@@ -18,9 +18,9 @@ use tracing::info;
 use tracing::warn;
 
 use crate::error::IndexerError;
+use crate::serve::config::{GrpcServerConfig, JsonRpcServerConfig};
 use zaino_primitives::types::Network;
 use zaino_rpc::net::{try_resolve_address, AddressResolution};
-use zaino_serve::server::config::{GrpcServerConfig, JsonRpcServerConfig};
 use zaino_state::legacy::config::{ServiceConfig, StorageConfig};
 
 mod validator;

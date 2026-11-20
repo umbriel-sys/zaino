@@ -120,14 +120,14 @@ impl Zainod {
             ephemeral_finalised_state: config.ephemeral,
             network: config.network,
             metrics_endpoint: None,
-            json_server_settings: Some(zaino_serve::server::config::JsonRpcServerConfig {
+            json_server_settings: Some(zainodlib::serve::config::JsonRpcServerConfig {
                 json_rpc_listen_address: json_addr,
                 cookie_dir: None,
             }),
-            grpc_settings: zaino_serve::server::config::GrpcServerConfig {
+            grpc_settings: zainodlib::serve::config::GrpcServerConfig {
                 listen_address: grpc_addr,
                 tls: None,
-                limits: zaino_serve::server::config::GrpcLimits::default(),
+                limits: zainodlib::serve::config::GrpcLimits::default(),
             },
             validator_settings: ValidatorConfig {
                 validator_grpc_listen_address: Some(config.validator_grpc.to_string()),
