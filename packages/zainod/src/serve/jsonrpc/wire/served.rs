@@ -13,9 +13,8 @@ use zaino_primitives::types::{
 use zaino_service::BlockHashAt;
 
 use super::{display_hex, zats_to_zec};
-
-/// zebrad's bound on the addresses of one request.
-pub const MAX_REQUEST_ADDRESSES: usize = 10_000;
+use crate::serve::addresses::checked_addresses;
+pub use crate::serve::addresses::{AddressesError, MAX_REQUEST_ADDRESSES};
 
 /// The `getinfo` response.
 #[derive(Clone, Debug, PartialEq, Serialize)]
@@ -317,39 +316,6 @@ impl NetworkInfoWire {
     }
 }
 
-/// Why an address request is refused, with zebrad's legacy code.
-#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
-pub enum AddressesError {
-    /// More than [`MAX_REQUEST_ADDRESSES`] addresses (zebrad's −8).
-    #[error("too many addresses: the limit is {MAX_REQUEST_ADDRESSES}")]
-    TooMany,
-    /// A malformed or TEX address (zebrad's −5).
-    #[error("invalid address {address}: {reason}")]
-    Invalid {
-        /// The address as sent.
-        address: String,
-        /// Why it is refused.
-        reason: String,
-    },
-}
-
-/// The addresses of a request, checked as zebrad checks them: at most
-/// [`MAX_REQUEST_ADDRESSES`], each a transparent P2PKH or P2SH address.
-fn checked_addresses(addresses: Vec<String>) -> Result<Vec<TransparentAddress>, AddressesError> {
-    if addresses.len() > MAX_REQUEST_ADDRESSES {
-        return Err(AddressesError::TooMany);
-    }
-    addresses
-        .into_iter()
-        .map(|address| {
-            TransparentAddress::try_new(address.clone()).map_err(|error| AddressesError::Invalid {
-                address,
-                reason: error.to_string(),
-            })
-        })
-        .collect()
-}
-
 /// `{"addresses": [..]}`, or one address as a bare string.
 #[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
 #[serde(untagged)]
@@ -366,7 +332,7 @@ pub enum AddressesRequestWire {
 impl AddressesRequestWire {
     /// The addresses asked about, checked.
     pub fn into_domain(self) -> Result<Vec<TransparentAddress>, AddressesError> {
-        checked_addresses(match self {
+        checked_addresses(&match self {
             Self::Addresses { addresses } => addresses,
             Self::Address(address) => vec![address],
         })
@@ -396,7 +362,7 @@ impl AddressTxIdsRequestWire {
     /// The request, its addresses checked.
     pub fn into_domain(self) -> Result<AddressTxIdsRequest, AddressesError> {
         Ok(AddressTxIdsRequest {
-            addresses: checked_addresses(self.addresses)?,
+            addresses: checked_addresses(&self.addresses)?,
             start: self.start,
             end: self.end,
         })
@@ -451,7 +417,7 @@ impl AddressUtxosRequestWire {
             } => (addresses, chain_info, start_height, max_entries),
         };
         Ok(AddressUtxosRequest {
-            addresses: checked_addresses(addresses)?,
+            addresses: checked_addresses(&addresses)?,
             chain_info,
             start_height,
             max_entries,
@@ -983,7 +949,7 @@ mod tests {
         ));
         assert!(matches!(
             read(json!({ "addresses": ["textest1qyqszqgpqyqszqgpqyqszqgpqyqszqgpfcjgfy"] })),
-            Err(AddressesError::Invalid { .. })
+            Err(AddressesError::Tex)
         ));
         assert_eq!(
             read(json!({ "addresses": vec!["x"; MAX_REQUEST_ADDRESSES + 1] })),

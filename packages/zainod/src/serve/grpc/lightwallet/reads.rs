@@ -33,9 +33,6 @@ use super::status::{self, Kind, Refusal};
 use super::stream::{spawn_timed_stream, ChannelStream, StreamBounds};
 use super::Lightwallet;
 
-/// The most addresses one address-index request may name, as zebrad's.
-const MAX_REQUEST_ADDRESSES: usize = 10_000;
-
 /// The most addresses one `GetAddressUtxos` request may carry.
 const UTXO_MAX_ADDRESSES: usize = 1000;
 
@@ -107,24 +104,9 @@ fn invalid_pool_type() -> tonic::Status {
 }
 
 /// The addresses of an address-index request, checked as zebrad checks
-/// them: at most 10,000, each a transparent P2PKH or P2SH address (never
-/// TEX), each once.
+/// them.
 fn checked_addresses(addresses: &[String]) -> Result<Vec<TransparentAddress>, Refusal> {
-    if addresses.len() > MAX_REQUEST_ADDRESSES {
-        return Err(Refusal::rejected_query(format!(
-            "too many addresses: the limit is {MAX_REQUEST_ADDRESSES}"
-        )));
-    }
-    let mut seen = HashSet::new();
-    let mut checked = Vec::with_capacity(addresses.len());
-    for address in addresses {
-        let address =
-            TransparentAddress::try_new(address.as_str()).map_err(Refusal::rejected_query)?;
-        if seen.insert(address.clone()) {
-            checked.push(address);
-        }
-    }
-    Ok(checked)
+    crate::serve::addresses::checked_addresses(addresses).map_err(Refusal::rejected_query)
 }
 
 /// A `GetTaddressTransactions` filter as lightwalletd reads it: a range and

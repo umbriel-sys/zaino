@@ -247,7 +247,7 @@ fn block_not_in_best_chain(at: BlockId) -> ErrorObjectOwned {
 fn addresses_error(error: AddressesError) -> ErrorObjectOwned {
     let code = match error {
         AddressesError::TooMany => INVALID_PARAMETER,
-        AddressesError::Invalid { .. } => INVALID_ADDRESS_OR_KEY,
+        AddressesError::Tex | AddressesError::Invalid { .. } => INVALID_ADDRESS_OR_KEY,
     };
     rpc_error(code, error)
 }

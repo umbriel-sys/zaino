@@ -948,3 +948,20 @@ async fn jsonrpc_unknown_chainwork_is_absent() {
     assert_eq!(served.get("chainwork"), None);
     assert_eq!(served["blocks"], json!(SERVED));
 }
+
+/// `getblock`'s `trees` lists only the pools holding notes, as zebrad: none
+/// at genesis, Sapling and Orchard once they have been written to.
+#[tokio::test]
+async fn jsonrpc_getblock_omits_empty_trees() {
+    let chain = chain_with(facts());
+    let rpc = served(&chain).await;
+    let genesis = ok(&rpc, "getblock", json!(["0", 1])).await;
+    assert_eq!(genesis["trees"], json!({}));
+    let noted = ok(&rpc, "getblock", json!(["100", 1])).await;
+    let trees = noted["trees"].as_object().expect("an object");
+    assert_eq!(
+        trees.keys().map(String::as_str).collect::<Vec<_>>(),
+        ["orchard", "sapling"]
+    );
+    assert!(trees.values().all(|tree| tree["size"].as_u64() > Some(0)));
+}

@@ -1,6 +1,7 @@
 //! The gRPC and JSON-RPC servers and the services they serve: the
 //! lightwalletd `CompactTxStreamer` and the zcash JSON-RPC methods.
 
+pub mod addresses;
 pub mod backend;
 pub mod config;
 pub mod error;

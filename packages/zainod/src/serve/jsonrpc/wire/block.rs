@@ -126,14 +126,17 @@ fn block_object(block: &BlockVerbose) -> Result<Value> {
                 .into(),
         );
     }
-    object.insert(
-        "trees".into(),
-        json!({
-            "sapling": { "size": u64::from(block.tree_sizes.sapling) },
-            "orchard": { "size": u64::from(block.tree_sizes.orchard) },
-            "ironwood": { "size": u64::from(block.tree_sizes.ironwood) },
-        }),
-    );
+    // as zebrad: an empty tree is omitted
+    let trees: Map<String, Value> = [
+        ("sapling", u64::from(block.tree_sizes.sapling)),
+        ("orchard", u64::from(block.tree_sizes.orchard)),
+        ("ironwood", u64::from(block.tree_sizes.ironwood)),
+    ]
+    .into_iter()
+    .filter(|(_, size)| *size != 0)
+    .map(|(pool, size)| (pool.to_owned(), json!({ "size": size })))
+    .collect();
+    object.insert("trees".into(), trees.into());
     insert_some(
         &mut object,
         "previousblockhash",
