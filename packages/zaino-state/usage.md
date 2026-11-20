@@ -26,7 +26,13 @@ manifest and the store metrics.
 The old store's tuning (`storage.database.size`, `sync_write_batch_size`,
 `accumulator_rebuild_memory_size`, `sync_checkpoint_interval`,
 `storage.cache`) is read from config for compatibility, not used, and warned
-when set.
+when set. `storage.database.delete_stale` (default true) is the store's
+switch: it deletes the directories the store no longer opens, the old
+database (`v1`) included.
+
+The entry points (`IndexerService::spawn`, `NodeBackedChainIndex::new`) are
+`#[deprecated]`: this crate is the legacy surface, and new code builds on
+`zaino_service::Service`.
 
 ## Reads
 

@@ -174,7 +174,7 @@ mod tests {
     /// being served beside the others, until one ends (AP-02).
     #[tokio::test]
     async fn a_stream_past_the_connection_bound_waits() -> Result<(), Box<dyn Error>> {
-        let (_sender, receiver) = tokio::sync::watch::channel(tip(10, 1));
+        let (sender, receiver) = tokio::sync::watch::channel(tip(10, 1));
         let listener = TcpListener::bind("127.0.0.1:0")?;
         let address = listener.local_addr()?;
         let one = crate::server::config::GrpcLimits {
@@ -204,23 +204,33 @@ mod tests {
             .into_inner();
         assert!(first.message().await?.is_some());
 
+        // No clock: the second stream reports whether the first had been
+        // released when it was served, and the server is seen serving the
+        // first (a new tip) while the second is waiting.
+        let released = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
         let mut second_client = client.clone();
+        let observed = std::sync::Arc::clone(&released);
         let second = tokio::spawn(async move {
             let mut stream = second_client
                 .subscribe_indexed_tips(SubscribeIndexedTipsRequest {})
                 .await?
                 .into_inner();
-            stream.message().await
+            let message = stream.message().await?;
+            Ok::<_, tonic::Status>((message, observed.load(std::sync::atomic::Ordering::SeqCst)))
         });
-        tokio::time::sleep(Duration::from_millis(300)).await;
+        sender.send(tip(11, 2))?;
+        assert!(first.message().await?.is_some());
         assert!(
             !second.is_finished(),
             "the second stream waits for the first"
         );
 
+        released.store(true, std::sync::atomic::Ordering::SeqCst);
         drop(first);
-        let served = tokio::time::timeout(Duration::from_secs(5), second).await??;
-        assert!(served?.is_some(), "served once the first ends");
+        let (served, after_release) =
+            tokio::time::timeout(Duration::from_secs(5), second).await???;
+        assert!(served.is_some(), "served once the first ends");
+        assert!(after_release, "and not before");
         tokio::time::timeout(Duration::from_secs(1), server.close()).await?;
         Ok(())
     }

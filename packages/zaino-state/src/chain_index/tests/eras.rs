@@ -19,31 +19,28 @@ use crate::chain_index::{
 /// are observed.
 const BOUNDARY: u32 = CHAIN_TIP - OPERATIONAL_NFS_DEPTH / 2;
 
-// multi_thread required (every test here): the finalised store commits under
-// `block_in_place`.
-
-#[tokio::test(flavor = "multi_thread")]
+#[tokio::test]
 async fn orchard_only() {
     walk(Activations::default()).await;
 }
 
-#[tokio::test(flavor = "multi_thread")]
+#[tokio::test]
 async fn ironwood_only() {
     walk(Activations::through(Upgrade::Nu6_3, 1)).await;
 }
 
-#[tokio::test(flavor = "multi_thread")]
+#[tokio::test]
 async fn orchard_to_ironwood_transition() {
     walk(Activations::default().at(Upgrade::Nu6_3, BOUNDARY)).await;
 }
 
 /// NU7 adds no transaction format (ZIP 259): served as the Ironwood era is.
-#[tokio::test(flavor = "multi_thread")]
+#[tokio::test]
 async fn nu7() {
     walk(Activations::through(Upgrade::Nu7, 1)).await;
 }
 
-#[tokio::test(flavor = "multi_thread")]
+#[tokio::test]
 async fn ironwood_to_nu7_transition() {
     walk(Activations::through(Upgrade::Nu6_3, 1).at(Upgrade::Nu7, BOUNDARY)).await;
 }

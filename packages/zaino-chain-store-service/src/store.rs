@@ -279,6 +279,7 @@ impl<St: Storage, Src: ChainStoreSource> Inner<St, Src> {
         let storage = &*storage;
         let parents = parents(config, root, &set);
         sweep(storage, &parents, &set, config.indexes.delete_stale)?;
+        sweep_legacy(storage, root, config.indexes.delete_stale)?;
         report_change(storage, root, network, &set);
 
         let mut indexes = Vec::new();
@@ -960,6 +961,41 @@ fn sweep<St: Storage>(
         }
     }
     Ok(())
+}
+
+/// The directory the deleted zainodb kept its database in, beside the store's.
+const LEGACY_DATABASE_DIR: &str = "v1";
+
+/// The old zainodb's database directory, which nothing reads: deleted when
+/// `delete_stale`, else left and logged (C6).
+fn sweep_legacy<St: Storage>(
+    storage: &St,
+    root: &Path,
+    delete_stale: bool,
+) -> Result<(), BootError> {
+    let storage_error = |source| BootError::Storage {
+        index: "store",
+        source,
+    };
+    let held = storage
+        .children(root)
+        .map_err(storage_error)?
+        .iter()
+        .any(|name| name == LEGACY_DATABASE_DIR);
+    if !held {
+        return Ok(());
+    }
+    let dir = root.join(LEGACY_DATABASE_DIR);
+    match delete_stale {
+        true => {
+            tracing::info!(dir = %dir.display(), "deleting the old database directory");
+            storage.remove(&dir).map_err(storage_error)
+        }
+        false => {
+            tracing::info!(dir = %dir.display(), "keeping the old database directory (delete_stale = false)");
+            Ok(())
+        }
+    }
 }
 
 /// The index a `<name>_<format>` directory belongs to.

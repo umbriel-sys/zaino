@@ -131,6 +131,8 @@ where
         ),
         IndexerError,
     > {
+        // the legacy surface until zainod runs on `zaino_service::Service`
+        #[allow(deprecated)]
         let service = IndexerService::<Service>::spawn(service_config).await?;
         let service_subscriber = service.inner_ref().get_subscriber();
 

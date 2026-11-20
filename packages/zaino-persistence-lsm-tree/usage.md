@@ -53,7 +53,8 @@ recovery, failure policy), [lsm-deletes.md](./docs/lsm-deletes.md) and
   A setting out of range refuses the open.
 - `write_buffer`: the buffered heap at which a commit writes the buffer to
   disk. Commits below it are visible to readers at once and durable after the
-  next `flush` or the write that crosses it.
+  next `flush` or the write that crosses it. `DEFAULT_WRITE_BUFFER` (64 MiB,
+  `DEFAULT_WRITE_BUFFER_MIB`) is the measured default every consumer uses.
 
 - `threads`: the size of the thread pool each backend builds at open for its
   writes and commit checks. `None` = the machine's parallelism shared out over

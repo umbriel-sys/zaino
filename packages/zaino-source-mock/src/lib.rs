@@ -11,6 +11,9 @@
 //!
 //! Chains come from [`ChainBuilder`]: synthetic, deterministic, any shape,
 //! every block real consensus bytes on one upgrade schedule ([`Activations`]).
+// A test fixture: the builder panics on a spec no chain can hold, by design,
+// so the no-panic lints are not set; no result is discarded.
+#![cfg_attr(not(test), deny(clippy::let_underscore_must_use, let_underscore_drop))]
 
 mod block;
 mod builder;

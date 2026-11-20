@@ -52,6 +52,7 @@ where
     Service: ZcashService,
 {
     /// Creates a new `IndexerService` using the provided `config`.
+    #[deprecated(note = "zaino-state is the legacy surface: build on `zaino_service::Service`")]
     pub async fn spawn(
         config: Service::Config,
     ) -> Result<Self, <Service::Subscriber as ZcashIndexer>::Error> {

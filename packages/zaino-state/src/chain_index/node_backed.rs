@@ -23,12 +23,6 @@ use super::validator_source::ValidatorSource;
 use super::ZebraNetwork;
 use crate::error::ChainIndexError;
 
-/// The LSM write buffer per index: `zaino-bench`'s measured default.
-const WRITE_BUFFER: std::num::NonZeroUsize = match std::num::NonZeroUsize::new(64 << 20) {
-    Some(bytes) => bytes,
-    None => std::num::NonZeroUsize::MIN,
-};
-
 /// Folds the statuses of the index's components into the index's own.
 ///
 /// Components are read live on every call, so a component that recovers is
@@ -115,6 +109,7 @@ fn service_config(
                 indexes: IndexesConfig {
                     set: Some(NamedSet::Full),
                     disable: vec!["history_tree".to_owned()],
+                    delete_stale: config.storage.database.delete_stale,
                     ..IndexesConfig::default()
                 },
                 on_corruption: OnCorruption::default(),
@@ -123,7 +118,7 @@ fn service_config(
             storage: LsmTreeStorage {
                 fs: RealFs::shared(),
                 lsm: LsmConfig::default(),
-                write_buffer: WRITE_BUFFER,
+                write_buffer: zaino_persistence_lsm_tree::DEFAULT_WRITE_BUFFER,
                 threads: None,
                 strict_manifest_read: false,
             },
@@ -201,6 +196,7 @@ pub struct NodeBackedChainIndex<
 impl<V: ChainIndexSourcePorts + ServiceSource> NodeBackedChainIndex<V> {
     /// Starts the index: the service, which serves at once and builds the
     /// store in the background.
+    #[deprecated(note = "zaino-state is the legacy surface: build on `zaino_service::Service`")]
     pub async fn new(
         source: ValidatorSource<V>,
         config: crate::config::ChainIndexConfig,

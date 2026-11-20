@@ -338,6 +338,48 @@ async fn stale_directories_go_unless_kept_and_foreign_ones_stay() {
     );
 }
 
+/// The old zainodb's `v1` directory beside the store goes with the stale
+/// sweep and stays when `delete_stale` is off (C6).
+#[tokio::test]
+async fn the_old_database_directory_goes_unless_kept() {
+    let (storage, chain) = (InMemoryStorage::new(), chain());
+    let network_dir = PathBuf::from("/data/regtest");
+    let legacy = || {
+        storage
+            .open(
+                &network_dir.join("v1"),
+                Identity {
+                    name: "zainodb",
+                    chain: "regtest",
+                    format: 1,
+                    schema: SchemaDigest::new([7; 32]),
+                },
+                &IndexId::Txids.schema().specs().expect("declared"),
+            )
+            .map(drop)
+            .expect("created");
+    };
+    let held = || {
+        storage
+            .children(&network_dir)
+            .expect("listed")
+            .contains(&"v1".to_owned())
+    };
+
+    legacy();
+    let mut keep = config(&[IndexId::Headers]);
+    keep.indexes.delete_stale = false;
+    drop(boot(&keep, &storage, &chain).await.expect("boots"));
+    assert!(held(), "kept when delete_stale is off");
+
+    drop(
+        boot(&config(&[IndexId::Headers]), &storage, &chain)
+            .await
+            .expect("boots"),
+    );
+    assert!(!held(), "deleted with the stale sweep");
+}
+
 #[tokio::test]
 async fn a_tip_the_validator_does_not_have_is_rebuilt() {
     let (storage, chain) = (InMemoryStorage::new(), chain());

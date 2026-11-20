@@ -102,6 +102,11 @@ description = "Lint every tracked shell script with shellcheck"
 script_runner = "bash"
 script = "git ls-files -z '*.sh' | xargs -0 -r shellcheck"
 
+[tasks.doctest]
+description = "Compile and run every doctest (nextest runs none)"
+command = "cargo"
+args = ["test", "--locked", "--doc", "--workspace"]
+
 [tasks.lint]
 description = "Run every lint CI runs. Enable as a pre-push hook with `git config core.hooksPath .githooks`."
 dependencies = [
@@ -114,4 +119,5 @@ dependencies = [
     "lint-code-duplication",
     "lint-tools",
     "clippy",
+    "doctest",
 ]

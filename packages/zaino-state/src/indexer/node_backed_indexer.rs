@@ -152,6 +152,7 @@ impl ZcashService for NodeBackedIndexerService<ZebraValidator> {
         );
         info!(build = %data.zebra_build(), subversion = %data.zebra_subversion(), "Connected to Zcash node");
 
+        #[allow(deprecated)]
         let indexer = NodeBackedChainIndex::new(
             source,
             crate::config::ChainIndexConfig::from_backend_config(&config.common, network),
@@ -258,8 +259,6 @@ fn parse_txid(txid_hex: &str) -> Result<types::TransactionHash, NodeBackedIndexe
     })
 }
 
-/// The legacy RPC's answer for a transaction it cannot find.
-#[allow(deprecated)]
 /// The pools a compact-block read serves: the requested ones, or for a
 /// nullifier read only their shielded nullifiers (D6-18).
 fn served_pools(
@@ -326,6 +325,8 @@ fn nonzero_standard_fee(
     Ok(crate::chain_index::wire_types::standard_fee_to_wire(fee))
 }
 
+/// The legacy RPC's answer for a transaction it cannot find.
+#[allow(deprecated)]
 fn no_such_transaction() -> NodeBackedIndexerServiceError {
     NodeBackedIndexerServiceError::RpcError(crate::error::LegacyRpcError::new(
         zebra_rpc::server::error::LegacyCode::InvalidAddressOrKey,

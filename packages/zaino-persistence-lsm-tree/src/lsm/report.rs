@@ -50,6 +50,11 @@ pub(super) fn cancelled(set: &str, merges: usize) {
     debug!(set, merges, "Compaction cancelled at close");
 }
 
+/// A merge thread that panicked instead of stopping at its cancel
+pub(super) fn merge_panicked(set: &str) {
+    warn!(set, "Compaction thread panicked at close");
+}
+
 /// Scope changed since `stale` were written: their filters rebuilt before the map serves
 pub(super) fn rescoping(set: &str, stale: &[SegmentMeta]) {
     let bytes = stale

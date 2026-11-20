@@ -40,6 +40,17 @@ pub struct LsmTreeStorage {
     pub strict_manifest_read: bool,
 }
 
+/// The default [`LsmTreeStorage::write_buffer`], in MiB (measured with
+/// `zaino-bench`).
+pub const DEFAULT_WRITE_BUFFER_MIB: usize = 64;
+
+/// [`DEFAULT_WRITE_BUFFER_MIB`] in bytes.
+pub const DEFAULT_WRITE_BUFFER: NonZeroUsize =
+    match NonZeroUsize::new(DEFAULT_WRITE_BUFFER_MIB << 20) {
+        Some(bytes) => bytes,
+        None => NonZeroUsize::MIN,
+    };
+
 /// Pool threads a backend keeps however many share the machine (measured, 5a
 /// step 6: the pool size does not move the build rate; idle pools burn CPU).
 pub const MIN_SHARED_THREADS: NonZeroUsize = NonZeroUsize::MIN.saturating_add(1);

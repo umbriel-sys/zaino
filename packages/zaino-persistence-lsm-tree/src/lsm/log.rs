@@ -701,7 +701,10 @@ impl Drop for SegmentLog {
             merge.cancel.store(true, Ordering::Relaxed);
         }
         for merge in self.merges.drain(..) {
-            let _ = merge.thread.join();
+            // a cancelled merge's own result is not wanted; a panic is reported
+            if merge.thread.join().is_err() {
+                report::merge_panicked(&self.name);
+            }
         }
     }
 }

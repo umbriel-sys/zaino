@@ -34,7 +34,8 @@ address_history = "/mnt/fast/zaino" # holds address_history_<format>/
    over them unless given `threads`);
 3. deletes every `<index>_<format>` directory the set does not open (old
    formats, disabled indexes) unless `delete_stale = false`; other
-   directories are left and logged;
+   directories are left and logged. The same switch covers the old
+   zainodb's database directory (`<root>/<network>/v1`), which nothing reads;
 4. opens each index stamped with its schema and the network kind; a schema
    mismatch is deleted and rebuilt, corruption per `on_corruption`
    (`rebuild`, default, or `halt`);

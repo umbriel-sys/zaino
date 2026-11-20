@@ -48,6 +48,9 @@ jobs:
 
       - run: cargo nextest run --locked --workspace --no-fail-fast
 
+      # nextest runs no doctests
+      - run: cargo test --locked --doc --workspace
+
       # Recorder, admin listener & metric registration contracts compile only under `prometheus`
       - run: cargo nextest run --locked -p zainod --features prometheus --no-fail-fast
 

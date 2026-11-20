@@ -118,6 +118,16 @@ pub struct DatabaseConfig {
     /// Deprecated: the old store's checkpoint interval; not read, warned when set.
     #[serde(default = "default_sync_checkpoint_interval")]
     pub sync_checkpoint_interval: u64,
+    /// Whether the store deletes the directories it no longer opens: old
+    /// index formats, disabled indexes and the old database (`v1`). Default
+    /// true.
+    #[serde(default = "default_delete_stale")]
+    pub delete_stale: bool,
+}
+
+/// Default [`DatabaseConfig::delete_stale`].
+fn default_delete_stale() -> bool {
+    true
 }
 
 /// Default [`DatabaseConfig::sync_checkpoint_interval`].
@@ -133,6 +143,7 @@ impl Default for DatabaseConfig {
             sync_write_batch_size: SyncWriteBatchSize::default(),
             accumulator_rebuild_memory_size: AccumulatorRebuildMemorySize::default(),
             sync_checkpoint_interval: default_sync_checkpoint_interval(),
+            delete_stale: default_delete_stale(),
         }
     }
 }

@@ -160,7 +160,9 @@ impl Mapping {
     /// `MADV_WILLNEED` over `range` (advisory: a failure costs page faults, not correctness)
     pub(crate) fn will_need(&self, range: Range<usize>) {
         if let Some(map) = &self.advice {
-            let _ = map.advise_range(memmap2::Advice::WillNeed, range.start, range.len());
+            // advisory: the kernel refusing it changes nothing read
+            map.advise_range(memmap2::Advice::WillNeed, range.start, range.len())
+                .ok();
         }
     }
 
@@ -178,7 +180,8 @@ impl Mapping {
             Access::Sequential => memmap2::Advice::Sequential,
         };
         if let Some(map) = &self.advice {
-            let _ = map.advise(advice);
+            // advisory: the kernel refusing it changes nothing read
+            map.advise(advice).ok();
         }
     }
 }

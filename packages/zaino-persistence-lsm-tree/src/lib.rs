@@ -14,7 +14,9 @@
         clippy::indexing_slicing,
         clippy::arithmetic_side_effects,
         clippy::string_slice,
-        clippy::get_unwrap
+        clippy::get_unwrap,
+        clippy::let_underscore_must_use,
+        let_underscore_drop
     )
 )]
 
@@ -43,4 +45,6 @@ pub use dir::{disk_bytes, ManifestRead};
 pub use emit::{describe_metrics, METRIC_BUCKETS};
 pub use lsm::{LsmConfig, Tuning, METRIC_BUCKETS as LSM_METRIC_BUCKETS};
 pub use remove::remove_dir_all;
-pub use storage::{LsmTreeStorage, StoreLock, MIN_SHARED_THREADS};
+pub use storage::{
+    LsmTreeStorage, StoreLock, DEFAULT_WRITE_BUFFER, DEFAULT_WRITE_BUFFER_MIB, MIN_SHARED_THREADS,
+};

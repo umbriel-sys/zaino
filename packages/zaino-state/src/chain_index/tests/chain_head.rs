@@ -25,7 +25,7 @@ use super::{served_tip, synced, MockchainMode};
 use crate::chain_index::ChainIndex;
 
 /// The chain head reaches the validator's tip, and ChainIndex serves it.
-#[tokio::test(flavor = "multi_thread")]
+#[tokio::test]
 async fn chain_head_reaches_the_validator_tip() {
     let index = synced(MockchainMode::Active).await;
 
@@ -34,7 +34,7 @@ async fn chain_head_reaches_the_validator_tip() {
 }
 
 /// Every announced tip must already resolve through the same local index view.
-#[tokio::test(flavor = "multi_thread")]
+#[tokio::test]
 async fn indexed_tip_events_name_index_readable_blocks() {
     // Given
     let index = synced(MockchainMode::Active).await;
@@ -69,7 +69,7 @@ async fn indexed_tip_events_name_index_readable_blocks() {
 /// and the same depth. A regression in either one's floor calculation opens a
 /// range of heights that neither layer will answer for, and that is invisible
 /// until a client asks for exactly those blocks.
-#[tokio::test(flavor = "multi_thread")]
+#[tokio::test]
 async fn layers_meet_without_a_gap() {
     let index = synced(MockchainMode::Active).await;
     let index_reader = &index.reader;

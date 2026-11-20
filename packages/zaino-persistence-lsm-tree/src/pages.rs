@@ -347,7 +347,7 @@ impl PagedFile {
 
     /// Synced data out of page cache (advisory: a refusal changes nothing stored)
     pub(crate) fn drop_cache(&self) {
-        let _ = self.data.drop_cache();
+        self.data.drop_cache().ok();
     }
 
     /// Data fsync → completed pages' CRCs written + fsynced → seal for the owner's next manifest

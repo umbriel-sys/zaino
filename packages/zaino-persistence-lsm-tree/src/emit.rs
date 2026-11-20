@@ -110,5 +110,5 @@ pub(crate) fn versions(index: &str) -> (metrics::Gauge, metrics::Gauge) {
 /// `emit` run in a `drop` so a panicking recorder can't unwind out of it (the metric is lost;
 /// unwinding out of a drop during a panic aborts the process)
 pub(crate) fn in_drop(emit: impl FnOnce()) {
-    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(emit));
+    std::panic::catch_unwind(std::panic::AssertUnwindSafe(emit)).ok();
 }

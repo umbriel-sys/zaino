@@ -34,7 +34,7 @@ fn max_backoff_window(config: &ChainHeadConfig) -> Duration {
 
 /// Regression test (fixes #593): a transient source failure must not escalate
 /// the index to `CriticalError`, which would stop the server.
-#[tokio::test(flavor = "multi_thread")]
+#[tokio::test]
 async fn survives_transient_source_failure() {
     let index = synced(MockchainMode::Active).await;
 
@@ -50,7 +50,7 @@ async fn survives_transient_source_failure() {
 
 /// After `max_consecutive_failures` with exponential backoff, the chain head
 /// gives up and the index reports [`StatusType::CriticalError`].
-#[tokio::test(flavor = "multi_thread")]
+#[tokio::test]
 async fn escalates_to_critical_after_persistent_failure() {
     let config = fast_chain_head_config();
     let index = synced_with(MockchainMode::Active, config.clone()).await;
@@ -133,7 +133,7 @@ fn the_fold_accounts_for_every_component() {
 /// finalised state and the mempool; the chain head enters `RecoverableError`
 /// on any transient validator blip, so a latch would make a single blip
 /// permanent.
-#[tokio::test(flavor = "multi_thread")]
+#[tokio::test]
 async fn status_recovers_after_a_transient_source_failure() {
     let index = synced(MockchainMode::Active).await;
     let (index_reader, mockchain) = (&index.reader, &index.source);
@@ -164,7 +164,7 @@ async fn status_recovers_after_a_transient_source_failure() {
 /// Several blocks appearing on the source before the next sync iteration
 /// are absorbed: the index converges on the source's tip.
 /// `sync_blocks_after_startup` covers the one-block-at-a-time trickle.
-#[tokio::test(flavor = "multi_thread")]
+#[tokio::test]
 async fn tip_converges_after_burst_mine() {
     let index = synced(MockchainMode::Active).await;
     let index_reader = &index.reader;
@@ -197,10 +197,7 @@ async fn tip_converges_after_burst_mine() {
 /// must build a wide gap before freezing. Regression: the store ran that build in
 /// the background and returned early, the re-freeze was refused as not ready, and
 /// the finalised index stalled one block short of the seam.
-///
-/// multi_thread required: the finalised store commits on a scoped thread under
-/// `block_in_place`, which a current-thread runtime cannot do.
-#[tokio::test(flavor = "multi_thread")]
+#[tokio::test]
 async fn finalised_index_follows_a_burst_mine_past_the_seam() {
     use crate::chain_index::OPERATIONAL_NFS_DEPTH;
 

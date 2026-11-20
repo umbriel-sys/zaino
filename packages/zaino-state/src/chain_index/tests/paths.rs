@@ -305,7 +305,7 @@ async fn local_reads(rig: &Rig) {
 }
 
 /// With no store every read the store would answer is the validator's.
-#[tokio::test(flavor = "multi_thread")]
+#[tokio::test]
 async fn with_no_store_reads_are_the_validators() {
     let rig = rig(true).await;
     local_reads(&rig).await;
@@ -754,7 +754,7 @@ async fn mempool_transactions_are_filtered_by_pool() {
 
 /// With the store mid-build, what it holds is local and the hole is the
 /// validator's; the txout set is retryable.
-#[tokio::test(flavor = "multi_thread")]
+#[tokio::test]
 async fn with_the_store_mid_build_the_hole_is_the_validators() {
     let rig = rig(false).await;
     assert_eq!(

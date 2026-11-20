@@ -127,7 +127,7 @@ fn miner_address() -> String {
         .expect("the miner pays a standard script")
 }
 
-#[tokio::test(flavor = "multi_thread")]
+#[tokio::test]
 async fn get_block_range() {
     let index = synced(MockchainMode::Static).await;
     let nonfinalized_snapshot = index.reader.snapshot_nonfinalized_state();
@@ -150,7 +150,7 @@ async fn get_block_range() {
 
 /// Ranges in both directions are served block for block, and a range
 /// reaching past the tip yields one error.
-#[tokio::test(flavor = "multi_thread")]
+#[tokio::test]
 async fn get_block_range_serves_both_directions_up_to_the_tip() {
     let index = synced(MockchainMode::Static).await;
     let snapshot = index.reader.snapshot_nonfinalized_state();
@@ -190,7 +190,7 @@ async fn get_block_range_serves_both_directions_up_to_the_tip() {
 }
 
 /// Every best-chain block is its own fork point.
-#[tokio::test(flavor = "multi_thread")]
+#[tokio::test]
 async fn find_fork_point_of_a_best_chain_block_is_itself() {
     let index = synced(MockchainMode::Static).await;
     let snapshot = index.reader.snapshot_nonfinalized_state();
@@ -208,7 +208,7 @@ async fn find_fork_point_of_a_best_chain_block_is_itself() {
 }
 
 /// The reported tip is the source's own tip.
-#[tokio::test(flavor = "multi_thread")]
+#[tokio::test]
 async fn best_chaintip_is_the_source_tip() {
     let index = synced(MockchainMode::Static).await;
     let snapshot = index.reader.snapshot_nonfinalized_state();
@@ -217,8 +217,7 @@ async fn best_chaintip_is_the_source_tip() {
     assert_eq!(tip.height.0, CHAIN_TIP);
 }
 
-// multi_thread required: the chain store's setup uses `block_in_place`.
-#[tokio::test(flavor = "multi_thread")]
+#[tokio::test]
 async fn get_standard_fee_passes_the_validator_answer_through() {
     let index = synced(MockchainMode::Static).await;
 
@@ -231,7 +230,7 @@ async fn get_standard_fee_passes_the_validator_answer_through() {
     assert_eq!(fee.version, 0);
 }
 
-#[tokio::test(flavor = "multi_thread")]
+#[tokio::test]
 async fn get_raw_transaction() {
     let index = synced(MockchainMode::Static).await;
     let nonfinalized_snapshot = index.reader.snapshot_nonfinalized_state();
@@ -256,7 +255,7 @@ async fn get_raw_transaction() {
     }
 }
 
-#[tokio::test(flavor = "multi_thread")]
+#[tokio::test]
 async fn get_transaction_status() {
     let index = synced(MockchainMode::Static).await;
     let nonfinalized_snapshot = index.reader.snapshot_nonfinalized_state();
@@ -280,7 +279,7 @@ async fn get_transaction_status() {
     }
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+#[tokio::test]
 async fn sync_blocks_after_startup() {
     let index = synced(MockchainMode::Active).await;
     let index_reader = &index.reader;
@@ -294,7 +293,7 @@ async fn sync_blocks_after_startup() {
     assert_eq!(served_tip(&index.source), indexer_tip);
 }
 
-#[tokio::test(flavor = "multi_thread")]
+#[tokio::test]
 async fn stale_snapshot_reports_mempool_transaction_as_unavailable_not_missing() {
     // A transaction the validator holds in its mempool, queried with a snapshot
     // the coherent view has moved past. Zaino cannot vouch for it against *that*
@@ -330,8 +329,7 @@ async fn stale_snapshot_reports_mempool_transaction_as_unavailable_not_missing()
     );
 }
 
-// multi_thread required: the chain store's validation uses `block_in_place`.
-#[tokio::test(flavor = "multi_thread")]
+#[tokio::test]
 async fn mined_transaction_is_served_while_the_mempool_still_lists_it() {
     // The chain view can sync a block before the core mempool re-polls, so the
     // core still lists a txid the caller's snapshot has mined. The chain
@@ -369,7 +367,7 @@ async fn mined_transaction_is_served_while_the_mempool_still_lists_it() {
 /// validator's `getmempoolinfo`. What is only checkable here is the
 /// passthrough: that the `MempoolInfo` describes the same transactions
 /// `get_mempool_transactions` returns.
-#[tokio::test(flavor = "multi_thread")]
+#[tokio::test]
 async fn get_mempool_info_agrees_with_the_served_set() {
     let index = synced(MockchainMode::Active).await;
     let index_reader = &index.reader;
@@ -420,7 +418,7 @@ async fn coherent_mempool(index: &super::Synced) -> Vec<(TransactionHash, Vec<u8
     mempool
 }
 
-#[tokio::test(flavor = "multi_thread")]
+#[tokio::test]
 async fn get_mempool_transaction() {
     let index = synced(MockchainMode::Active).await;
     let mempool = coherent_mempool(&index).await;
@@ -439,7 +437,7 @@ async fn get_mempool_transaction() {
     }
 }
 
-#[tokio::test(flavor = "multi_thread")]
+#[tokio::test]
 async fn get_mempool_transaction_status() {
     let index = synced(MockchainMode::Active).await;
     let mempool = coherent_mempool(&index).await;
@@ -483,7 +481,7 @@ async fn served_mempool(
     served
 }
 
-#[tokio::test(flavor = "multi_thread")]
+#[tokio::test]
 async fn get_mempool_transactions() {
     let index = synced(MockchainMode::Active).await;
     let mempool = coherent_mempool(&index).await;
@@ -491,7 +489,7 @@ async fn get_mempool_transactions() {
     assert_eq!(served_mempool(&index.reader, Vec::new()).await, mempool);
 }
 
-#[tokio::test(flavor = "multi_thread")]
+#[tokio::test]
 async fn get_filtered_mempool_transactions() {
     let index = synced(MockchainMode::Active).await;
     let mut mempool = coherent_mempool(&index).await;
@@ -540,7 +538,7 @@ async fn mempool_stream_across_a_mine(
     collector.await.expect("collector task failed")
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+#[tokio::test]
 async fn get_mempool_stream_no_expected_chain_tip_snapshot() {
     let index = synced(MockchainMode::Active).await;
     let mempool = coherent_mempool(&index).await;
@@ -550,7 +548,7 @@ async fn get_mempool_stream_no_expected_chain_tip_snapshot() {
     assert_eq!(mempool_stream_across_a_mine(&index, false).await, mempool);
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+#[tokio::test]
 async fn get_mempool_stream_correct_expected_chain_tip_snapshot() {
     let index = synced(MockchainMode::Active).await;
     let mempool = coherent_mempool(&index).await;
@@ -560,7 +558,7 @@ async fn get_mempool_stream_correct_expected_chain_tip_snapshot() {
     assert_eq!(mempool_stream_across_a_mine(&index, true).await, mempool);
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+#[tokio::test]
 async fn get_mempool_stream_for_stale_snapshot() {
     let index = synced(MockchainMode::Active).await;
     let index_reader = &index.reader;
@@ -587,7 +585,7 @@ async fn get_mempool_stream_for_stale_snapshot() {
     .await;
 }
 
-#[tokio::test(flavor = "multi_thread")]
+#[tokio::test]
 async fn get_block_height() {
     let index = synced(MockchainMode::Static).await;
     let nonfinalized_snapshot = index.reader.snapshot_nonfinalized_state();
@@ -611,7 +609,7 @@ async fn get_block_height() {
     assert_eq!(got, None);
 }
 
-#[tokio::test(flavor = "multi_thread")]
+#[tokio::test]
 async fn get_treestate() {
     let index = synced(MockchainMode::Static).await;
 
@@ -670,7 +668,7 @@ fn filtered_deltas_request(
     }
 }
 
-#[tokio::test(flavor = "multi_thread")]
+#[tokio::test]
 async fn get_address_deltas() {
     let index = synced(MockchainMode::Static).await;
     let mockchain = &index.source;
@@ -752,7 +750,7 @@ async fn get_address_deltas() {
     assert!(invalid_range_result.is_err());
 }
 
-#[tokio::test(flavor = "multi_thread")]
+#[tokio::test]
 async fn get_address_balance() {
     let index = synced(MockchainMode::Static).await;
     let request = || GetAddressBalanceRequest::new(vec![miner_address()]);
@@ -775,7 +773,7 @@ async fn get_address_balance() {
     assert!(invalid_address_result.is_err());
 }
 
-#[tokio::test(flavor = "multi_thread")]
+#[tokio::test]
 async fn get_address_txids() {
     let index = synced(MockchainMode::Static).await;
     let active_height = served_tip(&index.source);
@@ -828,7 +826,7 @@ async fn get_address_txids() {
     assert_eq!(legacy_code(&inverted), Some(-32602), "{inverted}");
 }
 
-#[tokio::test(flavor = "multi_thread")]
+#[tokio::test]
 async fn get_address_utxos() {
     let index = synced(MockchainMode::Static).await;
     let request = || GetAddressBalanceRequest::new(vec![miner_address()]);
@@ -890,7 +888,7 @@ fn unspent(spends: &[(u32, Outpoint, TransactionHash)], created: Vec<Outpoint>) 
         .collect()
 }
 
-#[tokio::test(flavor = "multi_thread")]
+#[tokio::test]
 async fn get_outpoint_spenders() {
     let index = synced(MockchainMode::Static).await;
     let snapshot = index.reader.snapshot_nonfinalized_state();
@@ -926,7 +924,7 @@ async fn get_outpoint_spenders() {
 /// the finalised state, one in the chain head alone, and `Finalised` must
 /// see only the first. This is the only exercise of the finalised
 /// `TxLocation -> txid` resolution through the `ChainIndex`.
-#[tokio::test(flavor = "multi_thread")]
+#[tokio::test]
 async fn get_outpoint_spenders_chain_scope() {
     let index = synced(MockchainMode::Static).await;
     let snapshot = index.reader.snapshot_nonfinalized_state();
@@ -972,7 +970,7 @@ async fn get_outpoint_spenders_chain_scope() {
     );
 }
 
-#[tokio::test(flavor = "multi_thread")]
+#[tokio::test]
 async fn get_outpoint_spenders_empty_and_single() {
     let index = synced(MockchainMode::Static).await;
     let snapshot = index.reader.snapshot_nonfinalized_state();
@@ -1028,7 +1026,7 @@ async fn zebra_block(index: &super::Synced, height: u32) -> zebra_chain::block::
 
 /// `getblock` is the validator's answer at every verbosity: 0 its bytes, 2 the
 /// transaction objects zebrad builds, 3 with prevouts and fees, above 3 `-8`.
-#[tokio::test(flavor = "multi_thread")]
+#[tokio::test]
 async fn z_get_block() {
     let index = synced(MockchainMode::Static).await;
     let active_height = served_tip(&index.source);
@@ -1155,7 +1153,7 @@ fn display_hex(hash: impl Into<[u8; 32]>) -> String {
 /// `get_block_header` served through the ChainIndex: the compact form
 /// round-trips to the stored header bytes, and the verbose form matches the
 /// source and reports the right hash / height.
-#[tokio::test(flavor = "multi_thread")]
+#[tokio::test]
 async fn get_block_header() {
     let index = synced(MockchainMode::Static).await;
     let mockchain = &index.source;
@@ -1187,7 +1185,7 @@ async fn get_block_header() {
 
 /// `get_block_deltas` served through the ChainIndex matches the source,
 /// reports the right block hash / height, and surfaces transparent deltas.
-#[tokio::test(flavor = "multi_thread")]
+#[tokio::test]
 async fn get_block_deltas() {
     let index = synced(MockchainMode::Static).await;
     let mockchain = &index.source;
@@ -1221,7 +1219,7 @@ async fn get_block_deltas() {
 
 /// `get_difficulty` served through the ChainIndex matches the source and is
 /// positive.
-#[tokio::test(flavor = "multi_thread")]
+#[tokio::test]
 async fn get_difficulty() {
     let index = synced(MockchainMode::Static).await;
 
@@ -1238,7 +1236,7 @@ async fn get_difficulty() {
 
 /// The merged [`NodeBackedIndexerServiceSubscriber`] RPC layer delegates to
 /// its chain index: `get_latest_block` reports the tip the index is synced to.
-#[tokio::test(flavor = "multi_thread")]
+#[tokio::test]
 async fn node_backed_indexer_service_serves_latest_block() {
     use crate::indexer::node_backed_indexer::NodeBackedIndexerServiceSubscriber;
     use crate::LightWalletIndexer as _;
@@ -1253,7 +1251,7 @@ async fn node_backed_indexer_service_serves_latest_block() {
 
 /// GetTransaction for a txid no one holds is `NotFound`, as lightwalletd
 /// answers (service.go:524-527).
-#[tokio::test(flavor = "multi_thread")]
+#[tokio::test]
 async fn get_transaction_of_an_unknown_txid_is_not_found() {
     use crate::indexer::node_backed_indexer::NodeBackedIndexerServiceSubscriber;
     use crate::LightWalletIndexer as _;
@@ -1273,7 +1271,7 @@ async fn get_transaction_of_an_unknown_txid_is_not_found() {
 
 /// GetBlock by a hash whose lookup fails keeps the failure's cause, not a
 /// fixed "Internal db error".
-#[tokio::test(flavor = "multi_thread")]
+#[tokio::test]
 async fn get_block_by_hash_keeps_the_lookup_failure() {
     use crate::indexer::node_backed_indexer::NodeBackedIndexerServiceSubscriber;
     use crate::LightWalletIndexer as _;
@@ -1299,7 +1297,7 @@ async fn get_block_by_hash_keeps_the_lookup_failure() {
 
 /// Dropping the chain index without an explicit `shutdown()` call must still
 /// release source-owned background work.
-#[tokio::test(flavor = "multi_thread")]
+#[tokio::test]
 async fn dropping_the_chain_index_releases_the_source() {
     let index = synced(MockchainMode::Static).await;
     let mockchain = index.source.clone();
@@ -1317,7 +1315,7 @@ async fn dropping_the_chain_index_releases_the_source() {
 
 /// zebra's `getblock` resolves negative heights against the tip (`-1` is the
 /// tip block).
-#[tokio::test(flavor = "multi_thread")]
+#[tokio::test]
 async fn z_get_block_resolves_negative_heights_against_the_tip() {
     let index = synced(MockchainMode::Static).await;
 
@@ -1348,7 +1346,7 @@ fn legacy_code_and_message(error: &(dyn std::error::Error + 'static)) -> Option<
 
 /// An unparsable `getblock` identifier carries the legacy InvalidParameter
 /// code (-8) as a typed `RpcError` in the `source()` chain.
-#[tokio::test(flavor = "multi_thread")]
+#[tokio::test]
 async fn z_get_block_invalid_identifier_keeps_legacy_error_code() {
     let index = synced(MockchainMode::Static).await;
 
@@ -1365,11 +1363,25 @@ async fn z_get_block_invalid_identifier_keeps_legacy_error_code() {
     );
 }
 
-/// Dropping the service must not panic on a thread with no Tokio runtime.
-///
-/// multi_thread required: the harness's finalised-state validation uses
-/// `block_in_place`. The drop under test happens on a separate plain thread.
+/// Dropping the service on a multi-thread runtime shuts the index down in
+/// place.
+// multi_thread required: the drop under test takes the `block_in_place`
+// branch, which only a multi-thread runtime has.
 #[tokio::test(flavor = "multi_thread")]
+async fn service_drop_shuts_down_in_place_on_a_multi_thread_runtime() {
+    use crate::indexer::node_backed_indexer::NodeBackedIndexerService;
+
+    let index = synced(MockchainMode::Static).await;
+    let mockchain = index.source.clone();
+    let service = NodeBackedIndexerService::new_for_test(index.indexer, regtest());
+
+    drop(service);
+    assert!(mockchain.source().shutdown_called());
+}
+
+/// Dropping the service must not panic on a thread with no Tokio runtime.
+/// The drop under test happens on a separate plain thread.
+#[tokio::test]
 async fn service_drop_survives_thread_without_runtime() {
     use crate::indexer::node_backed_indexer::NodeBackedIndexerService;
 
@@ -1382,12 +1394,9 @@ async fn service_drop_survives_thread_without_runtime() {
 }
 
 /// Dropping the service must not panic on a current-thread Tokio runtime,
-/// where `block_in_place` aborts.
-///
-/// multi_thread required: the harness's finalised-state validation uses
-/// `block_in_place`. The drop under test happens inside a current-thread
-/// runtime built on a separate thread.
-#[tokio::test(flavor = "multi_thread")]
+/// where `block_in_place` aborts. The drop under test happens inside a
+/// current-thread runtime built on a separate thread.
+#[tokio::test]
 async fn service_drop_survives_current_thread_runtime() {
     use crate::indexer::node_backed_indexer::NodeBackedIndexerService;
 
@@ -1407,7 +1416,7 @@ async fn service_drop_survives_current_thread_runtime() {
 
 /// A source with no local chain-tip-change stream (as over RPC) yields no
 /// chain-tip subscriber, rather than panicking.
-#[tokio::test(flavor = "multi_thread")]
+#[tokio::test]
 async fn chaintip_update_subscriber_absent_without_tip_stream() {
     use crate::indexer::node_backed_indexer::NodeBackedIndexerServiceSubscriber;
 
@@ -1422,7 +1431,7 @@ async fn chaintip_update_subscriber_absent_without_tip_stream() {
 
 /// `sendrawtransaction` rejections carry the legacy error code: invalid hex
 /// is zebrad's `-22`, and is refused before the validator is asked.
-#[tokio::test(flavor = "multi_thread")]
+#[tokio::test]
 async fn send_raw_transaction_invalid_hex_keeps_legacy_error_code() {
     let index = synced(MockchainMode::Static).await;
 
@@ -1453,6 +1462,7 @@ async fn tx_out_set_info_is_answered_or_refused() {
         ephemeral: true,
         ..super::index_config(&dir, &activations)
     };
+    #[allow(deprecated)]
     let ephemeral = crate::chain_index::NodeBackedChainIndex::new(
         super::mock_source(&activations, super::chain_blocks()),
         config,
@@ -1479,7 +1489,7 @@ async fn tx_out_set_info_is_answered_or_refused() {
 }
 
 /// A validator's rejection keeps its own code and message.
-#[tokio::test(flavor = "multi_thread")]
+#[tokio::test]
 async fn send_raw_transaction_keeps_the_validators_rejection_code() {
     use zaino_source::SendRawTransactionError as Rejection;
     let index = synced(MockchainMode::Static).await;
@@ -1509,7 +1519,7 @@ async fn send_raw_transaction_keeps_the_validators_rejection_code() {
 
 /// GetLightdInfo reports Sapling's activation and the next pending upgrade
 /// (K-02), and none once every upgrade is active.
-#[tokio::test(flavor = "multi_thread")]
+#[tokio::test]
 async fn lightd_info_reports_the_schedule() {
     use crate::indexer::node_backed_indexer::NodeBackedIndexerServiceSubscriber;
     use crate::LightWalletIndexer as _;
@@ -1585,7 +1595,7 @@ fn legacy_nullifiers(
 
 /// The shim's compact blocks carry every fee over the store and the window;
 /// the nullifier RPCs serve exactly what they served before.
-#[tokio::test(flavor = "multi_thread")]
+#[tokio::test]
 async fn compact_blocks_carry_fees_and_nullifier_blocks_keep_their_shape() {
     use crate::indexer::node_backed_indexer::NodeBackedIndexerServiceSubscriber;
     use crate::LightWalletIndexer as _;

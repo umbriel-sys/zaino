@@ -95,18 +95,17 @@ pub(crate) fn finalized_height_floor(chain_tip: u32) -> crate::Height {
 /// Both backends are selected by config and built through
 /// [`NodeBackedIndexerService`](crate::NodeBackedIndexerService), which
 /// resolves the connection type, probes the validator, adopts its activation
-/// schedule and waits for the initial sync:
+/// schedule and waits for the chain head to reach the validator's tip:
 ///
 /// ```no_run
-/// # async fn example() -> Result<(), Box<dyn std::error::Error>> {
-/// use zaino_state::{
-///     LightWalletService, NodeBackedIndexerService, NodeBackedIndexerServiceConfig, ZcashService,
-/// };
+/// # async fn example(
+/// #     config: zaino_state::NodeBackedIndexerServiceConfig,
+/// # ) -> Result<(), Box<dyn std::error::Error>> {
+/// use zaino_state::{NodeBackedIndexerService, ZcashService};
 ///
-/// // `ValidatorConnectionType::Rpc` reaches the validator over JSON-RPC only;
-/// // `Direct` additionally reads its state database, and is preferred where
-/// // available.
-/// let config = NodeBackedIndexerServiceConfig::default();
+/// // `config` is `NodeBackedIndexerServiceConfig::new_rpc` (JSON-RPC only) or
+/// // `new_direct` (also reads the validator's state database; preferred
+/// // where available).
 /// let service = NodeBackedIndexerService::spawn(config).await?;
 /// # Ok(())
 /// # }

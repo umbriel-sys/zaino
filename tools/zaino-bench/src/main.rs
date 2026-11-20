@@ -37,7 +37,7 @@ struct Cli {
     #[arg(long)]
     lsm_threads: Option<std::num::NonZeroUsize>,
     /// Each LSM index's write buffer, MiB (the heap at which a commit writes to disk).
-    #[arg(long, default_value_t = 64)]
+    #[arg(long, default_value_t = zaino_persistence_lsm_tree::DEFAULT_WRITE_BUFFER_MIB)]
     lsm_write_buffer_mib: usize,
     #[command(subcommand)]
     command: Command,

@@ -12,7 +12,9 @@
         clippy::indexing_slicing,
         clippy::arithmetic_side_effects,
         clippy::string_slice,
-        clippy::get_unwrap
+        clippy::get_unwrap,
+        clippy::let_underscore_must_use,
+        let_underscore_drop
     )
 )]
 
