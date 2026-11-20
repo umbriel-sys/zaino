@@ -46,7 +46,7 @@ landed. We do not cherry-pick from `dev` to cut releases — a release is always
 a **prefix** of `dev`'s history (the hotfix path, below, is the sole, contained
 exception).
 
-The workspace holds 27 crates (the root [README](../../README.md#project-structure)
+The workspace holds 28 crates (the root [README](../../README.md#project-structure)
 lists them) and 3 internal-only live-test crates (`e2e`, `clientless`,
 `zaino-testutils`). 19 are governed targets today (`zainod`, `zaino-serve`,
 `zaino-state`, `zaino-proto`, `zaino-primitives`, `zaino-address`,
@@ -58,7 +58,8 @@ versioned and released **independently**. The authoritative, machine-read list
 of governed targets is [`relman.toml`](../../relman.toml) at the repo root;
 this prose list mirrors it.
 
-> Not yet targets: `zaino-logging`, `zaino-async`, `zaino-persistence`,
+> Not yet targets: `zaino-logging`, `zaino-async`, `zaino-encoding`,
+> `zaino-persistence`,
 > `zaino-persistence-lsm-tree`, `zaino-indexes`, `zaino-source-mock`,
 > `zaino-chain-store-service`, `zaino-service`. Governed crates depend on
 > several of them, so they join `relman.toml` before the next release.
