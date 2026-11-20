@@ -691,12 +691,17 @@ name = "clientless"
 version = "0.2.0"
 dependencies = [
  "anyhow",
+ "blake2b_simd",
+ "hex",
  "rstest",
  "serde_json",
  "tokio",
+ "tonic",
  "wire_serialized_transaction_test_data",
+ "zaino-indexes",
  "zaino-proto",
  "zaino-testutils",
+ "zcash_history",
 ]
 
 [[package]]
@@ -6074,6 +6079,7 @@ dependencies = [
  "zaino-chain-store-service",
  "zaino-component",
  "zaino-consensus",
+ "zaino-encoding",
  "zaino-indexes",
  "zaino-mempool",
  "zaino-mempool-service",
@@ -6217,6 +6223,7 @@ dependencies = [
  "zaino-chain-store-service",
  "zaino-component",
  "zaino-consensus",
+ "zaino-encoding",
  "zaino-indexes",
  "zaino-logging",
  "zaino-mempool",

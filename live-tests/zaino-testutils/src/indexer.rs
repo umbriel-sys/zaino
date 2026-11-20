@@ -8,6 +8,7 @@ use anyhow::{Context, Result};
 use tempfile::TempDir;
 use tonic::transport::Channel;
 use zaino_proto::proto::compact_formats::{CompactBlock, CompactTx};
+use zaino_proto::proto::light_client::light_client_service_client::LightClientServiceClient;
 use zaino_proto::proto::service::compact_tx_streamer_client::CompactTxStreamerClient;
 use zaino_proto::proto::service::{
     AddressList, Balance, BlockId, BlockRange, ChainSpec, Empty, GetAddressUtxosArg,
@@ -130,10 +131,6 @@ impl Zainod {
                     true => NamedSet::Empty,
                     false => NamedSet::Full,
                 }),
-                disable: match config.ephemeral {
-                    true => Vec::new(),
-                    false => vec!["history_tree".to_owned()],
-                },
                 ..IndexesConfig::default()
             },
             persistence: PersistenceConfig {
@@ -217,6 +214,11 @@ impl Zainod {
     /// A gRPC client; cheap to clone and `Send`, for spawned streams.
     pub fn grpc(&self) -> CompactTxStreamerClient<Channel> {
         CompactTxStreamerClient::new(self.channel.clone())
+    }
+
+    /// A client for Zaino's own light-client service.
+    pub fn light_client(&self) -> LightClientServiceClient<Channel> {
+        LightClientServiceClient::new(self.channel.clone())
     }
 
     /// Polls the served tip every 100 ms until it reaches `height`.

@@ -28,7 +28,7 @@ use crate::wallet::{PoolBalances, Wallet as _};
 use crate::zebrad::{Zebrad, ZebradConfig};
 
 /// Bump when the builder's recipe changes without a fixture change.
-const RECIPE: u32 = 5;
+const RECIPE: u32 = 6;
 /// The indexer store's format: every index's directory name (its name and
 /// schema version), so a changed layout rebuilds the cache and no test
 /// starts on a store zainod has to rebuild.

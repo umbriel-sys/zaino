@@ -22,3 +22,8 @@ zaino-proto = { workspace = true }
 # `test_vectors.rs` parses committed transaction vectors through the
 # independent `legacy_parser`; no validator.
 wire_serialized_transaction_test_data = { workspace = true }
+blake2b_simd = "1"
+zcash_history = "0.6"
+hex.workspace = true
+zaino-indexes = { path = "../../packages/zaino-indexes" }
+tonic.workspace = true
