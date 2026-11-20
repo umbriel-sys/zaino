@@ -39,7 +39,62 @@ adoption moved to `zaino-source-zebra`."""
 
 [[changes]]
 crate = "zainod"
-kind = "fix"
+kind = "breaking"
 description = """
-`validator_user` / `validator_password` default to unset; no stand-in \
-credentials are sent."""
+**The daemon runs on `zaino-service`.** zainod no longer depends on \
+`zaino-state` or any zebra crate: it picks one validator source from config \
+(`kind = "zebra"` with `[validator.read_state]`, or `kind = "zcash_rpc"`), \
+spawns the service over it, and serves it. `zainodlib::indexer::launch` \
+returns the task and a `ServiceHandle` (`wait_until_local`, `store_tip`, \
+`is_caught_up`) and takes optional pre-bound listeners; `start_indexer` / \
+`spawn_indexer` keep their roles."""
+
+[[changes]]
+crate = "zainod"
+kind = "breaking"
+description = """
+**New config layout.** Sections `[validator]` (+ `[validator.read_state]`), \
+`[indexes]`, `[persistence]`, `[mempool]`, `[serve]`, `[serve.grpc]`, \
+`[serve.jsonrpc]` and `[admin]`, with top-level `network` and \
+`donation_address`. A key from the old layout is refused with a typed error \
+naming its replacement. No validator credentials are sent when none are \
+configured. See `packages/zainod/usage.md`."""
+
+[[changes]]
+crate = "zainod"
+kind = "breaking"
+description = """
+The served handlers are zainod's own: `serve::grpc::lightwallet` (the \
+lightwalletd service and the indexed-tip service over `Backend<S>`) and \
+`serve::jsonrpc::methods` (`methods(backend) -> jsonrpsee::Methods`). \
+`JsonRpcServer::spawn` takes the method table. `GrpcClient`, \
+`JsonRpcClient`, `grpc_routes` and the zebra-typed wire modules are removed; \
+the JSON-RPC shapes are Zaino types pinned to JSON captured from zebra-rpc \
+v7. The cargo features `test_dependencies` and `fast-test-seam` are removed."""
+
+[[changes]]
+crate = "zainod"
+kind = "feature"
+description = """
+JSON-RPC: `getblockhash`, `getblockhashes`, `getnetworkinfo` and `ping` are \
+served; errors carry the legacy code per method instead of one collapsed \
+code; `getblockchaininfo.chainwork` is the real cumulative work (absent when \
+unknown, never `0`); parameters follow zebrad v7 (`getblockheader` by height, \
+optional `getblocksubsidy` height, `getrawtransaction` block hash, \
+`getaddressutxos` paging)."""
+
+[[changes]]
+crate = "zainod"
+kind = "feature"
+description = """
+gRPC: `GetBlockRange` and `GetBlockRangeNullifiers` are served from encoded \
+frames shared through the frame cache. Every stream ends at server shutdown, \
+and shutdown is bounded by `serve.grpc.limits.shutdown_timeout_secs` \
+(default 5) (AP-02)."""
+
+[[changes]]
+crate = "zainod"
+kind = "breaking"
+description = """
+Verbose `getrawtransaction` is served only for a transaction in a best-chain \
+block; a mempool or side-chain transaction answers −1."""

@@ -206,7 +206,6 @@ zaino-chain-store-service = { path = "packages/zaino-chain-store-service", versi
 # on the same crate and writes its own composer against the same ports.
 zaino-chain = { path = "packages/zaino-chain", version = "0.1.0" }
 zaino-proto = { path = "packages/zaino-proto", version = "0.6.1" }
-zaino-state = { path = "packages/zaino-state", version = "0.10.0", default-features = false }
 
 
 config = { version = "0.15", default-features = false, features = ["toml"] }

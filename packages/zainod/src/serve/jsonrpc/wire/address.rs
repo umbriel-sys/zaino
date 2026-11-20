@@ -4,19 +4,33 @@ use serde::{
     ser::{SerializeMap, SerializeStruct},
     Serialize, Serializer,
 };
-use zaino_address::{ValidatedAddress, ZValidatedAddress};
-use zebra_rpc::client::ValidateAddressResponse;
+use zaino_address::ZValidatedAddress;
+use zaino_primitives::types::Network;
+use zcash_protocol::consensus::{
+    BlockHeight, NetworkType, NetworkUpgrade, Parameters, MAIN_NETWORK, TEST_NETWORK,
+};
 
-/// Renders a [`ValidatedAddress`] into Zebra's `validateaddress` response.
-///
-/// Zebra already defines and serializes this shape correctly, so there is no
-/// wire struct here — only the mapping. A free function rather than a method
-/// because `ValidateAddressResponse` is foreign.
-pub(crate) fn validate_address_from_domain(validated: ValidatedAddress) -> ValidateAddressResponse {
-    match validated {
-        ValidatedAddress::Invalid => ValidateAddressResponse::invalid(),
-        ValidatedAddress::Transparent { address, is_script } => {
-            ValidateAddressResponse::new(true, Some(address), Some(is_script))
+/// The network an address is classified for. `zaino-address` reads only the
+/// network type.
+#[derive(Clone, Copy)]
+pub(crate) struct AddressNetwork(pub(crate) Network);
+
+impl Parameters for AddressNetwork {
+    fn network_type(&self) -> NetworkType {
+        match self.0 {
+            Network::Mainnet => NetworkType::Main,
+            Network::PubTestnet => NetworkType::Test,
+            Network::Regtest => NetworkType::Regtest,
+        }
+    }
+
+    /// Regtest's schedule is its validator's, which an address does not
+    /// depend on: `None`.
+    fn activation_height(&self, upgrade: NetworkUpgrade) -> Option<BlockHeight> {
+        match self.0 {
+            Network::Mainnet => MAIN_NETWORK.activation_height(upgrade),
+            Network::PubTestnet => TEST_NETWORK.activation_height(upgrade),
+            Network::Regtest => None,
         }
     }
 }
@@ -156,21 +170,6 @@ mod tests {
             );
         }
     }
-
-    #[test]
-    fn validate_address_maps_transparent_and_invalid() {
-        let script = validate_address_from_domain(ValidatedAddress::Transparent {
-            address: "t3zzz".into(),
-            is_script: true,
-        });
-        assert!(script.is_valid());
-        assert_eq!(script.address().as_deref(), Some("t3zzz"));
-        assert_eq!(script.is_script(), Some(true));
-
-        let invalid = validate_address_from_domain(ValidatedAddress::Invalid);
-        assert!(!invalid.is_valid());
-        assert_eq!(invalid.address().as_deref(), None);
-    }
 }
 
 /// End-to-end vectors: address string in, served JSON out.
@@ -183,7 +182,6 @@ mod tests {
 mod served_vectors {
     use super::*;
     use serde_json::{json, Value};
-    use zebra_chain::parameters::Network;
 
     // Captured from zcashd's `z_validateaddress`.
     const P2PKH: &str = "tmVqEASZxBNKFTbmASZikGa5fPLkd68iJyx";
@@ -192,9 +190,9 @@ mod served_vectors {
     const UNIFIED: &str = "uregtest1njwg60x0jarhyuuxrcdvw854p68cgdfe85822lmclc7z9vy9xqr7t49n3d97k2dwlee82skwwe0ens0rc06p4vr04tvd3j9ckl3qry83ckay4l4ngdq9atg7vuj9z58tfjs0mnsgyrnprtqfv8almu564z498zy6tp2aa569tk8fyhdazyhytel2m32awe4kuy6qq996um3ljaajj36";
     const SPROUT: &str = "ztfhKyLouqi8sSwjRm4YMQdWPjTmrJ4QgtziVQ1Kd1e9EsRHYKofjoJdF438FwcUQnix8yrbSrzPpJJNABewgNffs5d4YZJ";
 
-    fn served(address: &str, network: &Network) -> Value {
+    fn served(address: &str, network: Network) -> Value {
         serde_json::to_value(ZValidateAddressWire::from_domain(
-            zaino_address::z_validate_address(address.to_string(), network),
+            zaino_address::z_validate_address(address.to_string(), &AddressNetwork(network)),
         ))
         .expect("ZValidateAddressWire serializes infallibly")
     }
@@ -203,7 +201,7 @@ mod served_vectors {
     /// kind, in zebrad's shape.
     #[test]
     fn each_kind_serves_its_own_shape() {
-        let network = Network::new_regtest(Default::default());
+        let network = Network::Regtest;
 
         for (address, kind) in [
             (P2PKH, "p2pkh"),
@@ -212,7 +210,7 @@ mod served_vectors {
             (UNIFIED, "unified"),
         ] {
             assert_eq!(
-                served(address, &network),
+                served(address, network),
                 json!({
                     "isvalid": true,
                     "address": address,
@@ -228,7 +226,7 @@ mod served_vectors {
     /// failing to parse it — the only thing to assert about it is "invalid".
     #[test]
     fn unclassifiable_addresses_serve_isvalid_false_alone() {
-        let network = Network::new_regtest(Default::default());
+        let network = Network::Regtest;
 
         for address in [
             SPROUT,
@@ -237,7 +235,7 @@ mod served_vectors {
             "not an address",
         ] {
             assert_eq!(
-                served(address, &network),
+                served(address, network),
                 json!({ "isvalid": false }),
                 "{address}"
             );
@@ -252,7 +250,7 @@ mod served_vectors {
 
         for address in [P2PKH, P2SH, SAPLING, UNIFIED] {
             assert_eq!(
-                served(address, &mainnet),
+                served(address, mainnet),
                 json!({ "isvalid": false }),
                 "{address} is not a mainnet address"
             );

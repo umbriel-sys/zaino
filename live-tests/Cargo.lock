@@ -4408,12 +4408,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "28d567dcbaf0049cb8ac2608a76cd95ff9e4412e1899d389ee400918ca7537f5"
 
 [[package]]
-name = "simple-mermaid"
-version = "0.2.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "589144a964b4b30fe3a83b4bb1a09e2475aac194ec832a046a23e75bddf9eb29"
-
-[[package]]
 name = "sinsemilla"
 version = "0.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -6148,50 +6142,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "zaino-state"
-version = "0.10.0"
-dependencies = [
- "bytes",
- "chrono",
- "futures",
- "hex",
- "reqwest 0.13.1",
- "serde",
- "serde_json",
- "simple-mermaid",
- "thiserror 2.0.20",
- "tokio",
- "tokio-stream",
- "tonic",
- "tower 0.4.13",
- "tracing",
- "whoami",
- "zaino-address",
- "zaino-chain",
- "zaino-chain-head",
- "zaino-chain-head-service",
- "zaino-chain-store",
- "zaino-chain-store-service",
- "zaino-component",
- "zaino-consensus",
- "zaino-mempool",
- "zaino-mempool-service",
- "zaino-persistence-lsm-tree",
- "zaino-primitives",
- "zaino-proto",
- "zaino-rpc",
- "zaino-service",
- "zaino-source",
- "zaino-source-zcash-rpc",
- "zaino-source-zebra",
- "zcash_address",
- "zcash_protocol",
- "zebra-chain",
- "zebra-rpc",
- "zebra-state",
-]
-
-[[package]]
 name = "zaino-testutils"
 version = "0.2.0"
 dependencies = [
@@ -6222,7 +6172,6 @@ dependencies = [
  "zaino-primitives",
  "zaino-proto",
  "zaino-rpc",
- "zaino-state",
  "zainod",
  "zcash_client_backend",
  "zcash_client_sqlite",
@@ -6238,17 +6187,22 @@ dependencies = [
 name = "zainod"
 version = "0.10.1"
 dependencies = [
+ "base64 0.22.1",
  "bytes",
  "clap",
  "config",
  "futures",
  "hex",
  "http",
+ "http-body-util",
  "indexmap 2.14.2",
  "jsonrpsee",
  "metrics",
+ "prost",
+ "rand 0.9.5",
  "serde",
  "serde_json",
+ "subtle",
  "thiserror 2.0.20",
  "tokio",
  "toml",
@@ -6267,6 +6221,7 @@ dependencies = [
  "zaino-logging",
  "zaino-mempool",
  "zaino-mempool-service",
+ "zaino-persistence-lsm-tree",
  "zaino-primitives",
  "zaino-proto",
  "zaino-rpc",
@@ -6274,10 +6229,8 @@ dependencies = [
  "zaino-source",
  "zaino-source-zcash-rpc",
  "zaino-source-zebra",
- "zaino-state",
- "zebra-chain",
- "zebra-rpc",
- "zebra-state",
+ "zcash_address",
+ "zcash_protocol",
 ]
 
 [[package]]

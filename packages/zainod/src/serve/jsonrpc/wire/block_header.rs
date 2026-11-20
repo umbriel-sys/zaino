@@ -2,8 +2,6 @@
 
 use serde::{Deserialize, Serialize};
 
-use zebra_rpc::methods::opthex;
-
 /// Response to a `getblockheader` RPC request.
 #[allow(clippy::large_enum_variant)]
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -40,9 +38,8 @@ impl GetBlockHeader {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct VerboseBlockHeader {
-    /// The hash of the requested block.
-    #[serde(with = "hex")]
-    pub hash: zebra_chain::block::Hash,
+    /// The hash of the requested block, in display order.
+    pub hash: String,
 
     /// The number of confirmations of this block in the best chain,
     /// or -1 if it is not in the best chain.
@@ -54,26 +51,25 @@ pub struct VerboseBlockHeader {
     /// The version field of the requested block.
     pub version: u32,
 
-    /// The merkle root of the requesteed block.
-    #[serde(with = "hex", rename = "merkleroot")]
-    pub merkle_root: zebra_chain::block::merkle::Root,
+    /// The merkle root of the requested block, in display order.
+    #[serde(rename = "merkleroot")]
+    pub merkle_root: String,
 
     /// The blockcommitments field of the requested block. Its interpretation changes
     /// depending on the network and height.
     ///
     /// This field is only present in Zebra. It was added [here](https://github.com/ZcashFoundation/zebra/pull/9217).
     #[serde(
-        with = "opthex",
         rename = "blockcommitments",
         default,
         skip_serializing_if = "Option::is_none"
     )]
-    pub block_commitments: Option<[u8; 32]>,
+    pub block_commitments: Option<String>,
 
     /// The root of the Sapling commitment tree after applying this block.
-    #[serde(with = "opthex", rename = "finalsaplingroot")]
+    #[serde(rename = "finalsaplingroot")]
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub final_sapling_root: Option<[u8; 32]>,
+    pub final_sapling_root: Option<String>,
 
     /// The block time of the requested block header in non-leap seconds since Jan 1 1970 GMT.
     pub time: i64,
@@ -117,11 +113,9 @@ pub struct VerboseBlockHeader {
 impl VerboseBlockHeader {
     /// Renders the domain type as the served JSON shape.
     ///
-    /// Note the two hash encodings side by side. `hash` is a
-    /// `zebra_chain::block::Hash`, whose `hex` serde impl already reverses into
-    /// display order; the neighbouring hashes are plain strings, so they are
-    /// reversed here explicitly. The commitments, Sapling root and nonce
-    /// follow zebrad (`HeaderDisplay`); `solution` is not reversed.
+    /// Hashes and the merkle root are in display order. The commitments,
+    /// Sapling root and nonce follow zebrad (`HeaderDisplay`); `solution` is
+    /// not reversed.
     pub fn from_domain(header: zaino_primitives::types::rpc::BlockHeaderVerbose) -> Self {
         let display = zaino_primitives::types::rpc::HeaderDisplay::new(
             header.block_commitments,
@@ -129,13 +123,13 @@ impl VerboseBlockHeader {
             header.nonce,
         );
         Self {
-            hash: zebra_chain::block::Hash(header.hash.into()),
+            hash: super::display_hex(header.hash.into()),
             confirmations: header.confirmations.to_rpc_i64(),
             height: header.height.into(),
             version: header.version,
-            merkle_root: zebra_chain::block::merkle::Root(header.merkle_root.into()),
-            block_commitments: display.block_commitments,
-            final_sapling_root: Some(display.final_sapling_root),
+            merkle_root: super::display_hex(header.merkle_root.into()),
+            block_commitments: display.block_commitments.map(hex::encode),
+            final_sapling_root: Some(hex::encode(display.final_sapling_root)),
             time: i64::from(header.time),
             nonce: hex::encode(display.nonce),
             solution: hex::encode(header.solution),
@@ -264,12 +258,11 @@ mod from_domain_tests {
 
 #[cfg(test)]
 mod tests {
-    use std::str::FromStr;
 
     use super::*;
-    use hex::FromHex;
     use serde_json::{json, Value};
-    use zebra_chain::block;
+
+    const HASH: &str = "000000000053d2771290ff1b57181bd067ae0e55a367ba8ddee2d961ea27a14f";
 
     /// The legacy full node verbose response.
     fn legacy_verbose_json() -> &'static str {
@@ -314,30 +307,12 @@ mod tests {
     fn deserialize_verbose_legacy_includes_chainwork() {
         match serde_json::from_str::<VerboseBlockHeader>(legacy_verbose_json()) {
             Ok(block_header) => {
-                assert_eq!(
-                    block_header.hash,
-                    block::Hash::from_str(
-                        "000000000053d2771290ff1b57181bd067ae0e55a367ba8ddee2d961ea27a14f"
-                    )
-                    .unwrap()
-                );
+                assert_eq!(block_header.hash, HASH);
                 assert_eq!(block_header.confirmations, 10);
                 assert_eq!(block_header.height, 123_456);
                 assert_eq!(block_header.version, 4);
-                assert_eq!(
-                    block_header.merkle_root,
-                    block::merkle::Root::from_hex(
-                        "000000000053d2771290ff1b57181bd067ae0e55a367ba8ddee2d961ea27a14f"
-                    )
-                    .unwrap()
-                );
-                assert_eq!(
-                    block_header.final_sapling_root.unwrap(),
-                    <[u8; 32]>::from_hex(
-                        "000000000053d2771290ff1b57181bd067ae0e55a367ba8ddee2d961ea27a14f"
-                    )
-                    .unwrap()
-                );
+                assert_eq!(block_header.merkle_root, HASH);
+                assert_eq!(block_header.final_sapling_root.as_deref(), Some(HASH));
                 assert_eq!(block_header.time, 1_700_000_000);
                 assert_eq!(block_header.nonce, "11nonce");
                 assert_eq!(block_header.solution, "22solution");
@@ -375,37 +350,14 @@ mod tests {
             Ok(block_header) => {
                 assert_eq!(
                     block_header.hash,
-                    block::Hash::from_str(
-                        "00000000001b76b932f31289beccd3988d098ec3c8c6e4a0c7bcaf52e9bdead1"
-                    )
-                    .unwrap()
+                    "00000000001b76b932f31289beccd3988d098ec3c8c6e4a0c7bcaf52e9bdead1"
                 );
                 assert_eq!(block_header.confirmations, 3);
                 assert_eq!(block_header.height, 42);
                 assert_eq!(block_header.version, 5);
-                assert_eq!(
-                    block_header.merkle_root,
-                    block::merkle::Root::from_hex(
-                        "000000000053d2771290ff1b57181bd067ae0e55a367ba8ddee2d961ea27a14f"
-                    )
-                    .unwrap()
-                );
-
-                assert_eq!(
-                    block_header.block_commitments.unwrap(),
-                    <[u8; 32]>::from_hex(
-                        "000000000053d2771290ff1b57181bd067ae0e55a367ba8ddee2d961ea27a14f"
-                    )
-                    .unwrap()
-                );
-
-                assert_eq!(
-                    block_header.final_sapling_root.unwrap(),
-                    <[u8; 32]>::from_hex(
-                        "000000000053d2771290ff1b57181bd067ae0e55a367ba8ddee2d961ea27a14f"
-                    )
-                    .unwrap()
-                );
+                assert_eq!(block_header.merkle_root, HASH);
+                assert_eq!(block_header.block_commitments.as_deref(), Some(HASH));
+                assert_eq!(block_header.final_sapling_root.as_deref(), Some(HASH));
 
                 assert_eq!(block_header.time, 1_699_999_999);
                 assert_eq!(block_header.nonce, "33nonce");

@@ -23,9 +23,7 @@ opt-level = 3
 zaino-testutils = { path = "zaino-testutils" }
 
 # The indexer under test runs in-process, at its operational seam depth.
-# `test_dependencies` opens the pre-bound-listener launch seam.
-zainod = { path = "../packages/zainod", features = ["test_dependencies"] }
-zaino-state = { path = "../packages/zaino-state" }
+zainod = { path = "../packages/zainod" }
 zaino-primitives = { path = "../packages/zaino-primitives", features = ["serde"] }
 zaino-proto = { path = "../packages/zaino-proto", default-features = false }
 

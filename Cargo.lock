@@ -6397,6 +6397,7 @@ dependencies = [
 name = "zainod"
 version = "0.10.1"
 dependencies = [
+ "base64",
  "bytes",
  "clap",
  "config",
@@ -6411,8 +6412,11 @@ dependencies = [
  "metrics",
  "metrics-exporter-prometheus",
  "metrics-process",
+ "prost",
+ "rand 0.9.4",
  "serde",
  "serde_json",
+ "subtle",
  "tempfile",
  "thiserror 2.0.20",
  "tokio",
@@ -6441,12 +6445,8 @@ dependencies = [
  "zaino-source-mock",
  "zaino-source-zcash-rpc",
  "zaino-source-zebra",
- "zaino-state",
  "zcash_address",
  "zcash_protocol",
- "zebra-chain",
- "zebra-rpc",
- "zebra-state",
 ]
 
 [[package]]

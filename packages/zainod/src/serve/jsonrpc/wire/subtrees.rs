@@ -1,11 +1,6 @@
-//! The `z_getsubtreesbyindex` response.
-//!
-//! Reuses Zebra's `GetSubtreesByIndexResponse`, so this module holds the
-//! conversion from the domain plus the pool-name parsing that selects which
-//! pool was asked about.
+//! The `z_getsubtreesbyindex` request's pool name.
 
-use zaino_primitives::types::{rpc::SubtreeRoots, ShieldedPool};
-use zebra_rpc::client::{GetSubtreesByIndexResponse, SubtreeRpcData};
+use zaino_primitives::types::ShieldedPool;
 
 /// A pool name this interface does not accept.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
@@ -26,38 +21,11 @@ pub fn pool_into_domain(pool: &str) -> Result<ShieldedPool, UnknownPoolName> {
     }
 }
 
-/// Renders the domain type as the `z_getsubtreesbyindex` response.
-///
-/// Subtree roots are *not* byte-reversed: they are commitment-tree values, not
-/// identifiers, so they are hex-encoded in their natural order — unlike the
-/// block hashes and txids elsewhere on this interface.
-pub fn from_domain(roots: SubtreeRoots) -> GetSubtreesByIndexResponse {
-    let pool = match roots.pool {
-        ShieldedPool::Sapling => "sapling",
-        ShieldedPool::Orchard => "orchard",
-        // Exhaustive on purpose, with no catch-all: a fourth pool must break
-        // this at compile time rather than be rendered under a guessed name.
-        ShieldedPool::Ironwood => "ironwood",
-    };
-
-    GetSubtreesByIndexResponse::new(
-        pool.to_string(),
-        zebra_chain::subtree::NoteCommitmentSubtreeIndex(roots.start_index),
-        roots
-            .subtrees
-            .into_iter()
-            .map(|subtree| SubtreeRpcData {
-                root: hex::encode(<[u8; 32]>::from(subtree.root)),
-                end_height: zebra_chain::block::Height(subtree.end_height.into()),
-            })
-            .collect(),
-    )
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use zaino_primitives::types::{Height, SubtreeRoot, TreeRoot};
+    use crate::serve::jsonrpc::wire::served::SubtreesWire;
+    use zaino_primitives::types::{rpc::SubtreeRoots, Height, SubtreeRoot, TreeRoot};
 
     /// Asymmetric under reversal, so an accidental byte-reversal shows up.
     const ASYMMETRIC: [u8; 32] = [
@@ -75,12 +43,12 @@ mod tests {
         ] {
             assert_eq!(pool_into_domain(name), Ok(pool));
 
-            let json = serde_json::to_value(from_domain(SubtreeRoots {
+            let json = serde_json::to_value(SubtreesWire::from_domain(SubtreeRoots {
                 pool,
                 start_index: 0,
                 subtrees: Vec::new(),
             }))
-            .unwrap();
+            .expect("serializes");
             assert_eq!(json["pool"], name);
         }
     }
@@ -93,20 +61,18 @@ mod tests {
         );
     }
 
-    /// A commitment-tree root is not an identifier, so it is hex-encoded in its
-    /// natural order. Reversing it here would produce valid-looking hex naming
-    /// a root that does not exist.
+    /// A commitment-tree root is not an identifier: hex in its natural order.
     #[test]
     fn subtree_roots_are_not_byte_reversed() {
-        let json = serde_json::to_value(from_domain(SubtreeRoots {
+        let json = serde_json::to_value(SubtreesWire::from_domain(SubtreeRoots {
             pool: ShieldedPool::Orchard,
             start_index: 3,
             subtrees: vec![SubtreeRoot {
                 root: TreeRoot::from(ASYMMETRIC),
-                end_height: Height::try_from(2_000u32).unwrap(),
+                end_height: Height::try_from(2_000u32).expect("in range"),
             }],
         }))
-        .unwrap();
+        .expect("serializes");
 
         assert_eq!(json["start_index"], 3);
         assert_eq!(json["subtrees"][0]["root"], hex::encode(ASYMMETRIC));

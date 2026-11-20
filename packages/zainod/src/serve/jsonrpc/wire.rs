@@ -2,8 +2,9 @@
 //!
 //! Zaino's JSON-RPC responses are a *wire contract*: the legacy full node's exact field
 //! names, its hex encodings, its byte orders. That contract belongs to the
-//! serving adapter, not to the business layer — `zaino-state` returns domain
-//! types, and this module is where they become JSON.
+//! serving adapter, not to the business layer — the service returns domain
+//! types, and this module is where they become JSON. No zebra type is named:
+//! the shapes zebrad defines are pinned as JSON captured from zebra-rpc v7.
 //!
 //! # Direction and naming
 //!
@@ -23,40 +24,21 @@
 //! the wire type instead, still named rather than `From` impls, so direction and
 //! boundary stay readable at the call site.
 //!
-//! # What is not here
-//!
-//! Where Zebra already defines the served shape and serializes it correctly, we
-//! reuse Zebra's type rather than reimplementing its serde. Only the
-//! legacy-only methods — the ones Zebra has no type for — need a wire type in
-//! this module.
-//!
-//! # Provenance
-//!
-//! These types were `zaino-fetch`'s response types, which served two roles at
-//! once: deserializing validator replies *and* serializing Zaino's own. The
-//! first role is now `zaino-source-zebra-rpc`'s, which parses into
-//! `zaino-primitives`. Only the second role remains, so the inbound machinery —
-//! the per-method error enums, the `ResponseToError` impls, the RPC-error-code
-//! mappings — did not come across. `Deserialize` did, where a live test or a
-//! client needs to read a response back.
 
 pub mod address;
 pub mod address_deltas;
-pub mod address_queries;
+pub mod block;
 pub mod block_deltas;
 pub mod block_header;
 pub mod block_subsidy;
-pub mod blockchain_info;
 pub mod chain_tips;
 pub mod common;
-pub mod hashes;
 pub mod mining_info;
 pub mod misc;
-pub mod node_info;
 pub mod peer_info;
+pub mod served;
 pub mod standard_fee;
 pub mod subtrees;
-pub mod treestate;
 
 /// Renders a 32-byte identifier as hex in RPC display order.
 ///
@@ -93,18 +75,15 @@ mod tests {
     use super::*;
 
     /// Hex in display order is byte-reversed exactly once. Reversing twice, or
-    /// not at all, produces a valid-looking hash that names a different block —
-    /// so this is pinned against Zebra's own display-order parser.
+    /// not at all, produces a valid-looking hash that names a different block.
     #[test]
     fn display_hex_reverses_exactly_once() {
-        use hex::FromHex as _;
-
         // Asymmetric under reversal, so a missing or doubled reverse shows up.
         let bytes: [u8; 32] = core::array::from_fn(|i| i as u8);
-
-        let rendered = display_hex(bytes);
-        let parsed = zebra_chain::block::Hash::from_hex(&rendered).expect("valid hash hex");
-        assert_eq!(parsed.0, bytes, "one reversal too many or too few");
+        assert_eq!(
+            display_hex(bytes),
+            "1f1e1d1c1b1a191817161514131211100f0e0d0c0b0a09080706050403020100"
+        );
     }
 
     /// Amounts cross the port as exact zatoshis and this interface wants ZEC.

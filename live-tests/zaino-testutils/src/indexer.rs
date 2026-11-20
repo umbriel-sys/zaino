@@ -15,12 +15,11 @@ use zaino_proto::proto::service::{
     SendResponse, ShieldedProtocol, SubtreeRoot, TransparentAddressBlockFilter, TreeState,
     TxFilter,
 };
-use zaino_state::legacy::config::{DatabaseConfig, ServiceConfig, StorageConfig};
-use zaino_state::{
-    NodeBackedIndexerService, NodeBackedIndexerServiceConfig, NodeBackedIndexerServiceSubscriber,
+use zainodlib::config::{
+    IndexesConfig, NamedSet, PersistenceConfig, ReadStateConfig, ServeConfig, ValidatorConfig,
+    ValidatorKind, ZainodConfig,
 };
-use zainodlib::config::{BackendType, ValidatorConfig, ZainodConfig};
-use zainodlib::indexer::Indexer;
+use zainodlib::indexer::{Listeners, ServiceHandle};
 use zcash_protocol::TxId;
 
 use crate::process;
@@ -83,7 +82,8 @@ pub struct Zainod {
     grpc_addr: SocketAddr,
     json_addr: SocketAddr,
     channel: Channel,
-    subscriber: NodeBackedIndexerServiceSubscriber,
+    backend: Backend,
+    service: std::sync::Arc<dyn ServiceHandle>,
     task: tokio::task::JoinHandle<Result<(), zainodlib::error::IndexerError>>,
     _db_dir: TempDir,
 }
@@ -112,59 +112,65 @@ impl Zainod {
         let json_addr = json_listener.local_addr()?;
 
         let zainod_config = ZainodConfig {
-            backend: match config.backend {
-                Backend::Fetch => BackendType::Rpc,
-                Backend::State => BackendType::Direct,
-            },
-            zebra_db_path: config.zebra_db_path,
-            ephemeral_finalised_state: config.ephemeral,
             network: config.network,
-            metrics_endpoint: None,
-            json_server_settings: Some(zainodlib::serve::config::JsonRpcServerConfig {
-                json_rpc_listen_address: json_addr,
-                cookie_dir: None,
-            }),
-            grpc_settings: zainodlib::serve::config::GrpcServerConfig {
-                listen_address: grpc_addr,
-                tls: None,
-                limits: zainodlib::serve::config::GrpcLimits::default(),
-            },
-            validator_settings: ValidatorConfig {
-                validator_grpc_listen_address: Some(config.validator_grpc.to_string()),
-                validator_jsonrpc_listen_address: config.validator_rpc.to_string(),
-                validator_cookie_path: None,
-                validator_user: None,
-                validator_password: None,
-            },
-            service: ServiceConfig::default(),
-            storage: StorageConfig {
-                database: DatabaseConfig {
-                    path: db_dir.path().join("db"),
-                    // A small map: the default 384 GB is a sparse file the
-                    // cache would otherwise copy.
-                    size: zaino_state::legacy::config::DatabaseSize(4),
-                    ..Default::default()
+            validator: ValidatorConfig {
+                kind: match config.backend {
+                    Backend::Fetch => ValidatorKind::ZcashRpc,
+                    Backend::State => ValidatorKind::Zebra,
                 },
-                ..Default::default()
+                rpc_address: config.validator_rpc.to_string(),
+                read_state: (config.backend == Backend::State).then(|| ReadStateConfig {
+                    state_path: config.zebra_db_path.clone(),
+                    grpc_address: config.validator_grpc.to_string(),
+                }),
+                ..ValidatorConfig::default()
             },
-            mempool: Default::default(),
-            donation_address: None,
+            indexes: IndexesConfig {
+                set: Some(match config.ephemeral {
+                    true => NamedSet::Empty,
+                    false => NamedSet::Full,
+                }),
+                disable: match config.ephemeral {
+                    true => Vec::new(),
+                    false => vec!["history_tree".to_owned()],
+                },
+                ..IndexesConfig::default()
+            },
+            persistence: PersistenceConfig {
+                path: db_dir.path().join("db"),
+                ..PersistenceConfig::default()
+            },
+            serve: ServeConfig {
+                grpc: zainodlib::serve::config::GrpcServerConfig {
+                    listen_address: grpc_addr,
+                    tls: None,
+                    limits: zainodlib::serve::config::GrpcLimits::default(),
+                },
+                jsonrpc: Some(zainodlib::serve::config::JsonRpcServerConfig {
+                    listen_address: json_addr,
+                    cookie_dir: None,
+                }),
+                ..ServeConfig::default()
+            },
+            ..ZainodConfig::default()
         };
-        let service_config = NodeBackedIndexerServiceConfig::try_from(zainod_config.clone())?;
-        let (task, subscriber) = Indexer::<NodeBackedIndexerService>::launch_inner_with_listeners(
-            service_config,
+        let running = zainodlib::indexer::launch(
             zainod_config,
-            grpc_listener,
-            Some(json_listener),
+            Listeners {
+                grpc: Some(grpc_listener),
+                jsonrpc: Some(json_listener),
+            },
         )
         .await?;
+        let (task, service) = (running.task, running.service);
 
         let channel = Channel::from_shared(format!("http://{grpc_addr}"))?.connect_lazy();
         let zainod = Self {
             grpc_addr,
             json_addr,
             channel,
-            subscriber,
+            backend: config.backend,
+            service,
             task,
             _db_dir: db_dir,
         };
@@ -175,6 +181,11 @@ impl Zainod {
             || async { zainod.indexer_info().await.ok() },
         )
         .await?;
+        zainod
+            .service
+            .wait_until_local()
+            .await
+            .context("the store builds until every read is local")?;
         Ok(zainod)
     }
 
@@ -203,11 +214,6 @@ impl Zainod {
         JsonRpcClient::new(self.json_addr)
     }
 
-    /// The service subscriber: the in-process view a test can read directly.
-    pub fn subscriber(&self) -> &NodeBackedIndexerServiceSubscriber {
-        &self.subscriber
-    }
-
     /// A gRPC client; cheap to clone and `Send`, for spawned streams.
     pub fn grpc(&self) -> CompactTxStreamerClient<Channel> {
         CompactTxStreamerClient::new(self.channel.clone())
@@ -229,19 +235,18 @@ impl Zainod {
 
     /// The finalised store's committed tip, `None` while empty or passed through.
     pub fn finalised_tip_height(&self) -> Option<u32> {
-        self.subscriber.indexer.finalised_tip_height()
+        self.service.store_tip().map(u32::from)
     }
 
-    /// Whether this indexer ingests through the validator's read-state (it
-    /// has a local tip-change stream) rather than over JSON-RPC alone.
+    /// Whether this indexer ingests through the validator's read-state
+    /// rather than over JSON-RPC alone.
     pub fn reads_validator_state(&self) -> bool {
-        self.subscriber.chaintip_update_subscriber().is_some()
+        self.backend == Backend::State
     }
 
     /// Whether the store has caught up with the chain head's floor.
     pub fn store_caught_up(&self) -> bool {
-        self.subscriber.indexer.finalised_state_mode()
-            == zaino_state::FinalisedStateMode::Persistent
+        self.service.is_caught_up()
     }
 
     /// GetLatestBlock height.

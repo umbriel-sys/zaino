@@ -9,7 +9,7 @@ use zaino_primitives::types::{
     rpc::{SpentOutpoint, TxOut},
     TxOutSetInfo,
 };
-use zaino_state::Spend;
+use zaino_service::Spend;
 
 use super::{display_hex, zats_to_zec};
 
@@ -30,7 +30,7 @@ impl MempoolInfoWire {
     /// The domain type is [`zaino_primitives::types::MempoolInfo`], re-exported
     /// by `zaino-state`. A plain field copy: the wire shape and the domain shape
     /// agree, and the mempool is live state with no on-disk form to translate.
-    pub fn from_domain(info: zaino_state::MempoolInfo) -> Self {
+    pub fn from_domain(info: zaino_primitives::types::MempoolInfo) -> Self {
         Self {
             size: info.size,
             bytes: info.bytes,

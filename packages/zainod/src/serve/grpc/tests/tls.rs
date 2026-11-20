@@ -40,9 +40,7 @@ fn fixture_path(name: &str) -> PathBuf {
 #[tokio::test]
 async fn tls_spawn_serves_a_handshake() {
     // Pre-bind so the OS-assigned port is known before spawning; hand the
-    // open socket to `spawn_inner` directly (this module is a child of
-    // `grpc`, so the private constructor is reachable without the
-    // `test_dependencies`-gated `spawn_from_listener` wrapper).
+    // open socket to `spawn_inner` directly.
     let listener = tokio::net::TcpListener::bind(SocketAddr::from((Ipv4Addr::LOCALHOST, 0)))
         .await
         .expect("bind on ephemeral port must succeed");

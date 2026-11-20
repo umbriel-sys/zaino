@@ -12,7 +12,6 @@ publish = false
 [dependencies]
 # In-process indexer and the types its handle exposes.
 zainod = { workspace = true }
-zaino-state = { workspace = true }
 zaino-primitives = { workspace = true }
 zaino-proto = { workspace = true }
 zcash_protocol = { workspace = true, features = ["local-consensus"] }

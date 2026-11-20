@@ -1,45 +1,11 @@
 //! The gRPC and JSON-RPC servers and the services they serve: the
 //! lightwalletd `CompactTxStreamer` and the zcash JSON-RPC methods.
 
-use tokio::sync::watch;
-use zaino_proto::proto::indexed_tip::indexed_tip_service_server::IndexedTipServiceServer;
-use zaino_proto::proto::service::compact_tx_streamer_server::CompactTxStreamerServer;
-use zaino_state::{IndexedTipIndexer, IndexerSubscriber, LightWalletIndexer, ZcashIndexer};
-
 pub mod backend;
 pub mod config;
 pub mod error;
 pub mod grpc;
 pub mod jsonrpc;
-
-use grpc::indexed_tip::IndexedTipService;
-
-#[derive(Clone)]
-/// Zaino gRPC service.
-pub struct GrpcClient<Indexer: ZcashIndexer + LightWalletIndexer> {
-    /// Chain fetch service subscriber.
-    pub service_subscriber: IndexerSubscriber<Indexer>,
-}
-
-#[derive(Clone)]
-/// Zaino JSONRPC service.
-pub struct JsonRpcClient<Indexer: ZcashIndexer + LightWalletIndexer> {
-    /// Chain fetch service subscriber.
-    pub service_subscriber: IndexerSubscriber<Indexer>,
-}
-
-/// The `CompactTxStreamer` and indexed-tip services over
-/// `service_subscriber`, as routes for [`grpc::TonicServer`].
-pub fn grpc_routes<Indexer: ZcashIndexer + LightWalletIndexer + IndexedTipIndexer + Clone>(
-    service_subscriber: IndexerSubscriber<Indexer>,
-    shutdown: watch::Receiver<()>,
-) -> tonic::service::Routes {
-    let indexed_tip_service = IndexedTipService::new(service_subscriber.inner_clone(), shutdown);
-    tonic::service::Routes::new(CompactTxStreamerServer::new(GrpcClient {
-        service_subscriber,
-    }))
-    .add_service(IndexedTipServiceServer::new(indexed_tip_service))
-}
 
 /// Prometheus metric names emitted by this crate; the single source of truth shared with `zainod`'s `describe_*` registrations (which carry the descriptions).
 #[allow(missing_docs)] // names are self-describing; descriptions live in zainod

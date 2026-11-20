@@ -17,8 +17,7 @@ const NAME: &str = "gRPC";
 
 use crate::serve::{config::GrpcServerConfig, error::ServerError};
 
-pub(crate) mod indexed_tip;
-pub mod service;
+pub mod lightwallet;
 
 /// LightWallet gRPC server capable of servicing clients over TCP.
 pub struct TonicServer {
@@ -27,6 +26,8 @@ pub struct TonicServer {
     /// JoinHandle for the servers `serve` task.
     pub server_handle: Option<tokio::task::JoinHandle<Result<(), ServerError>>>,
     shutdown: watch::Sender<()>,
+    /// How long `close` waits for open requests.
+    shutdown_timeout: Duration,
 }
 
 impl TonicServer {
@@ -34,7 +35,7 @@ impl TonicServer {
     ///
     /// `routes` is a pre-assembled tonic service router; production
     /// callers build one from an indexer subscriber via
-    /// [`crate::serve::grpc_routes`]. Decoupling the dispatcher from the
+    /// [`lightwallet::routes`]. Decoupling the dispatcher from the
     /// transport layer keeps this function focused on bind / TLS /
     /// shutdown and lets the bind-race regression test (see
     /// zingolabs/zaino#1081) pass [`Routes::default`] instead of a full
@@ -69,7 +70,6 @@ impl TonicServer {
     /// race. `TcpIncoming::from` applies the same nodelay/keepalive defaults as
     /// `TcpIncoming::bind`, so the served socket is identical to the production
     /// path.
-    #[cfg(any(test, feature = "test_dependencies"))]
     pub async fn spawn_from_listener(
         routes: Routes,
         server_config: GrpcServerConfig,
@@ -79,7 +79,6 @@ impl TonicServer {
     }
 
     /// Starts the gRPC service on a pre-bound listener and shares its shutdown signal.
-    #[cfg(any(test, feature = "test_dependencies"))]
     pub async fn spawn_from_listener_with_routes<BuildRoutes>(
         build_routes: BuildRoutes,
         server_config: GrpcServerConfig,
@@ -151,19 +150,26 @@ impl TonicServer {
             status,
             server_handle: Some(server_handle),
             shutdown,
+            shutdown_timeout: Duration::from_secs(limits.shutdown_timeout_secs.get()),
         })
     }
 
-    /// Sets the servers to close gracefully.
+    /// Closes the server gracefully: its streams end, and open requests get
+    /// the configured shutdown timeout before the server is stopped anyway.
     pub async fn close(&mut self) {
         self.status.set(Lifecycle::Closing, Health::Healthy);
         self.shutdown.send_replace(());
 
-        if let Some(handle) = self.server_handle.take() {
-            match handle.await {
-                Ok(Ok(())) => {}
-                Ok(Err(error)) => warn!(%error, "gRPC server ended with an error"),
-                Err(error) => warn!(%error, "gRPC server task did not finish"),
+        if let Some(mut handle) = self.server_handle.take() {
+            match tokio::time::timeout(self.shutdown_timeout, &mut handle).await {
+                Ok(Ok(Ok(()))) => {}
+                Ok(Ok(Err(error))) => warn!(%error, "gRPC server ended with an error"),
+                Ok(Err(error)) => warn!(%error, "gRPC server task did not finish"),
+                Err(_) => {
+                    handle.abort();
+                    warn!("gRPC server stopped with requests still open");
+                    self.status.set(Lifecycle::Offline, Health::Offline);
+                }
             }
         }
     }

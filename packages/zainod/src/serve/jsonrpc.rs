@@ -1,28 +1,24 @@
 //! Zaino's JsonRPC Server Implementation.
 
-use crate::serve::{
-    config::JsonRpcServerConfig, error::ServerError, jsonrpc::service::ZcashIndexerRpcServer as _,
-    JsonRpcClient,
-};
+use crate::serve::{config::JsonRpcServerConfig, error::ServerError};
 
+mod compat;
+mod cookie;
+pub mod methods;
 pub(crate) mod metrics;
-pub mod service;
 pub mod wire;
 
+use compat::{HttpCompatLayer, ZcashdErrorCodes};
+use cookie::Cookie;
 use zaino_component::{
     ComponentName, ComponentStatus, Health, Lifecycle, StatusCell, StatusSource as _,
     StatusWatch as _,
 };
-use zaino_state::{IndexerSubscriber, LightWalletIndexer, ZcashIndexer};
 
 use zaino_consensus::MAX_BLOCK_BYTES;
-use zebra_rpc::server::{
-    cookie::{remove_from_disk, write_to_disk, Cookie},
-    http_request_compatibility::HttpRequestMiddlewareLayer,
-    rpc_call_compatibility::FixRpcResponseMiddleware,
-};
 
 use jsonrpsee::server::{RpcServiceBuilder, ServerBuilder};
+use jsonrpsee::Methods;
 use std::path::PathBuf;
 use tracing::warn;
 
@@ -37,34 +33,26 @@ pub struct JsonRpcServer {
 }
 
 impl JsonRpcServer {
-    /// Starts the JSON-RPC service.
-    ///
-    /// Launches all components then enters command loop:
-    /// - Updates the ServerStatus.
-    /// - Checks for shutdown signal, shutting down server if received.
-    pub async fn spawn<Service: ZcashIndexer + LightWalletIndexer + Clone>(
-        service_subscriber: IndexerSubscriber<Service>,
+    /// Starts the JSON-RPC server answering `methods`.
+    pub async fn spawn(
+        methods: Methods,
         server_config: JsonRpcServerConfig,
     ) -> Result<Self, ServerError> {
-        Self::spawn_inner(service_subscriber, server_config, None).await
+        Self::spawn_inner(methods, server_config, None).await
     }
 
-    /// Starts the JSON-RPC service on a pre-bound listener.
-    ///
-    /// Mirrors `TonicServer::spawn_from_listener`: a test harness binds
-    /// `127.0.0.1:0`, reads the OS-assigned port, and hands the open socket
-    /// here, closing the pick-a-port / bind-later race.
-    #[cfg(feature = "test_dependencies")]
-    pub async fn spawn_from_listener<Service: ZcashIndexer + LightWalletIndexer + Clone>(
-        service_subscriber: IndexerSubscriber<Service>,
+    /// Starts the JSON-RPC server on a pre-bound listener, so a caller can
+    /// bind `127.0.0.1:0` and hand the open socket over race-free.
+    pub async fn spawn_from_listener(
+        methods: Methods,
         server_config: JsonRpcServerConfig,
         listener: std::net::TcpListener,
     ) -> Result<Self, ServerError> {
-        Self::spawn_inner(service_subscriber, server_config, Some(listener)).await
+        Self::spawn_inner(methods, server_config, Some(listener)).await
     }
 
-    async fn spawn_inner<Service: ZcashIndexer + LightWalletIndexer + Clone>(
-        service_subscriber: IndexerSubscriber<Service>,
+    async fn spawn_inner(
+        methods: Methods,
         server_config: JsonRpcServerConfig,
         listener: Option<std::net::TcpListener>,
     ) -> Result<Self, ServerError> {
@@ -74,37 +62,29 @@ impl JsonRpcServer {
             Health::Healthy,
         );
 
-        let rpc_impl = JsonRpcClient {
-            service_subscriber: service_subscriber.clone(),
-        };
-
-        // Initialize Zebra-compatible cookie-based authentication if enabled.
-        let (cookie, cookie_dir) = if server_config.cookie_dir.is_some() {
-            let cookie = Cookie::default();
-            if let Some(dir) = &server_config.cookie_dir {
-                write_to_disk(&cookie, dir).map_err(|e| {
+        // cookie authentication, as zebrad's, when a directory is configured
+        let cookie_dir = server_config.cookie_dir;
+        let cookie = match &cookie_dir {
+            Some(dir) => {
+                let cookie = Cookie::generate();
+                cookie.write_to(dir).map_err(|e| {
                     ServerError::ServerConfigError(format!("Failed to write cookie: {e}"))
                 })?;
-            } else {
-                return Err(ServerError::ServerConfigError(
-                    "Cookie dir must be provided when auth is enabled".into(),
-                ));
+                Some(cookie)
             }
-            (Some(cookie), server_config.cookie_dir)
-        } else {
-            (None, None)
+            None => None,
         };
 
-        // Set up Zebra HTTP request compatibility middleware (handles auth and content-type issues)
-        let max_request_body_size = (MAX_BLOCK_BYTES as usize)
+        let max_request_body_size = usize::try_from(MAX_BLOCK_BYTES)
+            .unwrap_or(usize::MAX)
             .saturating_mul(2)
             .saturating_add(1024);
-        let http_middleware_layer = HttpRequestMiddlewareLayer::new(cookie, max_request_body_size);
+        let http_middleware_layer = HttpCompatLayer::new(cookie, max_request_body_size);
 
         // Before the middleware stack: the metrics layer interns call labels
         // against this method set, so a caller cannot mint a series by inventing
         // a name (see `jsonrpc_metrics`)
-        let rpc_module = rpc_impl.into_rpc();
+        let rpc_module = methods;
         let method_names: crate::serve::jsonrpc::metrics::MethodNames =
             std::sync::Arc::new(rpc_module.method_names().collect());
 
@@ -114,7 +94,7 @@ impl JsonRpcServer {
         let rpc_middleware = rpc_middleware.layer_fn(move |service| {
             crate::serve::jsonrpc::metrics::MetricsMiddleware::new(service, method_names.clone())
         });
-        let rpc_middleware = rpc_middleware.layer_fn(FixRpcResponseMiddleware::new);
+        let rpc_middleware = rpc_middleware.layer_fn(ZcashdErrorCodes::new);
 
         // Build the JSON-RPC server with middleware integrated. A pre-bound
         // listener (test path) is served directly; otherwise we bind the
@@ -134,7 +114,7 @@ impl JsonRpcServer {
                 })?
             }
             None => builder
-                .build(server_config.json_rpc_listen_address)
+                .build(server_config.listen_address)
                 .await
                 .map_err(|e| {
                     ServerError::ServerConfigError(format!("JSON-RPC server build error: {e}"))
@@ -177,7 +157,7 @@ impl JsonRpcServer {
         self.status.set(Lifecycle::Closing, Health::Healthy);
 
         if let Some(dir) = &self.cookie_dir {
-            if let Err(e) = remove_from_disk(dir) {
+            if let Err(e) = cookie::remove_from(dir) {
                 warn!(%e, "error removing cookie");
             }
         }

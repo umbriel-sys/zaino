@@ -2,8 +2,6 @@
 
 use crate::serve::error::ServerError;
 
-use zaino_state::NodeBackedIndexerServiceError;
-
 /// Zingo-Indexer errors.
 #[derive(Debug, thiserror::Error)]
 pub enum IndexerError {
@@ -13,12 +11,23 @@ pub enum IndexerError {
     /// Configuration errors.
     #[error("Configuration error: {0}")]
     ConfigError(String),
-    /// Could not reach the backing validator's JSON-RPC endpoint at startup.
-    #[error("validator probe error: {0}")]
+    /// A key of the configuration before the service rewrite.
+    #[error("Configuration error: `{key}` is no longer a key: use `{replacement}`")]
+    OldConfigKey {
+        /// The old key.
+        key: &'static str,
+        /// What replaced it.
+        replacement: &'static str,
+    },
+    /// The validator's credentials or RPC client could not be set up.
+    #[error("validator connection error: {0}")]
     ProbeError(#[from] zaino_rpc::ProbeError),
-    /// NodeBackedIndexerService errors.
-    #[error("NodeBackedIndexerService error: {0}")]
-    NodeBackedIndexerServiceError(Box<NodeBackedIndexerServiceError>),
+    /// The validator could not be connected to.
+    #[error("validator connection error: {0}")]
+    Validator(String),
+    /// The service did not start.
+    #[error("service error: {0}")]
+    Service(#[from] zaino_service::SpawnError),
     /// HTTP related errors due to invalid URI.
     #[error("HTTP error: Invalid URI {0}")]
     HttpError(#[from] http::Error),
@@ -35,10 +44,4 @@ pub enum IndexerError {
     /// Zaino restart signal.
     #[error("Restart Zaino")]
     Restart,
-}
-
-impl From<NodeBackedIndexerServiceError> for IndexerError {
-    fn from(value: NodeBackedIndexerServiceError) -> Self {
-        IndexerError::NodeBackedIndexerServiceError(Box::new(value))
-    }
 }

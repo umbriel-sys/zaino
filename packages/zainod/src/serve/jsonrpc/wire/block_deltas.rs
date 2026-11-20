@@ -1,8 +1,5 @@
 //! Types associated with the `getblockdeltas` RPC request.
 
-use zebra_chain::amount::{Amount, NonNegative};
-
-use crate::serve::jsonrpc::wire::common::amount;
 use crate::serve::jsonrpc::wire::display_hex;
 
 impl BlockDeltas {
@@ -35,7 +32,7 @@ impl BlockDeltas {
                         .into_iter()
                         .map(|input| InputDelta {
                             address: String::from(input.address),
-                            satoshis: amount::negative_allowed(input.satoshis),
+                            satoshis: input.satoshis.as_i64(),
                             index: input.index,
                             prevtxid: display_hex(input.prev_txid.into()),
                             prevout: input.prev_output,
@@ -46,7 +43,7 @@ impl BlockDeltas {
                         .into_iter()
                         .map(|output| OutputDelta {
                             address: String::from(output.address),
-                            satoshis: amount::non_negative(output.satoshis),
+                            satoshis: output.satoshis.as_u64(),
                             index: output.index,
                         })
                         .collect(),
@@ -152,7 +149,7 @@ pub struct InputDelta {
     pub address: String,
 
     /// Amount in zatoshis, **negative** for inputs/spends.
-    pub satoshis: Amount,
+    pub satoshis: i64,
 
     /// Zero-based vin index within the transaction.
     pub index: u32,
@@ -171,7 +168,7 @@ pub struct OutputDelta {
     pub address: String,
 
     /// Amount in zatoshis, **non-negative**.
-    pub satoshis: Amount<NonNegative>,
+    pub satoshis: u64,
 
     /// Zero-based vout index within the transaction.
     pub index: u32,

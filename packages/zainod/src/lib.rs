@@ -37,6 +37,7 @@ pub mod indexer;
 #[cfg(feature = "prometheus")]
 pub mod metrics;
 pub mod serve;
+mod source;
 
 /// Run the Zaino indexer.
 ///
@@ -50,18 +51,18 @@ pub async fn run(config_path: PathBuf) -> Result<(), IndexerError> {
     let config = load_config(&config_path)?;
 
     #[cfg(feature = "prometheus")]
-    if let Some(endpoint) = config.metrics_endpoint {
-        crate::metrics::init(endpoint)?;
+    if let Some(admin) = config.admin {
+        crate::metrics::init(admin.listen_address)?;
     }
 
     // Else silent: the block above is compiled out, so a configured endpoint yields
     // no listener and no complaint
     #[cfg(not(feature = "prometheus"))]
-    if config.metrics_endpoint.is_some() {
+    if config.admin.is_some() {
         tracing::warn!(
-            "`metrics_endpoint` is configured but this binary was built without the \
-             `prometheus` feature, so no /metrics listener will start. Rebuild with \
-             `--features prometheus` (or `no_tls_with_prometheus`) to enable it."
+            "`[admin]` is configured but this binary was built without the `prometheus` \
+             feature, so no admin listener will start. Rebuild with `--features prometheus` \
+             (or `no_tls_with_prometheus`) to enable it."
         );
     }
 
