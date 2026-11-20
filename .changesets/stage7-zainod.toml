@@ -7,6 +7,13 @@ The crate names no zebra type: `blockid_to_hashorheight` is removed and the \
 now only finds `protoc`)."""
 
 [[changes]]
+crate = "zaino-encoding"
+kind = "feature"
+description = """
+`encode_header`: a block header back to its consensus bytes, for serving \
+headers Zaino holds."""
+
+[[changes]]
 crate = "zaino-source-zebra"
 kind = "feature"
 description = """

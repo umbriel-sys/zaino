@@ -748,6 +748,33 @@ fn light_checks_field_elements() {
     assert!(read_tx_checked(&orchard, true).is_ok(), "zero is canonical");
 }
 
+/// A decoded header encodes back to the block's leading bytes, which hash to
+/// its hash: standard solutions from the vectors, a regtest one hand-built.
+#[test]
+fn a_header_encodes_back_to_its_bytes() {
+    for (network, height, bytes) in vectors() {
+        let header = parse(bytes).expect("vector").header;
+        let encoded = encode_header(&header);
+        assert_eq!(encoded.len(), HEADER_LEN, "{network} {height}");
+        assert_eq!(encoded, bytes[..HEADER_LEN], "{network} {height}");
+        assert_eq!(
+            sha256d(&encoded),
+            <[u8; 32]>::from(header.hash),
+            "{network} {height}"
+        );
+    }
+    let regtest = BlockHeader {
+        solution: EquihashSolution::Regtest([7; 36]),
+        ..parse(vectors().next().expect("a vector").2)
+            .expect("vector")
+            .header
+    };
+    let encoded = encode_header(&regtest);
+    assert_eq!(encoded.len(), HEADER_LEN - 1344 - 3 + 36 + 1);
+    assert_eq!(encoded[140], 36);
+    assert_eq!(encoded[141..], [7; 36]);
+}
+
 /// Light checks fields, not curve points: zebra refuses a block it accepts.
 #[test]
 fn light_accepts_canonical_fields_that_are_not_points() {

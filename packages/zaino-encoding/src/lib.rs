@@ -338,6 +338,30 @@ fn read_header(r: &mut Reader<'_>) -> Result<RawHeader, DecodeError> {
     })
 }
 
+/// CompactSize(1344), the standard Equihash solution's length prefix.
+const STANDARD_SOLUTION_PREFIX: [u8; 3] = [0xfd, 0x40, 0x05];
+/// CompactSize(36), the regtest solution's.
+const REGTEST_SOLUTION_PREFIX: u8 = 36;
+
+/// The consensus encoding of `header`: the bytes its hash commits to
+/// (1,487 with a standard solution).
+pub fn encode_header(header: &BlockHeader) -> Vec<u8> {
+    let mut out = Vec::new();
+    out.extend(header.version.to_le_bytes());
+    out.extend(<[u8; 32]>::from(header.prev_hash));
+    out.extend(<[u8; 32]>::from(header.merkle_root));
+    out.extend(<[u8; 32]>::from(header.block_commitments));
+    out.extend(header.time.to_le_bytes());
+    out.extend(header.bits.as_bits().to_le_bytes());
+    out.extend(header.nonce);
+    match &header.solution {
+        EquihashSolution::Standard(_) => out.extend(STANDARD_SOLUTION_PREFIX),
+        EquihashSolution::Regtest(_) => out.push(REGTEST_SOLUTION_PREFIX),
+    }
+    out.extend(header.solution.as_bytes());
+    out
+}
+
 fn sha256d(bytes: &[u8]) -> [u8; 32] {
     Sha256::digest(Sha256::digest(bytes)).into()
 }

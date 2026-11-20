@@ -11,6 +11,8 @@ only: no validator, no RPC, no node library.
 - `parse_transaction(bytes)` — one serialized transaction, structure only,
   for bytes a validator has verified (a mempool transaction). Trailing bytes
   are refused.
+- `encode_header(&header)` — a block header back to its consensus bytes
+  (1,487 with a standard Equihash solution), the bytes its hash commits to.
 - `GENESIS_COINBASE_SCRIPT_SIG` — the one coinbase without a BIP 34 height.
 
 Malformed input is a typed `DecodeError`, never a panic.
