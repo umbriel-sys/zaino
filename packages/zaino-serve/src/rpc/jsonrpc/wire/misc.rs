@@ -6,9 +6,10 @@
 use serde::{Deserialize, Serialize};
 
 use zaino_primitives::types::{
-    rpc::{SpentInfo, SpentOutpoint, TxOut},
+    rpc::{SpentOutpoint, TxOut},
     TxOutSetInfo,
 };
+use zaino_state::Spend;
 
 use super::{display_hex, zats_to_zec};
 
@@ -92,20 +93,25 @@ pub struct SpentInfoWire {
     pub txid: String,
     /// Index of the spending input within that transaction's `vin` array.
     pub index: u32,
-    /// Height of the block containing the spending transaction.
+    /// Height of the block containing the spending transaction; −1 while it
+    /// is in the mempool, as the legacy full node writes it.
     ///
     /// Returned by the legacy full node 6.12.2, though absent from the published 6.2.0 RPC
     /// page.
-    pub height: u32,
+    pub height: i64,
 }
 
 impl SpentInfoWire {
     /// Renders where an output was spent.
-    pub fn from_domain(spent: SpentInfo) -> Self {
+    pub fn from_domain(spent: Spend) -> Self {
+        let (txid, index, height) = match spent {
+            Spend::Mined(info) => (info.txid, info.index, i64::from(u32::from(info.height))),
+            Spend::Mempool { txid, index } => (txid, index, -1),
+        };
         Self {
-            txid: display_hex(<[u8; 32]>::from(spent.txid)),
-            index: spent.index,
-            height: u32::from(spent.height),
+            txid: display_hex(<[u8; 32]>::from(txid)),
+            index,
+            height,
         }
     }
 }
@@ -371,6 +377,30 @@ mod tests {
                 "hash_serialized": "cc".repeat(32),
                 "total_amount": 2.5,
             })
+        );
+    }
+
+    /// A mined spend carries its height; a mempool spend −1, as zcashd.
+    #[test]
+    fn spent_info_writes_minus_one_for_a_mempool_spend() {
+        use zaino_primitives::types::{rpc::SpentInfo, Height};
+
+        let mined = SpentInfoWire::from_domain(Spend::Mined(SpentInfo {
+            txid: [0x11; 32].into(),
+            index: 2,
+            height: Height::try_from(42u32).unwrap(),
+        }));
+        assert_eq!(
+            serde_json::to_value(&mined).unwrap(),
+            json!({ "txid": display_hex([0x11; 32]), "index": 2, "height": 42 })
+        );
+        let mempool = SpentInfoWire::from_domain(Spend::Mempool {
+            txid: [0x22; 32].into(),
+            index: 1,
+        });
+        assert_eq!(
+            serde_json::to_value(&mempool).unwrap(),
+            json!({ "txid": display_hex([0x22; 32]), "index": 1, "height": -1 })
         );
     }
 

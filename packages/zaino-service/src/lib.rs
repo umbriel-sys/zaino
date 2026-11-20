@@ -38,7 +38,7 @@ pub use config::{DiskStore, Mode, ServiceConfig, Store};
 pub use engine::{Service, SpawnError, Statuses};
 pub use error::ServiceError;
 pub use hashes::BlockHashAt;
-pub use mempool_reads::{Placement, ServedTransaction, TransactionStatus};
+pub use mempool_reads::{Placement, ServedTransaction, Spend, TransactionStatus};
 pub use reads::{ChainSnapshot, ServiceSnapshot};
 pub use schedule::{schedule_at, ScheduleAt};
 pub use source::ServiceSource;

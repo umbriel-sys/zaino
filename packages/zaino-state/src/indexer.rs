@@ -535,11 +535,12 @@ pub trait ZcashIndexer: Send + Sync + 'static {
     /// # Notes
     ///
     /// the legacy full node 6.12.2 returns an undocumented `height` field in addition to
-    /// the documented `txid` and `index` fields.
+    /// the documented `txid` and `index` fields; a spend still in the mempool
+    /// has height −1.
     fn get_spent_info(
         &self,
         outpoint: zaino_primitives::types::rpc::SpentOutpoint,
-    ) -> impl SendFut<Result<zaino_primitives::types::rpc::SpentInfo, Self::Error>>;
+    ) -> impl SendFut<Result<zaino_service::Spend, Self::Error>>;
 
     /// Returns the transaction ids made by the provided transparent addresses.
     ///

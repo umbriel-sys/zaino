@@ -266,7 +266,7 @@ impl<V: ChainIndexSourcePorts + ServiceSource> ChainIndexRpcExt
     async fn get_spent_info(
         &self,
         outpoint: zaino_primitives::types::rpc::SpentOutpoint,
-    ) -> Result<zaino_primitives::types::rpc::SpentInfo, Self::Error> {
+    ) -> Result<zaino_service::Spend, Self::Error> {
         let snapshot = self.snapshot_nonfinalized_state();
         let rejection = match self.reads(&snapshot).spent_info(outpoint).await {
             Ok(Some(info)) => return Ok(info),

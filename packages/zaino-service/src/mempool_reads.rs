@@ -7,7 +7,10 @@ use futures::{Stream, StreamExt as _};
 use zaino_chain::{BlockRead as _, ChainTxPosition, ChainViewSnapshot as _, TransactionRead as _};
 use zaino_mempool::{CoherentSnapshot, MempoolEntry, TipAwareMempool as _};
 use zaino_mempool_service::{CoherentSubscriber, MempoolInfo, MempoolSubscriber};
-use zaino_primitives::types::{ChainStateEpoch, Height, TransactionId, TransactionLocation};
+use zaino_primitives::types::rpc::SpentInfo;
+use zaino_primitives::types::{
+    ChainStateEpoch, Height, Outpoint, TransactionId, TransactionLocation,
+};
 
 use crate::error::ServiceError;
 use crate::reads::ServiceSnapshot;
@@ -25,6 +28,20 @@ pub struct ServedTransaction {
     pub height: Height,
     /// Whether it came from the mempool.
     pub mempool: bool,
+}
+
+/// Where a transparent output was spent (`getspentinfo`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Spend {
+    /// By a mined transaction.
+    Mined(SpentInfo),
+    /// By a transaction in the mempool, not yet mined.
+    Mempool {
+        /// The spending transaction.
+        txid: TransactionId,
+        /// The spending input's index within it.
+        index: u32,
+    },
 }
 
 /// Where a transaction is.
@@ -159,6 +176,23 @@ impl<S: ServiceSource> ServiceSnapshot<S> {
             status.elsewhere.push(Placement::Mempool(target));
         }
         Ok(status)
+    }
+
+    /// The mempool transaction spending `outpoint` and which input does,
+    /// from the mempool coherent with this snapshot. Refused, never guessed,
+    /// when only a mempool for another tip holds a spender.
+    pub(crate) fn mempool_spender(
+        &self,
+        outpoint: Outpoint,
+    ) -> Result<Option<(TransactionId, u32)>> {
+        let coherent = self.coherence.coherent_snapshot();
+        if self.coherent_epoch(&coherent).is_some() {
+            return Ok(coherent.set.spender(&outpoint));
+        }
+        match self.mempool.snapshot().spender(&outpoint) {
+            Some(_) => Err(ServiceError::MempoolIncoherent),
+            None => Ok(None),
+        }
     }
 
     /// This snapshot's epoch, if `coherent` is valid for it.

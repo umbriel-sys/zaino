@@ -3,7 +3,7 @@
 use crate::chain_index::chain_view::BestTip as _;
 use futures::StreamExt;
 use hex::FromHex;
-use std::{io::Cursor, time};
+use std::time;
 use tokio::time::timeout;
 use tracing::{info, instrument, warn};
 use zaino_chain::ForkReconcile;
@@ -1174,7 +1174,7 @@ impl<V: ChainIndexSourcePorts + ServiceSource> ZcashIndexer
     async fn get_spent_info(
         &self,
         outpoint: zaino_primitives::types::rpc::SpentOutpoint,
-    ) -> Result<zaino_primitives::types::rpc::SpentInfo, Self::Error> {
+    ) -> Result<zaino_service::Spend, Self::Error> {
         Ok(self.indexer.get_spent_info(outpoint).await?)
     }
 
@@ -1494,40 +1494,15 @@ impl<V: ChainIndexSourcePorts + ServiceSource> LightWalletIndexer
                 match mempool.get_mempool_transactions(exclude_txids).await {
                     Ok(entries) => {
                         for entry in entries {
-                            // One parse, not two. This used to deserialize
-                            // the same bytes into a `zebra_chain`
-                            // transaction and then again into
-                            // `zaino-fetch`'s `FullTransaction`, purely to
-                            // reach the latter's `to_compact`. The domain
-                            // conversion reaches the same compact shape
-                            // from the zebra transaction directly, which is
-                            // what the TODO this replaces asked for.
-                            let compact = zebra_chain::transaction::Transaction::zcash_deserialize(
-                                &mut Cursor::new(entry.serialized_bytes()),
-                            )
-                            .map_err(|e| {
-                                tonic::Status::unknown(format!(
-                                    "mempool transaction did not deserialize: {e}"
-                                ))
-                            })
-                            .and_then(|transaction| {
-                                zaino_primitives::zebra::transaction_from_zebra(&transaction)
-                                    .map_err(|e| tonic::Status::unknown(e.to_string()))
-                            })
-                            .map(|transaction| {
-                                zaino_primitives::types::PreIndexCompactTx::from(&transaction)
-                                    .filtered(pools)
-                            });
-                            let compact = match compact {
-                                Ok(transaction) if !transaction.has_pool_data() => continue,
-                                // A mempool transaction is in no block, so index 0.
-                                Ok(transaction) => {
-                                    Ok(zaino_proto::compact::compact_tx_to_wire(0, &transaction))
-                                }
-                                Err(status) => Err(status),
-                            };
+                            // the entry's compact form, decoded once at ingest
+                            let compact = entry.compact.clone().filtered(pools);
+                            if !compact.has_pool_data() {
+                                continue;
+                            }
+                            // A mempool transaction is in no block, so index 0.
+                            let compact = zaino_proto::compact::compact_tx_to_wire(0, &compact);
 
-                            if channel_tx.send(compact).await.is_err() {
+                            if channel_tx.send(Ok(compact)).await.is_err() {
                                 break;
                             }
                         }

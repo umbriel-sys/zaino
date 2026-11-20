@@ -478,7 +478,7 @@ pub trait ChainIndexRpcExt: ChainIndex {
     fn get_spent_info(
         &self,
         outpoint: zaino_primitives::types::rpc::SpentOutpoint,
-    ) -> impl std::future::Future<Output = Result<zaino_primitives::types::rpc::SpentInfo, Self::Error>>;
+    ) -> impl std::future::Future<Output = Result<zaino_service::Spend, Self::Error>>;
 
     /// Returns the `getnetworksolps` response.
     fn get_network_sol_ps(

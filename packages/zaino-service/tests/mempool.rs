@@ -7,10 +7,14 @@ mod common;
 use std::collections::HashSet;
 use std::sync::Arc;
 
-use common::{chain, config, eventually, validator_backed, TIP};
+use common::{all_local, chain, config, disk, eventually, validator_backed, TIP};
 use futures::StreamExt as _;
+use zaino_chain_store_service::NamedSet;
+use zaino_persistence_lsm_tree::fs::SimFs;
+use zaino_primitives::types::rpc::SpentOutpoint;
 use zaino_primitives::types::{Height, TransactionId};
-use zaino_service::{Placement, Service, ServiceError};
+use zaino_service::{Mode, Placement, Service, ServiceError, Spend};
+use zaino_source::OneShotGetSpentInfo as _;
 use zaino_source_mock::MockChain;
 
 /// The validator serves through `SERVED`; its mempool is the next block's
@@ -170,6 +174,115 @@ async fn an_older_snapshot_places_the_mempool_elsewhere() {
         fresh.transaction_status(next).await.expect("answers").best,
         Some(Placement::Mempool(Some(height(SERVED + 2))))
     );
+}
+
+/// The first transparent output the block at `at` spends after its
+/// coinbase, and the transaction spending it with its first input.
+fn first_spend(chain: &MockChain, at: u32) -> (SpentOutpoint, TransactionId) {
+    let block = chain.block_at(at).expect("held");
+    let spender = &block.block.transactions()[1];
+    let input = &spender.transparent.inputs[0];
+    let spent = SpentOutpoint {
+        txid: input.prev_txid,
+        index: input.prev_index,
+    };
+    (spent, spender.txid)
+}
+
+/// getspentinfo with no store (as while one builds): a spend in the coherent
+/// mempool is answered from it, the validator not asked; once mined, the
+/// validator's; a snapshot the mempool is not coherent with is refused.
+#[tokio::test]
+async fn a_mempool_spend_is_answered_from_the_mempool() {
+    let chain = chain();
+    let service = served(&chain).await;
+    let old = service.snapshot();
+    let (spent, spender) = first_spend(&chain, SERVED + 1);
+    let asked = chain.calls("get_spent_info");
+    assert_eq!(
+        old.spent_info(spent).await.expect("answers"),
+        Some(Spend::Mempool {
+            txid: spender,
+            index: 0
+        })
+    );
+    assert_eq!(chain.calls("get_spent_info"), asked, "the mempool answers");
+
+    chain.serve_to(SERVED + 1);
+    let (next_spent, next_spender) = first_spend(&chain, SERVED + 2);
+    assert!(
+        eventually(|| {
+            let snapshot = service.snapshot();
+            u32::from(snapshot.tip().height) == SERVED + 1
+                && snapshot.mempool_txids().contains(&next_spender)
+                && snapshot.mempool_stream(true).is_some()
+        })
+        .await,
+        "the mempool coheres at the new tip"
+    );
+    let fresh = service.snapshot();
+    let mined = chain.get_spent_info(spent).await.expect("the validator's");
+    assert_eq!(mined.height, height(SERVED + 1));
+    assert_eq!(
+        fresh.spent_info(spent).await.expect("answers"),
+        Some(Spend::Mined(mined))
+    );
+    assert_eq!(
+        fresh.spent_info(next_spent).await.expect("answers"),
+        Some(Spend::Mempool {
+            txid: next_spender,
+            index: 0
+        })
+    );
+    assert!(matches!(
+        old.spent_info(next_spent).await,
+        Err(ServiceError::MempoolIncoherent)
+    ));
+}
+
+/// getspentinfo over a built store: the spend index says unspent, the
+/// coherent mempool names the spender, the validator is not asked; a mined
+/// spend is still the index's.
+#[tokio::test]
+async fn a_mempool_spend_is_found_past_the_spend_index() {
+    let chain = chain();
+    chain.serve_to(SERVED);
+    let service = Service::spawn(
+        Arc::new(chain.clone()),
+        config(disk(&SimFs::new(), NamedSet::Full, Mode::Primary)),
+    )
+    .await
+    .expect("spawns");
+    let (spent, spender) = first_spend(&chain, SERVED + 1);
+    assert!(
+        eventually(|| {
+            let snapshot = service.snapshot();
+            all_local(&service)
+                && snapshot.mempool_txids().contains(&spender)
+                && snapshot.mempool_stream(true).is_some()
+        })
+        .await,
+        "built, and the mempool coheres"
+    );
+    let snapshot = service.snapshot();
+    let (mined_spent, _) = first_spend(&chain, SERVED);
+    let mined = chain
+        .get_spent_info(mined_spent)
+        .await
+        .expect("the validator's");
+    let asked = chain.calls("get_spent_info");
+    assert_eq!(
+        snapshot.spent_info(spent).await.expect("answers"),
+        Some(Spend::Mempool {
+            txid: spender,
+            index: 0
+        })
+    );
+    assert_eq!(
+        snapshot.spent_info(mined_spent).await.expect("answers"),
+        Some(Spend::Mined(mined))
+    );
+    assert_eq!(chain.calls("get_spent_info"), asked, "local");
 }
 
 /// The pinned stream yields the coherent mempool and ends when the tip

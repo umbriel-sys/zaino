@@ -86,6 +86,7 @@ pub use zaino_chain::{ChainViewSnapshot, ComposerSnapshot};
 pub use zaino_chain_head::{ChainHeadBlock, ChainHeadSnapshot};
 pub use zaino_chain_head_service::PersistentSnapshot;
 pub use zaino_primitives::types::MempoolInfo;
+pub use zaino_service::Spend;
 
 #[cfg(test)]
 pub(crate) use chain_index::types::{BlockHash, Height, Outpoint};

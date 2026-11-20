@@ -30,6 +30,7 @@ use zaino_source::{
 use crate::capability::Capability;
 use crate::engine::Service;
 use crate::error::ServiceError;
+use crate::mempool_reads::Spend;
 use crate::source::ServiceSource;
 
 /// The chain view one service snapshot reads through.
@@ -252,20 +253,21 @@ impl<S: ServiceSource> ServiceSnapshot<S> {
         }))
     }
 
-    /// Where an outpoint was spent (`getspentinfo`): from Zaino's spend index
-    /// where it answers, else the validator's; `None` when unspent.
-    pub async fn spent_info(&self, outpoint: SpentOutpoint) -> Result<Option<SpentInfo>> {
+    /// Where an outpoint was spent (`getspentinfo`): a mined spend from
+    /// Zaino's spend index where it answers, else a spend in the mempool
+    /// coherent with this snapshot, else the validator's; `None` when
+    /// unspent.
+    pub async fn spent_info(&self, outpoint: SpentOutpoint) -> Result<Option<Spend>> {
+        let spent = Outpoint {
+            txid: outpoint.txid,
+            index: outpoint.index,
+        };
         let local = self
             .chain
-            .outpoint_spenders(
-                &[Outpoint {
-                    txid: outpoint.txid,
-                    index: outpoint.index,
-                }],
-                ChainScope::FullChain,
-            )
+            .outpoint_spenders(&[spent], ChainScope::FullChain)
             .await;
-        match local.as_deref() {
+        // whether the chain, asked locally, holds no spend of it
+        let unspent_on_chain = match local.as_deref() {
             Ok(
                 [SpendStatus::SpentBy {
                     txid,
@@ -273,25 +275,34 @@ impl<S: ServiceSource> ServiceSnapshot<S> {
                     height,
                 }],
             ) => {
-                return Ok(Some(SpentInfo {
+                return Ok(Some(Spend::Mined(SpentInfo {
                     txid: *txid,
                     index: *input_index,
                     height: *height,
-                }))
+                })))
             }
-            Ok([SpendStatus::Unspent]) => return Ok(None),
-            Ok([SpendStatus::SpentSpenderUnknown]) => {}
+            Ok([SpendStatus::Unspent]) => Some(true),
+            // spent on the chain: the mempool cannot hold its spender
+            Ok([SpendStatus::SpentSpenderUnknown]) => None,
             Ok(statuses) => {
                 return Err(ServiceError::SpendCountMismatch {
                     asked: 1,
                     answered: statuses.len(),
                 })
             }
-            Err(error) if not_local(error) => {}
+            Err(error) if not_local(error) => Some(false),
             Err(_) => return local.map(|_| None).map_err(ServiceError::from),
+        };
+        if let Some(unspent) = unspent_on_chain {
+            if let Some((txid, index)) = self.mempool_spender(spent)? {
+                return Ok(Some(Spend::Mempool { txid, index }));
+            }
+            if unspent {
+                return Ok(None);
+            }
         }
         match self.source.get_spent_info(outpoint).await {
-            Ok(info) => Ok(Some(info)),
+            Ok(info) => Ok(Some(Spend::Mined(info))),
             Err(QueryError::Domain(GetSpentInfoError::NotSpent)) => Ok(None),
             Err(QueryError::Domain(GetSpentInfoError::Unsupported)) => {
                 Err(ServiceError::NotServed {

@@ -15,3 +15,29 @@ description = """
 Each mempool transaction is decoded once at ingest with `zaino-encoding`. One \
 whose bytes do not decode to its txid is not admitted: logged, listed in \
 `unadmitted`, fetched once rather than every poll (C4)."""
+
+[[changes]]
+crate = "zaino-service"
+kind = "breaking"
+description = """
+`ServiceSnapshot::spent_info` returns `Spend`: `Mined(SpentInfo)`, or \
+`Mempool { txid, index }` for a spend in the mempool coherent with the \
+snapshot, found before the validator is asked; a spender held only by a \
+mempool for another tip is `MempoolIncoherent` (C4)."""
+
+[[changes]]
+crate = "zaino-state"
+kind = "breaking"
+description = """
+`get_spent_info` (`ZcashIndexer`, `ChainIndexRpcExt`) returns \
+`zaino_service::Spend`, re-exported as `zaino_state::Spend`. `GetMempoolTx` \
+serves each mempool entry's compact form instead of parsing every \
+transaction with `zebra_chain` per request (C4)."""
+
+[[changes]]
+crate = "zaino-serve"
+kind = "breaking"
+description = """
+`getspentinfo` answers a spend still in the mempool, with height −1 as zcashd \
+writes it; `SpentInfoWire::height` is `i64` and `from_domain` takes \
+`zaino_state::Spend` (C4)."""

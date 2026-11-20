@@ -66,7 +66,12 @@ chain). Notable shapes:
   rejection is an OK reply with the validator's code and message; an
   unreachable validator is `Unavailable`.
 - `GetMempoolTx` reads `pool_types` (none: the shielded pools; an invalid pool
-  is `InvalidArgument`) and drops a transaction with nothing in them.
+  is `InvalidArgument`) and drops a transaction with nothing in them. It
+  serves each entry's compact form, decoded once at ingest: nothing is parsed
+  per request.
+- `get_spent_info` returns `zaino_service::Spend` (re-exported as
+  `zaino_state::Spend`): a mined spend with its height, or a spend still in
+  the mempool, which `getspentinfo` writes with height −1 as zcashd does.
 - `GetStandardFee` refuses a zero fee (`Internal`) and is `Unavailable` when
   the validator is unreachable; `Ping` is `FailedPrecondition` (never enabled).
 - `getaddresstxids` and `getaddressdeltas` read their height range as zebrad

@@ -13,7 +13,7 @@ use zaino_primitives::types::rpc::{
 use zaino_primitives::types::{
     BlockHash, BlockRef, BlockVerbosity, Height, TransparentAddress, Zatoshis,
 };
-use zaino_service::{Capability, ServiceError};
+use zaino_service::{Capability, ServiceError, Spend};
 use zaino_source::{
     OneShotGetAddressDeltas as _, OneShotGetBlockDeltas as _, OneShotGetBlockHeader as _,
     OneShotGetBlockVerboseByHash as _, OneShotGetRawBlockByHash as _, OneShotGetSpentInfo as _,
@@ -178,7 +178,7 @@ async fn spent_info_is_local_where_indexed() {
     let asked = chain.calls("get_spent_info");
     assert_eq!(
         snapshot.spent_info(spent).await.expect("answers"),
-        Some(expected)
+        Some(Spend::Mined(expected))
     );
     assert_eq!(snapshot.spent_info(unspent).await.expect("answers"), None);
     assert_eq!(chain.calls("get_spent_info"), asked, "local");
@@ -187,7 +187,9 @@ async fn spent_info_is_local_where_indexed() {
     let from = chain.call_log().len();
     assert_eq!(
         remote.snapshot().spent_info(spent).await.expect("answers"),
-        Some(chain.get_spent_info(spent).await.expect("the validator's"))
+        Some(Spend::Mined(
+            chain.get_spent_info(spent).await.expect("the validator's")
+        ))
     );
     assert!(called_with(
         &chain,
