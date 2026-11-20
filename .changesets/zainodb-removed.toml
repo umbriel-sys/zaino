@@ -6,11 +6,6 @@ Removed. The store is `zaino-chain-store-service`; an existing zainodb \
 directory is not read."""
 
 [[changes]]
-crate = "zaino-encoding"
-kind = "breaking"
-description = "Removed with zainodb, its only user."
-
-[[changes]]
 crate = "zaino-status"
 kind = "breaking"
 description = """
