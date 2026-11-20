@@ -219,11 +219,12 @@ impl OneShotGetTransaction for ZebraValidator {
     async fn get_transaction(
         &self,
         txid: TransactionId,
-    ) -> Result<TransactionResponse, QueryError<GetTransactionError>> {
+        verbosity: zaino_primitives::types::rpc::TransactionVerbosity,
+    ) -> Result<TransactionAnswer, QueryError<GetTransactionError>> {
         // The state service has no mempool, so its `NotFound` means "not
         // mined". An unmined transaction is found only over JSON-RPC, which is
         // why this is a fallback rather than a preference.
-        fast_then_slow!(self, get_transaction, txid)
+        fast_then_slow!(self, get_transaction, txid, verbosity)
     }
 }
 

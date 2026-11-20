@@ -66,5 +66,6 @@ pub use subtree_roots::SubtreeRoots;
 pub use transaction_verbose::{
     InputVerbose, JoinSplitVerbose, OrchardActionVerbose, OrchardFlagsVerbose, OrchardVerbose,
     OutputVerbose, PrevoutVerbose, SaplingOutputVerbose, SaplingSpendVerbose, TransactionVerbose,
+    TransactionVerbosity,
 };
 pub use tx_out::{ScriptPubKey, TxOut};

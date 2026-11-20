@@ -307,8 +307,11 @@ mod generated {
             start_index: u16 = 4,
             limit: Option<u16> = Some(2)
         ) -> Vec<SubtreeRoot>, crate::GetSubtreeRootsError;
-        GetTransaction / OneShotGetTransaction :: get_transaction(txid: TransactionId = txid())
-            -> crate::TransactionResponse, crate::GetTransactionError;
+        GetTransaction / OneShotGetTransaction :: get_transaction(
+            txid: TransactionId = txid(),
+            verbosity: zaino_primitives::types::rpc::TransactionVerbosity
+                = zaino_primitives::types::rpc::TransactionVerbosity::Object
+        ) -> crate::TransactionAnswer, crate::GetTransactionError;
         GetTreestate / OneShotGetTreestate :: get_treestate(height: Height = height(7))
             -> Treestate, crate::GetTreestateError;
         GetTreestateByHash / OneShotGetTreestateByHash :: get_treestate_by_hash(

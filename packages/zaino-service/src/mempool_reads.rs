@@ -8,27 +8,13 @@ use zaino_chain::{BlockRead as _, ChainTxPosition, ChainViewSnapshot as _, Trans
 use zaino_mempool::{CoherentSnapshot, MempoolEntry, TipAwareMempool as _};
 use zaino_mempool_service::{CoherentSubscriber, MempoolInfo, MempoolSubscriber};
 use zaino_primitives::types::rpc::SpentInfo;
-use zaino_primitives::types::{
-    ChainStateEpoch, Height, Outpoint, TransactionId, TransactionLocation,
-};
+use zaino_primitives::types::{ChainStateEpoch, Height, Outpoint, TransactionId};
 
 use crate::error::ServiceError;
 use crate::reads::ServiceSnapshot;
 use crate::source::ServiceSource;
 
 type Result<T> = core::result::Result<T, ServiceError>;
-
-/// A transaction's bytes and the height it was, or would be, mined at.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ServedTransaction {
-    /// Its consensus bytes.
-    pub bytes: Vec<u8>,
-    /// Mined at this height, or, from the mempool, to be mined at it (the
-    /// tip's successor).
-    pub height: Height,
-    /// Whether it came from the mempool.
-    pub mempool: bool,
-}
 
 /// Where a transparent output was spent (`getspentinfo`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -89,52 +75,6 @@ impl<S: ServiceSource> ServiceSnapshot<S> {
         pinned: bool,
     ) -> Option<impl Stream<Item = Result<bytes::Bytes>> + Send + '_> {
         coherent_stream(&self.coherence, pinned.then(|| self.chain().epoch()))
-    }
-
-    /// A transaction's bytes: from the mempool when coherent with this
-    /// snapshot, else from the chain.
-    pub async fn transaction(&self, txid: TransactionId) -> Result<Option<ServedTransaction>> {
-        let coherent = self.coherence.coherent_snapshot();
-        match self.coherent_epoch(&coherent) {
-            Some(epoch) => {
-                if let Some(entry) = coherent.get(&txid) {
-                    return Ok(Some(ServedTransaction {
-                        bytes: entry.wire_bytes().to_vec(),
-                        height: successor(epoch.best_tip.height)?,
-                        mempool: true,
-                    }));
-                }
-            }
-            // the core set can lag the chain and still list a mined txid
-            None if self.mempool.contains_txid(&txid)
-                && self.chain().transaction_locations(txid).await?.is_empty() =>
-            {
-                return Err(ServiceError::MempoolIncoherent);
-            }
-            None => {}
-        }
-        let Some(transaction) = self.chain().raw_transaction(txid).await? else {
-            return Ok(None);
-        };
-        let height = match transaction.location {
-            TransactionLocation::BestChain(height) => height,
-            TransactionLocation::NonBestChain => {
-                let locations = self.chain().transaction_locations(txid).await?;
-                match locations
-                    .best_chain
-                    .or_else(|| locations.non_best_chain.first().copied())
-                {
-                    Some(position) => position.block.height,
-                    None => return Ok(None),
-                }
-            }
-            TransactionLocation::Mempool => return Ok(None),
-        };
-        Ok(Some(ServedTransaction {
-            bytes: transaction.bytes,
-            height,
-            mempool: false,
-        }))
     }
 
     /// Where a transaction is: its blocks, and the mempool, placed against

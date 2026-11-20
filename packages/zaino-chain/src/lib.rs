@@ -89,10 +89,7 @@ pub use ports::{
     HistoryTreeRead, PrevoutRead, SpendRead, TransactionRead, TreestateRead, TxOutSetRead,
 };
 pub use source::ChainViewSource;
-pub use types::{
-    BlockId, ChainScope, ChainTxPosition, Locator, RawTransaction, SpendStatus,
-    TransactionLocations,
-};
+pub use types::{BlockId, ChainScope, ChainTxPosition, Locator, SpendStatus, TransactionLocations};
 
 pub mod composer;
 pub mod store_indexes;

@@ -10,6 +10,7 @@ use zaino_chain::{
     AddressRead as _, BlockId as At, BlockRead as _, ChainViewError, ChainViewSnapshot as _,
     CompactBlockRead as _, CompactFrameRead as _, TreestateRead as _,
 };
+use zaino_primitives::types::rpc::TransactionVerbosity;
 use zaino_primitives::types::{
     BlockHash, Height, Network, PoolFilter, ShieldedPool, TransactionId, TransparentAddress,
     Treestate, Utxo, Zatoshis,
@@ -562,7 +563,7 @@ impl<S: ServiceSource> Lightwallet<S> {
     ) -> Result<RawTransaction, tonic::Status> {
         let reads = self.backend.service.with_chain(chain.clone());
         let served = reads
-            .transaction(txid)
+            .transaction(txid, TransactionVerbosity::Raw, None)
             .await
             .map_err(status::of_service)?
             .ok_or_else(|| {
@@ -584,7 +585,7 @@ impl<S: ServiceSource> Lightwallet<S> {
             ))
         })?;
         Ok(RawTransaction {
-            data: bytes::Bytes::from(served.bytes),
+            data: bytes::Bytes::from(served.into_bytes()),
             height,
         })
     }

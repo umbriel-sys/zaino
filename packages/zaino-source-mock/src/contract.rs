@@ -10,10 +10,11 @@ use std::collections::BTreeSet;
 
 use zaino_consensus::branch_id;
 use zaino_primitives::types::{
-    rpc::{ChainTipStatus, SpentOutpoint},
-    Block, BlockHash, BlockTransactions, BlockVerbosity, Height, NetworkUpgradeStatus,
-    ShieldedPool, TransactionId, TransactionLocation,
+    rpc::{ChainTipStatus, SpentOutpoint, TransactionVerbose, TransactionVerbosity},
+    Block, BlockConfirmations, BlockHash, BlockTransactions, BlockVerbosity, Height,
+    NetworkUpgradeStatus, ShieldedPool, TransactionId, TransactionLocation,
 };
+use zaino_source::TransactionAnswer;
 use zaino_source::{
     GetAddressBalanceError, GetAddressDeltasError, GetAddressTxidsError, GetAddressUtxosError,
     GetBlockByHashError, GetBlockError, GetChainTipsError, GetCommitmentTreeRootsByHeightError,
@@ -243,8 +244,34 @@ where
     )
 }
 
-/// Every mined transaction is located on the best chain at its block's
-/// height; an unknown txid is `NotFound`.
+/// `txid` at both verbosities: its bytes, and its object carrying them.
+async fn both_forms<S: zaino_source::OneShotGetTransaction>(
+    source: &S,
+    txid: TransactionId,
+) -> Result<TransactionVerbose, Broken> {
+    let raw = answered(
+        "raw transaction",
+        source
+            .get_transaction(txid, TransactionVerbosity::Raw)
+            .await,
+    )?;
+    let object = answered(
+        "transaction object",
+        source
+            .get_transaction(txid, TransactionVerbosity::Object)
+            .await,
+    )?;
+    let (TransactionAnswer::Raw(bytes), TransactionAnswer::Object(object)) = (raw, object) else {
+        return Err(format!("{txid} is not answered in the form asked"));
+    };
+    ensure(object.hex == bytes && object.txid == txid, || {
+        format!("{txid}'s object is not the transaction asked")
+    })?;
+    Ok(*object)
+}
+
+/// Every mined transaction is answered at both verbosities, its object
+/// placed in its best-chain block; an unknown txid is `NotFound`.
 pub async fn transactions<S>(source: &S) -> Result<(), Broken>
 where
     S: zaino_source::OneShotGetBestBlockHeight
@@ -254,21 +281,85 @@ where
     let tip = tip(source).await?;
     for height in 0..=u32::from(tip) {
         let height = Height::try_from(height).map_err(|e| e.to_string())?;
-        for tx in answered("block", source.get_block(height).await)?.transactions() {
-            let found = answered("transaction", source.get_transaction(tx.txid).await)?;
-            ensure(
-                found.location == TransactionLocation::BestChain(height),
-                || format!("{} is not located at {height}", tx.txid),
-            )?;
+        let block = answered("block", source.get_block(height).await)?;
+        for tx in block.transactions() {
+            let object = both_forms(source, tx.txid).await?;
+            let placed = object.location() == TransactionLocation::BestChain(height)
+                && object.block_hash == Some(block.header.hash)
+                && object.in_active_chain != Some(false)
+                && object.confirmations
+                    == Some(BlockConfirmations::of_best_chain_block(height, tip))
+                && object.block_time == Some(i64::from(block.header.time));
+            ensure(placed, || {
+                format!("{} is not placed in block {height}", tx.txid)
+            })?;
         }
     }
+    for verbosity in [TransactionVerbosity::Raw, TransactionVerbosity::Object] {
+        ensure(
+            matches!(
+                source
+                    .get_transaction(TransactionId::from(UNKNOWN), verbosity)
+                    .await,
+                Err(QueryError::Domain(GetTransactionError::NotFound(_)))
+            ),
+            || "an unknown txid is not NotFound".to_owned(),
+        )?;
+    }
+    Ok(())
+}
+
+/// The side-chain block `hash`: its verbose form reads, and its
+/// transactions are placed by it alone, with no height or confirmations,
+/// unless the best chain mined them again.
+pub async fn side_chain<S>(source: &S, hash: BlockHash) -> Result<(), Broken>
+where
+    S: zaino_source::OneShotGetBlockVerboseByHash + zaino_source::OneShotGetTransaction,
+{
+    let block = answered(
+        "side block",
+        source
+            .get_block_verbose_by_hash(hash, BlockVerbosity::Transactions)
+            .await,
+    )?;
+    let BlockTransactions::Objects(listed) = &block.transactions else {
+        return Err("verbosity 2 answered ids".to_owned());
+    };
+    let on_side = |object: &TransactionVerbose| {
+        object.location() == TransactionLocation::NonBestChain
+            && object.block_hash == Some(hash)
+            && object.in_active_chain == Some(false)
+            && object.confirmations.is_none()
+            && object.block_time.is_none()
+    };
     ensure(
-        matches!(
-            source.get_transaction(TransactionId::from(UNKNOWN)).await,
-            Err(QueryError::Domain(GetTransactionError::NotFound(_)))
-        ),
-        || "an unknown txid is not NotFound".to_owned(),
-    )
+        block.confirmations == BlockConfirmations::NotInBestChain,
+        || format!("{hash} is on the best chain"),
+    )?;
+    let mut side_only = 0usize;
+    for in_block in listed {
+        ensure(
+            in_block.height.is_none()
+                && in_block.confirmations.is_none()
+                && in_block.block_hash == Some(hash)
+                && in_block.in_active_chain == Some(false),
+            || format!("{} is not placed by its side block", in_block.txid),
+        )?;
+        let object = both_forms(source, in_block.txid).await?;
+        match object.location() {
+            // mined again, perhaps with other authorizing data
+            TransactionLocation::BestChain(_) => {}
+            _ => {
+                ensure(on_side(&object) && object.hex == in_block.hex, || {
+                    format!("{} is not placed on its side block", in_block.txid)
+                })?;
+                side_only = side_only.saturating_add(1);
+            }
+        }
+    }
+    ensure(side_only > 0, || {
+        format!("{hash} holds no side-chain transaction")
+    })
 }
 
 /// Subtree roots end in ascending order at or below the tip, and `limit`
@@ -533,10 +624,12 @@ where
         "mempool listings disagree".to_owned()
     })?;
     for txid in &txids {
-        let found = answered("mempool transaction", source.get_transaction(*txid).await)?;
-        ensure(found.location == TransactionLocation::Mempool, || {
-            format!("{txid} is not located in the mempool")
-        })?;
+        let object = both_forms(source, *txid).await?;
+        let unplaced = object.location() == TransactionLocation::Mempool
+            && object.confirmations.is_none()
+            && object.in_active_chain != Some(true)
+            && object.block_time.is_none();
+        ensure(unplaced, || format!("{txid} is not placed in the mempool"))?;
     }
     let (_, at) = answered("mempool source tip", source.get_mempool_source_tip().await)?;
     ensure(at <= tip, || {

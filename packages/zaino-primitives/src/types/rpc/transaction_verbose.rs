@@ -1,25 +1,47 @@
-//! A transaction as a verbose `getblock` (verbosity 2 and 3) answers it.
+//! A transaction as a verbose `getblock` (verbosity 2 and 3) or
+//! `getrawtransaction` answers it.
 //!
 //! Byte fields hold the bytes exactly as the validator serializes them;
 //! hashes use their domain types.
 
 use crate::types::{
-    BlockConfirmations, BlockHash, Height, SignedZatoshis, TransactionId, TransparentAddress,
-    Zatoshis,
+    BlockConfirmations, BlockHash, Height, SignedZatoshis, TransactionId, TransactionLocation,
+    TransparentAddress, Zatoshis,
 };
 
 use super::ScriptPubKey;
 
-/// A transaction object from a verbose `getblock`.
+/// How much a `getrawtransaction` returns.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum TransactionVerbosity {
+    /// The serialized transaction (verbosity 0).
+    Raw,
+    /// The transaction object (verbosity 1).
+    Object,
+}
+
+impl TransactionVerbosity {
+    /// The RPC verbosity level.
+    pub fn level(self) -> u8 {
+        match self {
+            Self::Raw => 0,
+            Self::Object => 1,
+        }
+    }
+}
+
+/// A transaction object from a verbose `getblock` or `getrawtransaction`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TransactionVerbose {
     /// Whether its block is on the best chain.
     pub in_active_chain: Option<bool>,
     /// The serialized transaction.
     pub hex: Vec<u8>,
-    /// The height of its block.
+    /// The height of its best-chain block; `None` in a side-chain block or
+    /// the mempool.
     pub height: Option<Height>,
-    /// Its block's confirmations.
+    /// Its best-chain block's confirmations; `None` in a side-chain block or
+    /// the mempool.
     pub confirmations: Option<BlockConfirmations>,
     /// The fee (verbosity 3, when every prevout is known).
     pub fee: Option<Zatoshis>,
@@ -67,6 +89,18 @@ pub struct TransactionVerbose {
     pub block_hash: Option<BlockHash>,
     /// Its block's time.
     pub block_time: Option<i64>,
+}
+
+impl TransactionVerbose {
+    /// Where the validator found it: a height is the best chain, a block
+    /// hash without one a side chain, neither the mempool.
+    pub fn location(&self) -> TransactionLocation {
+        match (self.height, self.block_hash) {
+            (Some(height), _) => TransactionLocation::BestChain(height),
+            (None, Some(_)) => TransactionLocation::NonBestChain,
+            (None, None) => TransactionLocation::Mempool,
+        }
+    }
 }
 
 /// A transparent input.

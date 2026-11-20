@@ -703,10 +703,13 @@ async fn mempool_transactions_are_filtered_by_pool() {
         .clone();
     let bytes = rig
         .chain
-        .get_transaction(transparent.txid)
+        .get_transaction(
+            transparent.txid,
+            zaino_primitives::types::rpc::TransactionVerbosity::Raw,
+        )
         .await
         .expect("known")
-        .bytes;
+        .into_bytes();
     rig.chain
         .set_mempool(zaino_source_mock::Mempool::Explicit(vec![(
             transparent,

@@ -32,18 +32,17 @@ use futures::Stream;
 use tokio::sync::watch;
 use zaino_chain_store::{HistoryEpoch, PoolFilter, TxOutSetAccumulator};
 use zaino_primitives::types::{
-    rpc::ChainTip, AddressBalance, AddressDelta, BlockHash, BlockHeader, BlockRef, ChainStateEpoch,
-    CompactBlock, Height, Outpoint, ShieldedPool, SubtreeIndex, SubtreeRoot, TransactionId,
-    TransparentAddress, TransparentOutput, Treestate, Utxo,
+    rpc::{ChainTip, TransactionVerbosity},
+    AddressBalance, AddressDelta, BlockHash, BlockHeader, BlockRef, ChainStateEpoch, CompactBlock,
+    Height, Outpoint, ShieldedPool, SubtreeIndex, SubtreeRoot, TransactionId, TransparentAddress,
+    TransparentOutput, Treestate, Utxo,
 };
-use zaino_source::UtxoPage;
+use zaino_source::{TransactionAnswer, UtxoPage};
 
 use crate::block::ChainBlock;
 use crate::capability::{ServiceabilityManifest, ServiceableRange};
 use crate::error::Result;
-use crate::types::{
-    BlockId, ChainScope, Locator, RawTransaction, SpendStatus, TransactionLocations,
-};
+use crate::types::{BlockId, ChainScope, Locator, SpendStatus, TransactionLocations};
 
 /// A live chain view.
 pub trait ChainView: Send + Sync {
@@ -211,11 +210,16 @@ pub trait CompactFrameRead: Send + Sync {
 
 /// Transactions, and where they were mined.
 pub trait TransactionRead: Send + Sync {
-    /// The consensus bytes of `txid`.
+    /// The validator's `getrawtransaction` answer for `txid` at `verbosity`,
+    /// where this view places the transaction: in a block the chain head or
+    /// the store holds, or mined by the validator in a hole between them.
+    /// `None` for a transaction it places nowhere, the validator's mempool
+    /// included.
     fn raw_transaction(
         &self,
         txid: TransactionId,
-    ) -> impl Future<Output = Result<Option<RawTransaction>>> + Send;
+        verbosity: TransactionVerbosity,
+    ) -> impl Future<Output = Result<Option<TransactionAnswer>>> + Send;
 
     /// Everywhere this view knows `txid` to have been mined.
     ///

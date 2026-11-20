@@ -1,5 +1,6 @@
 //! Trait implementations: zaino-source query traits on [`ZcashRpcAdapter`].
 
+use zaino_primitives::types::rpc::TransactionVerbosity;
 use zaino_primitives::types::{Block, BlockHash, Height, TransactionId, Treestate};
 use zaino_rpc::RpcClient;
 use zaino_source::{
@@ -1189,21 +1190,23 @@ impl zaino_source::OneShotGetTransaction for ZcashRpcAdapter {
     async fn get_transaction(
         &self,
         txid: TransactionId,
-    ) -> Result<zaino_source::TransactionResponse, QueryError<zaino_source::GetTransactionError>>
+        verbosity: TransactionVerbosity,
+    ) -> Result<zaino_source::TransactionAnswer, QueryError<zaino_source::GetTransactionError>>
     {
-        // Verbosity 1: the raw hex plus the height needed to place the
-        // transaction. Verbosity 0 would return the bytes alone, leaving the
-        // caller unable to tell a mined transaction from a mempool one.
         let params = vec![
             serde_json::Value::String(txid_to_display_hex(txid)),
-            serde_json::Value::Number(1.into()),
+            serde_json::Value::Number(verbosity.level().into()),
         ];
-        self.call_parsed_or_absent(
-            "getrawtransaction",
-            params,
-            parse::parse_transaction,
-            || zaino_source::GetTransactionError::NotFound(txid),
-        )
+        let parse = move |value: &serde_json::Value| match verbosity {
+            TransactionVerbosity::Raw => {
+                parse::parse_raw_transaction(value).map(zaino_source::TransactionAnswer::Raw)
+            }
+            TransactionVerbosity::Object => parse::parse_transaction_verbose(value)
+                .map(|object| zaino_source::TransactionAnswer::Object(Box::new(object))),
+        };
+        self.call_parsed_or_absent("getrawtransaction", params, parse, || {
+            zaino_source::GetTransactionError::NotFound(txid)
+        })
         .await
     }
 }

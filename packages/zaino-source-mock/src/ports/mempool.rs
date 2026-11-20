@@ -2,42 +2,52 @@
 
 use std::convert::Infallible;
 
+use zaino_primitives::types::rpc::TransactionVerbosity;
 use zaino_primitives::types::{BlockHash, Height, TransactionId};
 use zaino_source::{
     GetMempoolMetadataError, GetMempoolTxidsError, GetRawMempoolTransactionError,
-    GetTransactionError, MempoolTxMeta, QueryError, TransactionResponse,
+    GetTransactionError, MempoolTxMeta, QueryError, TransactionAnswer,
 };
 
 use super::{fault, refused};
 use crate::{CallArg, MockChain};
 
 impl zaino_source::OneShotGetTransaction for MockChain {
-    /// Where `txid` is, with its bytes; a transaction the chain was built
-    /// without bytes for is a fault, never empty bytes.
+    /// `txid`'s bytes, or zebrad's object for where it is; a transaction the
+    /// chain was built without bytes for is a fault, never empty bytes.
     async fn get_transaction(
         &self,
         txid: TransactionId,
-    ) -> Result<TransactionResponse, QueryError<GetTransactionError>> {
-        let served = self.enter("get_transaction", CallArg::Txid(txid)).await?;
-        let Some((location, mined)) = served.locate(txid) else {
+        verbosity: TransactionVerbosity,
+    ) -> Result<TransactionAnswer, QueryError<GetTransactionError>> {
+        let served = self
+            .enter("get_transaction", CallArg::Transaction { txid, verbosity })
+            .await?;
+        let Some((bytes, block)) = served.found(txid) else {
             return refused(GetTransactionError::NotFound(txid));
         };
-        let bytes = match mined {
-            Some((block, position)) => block.raw.as_ref().and_then(|raw| {
-                raw.transactions
-                    .get(usize::try_from(position).ok()?)
-                    .cloned()
-            }),
-            None => served
-                .mempool()
-                .into_iter()
-                .find(|(tx, _)| tx.txid == txid)
-                .and_then(|(_, bytes)| bytes),
-        };
-        Ok(TransactionResponse {
-            bytes: bytes.ok_or_else(|| fault(format!("transaction {txid} has no bytes")))?,
-            location,
-        })
+        let bytes = bytes.ok_or_else(|| fault(format!("transaction {txid} has no bytes")))?;
+        match verbosity {
+            TransactionVerbosity::Raw => Ok(TransactionAnswer::Raw(bytes)),
+            TransactionVerbosity::Object => {
+                super::tx_objects::transaction_object(&served, txid, &bytes, block)
+                    .map(|object| TransactionAnswer::Object(Box::new(object)))
+            }
+        }
+    }
+}
+
+impl MockChain {
+    /// The JSON zebrad's verbose `getrawtransaction` answers for `txid`,
+    /// from zebra's own builder; `None` for a transaction it does not hold.
+    /// Not a port call: nothing is logged.
+    pub fn zebrad_transaction(&self, txid: TransactionId) -> Option<serde_json::Value> {
+        let served = self.view();
+        let (bytes, block) = served.found(txid)?;
+        let object =
+            super::tx_objects::zebrad_object::<GetTransactionError>(&served, txid, &bytes?, block)
+                .ok()?;
+        serde_json::to_value(&object).ok()
     }
 }
 

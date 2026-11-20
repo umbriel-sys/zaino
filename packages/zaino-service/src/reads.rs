@@ -5,8 +5,8 @@ use std::sync::Arc;
 
 use zaino_chain::{
     AddressRead as _, BlockId, BlockRead as _, ChainScope, ChainViewError, ChainViewSnapshot as _,
-    ComposerSnapshot, PrevoutRead as _, RawTransaction, SpendRead as _, SpendStatus,
-    TransactionRead as _, TxOutSetRead as _,
+    ComposerSnapshot, PrevoutRead as _, SpendRead as _, SpendStatus, TransactionRead as _,
+    TxOutSetRead as _,
 };
 use zaino_chain_head_service::PersistentSnapshot;
 use zaino_chain_store_service::StoreReader;
@@ -15,7 +15,7 @@ use zaino_persistence_lsm_tree::LsmTreeReader;
 use zaino_primitives::types::rpc::{
     AddressDeltas, AddressDeltasRequest, BlockDelta, BlockDeltas, BlockHeaderVerbose, BlockSubsidy,
     InputDelta, MiningInfo, NetworkInfo, NodeInfo, OutputDelta, PeerInfo, SpentInfo, SpentOutpoint,
-    StandardFee, TxOut,
+    StandardFee, TransactionVerbosity, TxOut,
 };
 use zaino_primitives::types::{
     BlockConfirmations, BlockHash, BlockRef, BlockVerbose, BlockVerbosity, BlockchainInfo,
@@ -23,7 +23,8 @@ use zaino_primitives::types::{
     TransactionId, TransparentAddress, TxOutSetInfo, Utxo, Zatoshis,
 };
 use zaino_source::{
-    GetBlockDeltasError, GetBlockVerboseError, GetSpentInfoError, QueryError, UtxoPage,
+    GetBlockDeltasError, GetBlockVerboseError, GetSpentInfoError, GetTransactionError, QueryError,
+    TransactionAnswer, UtxoPage,
 };
 
 use crate::capability::Capability;
@@ -142,6 +143,45 @@ impl<S: ServiceSource> ServiceSnapshot<S> {
                         | GetBlockVerboseError::HeightNotFound(_)
                 )
             },
+        )
+    }
+
+    /// The validator's `getrawtransaction` answer at `verbosity`, for a
+    /// transaction Zaino's state knows: one the chain view places, or one
+    /// the mempool lists, whatever its tip. Bytes the mempool holds are
+    /// served from it. With `block`, only a transaction mined in that block.
+    pub async fn transaction(
+        &self,
+        txid: TransactionId,
+        verbosity: TransactionVerbosity,
+        block: Option<BlockHash>,
+    ) -> Result<Option<TransactionAnswer>> {
+        if let Some(block) = block {
+            let locations = self.chain.transaction_locations(txid).await?;
+            let in_block = locations
+                .best_chain
+                .iter()
+                .chain(&locations.non_best_chain)
+                .any(|position| position.block.hash == block);
+            return match in_block {
+                true => Ok(self.chain.raw_transaction(txid, verbosity).await?),
+                false => Ok(None),
+            };
+        }
+        let mempool = self.mempool.snapshot();
+        let held = mempool.by_txid().get(&txid);
+        if let (TransactionVerbosity::Raw, Some(entry)) = (verbosity, held) {
+            return Ok(Some(TransactionAnswer::Raw(entry.wire_bytes().to_vec())));
+        }
+        if let Some(answer) = self.chain.raw_transaction(txid, verbosity).await? {
+            return Ok(Some(answer));
+        }
+        if held.is_none() && !mempool.unadmitted().contains(&txid) {
+            return Ok(None);
+        }
+        found(
+            self.source.get_transaction(txid, verbosity).await,
+            |GetTransactionError::NotFound(_)| true,
         )
     }
 
@@ -340,27 +380,6 @@ impl<S: ServiceSource> ServiceSnapshot<S> {
                 }
             })?,
         })
-    }
-
-    /// A transaction's bytes and where it was mined; with `block`, only if
-    /// mined in that block (zebrad's `getrawtransaction` `block_hash`).
-    pub async fn raw_transaction(
-        &self,
-        txid: TransactionId,
-        block: Option<BlockHash>,
-    ) -> Result<Option<RawTransaction>> {
-        if let Some(block) = block {
-            let locations = self.chain.transaction_locations(txid).await?;
-            let in_block = locations
-                .best_chain
-                .iter()
-                .chain(&locations.non_best_chain)
-                .any(|position| position.block.hash == block);
-            if !in_block {
-                return Ok(None);
-            }
-        }
-        Ok(self.chain.raw_transaction(txid).await?)
     }
 
     /// A page of the addresses' unspent outputs and the tip it describes

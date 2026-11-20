@@ -9,6 +9,7 @@ use zaino_chain::{BlockId, ChainCapability};
 use zaino_indexes::IndexId;
 use zaino_primitives::types::rpc::{
     AddressDeltas, AddressDeltasRequest, BlockSubsidy, SpentOutpoint, StandardFee,
+    TransactionVerbosity,
 };
 use zaino_primitives::types::{
     BlockHash, BlockRef, BlockVerbosity, Height, TransparentAddress, Zatoshis,
@@ -230,22 +231,27 @@ async fn a_transaction_pinned_to_a_block_is_found_only_there() {
     let service = local(&chain).await;
     let snapshot = service.snapshot();
     let txid = chain.block_at(150).expect("held").block.transactions()[1].txid;
-    let found = snapshot
-        .raw_transaction(txid, Some(hash_at(&chain, 150)))
-        .await
-        .expect("answers")
-        .expect("in that block");
-    assert_eq!(
-        Some(found),
-        snapshot.raw_transaction(txid, None).await.expect("answers")
-    );
-    assert_eq!(
-        snapshot
-            .raw_transaction(txid, Some(hash_at(&chain, 151)))
+    for verbosity in [TransactionVerbosity::Raw, TransactionVerbosity::Object] {
+        let found = snapshot
+            .transaction(txid, verbosity, Some(hash_at(&chain, 150)))
             .await
-            .expect("answers"),
-        None
-    );
+            .expect("answers")
+            .expect("in that block");
+        assert_eq!(
+            Some(found),
+            snapshot
+                .transaction(txid, verbosity, None)
+                .await
+                .expect("answers")
+        );
+        assert_eq!(
+            snapshot
+                .transaction(txid, verbosity, Some(hash_at(&chain, 151)))
+                .await
+                .expect("answers"),
+            None
+        );
+    }
 }
 
 /// getaddressutxos with chainInfo, startHeight and maxEntries: the page, and

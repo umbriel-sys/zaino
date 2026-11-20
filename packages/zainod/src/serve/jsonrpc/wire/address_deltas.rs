@@ -2,6 +2,8 @@
 
 use serde::{Deserialize, Serialize};
 
+use crate::serve::addresses::{checked_addresses, AddressesError};
+
 /// Request parameters for the `getaddressdeltas` RPC method.
 #[derive(Clone, Debug, PartialEq, Deserialize, Serialize)]
 #[serde(untagged)]
@@ -46,12 +48,8 @@ impl GetAddressDeltasParams {
 
     /// Reads and validates the client's request into the domain vocabulary.
     ///
-    /// The client supplies the addresses as strings, so this is the
-    /// external-input validation step for them:
-    /// [`TransparentAddress::try_new`](zaino_primitives::types::TransparentAddress::try_new)
-    /// rejects anything that is not a well-formed transparent address, and the
-    /// rejection surfaces as an invalid-params error at the endpoint rather than
-    /// letting a bogus filter string reach the index.
+    /// The addresses are checked as every address method checks them
+    /// ([`checked_addresses`]).
     ///
     /// The height range is not validated here: it is open-ended by design — the
     /// legacy full node reads `0` in either position as "unbounded" — and is
@@ -59,49 +57,33 @@ impl GetAddressDeltasParams {
     /// knows the tip.
     pub fn into_domain(
         self,
-    ) -> Result<zaino_primitives::types::rpc::AddressDeltasRequest, GetAddressDeltasError> {
-        use zaino_primitives::types::{rpc::AddressDeltasRequest, TransparentAddress};
-
-        let parse = |address: String| {
-            TransparentAddress::try_new(address.clone()).map_err(|reason| {
-                GetAddressDeltasError::Address {
-                    address,
-                    reason: reason.to_string(),
-                }
-            })
-        };
+    ) -> Result<zaino_primitives::types::rpc::AddressDeltasRequest, AddressesError> {
+        use zaino_primitives::types::rpc::AddressDeltasRequest;
 
         match self {
-            Self::Address(address) => Ok(AddressDeltasRequest::Address(parse(address)?)),
+            Self::Address(address) => {
+                let invalid = || AddressesError::Invalid {
+                    address: address.clone(),
+                    reason: "no address".into(),
+                };
+                let mut checked = checked_addresses(std::slice::from_ref(&address))?;
+                Ok(AddressDeltasRequest::Address(
+                    checked.pop().ok_or_else(invalid)?,
+                ))
+            }
             Self::Filtered {
                 addresses,
                 start,
                 end,
                 chain_info,
             } => Ok(AddressDeltasRequest::Filtered {
-                addresses: addresses
-                    .into_iter()
-                    .map(parse)
-                    .collect::<Result<Vec<_>, _>>()?,
+                addresses: checked_addresses(&addresses)?,
                 start,
                 end,
                 chain_info,
             }),
         }
     }
-}
-
-/// Why a [`GetAddressDeltasParams`] could not be understood.
-#[derive(Debug, thiserror::Error)]
-pub enum GetAddressDeltasError {
-    /// A requested address is not a valid transparent address.
-    #[error("invalid transparent address {address:?}: {reason}")]
-    Address {
-        /// The offending string as the client sent it.
-        address: String,
-        /// Why it was rejected.
-        reason: String,
-    },
 }
 
 /// Response to a `getaddressdeltas` RPC request.
@@ -385,7 +367,7 @@ mod domain_tests {
     fn a_bogus_address_is_rejected() {
         assert!(matches!(
             GetAddressDeltasParams::new_address("not an address").into_domain(),
-            Err(GetAddressDeltasError::Address { .. })
+            Err(AddressesError::Invalid { .. })
         ));
 
         assert!(matches!(
@@ -396,7 +378,7 @@ mod domain_tests {
                 false,
             )
             .into_domain(),
-            Err(GetAddressDeltasError::Address { .. })
+            Err(AddressesError::Invalid { .. })
         ));
     }
 }

@@ -119,6 +119,13 @@ pub enum CallArg {
     },
     /// Transaction bytes.
     Bytes(Vec<u8>),
+    /// A `getrawtransaction` query.
+    Transaction {
+        /// The transaction.
+        txid: TransactionId,
+        /// The verbosity asked.
+        verbosity: zaino_primitives::types::rpc::TransactionVerbosity,
+    },
 }
 
 /// One port call, in the order received.
@@ -507,6 +514,15 @@ impl MockChain {
         })
     }
 
+    /// The state as a port sees it, outside any call: nothing is logged.
+    pub(crate) fn view(&self) -> Served<'_> {
+        self.in_flight.fetch_add(1, Ordering::AcqRel);
+        Served {
+            state: self.lock(),
+            _in_flight: InFlight(Arc::clone(&self.in_flight)),
+        }
+    }
+
     pub(crate) fn wake(&self) -> watch::Receiver<()> {
         self.blocks_received.subscribe()
     }
@@ -635,12 +651,36 @@ impl Served<'_> {
             .map(Arc::as_ref)
     }
 
-    /// Where `txid` is (best chain first, then side chains, then mempool),
-    /// with its block and position when mined.
+    /// `txid`'s bytes (if built with them) and, when mined, its block.
+    pub(crate) fn found(
+        &self,
+        txid: TransactionId,
+    ) -> Option<(Option<Vec<u8>>, Option<&MockBlock>)> {
+        let (_, mined) = self.locate(txid)?;
+        let bytes = match mined {
+            Some((block, position)) => block.raw.as_ref().and_then(|raw| {
+                raw.transactions
+                    .get(usize::try_from(position).ok()?)
+                    .cloned()
+            }),
+            None => self
+                .mempool()
+                .into_iter()
+                .find(|(tx, _)| tx.txid == txid)
+                .and_then(|(_, bytes)| bytes),
+        };
+        Some((bytes, mined.map(|(block, _)| block)))
+    }
+
+    /// Where `txid` is, as zebrad looks: the mempool first, then the best
+    /// chain, then side chains; with its block and position when mined.
     pub(crate) fn locate(
         &self,
         txid: TransactionId,
     ) -> Option<(TransactionLocation, Option<(&MockBlock, u32)>)> {
+        if self.mempool().into_iter().any(|(tx, _)| tx.txid == txid) {
+            return Some((TransactionLocation::Mempool, None));
+        }
         let places = self.state.txids.get(&txid);
         let visible = |(hash, position): &(BlockHash, u32)| {
             self.by_hash(*hash).map(|block| (block, *position))
@@ -656,13 +696,12 @@ impl Served<'_> {
                 Some(found),
             ));
         }
-        if let Some(found) = places.into_iter().flatten().filter_map(visible).next() {
-            return Some((TransactionLocation::NonBestChain, Some(found)));
-        }
-        self.mempool()
+        places
             .into_iter()
-            .any(|(tx, _)| tx.txid == txid)
-            .then_some((TransactionLocation::Mempool, None))
+            .flatten()
+            .filter_map(visible)
+            .next()
+            .map(|found| (TransactionLocation::NonBestChain, Some(found)))
     }
 
     /// The height the mempool ports serve at.

@@ -1,8 +1,6 @@
 //! The vocabulary a chain view answers in.
 
-use zaino_primitives::types::{
-    BlockHash, BlockRef, Height, TransactionId, TransactionLocation, TxIndex,
-};
+use zaino_primitives::types::{BlockHash, BlockRef, Height, TransactionId, TxIndex};
 
 /// A block, named either way.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -98,16 +96,6 @@ pub enum SpendStatus {
     },
     /// Spent, but this view cannot name the spender.
     SpentSpenderUnknown,
-}
-
-/// A transaction as the validator serves it.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct RawTransaction {
-    /// The transaction's consensus bytes.
-    pub bytes: Vec<u8>,
-    /// Where the validator found it, passed through as reported — `Mempool`
-    /// included, which is the validator's answer and not this view's.
-    pub location: TransactionLocation,
 }
 
 /// How far a spend search reaches.

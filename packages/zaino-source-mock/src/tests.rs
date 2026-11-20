@@ -2,8 +2,10 @@
 //! encodings and every control a test drives.
 
 use zaino_primitives::types::{
-    rpc::ChainTipStatus, Height, Network, ShieldedPool, TransactionLocation,
+    rpc::{ChainTipStatus, TransactionVerbosity},
+    Height, Network, ShieldedPool, TransactionLocation,
 };
+use zaino_source::TransactionAnswer;
 use zaino_source::{
     FailureMode, OneShotGetBestBlockHeight as _, OneShotGetBlock as _, OneShotGetBlockByHash as _,
     OneShotGetChainTip as _, OneShotGetChainTips as _, OneShotGetCommitmentTreeRootsByHeight as _,
@@ -510,11 +512,21 @@ async fn a_reorg_keeps_the_displaced_blocks_as_a_side_branch() {
         "refused as zebra refuses"
     );
     let txid = displaced.block.transactions()[1].txid;
-    let found = chain.get_transaction(txid).await.expect("known");
-    assert_eq!(found.location, TransactionLocation::NonBestChain);
+    let found = chain
+        .get_transaction(txid, TransactionVerbosity::Object)
+        .await
+        .expect("known");
+    let TransactionAnswer::Object(found) = found else {
+        panic!("the object was asked");
+    };
+    assert_eq!(found.location(), TransactionLocation::NonBestChain);
+    assert_eq!(found.block_hash, Some(displaced.hash()));
     contract::blocks(&chain)
         .await
         .expect("contract after reorg");
+    contract::side_chain(&chain, displaced.hash())
+        .await
+        .expect("side-chain contract");
 }
 
 /// Every call is logged in order with its arguments, failed ones included.
@@ -818,27 +830,43 @@ async fn sends_answer_as_scripted() {
 #[tokio::test]
 async fn an_explicit_mempool_is_served() {
     use zaino_source::{OneShotGetMempoolMetadata as _, OneShotGetMempoolTxids as _};
-    let chain = ChainBuilder::new().matured().blocks(2).build();
-    let block = chain
-        .block_at(crate::COINBASE_MATURITY + 2)
-        .expect("loaded");
-    let bytes = block.raw.as_ref().expect("built with bytes").transactions[1].clone();
-    let mut pending = block.block.transactions()[1].clone();
-    pending.txid = zaino_primitives::types::TransactionId::from([4; 32]);
-    let mut later = pending.clone();
-    later.txid = zaino_primitives::types::TransactionId::from([2; 32]);
+    // two unserved blocks' spends: real transactions the chain has not mined
+    let served = crate::COINBASE_MATURITY + 2;
+    let chain = ChainBuilder::new().matured().blocks(4).build();
+    chain.serve_to(served);
+    let unmined = |height: u32| {
+        let block = chain.block_at(height).expect("loaded");
+        let bytes = block.raw.as_ref().expect("built with bytes").transactions[1].clone();
+        (block.block.transactions()[1].clone(), bytes)
+    };
+    let (pending, bytes) = unmined(served + 1);
+    let (later, later_bytes) = unmined(served + 2);
     chain.set_mempool(Mempool::Explicit(vec![
         (pending.clone(), Some(bytes.clone())),
-        (later.clone(), Some(bytes.clone())),
+        (later.clone(), Some(later_bytes)),
     ]));
-    let found = chain.get_transaction(pending.txid).await.expect("known");
-    assert_eq!(found.location, TransactionLocation::Mempool);
-    assert_eq!(found.bytes, bytes);
+    let found = chain
+        .get_transaction(pending.txid, TransactionVerbosity::Raw)
+        .await
+        .expect("known");
+    assert_eq!(found, TransactionAnswer::Raw(bytes.clone()));
+    let TransactionAnswer::Object(object) = chain
+        .get_transaction(pending.txid, TransactionVerbosity::Object)
+        .await
+        .expect("known")
+    else {
+        panic!("the object was asked");
+    };
+    assert_eq!(object.location(), TransactionLocation::Mempool);
+    assert_eq!((object.hex.clone(), object.txid), (bytes, pending.txid));
     // as zebrad lists them: ascending as displayed, with their entry time
-    assert_eq!(
-        chain.get_mempool_txids().await.expect("answered"),
-        vec![later.txid, pending.txid]
-    );
+    let mut listed = vec![pending.txid, later.txid];
+    listed.sort_by_key(|txid| {
+        let mut displayed = <[u8; 32]>::from(*txid);
+        displayed.reverse();
+        displayed
+    });
+    assert_eq!(chain.get_mempool_txids().await.expect("answered"), listed);
     let tip_time = i64::from(chain.tip().expect("a chain").block.header.time);
     assert!(chain
         .get_mempool_metadata()
@@ -850,8 +878,10 @@ async fn an_explicit_mempool_is_served() {
 
     // a transaction without bytes is a fault, never empty bytes
     chain.set_mempool(Mempool::Explicit(vec![(pending.clone(), None)]));
-    assert!(matches!(
-        chain.get_transaction(pending.txid).await,
-        Err(QueryError::NonDomain(_))
-    ));
+    for verbosity in [TransactionVerbosity::Raw, TransactionVerbosity::Object] {
+        assert!(matches!(
+            chain.get_transaction(pending.txid, verbosity).await,
+            Err(QueryError::NonDomain(_))
+        ));
+    }
 }

@@ -10,6 +10,7 @@ use zaino_chain::ChainViewConfig;
 use zaino_chain_head::ChainHeadConfig;
 use zaino_consensus::FAST_TEST_MAX_NONFINALISED_DEPTH;
 use zaino_mempool::MempoolConfig;
+use zaino_primitives::types::rpc::TransactionVerbosity;
 use zaino_primitives::types::{Network, TransactionId};
 use zaino_proto::proto::indexed_tip::{
     indexed_tip_service_client::IndexedTipServiceClient, SubscribeIndexedTipsRequest,
@@ -500,7 +501,11 @@ async fn transactions_carry_their_light_wallet_height() {
     assert_eq!(transaction.height, u64::from(BUSY));
     assert_eq!(
         transaction.data.to_vec(),
-        chain.get_transaction(mined).await.expect("known").bytes
+        chain
+            .get_transaction(mined, TransactionVerbosity::Raw)
+            .await
+            .expect("known")
+            .into_bytes()
     );
 
     let pending = chain
@@ -551,7 +556,11 @@ async fn mempool_transactions_are_filtered_by_pool() {
         .expect("a transparent-only transaction")
         .clone();
     let txid = transparent.txid;
-    let bytes = chain.get_transaction(txid).await.expect("known").bytes;
+    let bytes = chain
+        .get_transaction(txid, TransactionVerbosity::Raw)
+        .await
+        .expect("known")
+        .into_bytes();
     chain.set_mempool(Mempool::Explicit(vec![(transparent, Some(bytes))]));
     let rpc = lightwallet(&chain).await;
     let listed = |pool_types: Vec<i32>, exclude: Vec<Vec<u8>>| {

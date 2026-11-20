@@ -43,14 +43,16 @@ use zaino_chain_store::{
     TreeStateIndex, TxOutSetAccumulator, TxOutSetIndex,
 };
 use zaino_primitives::types::{
-    legacy_tree_from_frontier, rpc::ChainTip, AbsoluteChainWork, AddressBalance, AddressDelta,
-    BlockConfirmations, BlockHash, BlockHeader, BlockRef, ChainStateEpoch, CompactBlock, Height,
-    Outpoint, PoolFrontier, PoolTreestate, PreIndexCompactTx, ShieldedPool, SignedZatoshis,
-    SubtreeIndex, SubtreeRoot, TransactionId, TransparentAddress, TransparentAddressKey,
-    TransparentOutput, Treestate, Utxo, Zatoshis, ZatoshisFlowSum,
+    legacy_tree_from_frontier,
+    rpc::{ChainTip, TransactionVerbose, TransactionVerbosity},
+    AbsoluteChainWork, AddressBalance, AddressDelta, BlockConfirmations, BlockHash, BlockHeader,
+    BlockRef, ChainStateEpoch, CompactBlock, Height, Outpoint, PoolFrontier, PoolTreestate,
+    PreIndexCompactTx, ShieldedPool, SignedZatoshis, SubtreeIndex, SubtreeRoot, TransactionId,
+    TransactionLocation, TransparentAddress, TransparentAddressKey, TransparentOutput, Treestate,
+    Utxo, Zatoshis, ZatoshisFlowSum,
 };
 
-use zaino_source::UtxoPage;
+use zaino_source::{TransactionAnswer, UtxoPage};
 
 use crate::block::ChainBlock;
 use crate::capability::{
@@ -63,8 +65,7 @@ use crate::ports::{
 };
 use crate::source::ChainViewSource;
 use crate::types::{
-    BlockId, ChainScope, ChainTxPosition, Locator, RawTransaction, SpendStatus,
-    TransactionLocations,
+    BlockId, ChainScope, ChainTxPosition, Locator, SpendStatus, TransactionLocations,
 };
 
 use coverage::{Coverage, Provider};
@@ -1376,20 +1377,88 @@ where
     HeadSnapshot: ChainHeadSnapshot + ChainHeadTransactionService,
     Source: ChainViewSource,
 {
-    async fn raw_transaction(&self, txid: TransactionId) -> Result<Option<RawTransaction>> {
+    async fn raw_transaction(
+        &self,
+        txid: TransactionId,
+        verbosity: TransactionVerbosity,
+    ) -> Result<Option<TransactionAnswer>> {
         self.fetch
             .require("raw transactions need the validator, which is disabled")?;
-        Ok(
-            fetch::miss(self.fetch.source().get_transaction(txid).await)?.map(|response| {
-                RawTransaction {
-                    bytes: response.bytes,
-                    location: response.location,
-                }
-            }),
-        )
+        if !self.local_locations(txid).await?.is_empty() {
+            let source = self.fetch.source();
+            return fetch::miss(source.get_transaction(txid, verbosity).await);
+        }
+        // the object that places it in the hole carries its bytes too
+        Ok(self
+            .mined_in_gap(txid)
+            .await?
+            .map(|(object, _)| match verbosity {
+                TransactionVerbosity::Raw => TransactionAnswer::Raw(object.hex),
+                TransactionVerbosity::Object => TransactionAnswer::Object(Box::new(object)),
+            }))
     }
 
     async fn transaction_locations(&self, txid: TransactionId) -> Result<TransactionLocations> {
+        let mut locations = self.local_locations(txid).await?;
+        if locations.best_chain.is_some() {
+            return Ok(locations);
+        }
+        // A hole between the providers (no store, or one still building) is
+        // the validator's: a transaction it mined there is placed by its block.
+        let Some((_, height)) = self.mined_in_gap(txid).await? else {
+            return Ok(locations);
+        };
+        let Some(block) = fetch::miss(self.fetch.source().get_block(height).await)? else {
+            return Ok(locations);
+        };
+        locations.best_chain = (0u32..)
+            .zip(block.transactions())
+            .find(|(_, transaction)| transaction.txid == txid)
+            .map(|(tx_index, _)| ChainTxPosition {
+                block: BlockRef {
+                    hash: block.header.hash,
+                    height,
+                },
+                tx_index,
+            });
+        Ok(locations)
+    }
+}
+
+impl<Reader, HeadSnapshot, Source> ComposerSnapshot<Reader, HeadSnapshot, Source>
+where
+    Reader: ChainStoreReader + TransactionIndex,
+    HeadSnapshot: ChainHeadSnapshot + ChainHeadTransactionService,
+    Source: ChainViewSource,
+{
+    /// The validator's object for `txid` and its height, where the validator
+    /// mined it at a height no local provider holds.
+    async fn mined_in_gap(
+        &self,
+        txid: TransactionId,
+    ) -> Result<Option<(TransactionVerbose, Height)>> {
+        if self.coverage.gap_from().is_none() || !self.coverage.source_fills {
+            return Ok(None);
+        }
+        let source = self.fetch.source();
+        let asked = source
+            .get_transaction(txid, TransactionVerbosity::Object)
+            .await;
+        let Some(TransactionAnswer::Object(object)) = fetch::miss(asked)? else {
+            return Ok(None);
+        };
+        let TransactionLocation::BestChain(height) = object.location() else {
+            return Ok(None);
+        };
+        Ok(matches!(
+            self.coverage.provider_at(height),
+            Ok(Some(Provider::Source))
+        )
+        .then_some((*object, height)))
+    }
+
+    /// Where the chain head and the store place `txid`.
+    async fn local_locations(&self, txid: TransactionId) -> Result<TransactionLocations> {
         // The chain head answers first and answers most: it is the only
         // provider retaining competing branches, so the only source of the
         // non-best half.
@@ -1432,41 +1501,8 @@ where
                     },
                     tx_index: position.tx_index,
                 });
-                return Ok(locations);
             }
         }
-
-        // A hole between the providers (no store, or one still building) is
-        // the validator's: a transaction it mined there is placed by its block.
-        if self.coverage.gap_from().is_none() || !self.coverage.source_fills {
-            return Ok(locations);
-        }
-        let source = self.fetch.source();
-        let Some(found) = fetch::miss(source.get_transaction(txid).await)? else {
-            return Ok(locations);
-        };
-        let zaino_primitives::types::TransactionLocation::BestChain(height) = found.location else {
-            return Ok(locations);
-        };
-        if !matches!(
-            self.coverage.provider_at(height),
-            Ok(Some(Provider::Source))
-        ) {
-            return Ok(locations);
-        }
-        let Some(block) = fetch::miss(source.get_block(height).await)? else {
-            return Ok(locations);
-        };
-        locations.best_chain = (0u32..)
-            .zip(block.transactions())
-            .find(|(_, transaction)| transaction.txid == txid)
-            .map(|(tx_index, _)| ChainTxPosition {
-                block: BlockRef {
-                    hash: block.header.hash,
-                    height,
-                },
-                tx_index,
-            });
         Ok(locations)
     }
 }

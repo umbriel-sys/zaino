@@ -8,8 +8,8 @@ use zaino_primitives::types::{
         OutputVerbose, PrevoutVerbose, SaplingOutputVerbose, SaplingSpendVerbose, ScriptPubKey,
         TransactionVerbose,
     },
-    BlockTransactions, BlockTreeSizes, BlockVerbose, Height, Script, SignedZatoshis,
-    TransparentAddress, Zatoshis,
+    BlockConfirmations, BlockTransactions, BlockTreeSizes, BlockVerbose, Height, Script,
+    SignedZatoshis, TransparentAddress, Zatoshis,
 };
 
 use super::{
@@ -76,19 +76,42 @@ fn parse_block_transactions(value: &serde_json::Value) -> Result<BlockTransactio
         .map(BlockTransactions::Objects)
 }
 
-/// Parse a transaction object of a verbose `getblock`.
+/// A transaction's `height` and `confirmations`: its best-chain block's, or
+/// neither in the mempool or a side-chain block, which is written `-1` and
+/// `0` beside the block's hash.
+fn parse_placement(
+    value: &serde_json::Value,
+) -> Result<(Option<Height>, Option<BlockConfirmations>), ParseError> {
+    let height = opt_field(value, "height");
+    let confirmations = opt_field(value, "confirmations");
+    if height.map(as_i64).transpose()? != Some(-1) {
+        return Ok((
+            height.map(as_height).transpose()?,
+            confirmations.map(as_block_confirmations).transpose()?,
+        ));
+    }
+    let unconfirmed = confirmations.map(as_i64).transpose()? == Some(0);
+    match unconfirmed && opt_field(value, "blockhash").is_some() {
+        true => Ok((None, None)),
+        false => Err(ParseError::Height(
+            "a side-chain transaction (height -1) has 0 confirmations and names its block"
+                .to_owned(),
+        )),
+    }
+}
+
+/// Parse a transaction object of a verbose `getblock` or `getrawtransaction`.
 pub fn parse_transaction_verbose(
     value: &serde_json::Value,
 ) -> Result<TransactionVerbose, ParseError> {
+    let (height, confirmations) = parse_placement(value)?;
     Ok(TransactionVerbose {
         in_active_chain: opt_field(value, "in_active_chain")
             .map(as_bool)
             .transpose()?,
         hex: bytes(field(value, "hex")?)?,
-        height: opt_field(value, "height").map(as_height).transpose()?,
-        confirmations: opt_field(value, "confirmations")
-            .map(as_block_confirmations)
-            .transpose()?,
+        height,
+        confirmations,
         fee: opt_field(value, "fee")
             .map(|fee| zec_to_zatoshis(as_f64(fee)?))
             .transpose()?,
@@ -278,4 +301,74 @@ fn signed_zatoshis(value: &serde_json::Value) -> Result<SignedZatoshis, ParseErr
 
 fn address(value: &serde_json::Value) -> Result<TransparentAddress, ParseError> {
     Ok(TransparentAddress::try_new(as_str(value)?)?)
+}
+
+#[cfg(test)]
+mod tests {
+    use serde_json::{json, Value};
+    use zaino_primitives::types::TransactionLocation;
+
+    use super::*;
+
+    const BLOCK: &str = "00000000000000000000000000000000000000000000000000000000000000aa";
+
+    /// A transaction object with `placement`'s keys beside the required ones.
+    fn object(placement: Value) -> Value {
+        let mut object = json!({
+            "hex": "00",
+            "txid": "11".repeat(32),
+            "overwintered": false,
+            "version": 1,
+            "locktime": 0,
+        });
+        for (key, value) in placement.as_object().expect("an object") {
+            object[key] = value.clone();
+        }
+        object
+    }
+
+    /// The best chain carries its height and confirmations; a side-chain
+    /// block (`-1`, `0`, its hash) and the mempool carry neither.
+    #[test]
+    fn every_placement_is_read() {
+        let best = parse_transaction_verbose(&object(json!({
+            "height": 12, "confirmations": 3, "blockhash": BLOCK, "in_active_chain": true,
+        })))
+        .expect("best chain");
+        let height = Height::try_from(12).expect("small");
+        assert_eq!(best.location(), TransactionLocation::BestChain(height));
+        assert_eq!(
+            best.confirmations.map(BlockConfirmations::to_rpc_i64),
+            Some(3)
+        );
+
+        let side = parse_transaction_verbose(&object(json!({
+            "height": -1, "confirmations": 0, "blockhash": BLOCK, "in_active_chain": false,
+        })))
+        .expect("side chain");
+        assert_eq!(side.location(), TransactionLocation::NonBestChain);
+        assert_eq!((side.height, side.confirmations), (None, None));
+        assert_eq!(side.in_active_chain, Some(false));
+
+        let mempool = parse_transaction_verbose(&object(json!({ "in_active_chain": false })))
+            .expect("mempool");
+        assert_eq!(mempool.location(), TransactionLocation::Mempool);
+    }
+
+    /// `-1` and `0` are the side-chain pair and nothing else.
+    #[test]
+    fn a_placement_that_encodes_no_state_is_refused() {
+        for placement in [
+            json!({ "height": -1, "confirmations": 0 }),
+            json!({ "height": -1, "confirmations": 2, "blockhash": BLOCK }),
+            json!({ "height": -1, "blockhash": BLOCK }),
+            json!({ "height": -7, "confirmations": 0, "blockhash": BLOCK }),
+            json!({ "height": 12, "confirmations": 0, "blockhash": BLOCK }),
+        ] {
+            assert!(
+                parse_transaction_verbose(&object(placement.clone())).is_err(),
+                "{placement}"
+            );
+        }
+    }
 }

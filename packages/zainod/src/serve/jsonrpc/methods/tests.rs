@@ -498,6 +498,7 @@ async fn jsonrpc_transactions_and_the_mempool_are_the_chains() {
         assert_eq!(object["height"], json!(110));
         assert_eq!(object["blockhash"], json!(at_hash));
         assert_eq!(object["confirmations"], json!(SERVED - 110 + 1));
+        assert_eq!(Some(object), chain.zebrad_transaction(spend.txid));
     }
     for refused in [
         json!(["not a txid"]),
@@ -532,10 +533,18 @@ async fn jsonrpc_transactions_and_the_mempool_are_the_chains() {
         ok(&rpc, "getrawtransaction", json!([unmined])).await,
         json!(hex::encode(unmined_bytes))
     );
-    // the service decodes no transaction: a mempool one has no verbose form
+    // a mempool transaction's object is the validator's, unplaced
+    let object = ok(&rpc, "getrawtransaction", json!([unmined, 1])).await;
+    assert_eq!(object["hex"], json!(hex::encode(unmined_bytes)));
+    for placed in ["height", "confirmations", "blockhash", "blocktime"] {
+        assert_eq!(object.get(placed), None, "{placed}");
+    }
+    let unmined_txid = block(&chain, SERVED + 1).block.transactions()[1].txid;
+    assert_eq!(Some(object), chain.zebrad_transaction(unmined_txid));
     assert_eq!(
-        call(&rpc, "getrawtransaction", json!([unmined, 1])).await,
-        Err(MISC)
+        call(&rpc, "getrawtransaction", json!([unmined, 1, at_hash])).await,
+        Err(INVALID_ADDRESS_OR_KEY),
+        "not mined in that block"
     );
 
     let coinbase = display_hex(block(&chain, SERVED).block.transactions()[0].txid.into());
@@ -930,6 +939,64 @@ async fn jsonrpc_unknown_chainwork_is_absent() {
     let served = ok(&rpc, "getblockchaininfo", json!([])).await;
     assert_eq!(served.get("chainwork"), None);
     assert_eq!(served["blocks"], json!(SERVED));
+}
+
+/// A transaction in a displaced block is served as zebrad serves it: height
+/// -1, no confirmations, in its block; so is that block's verbose form.
+#[tokio::test]
+async fn jsonrpc_a_side_chain_transaction_is_served_as_zebrad_serves_it() {
+    let chain = chain_with(facts());
+    let rpc = served(&chain).await;
+    let displaced_block = block(&chain, SERVED - 1);
+    let displaced_hash = hash(&chain, SERVED - 1);
+    let displaced = displaced_block.block.transactions()[1].txid;
+    let txid = display_hex(displaced.into());
+    let raw = displaced_block
+        .raw
+        .as_ref()
+        .expect("built blocks carry bytes");
+    let tx_hex = json!(hex::encode(&raw.transactions[1]));
+
+    let activations = zaino_source_mock::Activations::default();
+    let mut parent = block(&chain, SERVED - 3);
+    let mut branch = Vec::new();
+    for _ in 0..5 {
+        let spec = zaino_source_mock::BlockSpec::spends(1).seeded(7);
+        parent = zaino_source_mock::next_block(Some(&parent), &activations, spec);
+        branch.push(parent.clone());
+    }
+    chain.reorg(SERVED - 2, branch);
+    // a reorg serves the whole new branch
+    let new_tip = hash(&chain, SERVED + 2);
+    let mut moved = false;
+    for _ in 0..3_000 {
+        if ok(&rpc, "getbestblockhash", json!([])).await == json!(new_tip) {
+            moved = true;
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    assert!(moved, "the head follows the reorg");
+
+    assert_eq!(ok(&rpc, "getrawtransaction", json!([txid])).await, tx_hex);
+    for params in [json!([txid, 1]), json!([txid, 1, displaced_hash])] {
+        let object = ok(&rpc, "getrawtransaction", params).await;
+        assert_eq!(object["hex"], tx_hex);
+        assert_eq!(object["height"], json!(-1));
+        assert_eq!(object["confirmations"], json!(0));
+        assert_eq!(object["blockhash"], json!(displaced_hash));
+        assert_eq!(object["in_active_chain"], json!(false));
+        assert_eq!(Some(object), chain.zebrad_transaction(displaced));
+    }
+    assert_eq!(
+        call(&rpc, "getrawtransaction", json!([txid, 1, new_tip])).await,
+        Err(INVALID_ADDRESS_OR_KEY)
+    );
+
+    let side = ok(&rpc, "getblock", json!([displaced_hash, 2])).await;
+    assert_eq!(side["confirmations"], json!(-1));
+    assert_eq!(side["tx"][1]["txid"], json!(txid));
+    assert_eq!(side["tx"][1]["hex"], tx_hex);
 }
 
 /// `getblock`'s `trees` lists only the pools holding notes, as zebrad: none

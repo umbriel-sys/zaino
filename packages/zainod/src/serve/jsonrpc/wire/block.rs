@@ -162,16 +162,21 @@ fn transaction(tx: &TransactionVerbose) -> Result<Value> {
         tx.in_active_chain.map(Value::from),
     );
     object.insert("hex".into(), hex::encode(&tx.hex).into());
+    // as zebrad: in a side-chain block, height -1 and 0 confirmations
+    let side_chain = tx.block_hash.is_some() && tx.in_active_chain != Some(true);
     insert_some(
         &mut object,
         "height",
-        tx.height.map(|height| u32::from(height).into()),
+        tx.height
+            .map(|height| u32::from(height).into())
+            .or_else(|| side_chain.then(|| Value::from(-1))),
     );
     insert_some(
         &mut object,
         "confirmations",
         tx.confirmations
-            .map(|confirmations| confirmations.to_rpc_i64().into()),
+            .map(|confirmations| confirmations.to_rpc_i64().into())
+            .or_else(|| side_chain.then(|| Value::from(0))),
     );
     insert_some(&mut object, "fee", tx.fee.map(|fee| zec(fee).into()));
     object.insert(

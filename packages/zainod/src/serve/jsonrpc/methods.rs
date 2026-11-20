@@ -10,21 +10,17 @@ use jsonrpsee::core::RpcResult;
 use jsonrpsee::proc_macros::rpc;
 use jsonrpsee::types::ErrorObjectOwned;
 use zaino_chain::{AddressRead as _, BlockId, BlockRead as _, ForkReconcile as _, TreestateRead};
-use zaino_primitives::types::rpc::SubtreeRoots;
-use zaino_primitives::types::{
-    BlockTransactions, BlockVerbosity, Height, MempoolInfo, TransactionId,
-};
-use zaino_service::{Placement, ServiceError, ServiceSnapshot, ServiceSource};
-use zaino_source::{SolutionRateWindow, UtxoPage};
+use zaino_primitives::types::rpc::{SubtreeRoots, TransactionVerbosity};
+use zaino_primitives::types::{BlockVerbosity, Height, MempoolInfo, TransactionId};
+use zaino_service::{ServiceError, ServiceSnapshot, ServiceSource};
+use zaino_source::{SolutionRateWindow, TransactionAnswer, UtxoPage};
 
 use self::errors::{
     chain_error, internal, invalid_params, not_served, rpc_error, service_error, DESERIALIZATION,
     INVALID_ADDRESS_OR_KEY, INVALID_PARAMETER, MISC,
 };
 use super::wire::address::{AddressNetwork, ZValidateAddressWire};
-use super::wire::address_deltas::{
-    GetAddressDeltasError, GetAddressDeltasParams, GetAddressDeltasResponse,
-};
+use super::wire::address_deltas::{GetAddressDeltasParams, GetAddressDeltasResponse};
 use super::wire::block::{GetBlockWire, RawTransactionWire};
 use super::wire::block_deltas::BlockDeltas;
 use super::wire::block_header::GetBlockHeader;
@@ -41,7 +37,7 @@ use super::wire::served::{
     block_hashes_from_domain, AddressBalanceWire, AddressTxIdsRequestWire, AddressUtxosRequestWire,
     AddressUtxosWire, AddressesError, AddressesRequestWire, BlockHashesOptionsWire,
     BlockchainInfoWire, GetInfoWire, NetworkInfoWire, SubtreesWire, TreestateWire,
-    ValidateAddressWire, MAX_REQUEST_ADDRESSES,
+    ValidateAddressWire,
 };
 use super::wire::standard_fee::GetStandardFee;
 use crate::serve::backend::Backend;
@@ -287,50 +283,6 @@ fn block_id<S: ServiceSource>(snapshot: &ServiceSnapshot<S>, input: &str) -> Rpc
             "parse error: could not convert the input string to a hash or height",
         )
     })
-}
-
-/// A verbose `getrawtransaction` object. The service decodes no transaction,
-/// so the object is the validator's, from the best-chain block holding it.
-async fn transaction_object<S: ServiceSource>(
-    snapshot: &ServiceSnapshot<S>,
-    txid: TransactionId,
-    block: Option<zaino_primitives::types::BlockHash>,
-) -> RpcResult<RawTransactionWire> {
-    let undecodable = |place: &str| {
-        rpc_error(
-            MISC,
-            format!("the transaction is {place}: its verbose form is served only from a best-chain block"),
-        )
-    };
-    let status = snapshot
-        .transaction_status(txid)
-        .await
-        .map_err(service_error)?;
-    let position = match status.best {
-        Some(Placement::Block(position)) => position,
-        Some(Placement::Mempool(_)) => return Err(undecodable("in the mempool")),
-        None if status.elsewhere.is_empty() => return Err(no_such_transaction()),
-        None => return Err(undecodable("off the best chain")),
-    };
-    if block.is_some_and(|block| block != position.block.hash) {
-        return Err(rpc_error(INVALID_ADDRESS_OR_KEY, "txid not found"));
-    }
-    let holder = snapshot
-        .block_verbose(
-            BlockId::Hash(position.block.hash),
-            BlockVerbosity::Transactions,
-        )
-        .await
-        .map_err(service_error)?
-        .ok_or_else(|| internal(ServiceError::MissingBlock(position.block.height)))?;
-    let BlockTransactions::Objects(transactions) = &holder.transactions else {
-        return Err(internal("the validator's verbose block lists no objects"));
-    };
-    let transaction = transactions
-        .iter()
-        .find(|transaction| transaction.txid == txid)
-        .ok_or_else(|| internal("the validator's block omits a transaction Zaino places in it"))?;
-    RawTransactionWire::object_from_domain(transaction).map_err(internal)
 }
 
 #[jsonrpsee::core::async_trait]
@@ -645,25 +597,22 @@ impl<S: ServiceSource + 'static> ZainoRpcServer for JsonRpcMethods<S> {
                 })
             })
             .transpose()?;
-        let snapshot = self.snapshot();
-        if verbose.unwrap_or(0) != 0 {
-            return transaction_object(&snapshot, txid, block).await;
-        }
-        let bytes = match block {
-            Some(block) => snapshot
-                .raw_transaction(txid, Some(block))
-                .await
-                .map_err(service_error)?
-                .map(|transaction| transaction.bytes),
-            None => snapshot
-                .transaction(txid)
-                .await
-                .map_err(service_error)?
-                .map(|transaction| transaction.bytes),
+        let verbosity = match verbose.unwrap_or(0) {
+            0 => TransactionVerbosity::Raw,
+            _ => TransactionVerbosity::Object,
         };
-        bytes
-            .map(|bytes| RawTransactionWire::raw_from_domain(&bytes))
-            .ok_or_else(no_such_transaction)
+        let answer = self
+            .snapshot()
+            .transaction(txid, verbosity, block)
+            .await
+            .map_err(service_error)?
+            .ok_or_else(no_such_transaction)?;
+        match answer {
+            TransactionAnswer::Raw(bytes) => Ok(RawTransactionWire::raw_from_domain(&bytes)),
+            TransactionAnswer::Object(object) => {
+                RawTransactionWire::object_from_domain(&object).map_err(internal)
+            }
+        }
     }
 
     async fn get_tx_out(
@@ -751,16 +700,7 @@ impl<S: ServiceSource + 'static> ZainoRpcServer for JsonRpcMethods<S> {
         &self,
         params: GetAddressDeltasParams,
     ) -> RpcResult<GetAddressDeltasResponse> {
-        if let GetAddressDeltasParams::Filtered { addresses, .. } = &params {
-            if addresses.len() > MAX_REQUEST_ADDRESSES {
-                return Err(addresses_error(AddressesError::TooMany));
-            }
-        }
-        let request = params.into_domain().map_err(|error| match error {
-            error @ GetAddressDeltasError::Address { .. } => {
-                rpc_error(INVALID_ADDRESS_OR_KEY, error)
-            }
-        })?;
+        let request = params.into_domain().map_err(addresses_error)?;
         self.snapshot()
             .address_deltas(request)
             .await

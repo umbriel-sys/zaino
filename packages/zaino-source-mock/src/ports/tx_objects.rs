@@ -57,12 +57,68 @@ pub(crate) fn transaction_objects<E: std::fmt::Debug + std::fmt::Display>(
             if verbosity == BlockVerbosity::TransactionsWithPrevouts {
                 object.add_prevouts(tx, &spent, &network);
             }
-            let json = serde_json::to_value(&object)
-                .map_err(|error| fault(format!("transaction object: {error}")))?;
-            zaino_source_zcash_rpc::parse_transaction_object(&json)
-                .map_err(|error| fault(format!("transaction object: {error}")))
+            read_back(&object)
         })
         .collect()
+}
+
+/// zebrad's object as the zcash RPC adapter reads it.
+fn read_back<E: std::fmt::Debug + std::fmt::Display>(
+    object: &zebra_rpc::client::TransactionObject,
+) -> Result<TransactionVerbose, QueryError<E>> {
+    let json = serde_json::to_value(object)
+        .map_err(|error| fault(format!("transaction object: {error}")))?;
+    zaino_source_zcash_rpc::parse_transaction_object(&json)
+        .map_err(|error| fault(format!("transaction object: {error}")))
+}
+
+/// zebrad's verbose `getrawtransaction` for `txid`: placed by its best-chain
+/// `block`, named by a side-chain one, or unplaced in the mempool.
+pub(crate) fn transaction_object<E: std::fmt::Debug + std::fmt::Display>(
+    served: &Served<'_>,
+    txid: zaino_primitives::types::TransactionId,
+    bytes: &[u8],
+    block: Option<&MockBlock>,
+) -> Result<TransactionVerbose, QueryError<E>> {
+    read_back(&zebrad_object(served, txid, bytes, block)?)
+}
+
+/// The object zebrad's `getrawtransaction` builds for `txid`.
+pub(crate) fn zebrad_object<E: std::fmt::Debug + std::fmt::Display>(
+    served: &Served<'_>,
+    txid: zaino_primitives::types::TransactionId,
+    bytes: &[u8],
+    block: Option<&MockBlock>,
+) -> Result<zebra_rpc::client::TransactionObject, QueryError<E>> {
+    let transaction: zebra_chain::transaction::Transaction = bytes
+        .zcash_deserialize_into()
+        .map_err(|error| fault(format!("transaction bytes: {error}")))?;
+    let network = zebra_network(served)?;
+    let hash = block.map(|block| zebra_chain::block::Hash(block.hash().into()));
+    let best = block.filter(|block| served.is_best(block.hash()));
+    let (height, confirmations, time) = match (best, served.tip()) {
+        (Some(block), Some(tip)) => {
+            let depth = u32::from(tip.height()).saturating_sub(u32::from(block.height()));
+            let time = chrono::DateTime::from_timestamp(i64::from(block.block.header.time), 0)
+                .ok_or_else(|| fault(format!("block {} has no valid time", block.height())))?;
+            (
+                Some(zebra_chain::block::Height(u32::from(block.height()))),
+                Some(i64::from(depth).saturating_add(1)),
+                Some(time),
+            )
+        }
+        _ => (None, None, None),
+    };
+    Ok(zebra_rpc::client::TransactionObject::from_transaction(
+        Arc::new(transaction),
+        height,
+        confirmations,
+        &network,
+        time,
+        hash,
+        Some(best.is_some()),
+        zebra_chain::transaction::Hash(txid.into()),
+    ))
 }
 
 /// The outputs `block` spends that the served best chain holds, as zebrad's

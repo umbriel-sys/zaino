@@ -138,16 +138,37 @@ impl<V: ChainIndexSourcePorts + ServiceSource> ChainIndex for NodeBackedChainInd
         snapshot: &Self::Snapshot,
         txid: &types::TransactionHash,
     ) -> Result<Option<(Vec<u8>, Option<u32>)>, Self::Error> {
+        use zaino_service::{Placement, ServiceError};
+        let reads = self.reads(snapshot);
+        let txid = domain_txid(txid);
+        let next = || {
+            let tip = snapshot.best_tip().height;
+            tip.checked_add(1).ok_or(ServiceError::HeightOverflow(tip))
+        };
         // a mempool transaction's branch id is the one at the height it would
         // be mined at
-        Ok(self
-            .reads(snapshot)
-            .transaction(domain_txid(txid))
+        let height = match reads.transaction_status(txid).await {
+            Err(ServiceError::MinedAndInMempool(_)) => next()?,
+            Err(error) => return Err(error.into()),
+            Ok(status) => match (status.best, status.elsewhere.as_slice()) {
+                (Some(Placement::Block(position)), _) => position.block.height,
+                (Some(Placement::Mempool(_)), _) => next()?,
+                (None, []) => return Ok(None),
+                (None, elsewhere) => {
+                    let mined = elsewhere.iter().find_map(|placement| match placement {
+                        Placement::Block(position) => Some(position.block.height),
+                        Placement::Mempool(_) => None,
+                    });
+                    // only a mempool for another tip holds it: ask again
+                    mined.ok_or(ServiceError::MempoolIncoherent)?
+                }
+            },
+        };
+        let verbosity = zaino_primitives::types::rpc::TransactionVerbosity::Raw;
+        Ok(reads
+            .transaction(txid, verbosity, None)
             .await?
-            .map(|served| {
-                let branch_id = types::branch_id(&self.network, served.height);
-                (served.bytes, branch_id)
-            }))
+            .map(|served| (served.into_bytes(), types::branch_id(&self.network, height))))
     }
 
     async fn get_transaction_status(

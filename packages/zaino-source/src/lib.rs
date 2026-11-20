@@ -121,7 +121,7 @@ pub use get_raw_mempool_transaction::{
 pub use get_spent_info::{GetSpentInfoError, OneShotGetSpentInfo};
 pub use get_standard_fee::{GetStandardFeeError, OneShotGetStandardFee};
 pub use get_subtree_roots::{GetSubtreeRootsError, OneShotGetSubtreeRoots};
-pub use get_transaction::{GetTransactionError, OneShotGetTransaction, TransactionResponse};
+pub use get_transaction::{GetTransactionError, OneShotGetTransaction, TransactionAnswer};
 pub use get_treestate::{GetTreestate, GetTreestateError, OneShotGetTreestate};
 pub use get_treestate_by_hash::{GetTreestateByHashError, OneShotGetTreestateByHash};
 pub use get_tx_out::{GetTxOutError, OneShotGetTxOut};

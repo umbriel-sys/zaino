@@ -9,22 +9,25 @@ mod common;
 use std::sync::Arc;
 
 use common::{
-    block_at, called, calls_after, chain, chain_with_facts, chainwork_at, hash_of, height, raw_of,
-    reorg, rig, tx_at, Rig, DEPTH, TIP,
+    block_at, branch, called, calls_after, chain, chain_with_facts, chainwork_at, hash_of, height,
+    raw_of, reorg, rig, tx_at, Rig, DEPTH, TIP,
 };
 use futures::{StreamExt as _, TryStreamExt as _};
 use zaino_chain::{
     AddressRead as _, Answerable, BlockId, BlockRead as _, ChainCapability, ChainScope,
     ChainView as _, ChainViewConfig, ChainViewError, ChainViewSnapshot as _, CompactBlockRead as _,
-    ForkReconcile as _, Locator, PrevoutRead as _, SpendRead as _, SpendStatus,
-    TransactionRead as _, TreestateRead as _,
+    ForkReconcile as _, Locator, PrevoutRead as _, SpendRead as _, SpendStatus, TransactionRead,
+    TreestateRead as _,
 };
 use zaino_chain_head::ChainHeadBlockService as _;
 use zaino_chain_store::PoolFilter;
+use zaino_primitives::types::rpc::TransactionVerbosity;
 use zaino_primitives::types::{
-    BlockRef, CompactBlock, PreIndexCompactTx, ShieldedPool, TransactionId, TransparentAddress,
+    BlockRef, CompactBlock, PreIndexCompactTx, ShieldedPool, TransactionId, TransactionLocation,
+    TransparentAddress,
 };
-use zaino_source_mock::{address_of, CallArg, NodeFacts, MINER_SCRIPT};
+use zaino_source::{OneShotGetTransaction as _, TransactionAnswer};
+use zaino_source_mock::{address_of, CallArg, Mempool, NodeFacts, MINER_SCRIPT};
 
 /// The window floor.
 const FLOOR: u32 = TIP - DEPTH;
@@ -823,8 +826,7 @@ async fn an_invalid_request_is_rejected() {
     ));
 }
 
-/// The validator's answers for an address, a transaction and subtree roots
-/// pass through.
+/// The validator's answers for an address and subtree roots pass through.
 #[tokio::test]
 async fn validator_answers_pass_through() {
     let rig = caught_up().await;
@@ -845,21 +847,6 @@ async fn validator_answers_pass_through() {
         .await
         .expect("the validator answers");
     assert_eq!(txids.len(), 5, "one coinbase per block");
-
-    let coinbase = tx_at(&rig.chain, 50, 0);
-    let raw = snapshot
-        .raw_transaction(coinbase.txid)
-        .await
-        .expect("the validator answers")
-        .expect("mined");
-    assert_eq!(
-        raw.bytes,
-        block_at(&rig.chain, 50).raw.expect("bytes").transactions[0]
-    );
-    assert_eq!(
-        raw.location,
-        zaino_primitives::types::TransactionLocation::BestChain(height(50))
-    );
 
     // Too few notes for a completed subtree: an empty answer, not a refusal.
     assert!(snapshot
@@ -921,6 +908,138 @@ async fn transaction_locations_come_from_the_tier_holding_the_block() {
             .collect::<Vec<_>>(),
         vec![displaced_block]
     );
+}
+
+/// The transaction at `index` of the best-chain block at `at`, its bytes.
+fn bytes_at(rig: &Rig, at: u32, index: usize) -> Vec<u8> {
+    let raw = block_at(&rig.chain, at).raw.expect("bytes");
+    raw.transactions.get(index).expect("held").clone()
+}
+
+fn asked(txid: TransactionId, verbosity: TransactionVerbosity) -> CallArg {
+    CallArg::Transaction { txid, verbosity }
+}
+
+/// Both forms of a transaction the view places at `at`, checked against the
+/// chain; the raw form of one a local provider places never asks the object.
+async fn assert_served(rig: &Rig, snapshot: &impl TransactionRead, at: u32, local: bool) {
+    let txid = tx_at(&rig.chain, at, 1).txid;
+    let bytes = bytes_at(rig, at, 1);
+    let before = rig.chain.call_log().len();
+    let raw = snapshot
+        .raw_transaction(txid, TransactionVerbosity::Raw)
+        .await
+        .expect("serviceable")
+        .expect("placed");
+    assert_eq!(raw, TransactionAnswer::Raw(bytes.clone()), "{at}");
+    let calls = calls_after(&rig.chain, before);
+    let object = asked(txid, TransactionVerbosity::Object);
+    assert_eq!(called(&calls, "get_transaction", &object), !local, "{at}");
+
+    let answer = snapshot
+        .raw_transaction(txid, TransactionVerbosity::Object)
+        .await
+        .expect("serviceable")
+        .expect("placed");
+    let TransactionAnswer::Object(object) = answer else {
+        panic!("the raw form for an object at {at}");
+    };
+    assert_eq!(object.hex, bytes, "{at}");
+    assert_eq!(
+        object.location(),
+        TransactionLocation::BestChain(height(at)),
+        "{at}"
+    );
+}
+
+/// A transaction is served, in both forms, wherever the view places it: in
+/// the store, the head, and the hole a building or absent store leaves.
+#[tokio::test]
+async fn a_transaction_is_served_wherever_the_view_places_it() {
+    let rig = caught_up().await;
+    let snapshot = rig.view().snapshot();
+    assert_served(&rig, &snapshot, 50, true).await;
+    assert_served(&rig, &snapshot, IN_WINDOW, true).await;
+
+    let rig = syncing().await;
+    let snapshot = rig.view().snapshot();
+    assert_served(&rig, &snapshot, 50, true).await;
+    assert_served(&rig, &snapshot, IN_HOLE, false).await;
+    assert_served(&rig, &snapshot, IN_WINDOW, true).await;
+
+    let snapshot = rig
+        .view_with(ChainViewConfig::default().without_store())
+        .snapshot();
+    assert_served(&rig, &snapshot, 50, false).await;
+    assert_served(&rig, &snapshot, IN_WINDOW, true).await;
+}
+
+/// A transaction in a displaced block the head retains is served as the
+/// validator's side-chain object.
+#[tokio::test]
+async fn a_side_chain_transaction_is_served() {
+    let rig = caught_up().await;
+    let displaced = tx_at(&rig.chain, 295, 1).txid;
+    let bytes = bytes_at(&rig, 295, 1);
+    let displaced_block = hash_of(&rig.chain, 295);
+    reorg(&rig.chain, 290, 12, 7);
+    rig.advance().await;
+    let snapshot = rig.view().snapshot();
+
+    for verbosity in [TransactionVerbosity::Raw, TransactionVerbosity::Object] {
+        let answer = snapshot
+            .raw_transaction(displaced, verbosity)
+            .await
+            .expect("serviceable")
+            .expect("placed off the best chain");
+        match answer {
+            TransactionAnswer::Raw(raw) => assert_eq!(raw, bytes),
+            TransactionAnswer::Object(object) => {
+                assert_eq!(object.location(), TransactionLocation::NonBestChain);
+                assert_eq!(object.block_hash, Some(displaced_block));
+                assert_eq!(object.hex, bytes);
+            }
+        }
+    }
+}
+
+/// A transaction the view places nowhere is a miss, in every shape, though
+/// the validator's mempool holds it; so is one nobody knows.
+#[tokio::test]
+async fn a_transaction_the_view_does_not_place_is_a_miss() {
+    for rig in [caught_up().await, syncing().await] {
+        let unmined = branch(&rig.chain, TIP, 1, 11).remove(0);
+        let transaction = unmined
+            .block
+            .transactions()
+            .get(1)
+            .expect("a spend")
+            .clone();
+        let txid = transaction.txid;
+        let bytes = unmined.raw.expect("bytes").transactions.get(1).cloned();
+        rig.chain
+            .set_mempool(Mempool::Explicit(vec![(transaction, bytes)]));
+        assert!(
+            rig.chain
+                .get_transaction(txid, TransactionVerbosity::Raw)
+                .await
+                .is_ok(),
+            "the validator serves it"
+        );
+
+        let snapshot = rig.view().snapshot();
+        for verbosity in [TransactionVerbosity::Raw, TransactionVerbosity::Object] {
+            for txid in [txid, TransactionId::from([9; 32])] {
+                assert_eq!(
+                    snapshot
+                        .raw_transaction(txid, verbosity)
+                        .await
+                        .expect("serviceable"),
+                    None
+                );
+            }
+        }
+    }
 }
 
 // ***** Fork reconciliation *****

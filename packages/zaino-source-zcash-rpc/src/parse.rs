@@ -34,11 +34,11 @@ use zaino_primitives::types::{
     AbsoluteChainWork, AddressBalance, AddressDelta, BlockCommitments, BlockConfirmations,
     BlockHash, BlockchainInfo, CompactDifficulty, ConsensusBranchId, ConsensusBranchIds, Height,
     MerkleRoot, Network, NetworkUpgradeInfo, NetworkUpgradeStatus, Script, SignedZatoshis,
-    SubtreeRoot, TransactionId, TransactionLocation, TransparentAddress, TransparentAddressError,
-    TreeRoot, TreeRootInfo, TreeRoots, TreeSize, TreeSizeOutOfRange, Treestate, TxConfirmations,
-    Utxo, ValuePoolBalance, Zatoshis, ZatoshisFlowSum,
+    SubtreeRoot, TransactionId, TransparentAddress, TransparentAddressError, TreeRoot,
+    TreeRootInfo, TreeRoots, TreeSize, TreeSizeOutOfRange, Treestate, TxConfirmations, Utxo,
+    ValuePoolBalance, Zatoshis, ZatoshisFlowSum,
 };
-use zaino_source::{MempoolTxMeta, TransactionResponse};
+use zaino_source::MempoolTxMeta;
 
 mod getblock;
 
@@ -1222,48 +1222,6 @@ pub(crate) fn parse_block_deltas(value: &serde_json::Value) -> Result<BlockDelta
     })
 }
 
-/// Parse a verbose `getrawtransaction` response into raw bytes plus location.
-///
-/// # Location
-///
-/// The `height` field carries all three placements, and the distinction
-/// matters: reporting a side-chain transaction as unmined would tell a caller
-/// it is still pending when it is in fact on an abandoned branch.
-///
-/// - absent — the transaction is in the mempool, not mined anywhere;
-/// - `-1` — mined, but in a side-chain block;
-/// - `>= 0` — mined at that height in the best chain.
-///
-/// Any other negative value is rejected rather than folded into
-/// [`TransactionLocation::NonBestChain`]: `-1` is the defined sentinel, and a
-/// validator sending something else is not making a statement this interface
-/// defines.
-pub(crate) fn parse_transaction(
-    value: &serde_json::Value,
-) -> Result<TransactionResponse, ParseError> {
-    let bytes =
-        hex::decode(as_str(field(value, "hex")?)?).map_err(|e| ParseError::Hex(e.to_string()))?;
-
-    let location = match opt_field(value, "height").map(as_i64).transpose()? {
-        None => TransactionLocation::Mempool,
-        Some(-1) => TransactionLocation::NonBestChain,
-        Some(height) if height >= 0 => {
-            let height = u32::try_from(height).map_err(|_| ParseError::Overflow(height as u64))?;
-            TransactionLocation::BestChain(
-                Height::try_from(height).map_err(|e| ParseError::Height(e.to_string()))?,
-            )
-        }
-        Some(other) => {
-            return Err(ParseError::Height(format!(
-                "transaction height {other} is neither a best-chain height nor the \
-                 side-chain sentinel -1"
-            )))
-        }
-    };
-
-    Ok(TransactionResponse { bytes, location })
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1519,40 +1477,6 @@ mod tests {
             zatoshis_field(&zec_only, "valueZat", "value").expect("zec fallback"),
             Zatoshis::new(150_000_000).expect("valid")
         );
-    }
-
-    /// Zebra defines `height` as carrying all three placements. Reporting a
-    /// side-chain transaction as unmined would tell a caller it is still
-    /// pending when it is actually on an abandoned branch, so each case is
-    /// pinned.
-    #[test]
-    fn transaction_location_distinguishes_all_three_placements() {
-        let mined = json!({ "hex": "00", "height": 12345 });
-        assert_eq!(
-            parse_transaction(&mined).expect("mined").location,
-            TransactionLocation::BestChain(Height::try_from(12345).expect("valid"))
-        );
-
-        let side_chain = json!({ "hex": "00", "height": -1 });
-        assert_eq!(
-            parse_transaction(&side_chain).expect("side chain").location,
-            TransactionLocation::NonBestChain
-        );
-
-        let mempool = json!({ "hex": "00" });
-        assert_eq!(
-            parse_transaction(&mempool).expect("mempool").location,
-            TransactionLocation::Mempool
-        );
-    }
-
-    /// Only `-1` means side chain. Another negative value is not a statement
-    /// this interface defines, so it must not be silently accepted as one.
-    #[test]
-    fn transaction_rejects_an_undefined_negative_height() {
-        let bogus = json!({ "hex": "00", "height": -7 });
-
-        assert!(parse_transaction(&bogus).is_err());
     }
 
     const TREESTATE_HASH: &str = "0000000000000000000000000000000000000000000000000000000000000001";
@@ -1920,7 +1844,7 @@ mod tests {
 
     /// `getrawtransaction` at verbosity 0 answers with a bare hex string, not
     /// an object — a different shape from the verbosity-1 response
-    /// [`parse_transaction`] reads.
+    /// [`parse_transaction_verbose`] reads.
     #[test]
     fn a_raw_transaction_is_a_bare_hex_string() {
         assert_eq!(

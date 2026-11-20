@@ -1,28 +1,11 @@
 //! ReadState adapter: implements source traits via Zebra's ReadStateService.
 //!
-//! # Capabilities this adapter does not claim
+//! The state service has no mempool, so no mempool port is implemented here;
+//! the composite routes those to JSON-RPC.
 //!
-//! Each trait here answers one question with one read of the state service.
-//! Two questions are deliberately left unimplemented because they cannot be
-//! answered that way, and pretending otherwise would either duplicate logic or
-//! silently return less than the caller asked for:
-//!
-//! - **`GetAddressDeltas`** is a composition: address txids, then every
-//!   transaction, then a derivation over them. Crucially the transaction step
-//!   needs the mempool, which the state service does not have — an
-//!   implementation here would quietly omit unconfirmed deltas. It belongs
-//!   above the adapters, where both transports are in reach.
-//! - **`SubscribeChainTip`** needs a `ChainTipChange`, which the read-only
-//!   construction path does not produce (see the impl below).
-//!
-//! Leaving them out is the capability model working: a composite routes each to
-//! whichever transport can answer it, rather than every adapter growing a
-//! partial version.
-//!
-//! `GetBlockDeltas` *is* implemented here, and was once on this list on the
-//! grounds that the validator computes it in one call. That was wrong: zebrad
-//! does not implement `getblockdeltas` at all, so the derivation below is the
-//! only implementation a zebrad-backed deployment has.
+//! `GetBlockDeltas` and `GetAddressDeltas` are derived here: zebrad has
+//! neither RPC, so these are the only implementations a zebrad-backed
+//! deployment has.
 
 use std::path::Path;
 
@@ -1168,48 +1151,76 @@ impl zaino_source::OneShotGetTransaction for ZebraReadStateAdapter {
     async fn get_transaction(
         &self,
         txid: zaino_primitives::types::TransactionId,
+        verbosity: zaino_primitives::types::rpc::TransactionVerbosity,
     ) -> Result<
-        zaino_source::TransactionResponse,
+        zaino_source::TransactionAnswer,
         QueryError<zaino_source::GetTransactionError, ReadStateError>,
     > {
-        use zaino_primitives::types::TransactionLocation;
+        use zaino_primitives::types::rpc::TransactionVerbosity;
         use zebra_chain::serialization::ZcashSerialize;
+        use zebra_rpc::client::TransactionObject;
 
         let zebra_txid = zebra_chain::transaction::Hash::from(<[u8; 32]>::from(txid));
 
         let response = read(&self.state, ReadRequest::AnyChainTransaction(zebra_txid)).await?;
 
-        let any_tx = match response {
-            ReadResponse::AnyChainTransaction(tx) => tx,
-            _ => return Err(unexpected_response("AnyChainTransaction").into()),
-        };
-
-        // `AnyChainTransaction` covers mined transactions on either chain. It
-        // does not cover the mempool — the state service has no mempool — so an
-        // absent transaction here means "not mined", not "does not exist". A
-        // composite that also holds an RPC adapter should ask it before
-        // concluding the transaction is unknown.
-        let (transaction, location) = match any_tx {
-            Some(zebra_state::AnyTx::Mined(mined)) => {
-                let height =
-                    Height::try_from(mined.height.0).map_err(ReadStateError::invalid_data)?;
-                (mined.tx.clone(), TransactionLocation::BestChain(height))
-            }
-            Some(zebra_state::AnyTx::Side((transaction, _block_hash))) => {
-                (transaction, TransactionLocation::NonBestChain)
-            }
-            None => {
+        // The state service has no mempool: an absent transaction is "not
+        // mined", and the composite asks the RPC adapter next.
+        let found = match response {
+            ReadResponse::AnyChainTransaction(Some(found)) => found,
+            ReadResponse::AnyChainTransaction(None) => {
                 return Err(QueryError::Domain(
                     zaino_source::GetTransactionError::NotFound(txid),
                 ))
             }
+            _ => return Err(unexpected_response("AnyChainTransaction").into()),
         };
 
-        let bytes = transaction
-            .zcash_serialize_to_vec()
-            .map_err(ReadStateError::invalid_data)?;
+        if verbosity == TransactionVerbosity::Raw {
+            let transaction: std::sync::Arc<zebra_chain::transaction::Transaction> = found.into();
+            return Ok(zaino_source::TransactionAnswer::Raw(
+                transaction
+                    .zcash_serialize_to_vec()
+                    .map_err(ReadStateError::invalid_data)?,
+            ));
+        }
 
-        Ok(zaino_source::TransactionResponse { bytes, location })
+        // as zebrad's `getrawtransaction` builds it from the same response
+        let object = match found {
+            zebra_state::AnyTx::Mined(mined) => {
+                let block_hash =
+                    match read(&self.state, ReadRequest::BestChainBlockHash(mined.height)).await? {
+                        ReadResponse::BlockHash(hash) => hash,
+                        _ => return Err(unexpected_response("BestChainBlockHash").into()),
+                    };
+                TransactionObject::from_transaction(
+                    mined.tx.clone(),
+                    Some(mined.height),
+                    Some(mined.confirmations.into()),
+                    &self.network,
+                    Some(mined.block_time),
+                    block_hash,
+                    Some(true),
+                    zebra_txid,
+                )
+            }
+            zebra_state::AnyTx::Side((transaction, block_hash)) => {
+                TransactionObject::from_transaction(
+                    transaction,
+                    None,
+                    None,
+                    &self.network,
+                    None,
+                    Some(block_hash),
+                    Some(false),
+                    zebra_txid,
+                )
+            }
+        };
+        let json = serde_json::to_value(&object).map_err(ReadStateError::invalid_data)?;
+        let object = zaino_source_zcash_rpc::parse_transaction_object(&json)
+            .map_err(ReadStateError::invalid_data)?;
+        Ok(zaino_source::TransactionAnswer::Object(Box::new(object)))
     }
 }
 
