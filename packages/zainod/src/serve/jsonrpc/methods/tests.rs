@@ -731,6 +731,33 @@ async fn jsonrpc_address_reads_are_the_chains() {
             "{method}"
         );
     }
+    // one checker: the four methods refuse with the same error, message included
+    for refused in [json!(["not an address"]), json!([tex]), json!(too_many)] {
+        let mut refusals = Vec::new();
+        for method in [
+            "getaddressbalance",
+            "getaddressutxos",
+            "getaddresstxids",
+            "getaddressdeltas",
+        ] {
+            let mut positional = ArrayParams::new();
+            positional
+                .insert(json!({ "addresses": refused }))
+                .expect("serializes");
+            match rpc.call::<_, Value>(method, positional).await {
+                Err(MethodsError::JsonRpc(error)) => {
+                    refusals.push((error.code(), error.message().to_string()));
+                }
+                other => panic!("{method} {refused}: {other:?}"),
+            }
+        }
+        assert!(
+            refusals
+                .iter()
+                .all(|refusal| Some(refusal) == refusals.first()),
+            "{refusals:?}"
+        );
+    }
     // zebrad's −32602 for an inverted range
     for method in ["getaddresstxids", "getaddressdeltas"] {
         let mut inverted = both.clone();
