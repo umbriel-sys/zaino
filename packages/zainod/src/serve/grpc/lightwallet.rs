@@ -142,7 +142,7 @@ async fn served<T>(
     method: &'static str,
     answer: impl Future<Output = Result<T, tonic::Status>>,
 ) -> Result<tonic::Response<T>, tonic::Status> {
-    info!(method, "[TEST] received call");
+    info!(method, "received call");
     let start = Instant::now();
     let result = answer.await.map(tonic::Response::new);
     record_grpc_metrics(method, start, &result);

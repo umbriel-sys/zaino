@@ -55,9 +55,9 @@ use crate::txout_set::TxOutSetAccumulator;
 ///
 /// - the chain tip, to know how far there is to build;
 /// - blocks by height, to build from;
-/// - blocks by hash, and transactions, which only the passthrough mode needs —
-///   a store configured to hold nothing answers reads from the validator, and
-///   so asks questions a building store never does;
+/// - blocks by hash, which only the passthrough mode needs — a store
+///   configured to hold nothing answers reads from the validator, and so asks
+///   a question a building store never does;
 /// - commitment tree roots, which are not derivable from a block alone;
 /// - treestates and subtree roots, for the note frontiers and completed
 ///   subtrees an index fold takes beside each block (D-85).
@@ -73,7 +73,6 @@ pub trait ChainStoreSource:
     + zaino_source::OneShotGetBlock
     + zaino_source::OneShotGetBlockByHash
     + zaino_source::OneShotGetCommitmentTreeRoots
-    + zaino_source::OneShotGetTransaction
     + zaino_source::OneShotGetTreestate
     + zaino_source::OneShotGetSubtreeRoots
     + Send
@@ -87,7 +86,6 @@ impl<T> ChainStoreSource for T where
         + zaino_source::OneShotGetBlock
         + zaino_source::OneShotGetBlockByHash
         + zaino_source::OneShotGetCommitmentTreeRoots
-        + zaino_source::OneShotGetTransaction
         + zaino_source::OneShotGetTreestate
         + zaino_source::OneShotGetSubtreeRoots
         + Send

@@ -4,7 +4,7 @@ pub mod amount;
 
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use serde::{Deserialize, Deserializer, Serialize, Serializer};
+use serde::{Deserialize, Serialize};
 
 /// The identifier for a Zcash node.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -19,35 +19,6 @@ pub struct BlockHeight(pub u32);
 impl From<u32> for BlockHeight {
     fn from(v: u32) -> Self {
         BlockHeight(v)
-    }
-}
-
-/// The height of a Zcash block, or None if unknown.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct MaybeHeight(pub Option<BlockHeight>);
-
-impl Serialize for MaybeHeight {
-    fn serialize<S: Serializer>(&self, ser: S) -> Result<S::Ok, S::Error> {
-        match self.0 {
-            Some(BlockHeight(h)) => ser.serialize_u32(h),
-            None => ser.serialize_i64(-1),
-        }
-    }
-}
-
-impl<'de> Deserialize<'de> for MaybeHeight {
-    fn deserialize<D: Deserializer<'de>>(de: D) -> Result<Self, D::Error> {
-        // Accept either a number or null.
-        // Negative → None; non-negative → Some(height).
-        let opt = Option::<i64>::deserialize(de)?;
-        match opt {
-            None => Ok(MaybeHeight(None)),
-            Some(n) if n < 0 => Ok(MaybeHeight(None)),
-            Some(n) => {
-                let h = u32::try_from(n).map_err(serde::de::Error::custom)?;
-                Ok(MaybeHeight(Some(BlockHeight(h))))
-            }
-        }
     }
 }
 
@@ -93,36 +64,3 @@ pub struct Bytes(pub u64);
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(transparent)]
 pub struct TimeOffsetSeconds(pub i64);
-
-#[cfg(test)]
-mod tests {
-    use crate::serve::jsonrpc::wire::common::{BlockHeight, MaybeHeight};
-
-    #[test]
-    fn maybeheight_deser_accepts_minus_one_and_null() {
-        let a: MaybeHeight = serde_json::from_str("-1").unwrap();
-        assert!(a.0.is_none());
-
-        let b: MaybeHeight = serde_json::from_str("null").unwrap();
-        assert!(b.0.is_none());
-
-        let c: MaybeHeight = serde_json::from_str("123").unwrap();
-        assert_eq!(c.0.unwrap().0, 123);
-    }
-
-    #[test]
-    fn maybeheight_serializes_none_as_minus_one() {
-        let m = MaybeHeight(None);
-        let s = serde_json::to_string(&m).unwrap();
-        assert_eq!(s, "-1");
-    }
-
-    #[test]
-    fn maybeheight_roundtrips_some() {
-        let m = MaybeHeight(Some(BlockHeight(42)));
-        let s = serde_json::to_string(&m).unwrap();
-        assert_eq!(s, "42");
-        let back: MaybeHeight = serde_json::from_str(&s).unwrap();
-        assert_eq!(back.0.unwrap().0, 42);
-    }
-}
