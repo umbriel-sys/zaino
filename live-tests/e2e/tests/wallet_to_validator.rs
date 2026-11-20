@@ -1421,23 +1421,9 @@ mod zebrad {
         let fetch = Zainod::launch(cache.indexer_config(&zebrad, Backend::Fetch)).await?;
         let state = Zainod::launch(cache.indexer_config(&zebrad, Backend::State)).await?;
 
-        // zebrad implements no `getblockdeltas`, so only a read-state can synthesise one. The
-        // state indexer must answer and the fetch one must not, or both are reaching the one
-        // validator over the one transport and every comparison below is an identity.
-        let tip_hash = zebrad.best_block_hash().await?;
-        let deltas = json!([&tip_hash]);
-        state
-            .json_rpc()
-            .call_value("getblockdeltas", deltas.clone())
-            .await?;
         anyhow::ensure!(
-            fetch
-                .json_rpc()
-                .call_value("getblockdeltas", deltas)
-                .await
-                .is_err(),
-            "the fetch indexer answered getblockdeltas, which only a read-state can \
-             synthesise; this indexer pair is not comparing two ingest paths"
+            state.reads_validator_state() && !fetch.reads_validator_state(),
+            "this indexer pair is not comparing two ingest paths"
         );
 
         // `PoolType` wire codes. This must equal `PoolTypeFilter::default()` — every
@@ -1498,23 +1484,9 @@ mod zebrad {
         let fetch = Zainod::launch(cache.indexer_config(&zebrad, Backend::Fetch)).await?;
         let state = Zainod::launch(cache.indexer_config(&zebrad, Backend::State)).await?;
 
-        // zebrad implements no `getblockdeltas`, so only a read-state can synthesise one. The
-        // state indexer must answer and the fetch one must not, or both are reaching the one
-        // validator over the one transport and every comparison below is an identity.
-        let tip_hash = zebrad.best_block_hash().await?;
-        let deltas = json!([&tip_hash]);
-        state
-            .json_rpc()
-            .call_value("getblockdeltas", deltas.clone())
-            .await?;
         anyhow::ensure!(
-            fetch
-                .json_rpc()
-                .call_value("getblockdeltas", deltas)
-                .await
-                .is_err(),
-            "the fetch indexer answered getblockdeltas, which only a read-state can \
-             synthesise; this indexer pair is not comparing two ingest paths"
+            state.reads_validator_state() && !fetch.reads_validator_state(),
+            "this indexer pair is not comparing two ingest paths"
         );
 
         // `PoolType` wire codes: transparent=1, sapling=2, orchard=3, ironwood=4.
@@ -1578,25 +1550,12 @@ mod zebrad {
         let fetch = Zainod::launch(cache.indexer_config(&zebrad, Backend::Fetch)).await?;
         let state = Zainod::launch(cache.indexer_config(&zebrad, Backend::State)).await?;
 
-        // zebrad implements no `getblockdeltas`, so only a read-state can synthesise one.
-        // The state indexer must answer and the fetch one must not, or both are reaching the
-        // one validator over the one transport and every comparison below is an identity.
-        let tip_hash = zebrad.best_block_hash().await?;
-        let deltas = json!([&tip_hash]);
-        state
-            .json_rpc()
-            .call_value("getblockdeltas", deltas.clone())
-            .await?;
         anyhow::ensure!(
-            fetch
-                .json_rpc()
-                .call_value("getblockdeltas", deltas)
-                .await
-                .is_err(),
-            "the fetch indexer answered getblockdeltas, which only a read-state can \
-             synthesise; this indexer pair is not comparing two ingest paths"
+            state.reads_validator_state() && !fetch.reads_validator_state(),
+            "this indexer pair is not comparing two ingest paths"
         );
 
+        let tip_hash = zebrad.best_block_hash().await?;
         let tip = cache.manifest.fixture.height;
         let fetch_tree = fetch.get_tree_state(tip).await?;
         assert_eq!(
@@ -1632,23 +1591,9 @@ mod zebrad {
         let fetch = Zainod::launch(cache.indexer_config(&zebrad, Backend::Fetch)).await?;
         let state = Zainod::launch(cache.indexer_config(&zebrad, Backend::State)).await?;
 
-        // zebrad implements no `getblockdeltas`, so only a read-state can synthesise one.
-        // The state indexer must answer and the fetch one must not, or both are reaching the
-        // one validator over the one transport and every comparison below is an identity.
-        let tip_hash = zebrad.best_block_hash().await?;
-        let deltas = json!([&tip_hash]);
-        state
-            .json_rpc()
-            .call_value("getblockdeltas", deltas.clone())
-            .await?;
         anyhow::ensure!(
-            fetch
-                .json_rpc()
-                .call_value("getblockdeltas", deltas)
-                .await
-                .is_err(),
-            "the fetch indexer answered getblockdeltas, which only a read-state can \
-             synthesise; this indexer pair is not comparing two ingest paths"
+            state.reads_validator_state() && !fetch.reads_validator_state(),
+            "this indexer pair is not comparing two ingest paths"
         );
 
         let fetch_roots = fetch
@@ -1679,23 +1624,9 @@ mod zebrad {
         let fetch = Zainod::launch(cache.indexer_config(&zebrad, Backend::Fetch)).await?;
         let state = Zainod::launch(cache.indexer_config(&zebrad, Backend::State)).await?;
 
-        // zebrad implements no `getblockdeltas`, so only a read-state can synthesise one.
-        // The state indexer must answer and the fetch one must not, or both are reaching the
-        // one validator over the one transport and every comparison below is an identity.
-        let tip_hash = zebrad.best_block_hash().await?;
-        let deltas = json!([&tip_hash]);
-        state
-            .json_rpc()
-            .call_value("getblockdeltas", deltas.clone())
-            .await?;
         anyhow::ensure!(
-            fetch
-                .json_rpc()
-                .call_value("getblockdeltas", deltas)
-                .await
-                .is_err(),
-            "the fetch indexer answered getblockdeltas, which only a read-state can \
-             synthesise; this indexer pair is not comparing two ingest paths"
+            state.reads_validator_state() && !fetch.reads_validator_state(),
+            "this indexer pair is not comparing two ingest paths"
         );
 
         let vrpc = zebrad.rpc();
@@ -1739,23 +1670,9 @@ mod zebrad {
         let fetch = Zainod::launch(cache.indexer_config(&zebrad, Backend::Fetch)).await?;
         let state = Zainod::launch(cache.indexer_config(&zebrad, Backend::State)).await?;
 
-        // zebrad implements no `getblockdeltas`, so only a read-state can synthesise one.
-        // The state indexer must answer and the fetch one must not, or both are reaching the
-        // one validator over the one transport and every comparison below is an identity.
-        let tip_hash = zebrad.best_block_hash().await?;
-        let deltas = json!([&tip_hash]);
-        state
-            .json_rpc()
-            .call_value("getblockdeltas", deltas.clone())
-            .await?;
         anyhow::ensure!(
-            fetch
-                .json_rpc()
-                .call_value("getblockdeltas", deltas)
-                .await
-                .is_err(),
-            "the fetch indexer answered getblockdeltas, which only a read-state can \
-             synthesise; this indexer pair is not comparing two ingest paths"
+            state.reads_validator_state() && !fetch.reads_validator_state(),
+            "this indexer pair is not comparing two ingest paths"
         );
 
         let taddr = &cache.manifest.recipient.transparent;
@@ -1797,23 +1714,9 @@ mod zebrad {
         let fetch = Zainod::launch(cache.indexer_config(&zebrad, Backend::Fetch)).await?;
         let state = Zainod::launch(cache.indexer_config(&zebrad, Backend::State)).await?;
 
-        // zebrad implements no `getblockdeltas`, so only a read-state can synthesise one.
-        // The state indexer must answer and the fetch one must not, or both are reaching the
-        // one validator over the one transport and every comparison below is an identity.
-        let tip_hash = zebrad.best_block_hash().await?;
-        let deltas = json!([&tip_hash]);
-        state
-            .json_rpc()
-            .call_value("getblockdeltas", deltas.clone())
-            .await?;
         anyhow::ensure!(
-            fetch
-                .json_rpc()
-                .call_value("getblockdeltas", deltas)
-                .await
-                .is_err(),
-            "the fetch indexer answered getblockdeltas, which only a read-state can \
-             synthesise; this indexer pair is not comparing two ingest paths"
+            state.reads_validator_state() && !fetch.reads_validator_state(),
+            "this indexer pair is not comparing two ingest paths"
         );
 
         let taddr = cache.manifest.faucet.transparent.clone();
@@ -1939,23 +1842,9 @@ mod zebrad {
         let fetch = Zainod::launch(cache.indexer_config(&zebrad, Backend::Fetch)).await?;
         let state = Zainod::launch(cache.indexer_config(&zebrad, Backend::State)).await?;
 
-        // zebrad implements no `getblockdeltas`, so only a read-state can synthesise one.
-        // The state indexer must answer and the fetch one must not, or both are reaching the
-        // one validator over the one transport and every comparison below is an identity.
-        let tip_hash = zebrad.best_block_hash().await?;
-        let deltas = json!([&tip_hash]);
-        state
-            .json_rpc()
-            .call_value("getblockdeltas", deltas.clone())
-            .await?;
         anyhow::ensure!(
-            fetch
-                .json_rpc()
-                .call_value("getblockdeltas", deltas)
-                .await
-                .is_err(),
-            "the fetch indexer answered getblockdeltas, which only a read-state can \
-             synthesise; this indexer pair is not comparing two ingest paths"
+            state.reads_validator_state() && !fetch.reads_validator_state(),
+            "this indexer pair is not comparing two ingest paths"
         );
 
         let taddr = cache.manifest.recipient.transparent.clone();
@@ -2002,23 +1891,9 @@ mod zebrad {
         let fetch = Zainod::launch(cache.indexer_config(&zebrad, Backend::Fetch)).await?;
         let state = Zainod::launch(cache.indexer_config(&zebrad, Backend::State)).await?;
 
-        // zebrad implements no `getblockdeltas`, so only a read-state can synthesise one. The
-        // state indexer must answer and the fetch one must not, or both are reaching the one
-        // validator over the one transport and every comparison below is an identity.
-        let tip_hash = zebrad.best_block_hash().await?;
-        let deltas = json!([&tip_hash]);
-        state
-            .json_rpc()
-            .call_value("getblockdeltas", deltas.clone())
-            .await?;
         anyhow::ensure!(
-            fetch
-                .json_rpc()
-                .call_value("getblockdeltas", deltas)
-                .await
-                .is_err(),
-            "the fetch indexer answered getblockdeltas, which only a read-state can \
-             synthesise; this indexer pair is not comparing two ingest paths"
+            state.reads_validator_state() && !fetch.reads_validator_state(),
+            "this indexer pair is not comparing two ingest paths"
         );
 
         // `PoolType` wire codes: transparent=1, sapling=2, orchard=3, ironwood=4.
@@ -2064,23 +1939,9 @@ mod zebrad {
         let fetch = Zainod::launch(cache.indexer_config(&zebrad, Backend::Fetch)).await?;
         let state = Zainod::launch(cache.indexer_config(&zebrad, Backend::State)).await?;
 
-        // zebrad implements no `getblockdeltas`, so only a read-state can synthesise one. The
-        // state indexer must answer and the fetch one must not, or both are reaching the one
-        // validator over the one transport and every comparison below is an identity.
-        let tip_hash = zebrad.best_block_hash().await?;
-        let deltas = json!([&tip_hash]);
-        state
-            .json_rpc()
-            .call_value("getblockdeltas", deltas.clone())
-            .await?;
         anyhow::ensure!(
-            fetch
-                .json_rpc()
-                .call_value("getblockdeltas", deltas)
-                .await
-                .is_err(),
-            "the fetch indexer answered getblockdeltas, which only a read-state can \
-             synthesise; this indexer pair is not comparing two ingest paths"
+            state.reads_validator_state() && !fetch.reads_validator_state(),
+            "this indexer pair is not comparing two ingest paths"
         );
 
         let faucet_taddr = &cache.manifest.faucet.transparent;
@@ -2127,23 +1988,9 @@ mod zebrad {
         let fetch = Zainod::launch(cache.indexer_config(&zebrad, Backend::Fetch)).await?;
         let state = Zainod::launch(cache.indexer_config(&zebrad, Backend::State)).await?;
 
-        // zebrad implements no `getblockdeltas`, so only a read-state can synthesise one. The
-        // state indexer must answer and the fetch one must not, or both are reaching the one
-        // validator over the one transport and every comparison below is an identity.
-        let tip_hash = zebrad.best_block_hash().await?;
-        let deltas = json!([&tip_hash]);
-        state
-            .json_rpc()
-            .call_value("getblockdeltas", deltas.clone())
-            .await?;
         anyhow::ensure!(
-            fetch
-                .json_rpc()
-                .call_value("getblockdeltas", deltas)
-                .await
-                .is_err(),
-            "the fetch indexer answered getblockdeltas, which only a read-state can \
-             synthesise; this indexer pair is not comparing two ingest paths"
+            state.reads_validator_state() && !fetch.reads_validator_state(),
+            "this indexer pair is not comparing two ingest paths"
         );
 
         let faucet_taddr = cache.manifest.faucet.transparent.clone();
@@ -2187,23 +2034,9 @@ mod zebrad {
         let fetch = Zainod::launch(cache.indexer_config(&zebrad, Backend::Fetch)).await?;
         let state = Zainod::launch(cache.indexer_config(&zebrad, Backend::State)).await?;
 
-        // zebrad implements no `getblockdeltas`, so only a read-state can synthesise one. The
-        // state indexer must answer and the fetch one must not, or both are reaching the one
-        // validator over the one transport and every comparison below is an identity.
-        let tip_hash = zebrad.best_block_hash().await?;
-        let deltas = json!([&tip_hash]);
-        state
-            .json_rpc()
-            .call_value("getblockdeltas", deltas.clone())
-            .await?;
         anyhow::ensure!(
-            fetch
-                .json_rpc()
-                .call_value("getblockdeltas", deltas)
-                .await
-                .is_err(),
-            "the fetch indexer answered getblockdeltas, which only a read-state can \
-             synthesise; this indexer pair is not comparing two ingest paths"
+            state.reads_validator_state() && !fetch.reads_validator_state(),
+            "this indexer pair is not comparing two ingest paths"
         );
 
         let faucet_taddr = cache.manifest.faucet.transparent.clone();
@@ -2234,23 +2067,9 @@ mod zebrad {
         let fetch = Zainod::launch(cache.indexer_config(&zebrad, Backend::Fetch)).await?;
         let state = Zainod::launch(cache.indexer_config(&zebrad, Backend::State)).await?;
 
-        // zebrad implements no `getblockdeltas`, so only a read-state can synthesise one. The
-        // state indexer must answer and the fetch one must not, or both are reaching the one
-        // validator over the one transport and every comparison below is an identity.
-        let tip_hash = zebrad.best_block_hash().await?;
-        let deltas = json!([&tip_hash]);
-        state
-            .json_rpc()
-            .call_value("getblockdeltas", deltas.clone())
-            .await?;
         anyhow::ensure!(
-            fetch
-                .json_rpc()
-                .call_value("getblockdeltas", deltas)
-                .await
-                .is_err(),
-            "the fetch indexer answered getblockdeltas, which only a read-state can \
-             synthesise; this indexer pair is not comparing two ingest paths"
+            state.reads_validator_state() && !fetch.reads_validator_state(),
+            "this indexer pair is not comparing two ingest paths"
         );
 
         let faucet_taddr = cache.manifest.faucet.transparent.clone();
@@ -2300,21 +2119,14 @@ mod zebrad {
         let receipts = receipts(&cache.manifest, Pool::Transparent);
         let shields = shields(&cache.manifest);
 
-        // zebrad implements no `getaddressdeltas`, so only a read-state can answer it. The
-        // state indexer must answer and the fetch one must not, or the assertions below are
-        // reading the validator over the one transport rather than zaino's read-state.
+        anyhow::ensure!(
+            state.reads_validator_state() && !fetch.reads_validator_state(),
+            "this indexer pair is not comparing two ingest paths"
+        );
         let srpc = state.json_rpc();
         let bare = srpc
             .call_value("getaddressdeltas", json!([recipient_taddr]))
             .await?;
-        anyhow::ensure!(
-            fetch
-                .json_rpc()
-                .call_value("getaddressdeltas", json!([recipient_taddr]))
-                .await
-                .is_err(),
-            "the fetch indexer answered getaddressdeltas, which only a read-state can serve"
-        );
 
         // The bare-address form answers the rangeless whole chain as a plain array.
         let bare = bare
@@ -2447,10 +2259,6 @@ mod zebrad {
     /// input was dropped and `inputs` was empty, so balances overstated funds.
     #[tokio::test(flavor = "multi_thread")]
     async fn get_block_deltas_resolves_transparent_spend() -> Result<()> {
-        // State-backend only: zebra serves no `getblockdeltas` RPC, so only the
-        // state backend — which synthesizes the deltas from a verbosity-2 block
-        // and resolves each spend's prevout via its `ReadStateService` — can
-        // answer it. There is no fetch path and no fetch-vs-state cross-check.
         let cache = ChainCache::ensure().await?;
         let zebrad = Zebrad::launch(cache.zebrad_config()).await?;
         let indexer = Zainod::launch(cache.indexer_config(&zebrad, Backend::State)).await?;
@@ -2548,9 +2356,6 @@ mod zebrad {
     /// transparent input deltas.
     #[tokio::test(flavor = "multi_thread")]
     async fn get_block_deltas_coinbase_only_block_has_no_inputs() -> Result<()> {
-        // State-backend only (cf. `get_block_deltas_resolves_transparent_spend`):
-        // zebra serves no `getblockdeltas` RPC, so only the synthesizing state
-        // backend can answer it.
         let cache = ChainCache::ensure().await?;
         let zebrad = Zebrad::launch(cache.zebrad_config()).await?;
         let indexer = Zainod::launch(cache.indexer_config(&zebrad, Backend::State)).await?;
@@ -2598,23 +2403,9 @@ mod zebrad {
         let fetch = Zainod::launch(cache.indexer_config(&zebrad, Backend::Fetch)).await?;
         let state = Zainod::launch(cache.indexer_config(&zebrad, Backend::State)).await?;
 
-        // zebrad implements no `getblockdeltas`, so only a read-state can synthesise one. The
-        // state indexer must answer and the fetch one must not, or both are reaching the one
-        // validator over the one transport and every comparison below is an identity.
-        let tip_hash = zebrad.best_block_hash().await?;
-        let deltas = json!([&tip_hash]);
-        state
-            .json_rpc()
-            .call_value("getblockdeltas", deltas.clone())
-            .await?;
         anyhow::ensure!(
-            fetch
-                .json_rpc()
-                .call_value("getblockdeltas", deltas)
-                .await
-                .is_err(),
-            "the fetch indexer answered getblockdeltas, which only a read-state can \
-             synthesise; this indexer pair is not comparing two ingest paths"
+            state.reads_validator_state() && !fetch.reads_validator_state(),
+            "this indexer pair is not comparing two ingest paths"
         );
 
         assert!(
@@ -2659,23 +2450,9 @@ mod zebrad {
         let fetch = Zainod::launch(cache.indexer_config(&zebrad, Backend::Fetch)).await?;
         let state = Zainod::launch(cache.indexer_config(&zebrad, Backend::State)).await?;
 
-        // zebrad implements no `getblockdeltas`, so only a read-state can synthesise one. The
-        // state indexer must answer and the fetch one must not, or both are reaching the one
-        // validator over the one transport and every comparison below is an identity.
-        let tip_hash = zebrad.best_block_hash().await?;
-        let deltas = json!([&tip_hash]);
-        state
-            .json_rpc()
-            .call_value("getblockdeltas", deltas.clone())
-            .await?;
         anyhow::ensure!(
-            fetch
-                .json_rpc()
-                .call_value("getblockdeltas", deltas)
-                .await
-                .is_err(),
-            "the fetch indexer answered getblockdeltas, which only a read-state can \
-             synthesise; this indexer pair is not comparing two ingest paths"
+            state.reads_validator_state() && !fetch.reads_validator_state(),
+            "this indexer pair is not comparing two ingest paths"
         );
 
         // `PoolType` wire codes: transparent=1, sapling=2, orchard=3, ironwood=4.
@@ -2709,23 +2486,9 @@ mod zebrad {
         let fetch = Zainod::launch(cache.indexer_config(&zebrad, Backend::Fetch)).await?;
         let state = Zainod::launch(cache.indexer_config(&zebrad, Backend::State)).await?;
 
-        // zebrad implements no `getblockdeltas`, so only a read-state can synthesise one. The
-        // state indexer must answer and the fetch one must not, or both are reaching the one
-        // validator over the one transport and every comparison below is an identity.
-        let tip_hash = zebrad.best_block_hash().await?;
-        let deltas = json!([&tip_hash]);
-        state
-            .json_rpc()
-            .call_value("getblockdeltas", deltas.clone())
-            .await?;
         anyhow::ensure!(
-            fetch
-                .json_rpc()
-                .call_value("getblockdeltas", deltas)
-                .await
-                .is_err(),
-            "the fetch indexer answered getblockdeltas, which only a read-state can \
-             synthesise; this indexer pair is not comparing two ingest paths"
+            state.reads_validator_state() && !fetch.reads_validator_state(),
+            "this indexer pair is not comparing two ingest paths"
         );
 
         // `PoolType` wire codes: transparent=1, sapling=2, orchard=3, ironwood=4.

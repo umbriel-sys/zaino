@@ -232,6 +232,12 @@ impl Zainod {
         self.subscriber.indexer.finalised_tip_height()
     }
 
+    /// Whether this indexer ingests through the validator's read-state (it
+    /// has a local tip-change stream) rather than over JSON-RPC alone.
+    pub fn reads_validator_state(&self) -> bool {
+        self.subscriber.chaintip_update_subscriber().is_some()
+    }
+
     /// Whether the store has caught up with the chain head's floor.
     pub fn store_caught_up(&self) -> bool {
         self.subscriber.indexer.finalised_state_mode()
