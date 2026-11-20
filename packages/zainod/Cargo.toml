@@ -100,8 +100,22 @@ zaino-consensus.workspace = true
 zaino-address.workspace = true
 tonic = { workspace = true, features = ["tls-native-roots", "tls-aws-lc"] }
 jsonrpsee = { workspace = true, features = ["server", "macros"] }
+zaino-service = { version = "0.1.0", path = "../zaino-service" }
+zaino-chain.workspace = true
+zaino-mempool-service.workspace = true
+zaino-indexes = { version = "0.1.0", path = "../zaino-indexes" }
+zaino-chain-store-service.workspace = true
+zaino-chain-head.workspace = true
+zaino-source-zebra.workspace = true
+zaino-source-zcash-rpc.workspace = true
+bytes.workspace = true
 
 [dev-dependencies]
 tempfile = { workspace = true }
+zaino-persistence-lsm-tree = { path = "../zaino-persistence-lsm-tree" }
+zaino-source-mock.workspace = true
 zcash_address = { workspace = true }
 zcash_protocol = { workspace = true }
+
+[build-dependencies]
+whoami.workspace = true

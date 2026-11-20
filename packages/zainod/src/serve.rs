@@ -6,6 +6,7 @@ use zaino_proto::proto::indexed_tip::indexed_tip_service_server::IndexedTipServi
 use zaino_proto::proto::service::compact_tx_streamer_server::CompactTxStreamerServer;
 use zaino_state::{IndexedTipIndexer, IndexerSubscriber, LightWalletIndexer, ZcashIndexer};
 
+pub mod backend;
 pub mod config;
 pub mod error;
 pub mod grpc;
