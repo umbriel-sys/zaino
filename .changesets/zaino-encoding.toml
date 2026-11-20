@@ -1,8 +1,11 @@
 [[changes]]
 crate = "zaino-encoding"
-kind = "feature"
+kind = "breaking"
 description = """
-New crate: the non-validating decoder from Zcash consensus bytes to the \
+**Breaking: the crate name is reused for different code.** The old \
+`zaino-encoding` (versioned serde traits and byte helpers, removed with \
+zainodb) is gone and none of its API remains. The crate is now the \
+non-validating decoder from Zcash consensus bytes to the \
 domain `Block` and `Transaction`, moved out of `zaino-source-zcash-rpc` so a \
 crate above the source layer can decode without an adapter or a node library. \
 `parse_block(bytes, light)`, `parse_transaction(bytes)`, `DecodeError`, \
