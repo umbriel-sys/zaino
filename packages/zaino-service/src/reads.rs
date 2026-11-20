@@ -23,8 +23,7 @@ use zaino_primitives::types::{
     TransactionId, TransparentAddress, TxOutSetInfo, Utxo, Zatoshis,
 };
 use zaino_source::{
-    GetBlockDeltasError, GetBlockHeaderError, GetBlockVerboseError, GetSpentInfoError, QueryError,
-    UtxoPage,
+    GetBlockDeltasError, GetBlockVerboseError, GetSpentInfoError, QueryError, UtxoPage,
 };
 
 use crate::capability::Capability;
@@ -114,15 +113,14 @@ impl<S: ServiceSource> ServiceSnapshot<S> {
         }))
     }
 
-    /// The serialized header of the block at `at`, from the validator by the
-    /// hash this snapshot holds there.
+    /// The serialized header of the block at `at`: encoded from the header
+    /// ChainView finds, so Zaino's own where it holds the block.
     pub async fn raw_block_header(&self, at: BlockId) -> Result<Option<Vec<u8>>> {
-        let Some(hash) = self.pinned(at).await? else {
-            return Ok(None);
-        };
-        found(self.source.get_raw_block_header(hash).await, |error| {
-            matches!(error, GetBlockHeaderError::BlockNotFound(_))
-        })
+        Ok(self
+            .chain
+            .block_header(at)
+            .await?
+            .map(|header| zaino_encoding::encode_header(&header)))
     }
 
     /// The validator's verbose `getblock` at `verbosity`, by the hash this

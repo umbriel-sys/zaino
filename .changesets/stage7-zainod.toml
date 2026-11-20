@@ -112,3 +112,33 @@ crate = "zaino-service"
 kind = "feature"
 description = """
 `Service::index_states()`: how far each index of the store serves."""
+
+[[changes]]
+crate = "zaino-proto"
+kind = "feature"
+description = """
+`proto/light_client.proto` (`zaino.lightclient.v1.LightClientService`): \
+`GetBlockHeaders(BlockRange) returns (stream BlockHeader)`, Zaino's own \
+service beside the lightwalletd protocol."""
+
+[[changes]]
+crate = "zainod"
+kind = "feature"
+description = """
+gRPC `GetBlockHeaders`: a range of full block headers under \
+`GetBlockRange`'s range rules, served from Zaino where it holds the header."""
+
+[[changes]]
+crate = "zaino-chain"
+kind = "breaking"
+description = """
+`BlockRead::stream_headers(start, end)`: the headers of a range, the \
+store's from its headers index alone (a new required method of the port)."""
+
+[[changes]]
+crate = "zaino-service"
+kind = "breaking"
+description = """
+`ServiceSnapshot::raw_block_header` is served from the header Zaino holds, \
+encoded, instead of always asking the validator; `ServiceSource` no longer \
+requires `OneShotGetRawBlockHeader`."""

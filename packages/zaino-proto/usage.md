@@ -4,6 +4,19 @@ The light-wallet protocol's generated types (`proto`), and, behind the
 `zaino-primitives` feature, how domain compact blocks go onto that wire
 (`compact`).
 
+## Zaino's own services
+
+Two services are Zaino's, not lightwalletd's; the vendored lightwalletd
+files under `lightwallet-protocol/` stay identical to upstream.
+
+| File | Service | Requests |
+| --- | --- | --- |
+| `proto/indexed_tip.proto` | `zaino.index.v1.IndexedTipService` | `SubscribeIndexedTips` |
+| `proto/light_client.proto` | `zaino.lightclient.v1.LightClientService` | `GetBlockHeaders(BlockRange) returns (stream BlockHeader)` |
+
+`light_client.proto` borrows `BlockRange` from the lightwalletd package; the
+generated code names `proto::service::BlockRange`.
+
 ## Domain compact blocks on the wire
 
 `compact` sits below every crate that serves compact blocks (store, chain

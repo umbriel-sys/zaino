@@ -1,0 +1,24 @@
+syntax = "proto3";
+
+package zaino.lightclient.v1;
+
+import "service.proto";
+
+// A block's header.
+message BlockHeader {
+  uint64 height = 1;
+  // The 32-byte block hash in Zcash protocol (internal) byte order.
+  bytes hash = 2;
+  // The full serialized header (1,487 bytes on mainnet).
+  bytes header = 3;
+}
+
+// Light-client data Zaino serves beside the lightwalletd protocol, until
+// that protocol carries it.
+service LightClientService {
+  // The headers of a block range, under `GetBlockRange`'s range rules: a
+  // start above the end is served descending, a range past the tip is served
+  // to the tip and then refused. `poolTypes` is checked as there and selects
+  // nothing.
+  rpc GetBlockHeaders(cash.z.wallet.sdk.rpc.BlockRange) returns (stream BlockHeader);
+}

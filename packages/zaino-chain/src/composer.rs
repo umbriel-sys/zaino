@@ -978,6 +978,22 @@ where
         Ok(self.block(at).await?.map(|block| block.header))
     }
 
+    fn stream_headers(
+        &self,
+        start: Height,
+        end: Height,
+    ) -> impl Stream<Item = Result<Vec<BlockHeader>>> + Send + use<Reader, HeadSnapshot, Source>
+    {
+        stream::walk(
+            self.clone(),
+            start,
+            end,
+            move |snapshot, segment, heights| {
+                Box::pin(async move { snapshot.headers_from(segment.provider, heights).await })
+            },
+        )
+    }
+
     async fn raw_block(&self, at: BlockId) -> Result<Option<Vec<u8>>> {
         match at {
             BlockId::Height(height) => match self
@@ -1108,6 +1124,30 @@ where
     Source: ChainViewSource,
 {
     /// Indexed blocks for a run of heights, from one provider.
+    /// The headers at `heights`: a store run needs only the headers index.
+    async fn headers_from(
+        &self,
+        provider: Provider,
+        heights: Vec<Height>,
+    ) -> Result<Vec<BlockHeader>> {
+        match (provider, heights.first().copied(), heights.last().copied()) {
+            (Provider::Store, Some(first), Some(last)) => Ok(self
+                .reader
+                .headers_chunk(first, last)
+                .await
+                .map_err(store_err)?
+                .into_iter()
+                .map(|stored| stored.header)
+                .collect()),
+            _ => Ok(self
+                .blocks_from(provider, heights)
+                .await?
+                .into_iter()
+                .map(|block| block.header)
+                .collect()),
+        }
+    }
+
     async fn blocks_from(
         &self,
         provider: Provider,

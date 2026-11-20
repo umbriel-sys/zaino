@@ -118,6 +118,15 @@ pub trait BlockRead: Send + Sync {
     fn block_header(&self, at: BlockId)
         -> impl Future<Output = Result<Option<BlockHeader>>> + Send;
 
+    /// The headers from `start` to `end`, in either direction, as a stream of
+    /// chunks: the store's from its headers index alone, the rest from the
+    /// block each provider holds. Truncated at the chain tip.
+    fn stream_headers(
+        &self,
+        start: Height,
+        end: Height,
+    ) -> impl Stream<Item = Result<Vec<BlockHeader>>> + Send + use<Self>;
+
     /// The consensus bytes of the block at `at`.
     ///
     /// Pinned to the snapshot: a height a local provider covers is fetched by

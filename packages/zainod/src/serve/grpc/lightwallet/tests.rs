@@ -665,6 +665,75 @@ impl Connection {
     }
 }
 
+/// GetBlockHeaders follows GetBlockRange's range rules: either direction,
+/// served to the tip and then refused with the first missing height, a
+/// request without a start refused. Each header is the block's own bytes.
+#[tokio::test]
+async fn block_headers_follow_the_block_range_rules() {
+    use zaino_proto::proto::light_client::light_client_service_client::LightClientServiceClient;
+    use zaino_source::OneShotGetRawBlockHeader as _;
+    let chain = chain();
+    let rpc = lightwallet(&chain).await;
+    let (mut server, connection) = serve(&rpc, Default::default()).await;
+    let client = LightClientServiceClient::new(connection.0);
+    let headers = |wanted: BlockRange| {
+        let mut client = client.clone();
+        async move {
+            let stream = client.get_block_headers(wanted).await?.into_inner();
+            Ok::<_, tonic::Status>(stream.collect::<Vec<_>>().await)
+        }
+    };
+
+    let ascending = headers(range(BUSY - 1, BUSY + 1)).await.expect("opens");
+    let mut expected = Vec::new();
+    for height in BUSY - 1..=BUSY + 1 {
+        let block = chain.block_at(height).expect("built");
+        expected.push(zaino_proto::proto::light_client::BlockHeader {
+            height: u64::from(height),
+            hash: <[u8; 32]>::from(block.hash()).to_vec(),
+            header: chain
+                .get_raw_block_header(block.hash())
+                .await
+                .expect("the validator answers"),
+        });
+    }
+    assert_eq!(
+        ascending
+            .into_iter()
+            .map(|header| header.expect("served"))
+            .collect::<Vec<_>>(),
+        expected
+    );
+    let descending = headers(range(BUSY + 1, BUSY - 1)).await.expect("opens");
+    expected.reverse();
+    assert_eq!(
+        descending
+            .into_iter()
+            .map(|header| header.expect("served"))
+            .collect::<Vec<_>>(),
+        expected
+    );
+
+    let cut = headers(range(SERVED, SERVED + 2)).await.expect("opens");
+    assert!(matches!(cut.as_slice(), [Ok(header), Err(refusal)]
+            if header.height == u64::from(SERVED)
+                && refusal.code() == tonic::Code::OutOfRange
+                && refusal.message().contains(&format!("[{}]", SERVED + 1))));
+    let no_start = headers(BlockRange {
+        start: None,
+        end: Some(at(5)),
+        pool_types: Vec::new(),
+    })
+    .await
+    .map(drop)
+    .expect_err("no start");
+    assert_eq!(no_start.code(), tonic::Code::OutOfRange);
+
+    tokio::time::timeout(Duration::from_secs(1), server.close())
+        .await
+        .expect("closes");
+}
+
 /// Over the wire a range is served from encoded frames: a client decodes
 /// the same blocks the typed read answers, in both range requests, and the
 /// refusal past the tip still ends the stream.

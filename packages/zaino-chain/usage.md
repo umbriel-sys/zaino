@@ -72,7 +72,8 @@ serialized size (from I-01, or the parsed block's bytes). For a
 store-covered height it is composed from three store reads, each over one index
 (headers with chainwork, compact transactions with every pool, tree roots), so a
 store answers it with the `CompactBlocks` and `TreeRoots` capabilities; `block_header`
-needs only the headers index. The chain head and the validator supply parsed
+and `stream_headers(start, end)` (a range, in either direction, truncated at
+the tip) need only the headers index. The chain head and the validator supply parsed
 blocks, projected to the same shape. Each compact transaction's `fee` comes
 from I-05: the store's always, the head's where its `compact_blocks`
 extension is built (otherwise `None`, as from the validator). A hash on the

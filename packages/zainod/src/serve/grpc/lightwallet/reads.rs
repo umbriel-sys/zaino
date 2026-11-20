@@ -18,6 +18,7 @@ use zaino_proto::compact::{
     compact_block_to_wire, compact_tx_to_wire, pool_filter_from_wire, whole_compact_block_to_wire,
 };
 use zaino_proto::proto::compact_formats::{CompactBlock, CompactTx};
+use zaino_proto::proto::light_client::BlockHeader;
 use zaino_proto::proto::service::{
     Address, AddressList, Balance, BlockId, BlockRange, GetAddressUtxosArg, GetAddressUtxosReply,
     GetAddressUtxosReplyList, GetMempoolTxRequest, GetSubtreeRootsArg, LightdInfo, PingResponse,
@@ -430,6 +431,28 @@ impl<S: ServiceSource> Lightwallet<S> {
             nullifiers_only,
             |chain, from, to, pools| chain.stream_compact_frames(from, to, pools),
         )
+    }
+
+    /// `GetBlockHeaders`: the headers of a range, under the block ranges'
+    /// rules. A header Zaino holds is its own; the pools are not read.
+    pub(super) fn block_headers(
+        &self,
+        request: &BlockRange,
+    ) -> Result<ChannelStream<BlockHeader>, tonic::Status> {
+        self.ranged(request, "GetBlockHeaders", false, |chain, from, to, _| {
+            chain.stream_headers(from, to).map(|chunk| {
+                chunk.map(|headers| {
+                    headers
+                        .iter()
+                        .map(|header| BlockHeader {
+                            height: u64::from(u32::from(header.height)),
+                            hash: <[u8; 32]>::from(header.hash).to_vec(),
+                            header: zaino_encoding::encode_header(header),
+                        })
+                        .collect()
+                })
+            })
+        })
     }
 
     /// A block range served from `chunks`.

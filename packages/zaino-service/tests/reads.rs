@@ -16,8 +16,8 @@ use zaino_primitives::types::{
 use zaino_service::{Capability, ServiceError, Spend};
 use zaino_source::{
     OneShotGetAddressDeltas as _, OneShotGetBlockDeltas as _, OneShotGetBlockHeader as _,
-    OneShotGetBlockVerboseByHash as _, OneShotGetRawBlockByHash as _, OneShotGetSpentInfo as _,
-    OneShotGetTxOut as _, UtxoPage,
+    OneShotGetBlockVerboseByHash as _, OneShotGetRawBlockByHash as _,
+    OneShotGetRawBlockHeader as _, OneShotGetSpentInfo as _, OneShotGetTxOut as _, UtxoPage,
 };
 use zaino_source_mock::{CallArg, MockChain, NodeFacts, MINER_SCRIPT};
 
@@ -400,17 +400,26 @@ async fn passthrough_reads_ask_the_validator() {
     let snapshot = service.snapshot();
     let pinned = hash_at(&chain, 150);
     let from = chain.call_log().len();
-    assert!(snapshot
+    // the header Zaino holds, encoded: the validator's bytes, without asking it
+    let header = snapshot
         .raw_block_header(BlockId::Height(height(150)))
         .await
-        .expect("answers")
-        .is_some());
-    assert!(called_with(
-        &chain,
-        from,
-        "get_raw_block_header",
-        &CallArg::Hash(pinned)
-    ));
+        .expect("answers");
+    assert!(!chain
+        .call_log()
+        .iter()
+        .skip(from)
+        .any(|call| call.port == "get_raw_block_header"));
+    assert_eq!(
+        header,
+        Some(
+            chain
+                .get_raw_block_header(pinned)
+                .await
+                .expect("the validator answers")
+        )
+    );
+    let from = chain.call_log().len();
     for verbosity in [
         BlockVerbosity::TransactionIds,
         BlockVerbosity::Transactions,

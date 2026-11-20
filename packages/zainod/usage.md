@@ -94,6 +94,24 @@ client opening many streams slows itself, not the server.
   frames: each block is encoded once and the bytes are shared by every
   client through `zaino-chain`'s frame cache.
 
+### Block headers
+
+`zaino.lightclient.v1.LightClientService/GetBlockHeaders` takes the
+lightwalletd `BlockRange` and streams `{ height, hash, header }`, the header
+being the block's full serialized header. It follows `GetBlockRange`'s rules
+exactly: a start above the end is served descending, and a range past the
+tip is served to the tip and then refused naming the first missing height. A
+header Zaino holds (the store's headers index, the chain head's window) is
+served from Zaino; the validator is asked only for a height Zaino does not
+hold.
+
+```console
+grpcurl -plaintext -import-path packages/zaino-proto/proto \
+  -proto light_client.proto \
+  -d '{"start":{"height":100},"end":{"height":110}}' \
+  127.0.0.1:8137 zaino.lightclient.v1.LightClientService/GetBlockHeaders
+```
+
 ### Indexed-tip subscription
 
 `zaino.index.v1.IndexedTipService/SubscribeIndexedTips` is a server-streaming

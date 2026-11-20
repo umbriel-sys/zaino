@@ -23,6 +23,10 @@ use zaino_proto::proto::indexed_tip::{
     indexed_tip_service_server::{IndexedTipService, IndexedTipServiceServer},
     IndexedTip, SubscribeIndexedTipsRequest,
 };
+use zaino_proto::proto::light_client::{
+    light_client_service_server::{LightClientService, LightClientServiceServer},
+    BlockHeader,
+};
 use zaino_proto::proto::service::{
     compact_tx_streamer_server::CompactTxStreamer, Address, AddressList, Balance, BlockId,
     BlockRange, ChainSpec, Duration, Empty, GetAddressUtxosArg, GetAddressUtxosReply,
@@ -68,8 +72,8 @@ impl<S: ServiceSource> Clone for Lightwallet<S> {
     }
 }
 
-/// The lightwalletd service and the indexed-tip service over `backend`, as
-/// routes for [`TonicServer`](super::TonicServer). Every stream ends when
+/// The lightwalletd service, Zaino's light-client service and the
+/// indexed-tip service over `backend`, as routes for [`TonicServer`](super::TonicServer). Every stream ends when
 /// `shutdown` changes or closes.
 pub fn routes<S: ServiceSource>(
     backend: Backend<S>,
@@ -80,8 +84,25 @@ pub fn routes<S: ServiceSource>(
         shutdown: shutdown.clone(),
     };
     let lightwallet = Lightwallet::new(backend).ending_at(shutdown);
-    tonic::service::Routes::new(frames::FramedRanges::new(lightwallet))
+    tonic::service::Routes::new(frames::FramedRanges::new(lightwallet.clone()))
+        .add_service(LightClientServiceServer::new(lightwallet))
         .add_service(IndexedTipServiceServer::new(indexed_tips))
+}
+
+/// Zaino's own light-client requests, beside the lightwalletd ones.
+#[tonic::async_trait]
+impl<S: ServiceSource> LightClientService for Lightwallet<S> {
+    type GetBlockHeadersStream = ChannelStream<BlockHeader>;
+
+    async fn get_block_headers(
+        &self,
+        request: tonic::Request<BlockRange>,
+    ) -> Result<tonic::Response<Self::GetBlockHeadersStream>, tonic::Status> {
+        served("get_block_headers", async {
+            self.block_headers(&request.into_inner())
+        })
+        .await
+    }
 }
 
 /// One request's duration (whose `_count` is the per-method volume) and, on

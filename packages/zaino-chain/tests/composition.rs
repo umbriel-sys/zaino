@@ -261,6 +261,18 @@ async fn every_range_streams_descending_across_all_three_providers() {
         .expect("serviceable");
     let raw_expected: Vec<Vec<u8>> = expected.iter().map(|at| raw_of(&rig.chain, *at)).collect();
     assert_eq!(raw, raw_expected);
+
+    // each header is the block's own, whoever holds it
+    let headers = snapshot
+        .stream_headers(height(210), height(98))
+        .try_concat()
+        .await
+        .expect("serviceable");
+    let headers_expected: Vec<_> = expected
+        .iter()
+        .map(|at| rig.chain.block_at(*at).expect("built").block.header)
+        .collect();
+    assert_eq!(headers, headers_expected);
 }
 
 /// A descending stream chunks like an ascending one, and the chunks tile the

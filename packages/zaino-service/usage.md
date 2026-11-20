@@ -74,7 +74,8 @@ by ChainView. Built on top:
 | `address_utxos(addresses, page)` | ChainView's page and the tip it describes |
 | `address_txids(addresses, start, end)` | ChainView's, over zebrad's `build_height_range`: an absent start is genesis, an absent or zero end the tip, both clamp to the snapshot's tip; a start above the end is `ServiceError::InvalidRange` (zebrad's message) |
 | `address_deltas(request)` | ChainView's, over the same range rule (the single-address form reads the whole chain); with `chain_info`, the range's bounding blocks |
-| `raw_block_header`, `raw_block`, `block_verbose(at, verbosity)` | the validator's answer (`getblock` 0 to 3), by the hash the snapshot holds |
+| `raw_block_header(at)` | the header ChainView finds, encoded: Zaino's own where it holds the block, the validator's block's otherwise |
+| `raw_block`, `block_verbose(at, verbosity)` | the validator's answer (`getblock` 0 to 3), by the hash the snapshot holds |
 | `block_subsidy(height)` | the validator, at the tip when `None` |
 | `block_hash(index)` | Zaino's headers; `index` from genesis, or from the tip when negative (`-1` is the tip), as zebrad reads it |
 | `block_hashes(low, high)` | Zaino's headers: the blocks whose own time is in `[low, high)`, by time then hash. A median-time search brackets the heights (the drift rule per network); selected by `nTime`, since zcashd's logical times are not indexed, so a transport refuses `logicalTimes` |

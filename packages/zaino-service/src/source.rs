@@ -23,7 +23,6 @@ pub trait ServiceSource:
     + zaino_source::OneShotGetNetworkSolPs
     + zaino_source::OneShotGetNodeInfo
     + zaino_source::OneShotGetPeerInfo
-    + zaino_source::OneShotGetRawBlockHeader
     + zaino_source::OneShotGetSpentInfo
     + zaino_source::OneShotGetTxOut
     + zaino_source::OneShotPing
@@ -54,7 +53,6 @@ impl<T> ServiceSource for T where
         + zaino_source::OneShotGetNetworkSolPs
         + zaino_source::OneShotGetNodeInfo
         + zaino_source::OneShotGetPeerInfo
-        + zaino_source::OneShotGetRawBlockHeader
         + zaino_source::OneShotGetSpentInfo
         + zaino_source::OneShotGetTxOut
         + zaino_source::OneShotPing

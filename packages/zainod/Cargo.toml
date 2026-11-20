@@ -101,6 +101,7 @@ subtle = "2.6"
 rand = "0.9"
 zcash_protocol.workspace = true
 prost.workspace = true
+zaino-encoding.workspace = true
 
 [dev-dependencies]
 tempfile = { workspace = true }
