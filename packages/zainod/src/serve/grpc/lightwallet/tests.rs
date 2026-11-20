@@ -2,7 +2,7 @@
 //! refusal is worded, as lightwalletd clients see it.
 
 use std::num::{NonZeroU32, NonZeroU64};
-use std::sync::{Arc, OnceLock};
+use std::sync::Arc;
 use std::time::Duration;
 
 use futures::StreamExt as _;
@@ -10,7 +10,7 @@ use zaino_chain::ChainViewConfig;
 use zaino_chain_head::ChainHeadConfig;
 use zaino_consensus::FAST_TEST_MAX_NONFINALISED_DEPTH;
 use zaino_mempool::MempoolConfig;
-use zaino_primitives::types::{Network, ShieldedPool, TransactionId};
+use zaino_primitives::types::{Network, TransactionId};
 use zaino_proto::proto::indexed_tip::{
     indexed_tip_service_client::IndexedTipServiceClient, SubscribeIndexedTipsRequest,
 };
@@ -21,9 +21,7 @@ use zaino_proto::proto::service::{
 };
 use zaino_service::{Service, ServiceConfig, Store};
 use zaino_source::{FailureMode, OneShotGetTransaction as _, SendRawTransactionError};
-use zaino_source_mock::{
-    address_of, BlockSpec, ChainBuilder, Mempool, MockBlock, MockChain, NodeFacts, MINER_SCRIPT,
-};
+use zaino_source_mock::{address_of, Mempool, MockChain, NodeFacts, MINER_SCRIPT};
 
 use super::Lightwallet;
 use crate::serve::backend::{Backend, BuildInfo, ServeInfo};
@@ -39,21 +37,7 @@ const BUSY: u32 = 110;
 /// A fake validator: every block spends two outputs once coinbases mature,
 /// every tenth adds Sapling and Orchard notes.
 fn chain() -> MockChain {
-    static BLOCKS: OnceLock<Vec<MockBlock>> = OnceLock::new();
-    let blocks = BLOCKS.get_or_init(|| {
-        (1..=TIP)
-            .fold(ChainBuilder::new(), |builder, height| {
-                let spec = BlockSpec::spends(2);
-                builder.block(match height % 10 {
-                    0 => spec
-                        .notes(ShieldedPool::Sapling, 2)
-                        .notes(ShieldedPool::Orchard, 2),
-                    _ => spec,
-                })
-            })
-            .into_blocks()
-    });
-    let chain = MockChain::new(NodeFacts::regtest(), blocks.clone());
+    let chain = MockChain::new(NodeFacts::regtest(), crate::serve::testing::blocks(TIP));
     chain.serve_to(SERVED);
     chain
 }

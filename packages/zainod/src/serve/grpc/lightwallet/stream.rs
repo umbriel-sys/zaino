@@ -1,6 +1,7 @@
 //! Served streams: a bounded channel fed by one task, which stops when the
 //! client stops reading it.
 
+use std::future::Future as _;
 use std::pin::Pin;
 use std::task::{Context, Poll};
 use std::time::Duration;
@@ -10,24 +11,49 @@ use tokio::sync::{mpsc, watch};
 use tokio::task::JoinHandle;
 
 /// A stream of items read from the task feeding it. Dropping the stream
-/// aborts the task.
+/// aborts the task; a task that panicked ends the stream with `INTERNAL`
+/// rather than as if it had finished.
 #[derive(Debug)]
 pub struct ChannelStream<T> {
     items: mpsc::Receiver<Result<T, tonic::Status>>,
-    feeder: JoinHandle<()>,
+    /// The feeding task, until its end has been reported.
+    feeder: Option<JoinHandle<()>>,
 }
 
 impl<T> Stream for ChannelStream<T> {
     type Item = Result<T, tonic::Status>;
 
     fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
-        self.items.poll_recv(cx)
+        match self.items.poll_recv(cx) {
+            Poll::Ready(None) => {}
+            item => return item,
+        }
+        // the channel is closed: how did the task end?
+        let Some(feeder) = self.feeder.as_mut() else {
+            return Poll::Ready(None);
+        };
+        let ended = match Pin::new(feeder).poll(cx) {
+            Poll::Pending => return Poll::Pending,
+            Poll::Ready(ended) => ended,
+        };
+        self.feeder = None;
+        Poll::Ready(match ended {
+            Err(error) if error.is_panic() => {
+                tracing::error!(%error, "a stream's task panicked");
+                Some(Err(tonic::Status::internal(
+                    "Error: the stream ended unexpectedly.",
+                )))
+            }
+            _ => None,
+        })
     }
 }
 
 impl<T> Drop for ChannelStream<T> {
     fn drop(&mut self) {
-        self.feeder.abort();
+        if let Some(feeder) = &self.feeder {
+            feeder.abort();
+        }
     }
 }
 
@@ -91,7 +117,10 @@ where
             () = bounds.shutdown.signalled() => {}
         }
     });
-    ChannelStream { items, feeder }
+    ChannelStream {
+        items,
+        feeder: Some(feeder),
+    }
 }
 
 #[cfg(test)]
@@ -106,6 +135,26 @@ mod tests {
             buffer: 1,
             shutdown: Shutdown::default(),
         }
+    }
+
+    /// A task that panics ends its stream with `INTERNAL`, after what it
+    /// had sent (AP-02: a stream's failure is surfaced, not swallowed).
+    #[tokio::test]
+    async fn a_panicking_task_ends_the_stream_with_an_error() {
+        let mut stream = spawn_timed_stream(
+            bounds(Duration::from_secs(60)),
+            tonic::Status::internal("late"),
+            |sender| async move {
+                if sender.send(Ok(1u32)).await.is_err() {
+                    return;
+                }
+                panic!("the task fails");
+            },
+        );
+        assert_eq!(stream.next().await.expect("an item").expect("sent"), 1);
+        let failed = stream.next().await.expect("an item").expect_err("failed");
+        assert_eq!(failed.code(), tonic::Code::Internal);
+        assert!(stream.next().await.is_none());
     }
 
     /// A stream ends, without an error, when the server shuts down.

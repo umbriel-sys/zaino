@@ -4,7 +4,7 @@
 use std::collections::HashSet;
 use std::num::{NonZeroU32, NonZeroU64, NonZeroUsize};
 use std::path::PathBuf;
-use std::sync::{Arc, OnceLock};
+use std::sync::Arc;
 use std::time::Duration;
 
 use jsonrpsee::core::params::ArrayParams;
@@ -19,7 +19,7 @@ use zaino_consensus::FAST_TEST_MAX_NONFINALISED_DEPTH;
 use zaino_mempool::MempoolConfig;
 use zaino_persistence_lsm_tree::{fs::SimFs, LsmConfig, LsmTreeStorage};
 use zaino_primitives::types::rpc::{BlockSubsidy, SpentOutpoint};
-use zaino_primitives::types::{Network, ShieldedPool, Zatoshis};
+use zaino_primitives::types::{Network, Zatoshis};
 use zaino_service::{DiskStore, Mode, Service, ServiceConfig, Store};
 use zaino_source::{
     FailureMode, OneShotGetBlockchainInfo as _, OneShotGetDifficulty as _,
@@ -28,8 +28,7 @@ use zaino_source::{
     OneShotGetStandardFee as _, SendRawTransactionError, SolutionRateWindow,
 };
 use zaino_source_mock::{
-    address_of, BlockSpec, ChainBuilder, MockBlock, MockChain, NodeFacts, MINER_SCRIPT,
-    RECIPIENT_SCRIPT,
+    address_of, MockBlock, MockChain, NodeFacts, MINER_SCRIPT, RECIPIENT_SCRIPT,
 };
 
 use super::methods;
@@ -70,21 +69,7 @@ fn facts() -> NodeFacts {
 /// The fake validator: spends once coinbases mature, shielded notes every
 /// tenth block.
 fn chain_with(facts: NodeFacts) -> MockChain {
-    static BLOCKS: OnceLock<Vec<MockBlock>> = OnceLock::new();
-    let blocks = BLOCKS.get_or_init(|| {
-        (1..=TIP)
-            .fold(ChainBuilder::new(), |builder, height| {
-                let spec = BlockSpec::spends(2);
-                builder.block(match height % 10 {
-                    0 => spec
-                        .notes(ShieldedPool::Sapling, 2)
-                        .notes(ShieldedPool::Orchard, 2),
-                    _ => spec,
-                })
-            })
-            .into_blocks()
-    });
-    MockChain::new(facts, blocks.clone())
+    MockChain::new(facts, crate::serve::testing::blocks(TIP))
 }
 
 fn config(store: Store) -> ServiceConfig {
@@ -960,8 +945,8 @@ async fn jsonrpc_getblock_omits_empty_trees() {
     let noted = ok(&rpc, "getblock", json!(["100", 1])).await;
     let trees = noted["trees"].as_object().expect("an object");
     assert_eq!(
-        trees.keys().map(String::as_str).collect::<Vec<_>>(),
-        ["orchard", "sapling"]
+        trees.keys().map(String::as_str).collect::<HashSet<_>>(),
+        HashSet::from(["orchard", "sapling"])
     );
     assert!(trees.values().all(|tree| tree["size"].as_u64() > Some(0)));
 }
