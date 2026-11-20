@@ -285,8 +285,8 @@ impl<V: ChainIndexSourcePorts + ServiceSource> ChainIndexRpcExt
         height: Option<i32>,
     ) -> Result<u64, Self::Error> {
         // Q-34: a non-positive count is the difficulty averaging window, as
-        // zebrad reads it; a negative height is the tip; one past the
-        // protocol maximum is −8, never ignored
+        // zebrad reads it; a negative height is the tip (no `i32` is above
+        // the protocol maximum)
         let window = zaino_source::SolutionRateWindow::from_rpc(blocks);
         let height = match height.and_then(|h| u32::try_from(h).ok()) {
             Some(h) => Some(domain_height(types::Height(h)).ok_or_else(|| {

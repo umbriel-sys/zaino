@@ -52,7 +52,9 @@ chain). Notable shapes:
   not built, `Unavailable` while building.
 - `sendrawtransaction` keeps the validator's rejection code and message
   (−22, −25, −26, −27); invalid hex is −22 before the validator is asked.
-- `GetTransaction` for an unknown txid is `NotFound`.
+- `GetTransaction` for an unknown txid is `NotFound`. Its height is the
+  best-chain block's, `u64::MAX` when mined only off the best chain, 0 in a
+  mempool; a transaction nothing places yet is `Unavailable`, never 0.
 - `getnetworksolps`: a non-positive block count is the difficulty averaging
   window, as zebrad reads it; a negative height is the tip.
 - Verbose `getrawtransaction`: a mempool transaction has no `confirmations`

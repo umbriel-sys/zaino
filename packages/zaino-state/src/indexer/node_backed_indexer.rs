@@ -327,6 +327,30 @@ fn nonzero_standard_fee(
 
 /// The legacy RPC's answer for a transaction it cannot find.
 #[allow(deprecated)]
+/// The height lightwalletd reports for a transaction: its best-chain
+/// block's, `u64::MAX` if mined only off the best chain, 0 in a mempool;
+/// `None` when nothing places it.
+fn light_wallet_height(
+    best: Option<&types::BestChainLocation>,
+    non_best: &std::collections::HashSet<types::NonBestChainLocation>,
+) -> Option<u64> {
+    match best {
+        Some(types::BestChainLocation::Block(_, height)) => return Some(u64::from(height.0)),
+        Some(types::BestChainLocation::Mempool(_)) => return Some(0),
+        None => {}
+    }
+    let off_best = |mined: bool| {
+        non_best
+            .iter()
+            .any(|location| matches!(location, types::NonBestChainLocation::Block(..)) == mined)
+    };
+    if off_best(true) {
+        Some(u64::MAX)
+    } else {
+        off_best(false).then_some(0)
+    }
+}
+
 fn no_such_transaction() -> NodeBackedIndexerServiceError {
     NodeBackedIndexerServiceError::RpcError(crate::error::LegacyRpcError::new(
         zebra_rpc::server::error::LegacyCode::InvalidAddressOrKey,
@@ -486,8 +510,8 @@ impl<V: ChainIndexSourcePorts + ServiceSource> NodeBackedIndexerServiceSubscribe
             .await?)
     }
 
-    /// A transaction as the light-wallet `RawTransaction`: its best-chain
-    /// height, `u64::MAX` if mined only on a non-best chain, or 0 in the mempool.
+    /// A transaction as the light-wallet `RawTransaction`, at its
+    /// [`light_wallet_height`]; `Unavailable` while nothing places it.
     async fn light_wallet_transaction(
         &self,
         snapshot: &crate::chain_index::chain_view::ChainIndexSnapshot<V>,
@@ -504,16 +528,13 @@ impl<V: ChainIndexSourcePorts + ServiceSource> NodeBackedIndexerServiceSubscribe
                 )))
             })?;
         let (best, non_best) = self.indexer.get_transaction_status(snapshot, &txid).await?;
-        let height = match best {
-            Some(types::BestChainLocation::Block(_, height)) => u64::from(height.0),
-            _ if non_best
-                .iter()
-                .any(|location| matches!(location, types::NonBestChainLocation::Block(..))) =>
-            {
-                u64::MAX
-            }
-            _ => 0,
-        };
+        // bytes without a location (the validator's, read before the indexes
+        // place it) are not a mempool transaction: refused, to be asked again
+        let height = light_wallet_height(best.as_ref(), &non_best).ok_or_else(|| {
+            NodeBackedIndexerServiceError::TonicStatusError(tonic::Status::unavailable(format!(
+                "transaction {txid_hex} is not placed yet"
+            )))
+        })?;
         Ok(RawTransaction {
             data: bytes::Bytes::from(bytes),
             height,
@@ -1801,8 +1822,30 @@ impl<V: ChainIndexSourcePorts + ServiceSource> LightWalletIndexer
 
 #[cfg(test)]
 mod tests {
-    use super::{nonzero_standard_fee, StandardFee};
+    use std::collections::HashSet;
+
+    use super::types::{BestChainLocation, BlockHash, Height, NonBestChainLocation};
+    use super::{light_wallet_height, nonzero_standard_fee, StandardFee};
     use zaino_primitives::types::Zatoshis;
+
+    /// lightwalletd's heights: the best-chain block's; `u64::MAX` mined only
+    /// off the best chain; 0 in a mempool; none when nothing places it,
+    /// never 0.
+    #[test]
+    fn an_unplaced_transaction_has_no_light_wallet_height() {
+        let hash = BlockHash([7; 32]);
+        let mined = BestChainLocation::Block(hash, Height(9));
+        let pending = BestChainLocation::Mempool(Height(10));
+        let off_best = HashSet::from([NonBestChainLocation::Block(hash, Height(8))]);
+        let other_mempool = HashSet::from([NonBestChainLocation::Mempool(None)]);
+        let nowhere = HashSet::new();
+
+        assert_eq!(light_wallet_height(Some(&mined), &off_best), Some(9));
+        assert_eq!(light_wallet_height(Some(&pending), &nowhere), Some(0));
+        assert_eq!(light_wallet_height(None, &off_best), Some(u64::MAX));
+        assert_eq!(light_wallet_height(None, &other_mempool), Some(0));
+        assert_eq!(light_wallet_height(None, &nowhere), None);
+    }
 
     /// A zero standard fee is refused; any other is served.
     #[test]

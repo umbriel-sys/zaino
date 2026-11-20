@@ -21,19 +21,6 @@ on each other.
 """
 
 [[ignore]]
-fingerprint = "f7f7b594cb1389c0"
-members = [
-    "CapabilityRequest::name",
-    "Upgrade::name",
-]
-reason = """
-Two unrelated enums mapping their own variants to their own names: zainodb's \
-capability requests and the mock's network upgrades. The shape is shared; \
-nothing else is, and the crates do not depend on each other. zainodb is \
-deleted in Stage 6, which removes the group.
-"""
-
-[[ignore]]
 fingerprint = "5434ff95b44fc0d3"
 members = [
     "parse_sapling_spend",

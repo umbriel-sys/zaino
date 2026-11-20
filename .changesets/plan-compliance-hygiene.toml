@@ -33,3 +33,11 @@ description = "The crate denies discarded results, as every other crate does (#5
 crate = "zaino-source-mock"
 kind = "fix"
 description = "The crate denies discarded results (#53)."
+
+[[changes]]
+crate = "zaino-state"
+kind = "fix"
+description = """
+gRPC `GetTransaction` no longer reports height 0 for a transaction whose \
+bytes are found but which nothing places: it is `Unavailable`. Height 0 is \
+a mempool transaction only."""
