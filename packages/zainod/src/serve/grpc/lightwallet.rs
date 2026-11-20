@@ -25,7 +25,7 @@ use zaino_proto::proto::indexed_tip::{
 };
 use zaino_proto::proto::light_client::{
     light_client_service_server::{LightClientService, LightClientServiceServer},
-    BlockHeader,
+    BlockHeader, HistoryProof, HistoryProofRequest,
 };
 use zaino_proto::proto::service::{
     compact_tx_streamer_server::CompactTxStreamer, Address, AddressList, Balance, BlockId,
@@ -101,6 +101,17 @@ impl<S: ServiceSource> LightClientService for Lightwallet<S> {
         served("get_block_headers", async {
             self.block_headers(&request.into_inner())
         })
+        .await
+    }
+
+    async fn get_history_proof(
+        &self,
+        request: tonic::Request<HistoryProofRequest>,
+    ) -> Result<tonic::Response<HistoryProof>, tonic::Status> {
+        served(
+            "get_history_proof",
+            self.history_proof(request.into_inner()),
+        )
         .await
     }
 }

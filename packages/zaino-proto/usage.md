@@ -12,10 +12,10 @@ files under `lightwallet-protocol/` stay identical to upstream.
 | File | Service | Requests |
 | --- | --- | --- |
 | `proto/indexed_tip.proto` | `zaino.index.v1.IndexedTipService` | `SubscribeIndexedTips` |
-| `proto/light_client.proto` | `zaino.lightclient.v1.LightClientService` | `GetBlockHeaders(BlockRange) returns (stream BlockHeader)` |
+| `proto/light_client.proto` | `zaino.lightclient.v1.LightClientService` | `GetBlockHeaders(BlockRange) returns (stream BlockHeader)`, `GetHistoryProof(HistoryProofRequest) returns (HistoryProof)` |
 
-`light_client.proto` borrows `BlockRange` from the lightwalletd package; the
-generated code names `proto::service::BlockRange`.
+`light_client.proto` borrows `BlockRange` and `BlockID` from the lightwalletd
+package; the generated code names `proto::service::{BlockRange, BlockId}`.
 
 ## Domain compact blocks on the wire
 

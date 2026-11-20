@@ -364,8 +364,15 @@ fn history(error: zcash_history::Error) -> FoldError {
 /// to right: the perfect subtrees it decomposes into, largest first. A
 /// length that is not a valid MMR size is refused.
 fn peak_positions(length: u32) -> Result<Vec<u32>, FoldError> {
-    let invalid = || FoldError::continuity(NAME, format!("{length} is not an MMR length"));
-    let mut peaks = Vec::new();
+    peaks(length)
+        .ok_or_else(|| FoldError::continuity(NAME, format!("{length} is not an MMR length")))
+}
+
+/// The perfect subtrees a tree of `length` stored nodes decomposes into,
+/// left to right, as (first position, node count); `None` if `length` is
+/// not a valid MMR size.
+fn subtrees(length: u32) -> Option<Vec<(u32, u32)>> {
+    let mut subtrees = Vec::new();
     let (mut remaining, mut offset) = (length, 0u32);
     let mut previous = u32::MAX;
     while remaining > 0 {
@@ -377,18 +384,55 @@ fn peak_positions(length: u32) -> Result<Vec<u32>, FoldError> {
             size = bigger;
         }
         if size >= previous {
-            return Err(invalid());
+            return None;
         }
-        let top = size
-            .checked_sub(1)
-            .and_then(|last| offset.checked_add(last))
-            .ok_or_else(invalid)?;
-        peaks.push(top);
-        offset = offset.checked_add(size).ok_or_else(invalid)?;
-        remaining = remaining.checked_sub(size).ok_or_else(invalid)?;
+        subtrees.push((offset, size));
+        offset = offset.checked_add(size)?;
+        remaining = remaining.checked_sub(size)?;
         previous = size;
     }
-    Ok(peaks)
+    Some(subtrees)
+}
+
+/// The positions of the peaks of a tree of `length` stored nodes, left to
+/// right; `None` if `length` is not a valid MMR size.
+pub fn peaks(length: u32) -> Option<Vec<u32>> {
+    subtrees(length)?
+        .into_iter()
+        .map(|(first, size)| first.checked_add(size.checked_sub(1)?))
+        .collect()
+}
+
+/// The positions proving the leaf at `leaf` in a tree of `length` stored
+/// nodes: its sibling at each level, from the leaf up to its peak. `None`
+/// if `length` is not a valid MMR size or `leaf` is not one of its leaves.
+pub fn inclusion_path(leaf: u32, length: u32) -> Option<Vec<u32>> {
+    let (mut first, mut size) = subtrees(length)?
+        .into_iter()
+        .find(|(first, size)| first.checked_add(*size).is_some_and(|end| leaf < end))?;
+    if leaf < first {
+        return None;
+    }
+    // top down: each subtree is its left half, its right half, then its root
+    let mut siblings = Vec::new();
+    while size > 1 {
+        let half = size.checked_sub(1)?.checked_div(2)?;
+        let right = first.checked_add(half)?;
+        let root = first.checked_add(size.checked_sub(1)?)?;
+        if leaf == root {
+            return None;
+        }
+        let (left_top, right_top) = (right.checked_sub(1)?, root.checked_sub(1)?);
+        if leaf < right {
+            siblings.push(right_top);
+        } else {
+            siblings.push(left_top);
+            first = right;
+        }
+        size = half;
+    }
+    siblings.reverse();
+    Some(siblings)
 }
 
 /// The block's V1 leaf: hash, time, target, Sapling root, work, height and
@@ -724,6 +768,64 @@ mod tests {
         for invalid in [2u32, 5, 6, 9] {
             assert!(peak_positions(invalid).is_err(), "{invalid}");
         }
+    }
+
+    /// For every leaf of every tree up to 130 leaves: combining the leaf
+    /// with its inclusion path, sibling by sibling, gives the node stored at
+    /// its peak. A position that is not a leaf, or outside the tree, has no
+    /// path.
+    #[test]
+    fn an_inclusion_path_combines_to_the_leafs_peak() {
+        use zcash_history::Version as _;
+        let leaf = |n: u32| {
+            leaf_v1(
+                branch_id::HEARTWOOD,
+                &block_at(n, Some(branch_id::HEARTWOOD), [0; 32]),
+            )
+            .expect("leaf")
+        };
+        let data = |tree: &mut Tree<zcash_history::V1>, position: u32| {
+            let bytes = entry_bytes(tree, position).expect("stored");
+            Entry::<zcash_history::V1>::from_bytes(branch_id::HEARTWOOD, bytes)
+                .expect("decodes")
+                .data()
+                .clone()
+        };
+        let mut tree =
+            Tree::<zcash_history::V1>::new(1, vec![(0, Entry::new_leaf(leaf(1)))], vec![]);
+        // a leaf's position is the tree's length before it was appended
+        let mut leaves = vec![0u32];
+        for count in 1..=130u32 {
+            if count > 1 {
+                leaves.push(tree.len());
+                tree.append_leaf(leaf(count)).expect("append");
+            }
+            let length = tree.len();
+            let peaks = peaks(length).expect("a valid length");
+            for position in &leaves {
+                let path = inclusion_path(*position, length).expect("a leaf of the tree");
+                let (mut at, mut node) = (*position, data(&mut tree, *position));
+                for sibling in path {
+                    let other = data(&mut tree, sibling);
+                    // the parent follows its right child
+                    (at, node) = match sibling < at {
+                        true => (at + 1, zcash_history::V1::combine(&other, &node)),
+                        false => (sibling + 1, zcash_history::V1::combine(&node, &other)),
+                    };
+                }
+                assert!(peaks.contains(&at), "{position} of {length} ends at {at}");
+                assert_eq!(
+                    zcash_history::V1::hash(&node),
+                    zcash_history::V1::hash(&data(&mut tree, at)),
+                    "{position} of {length}"
+                );
+            }
+            let internal: Vec<u32> = (0..length).filter(|p| !leaves.contains(p)).collect();
+            for position in internal.into_iter().chain([length, length + 7]) {
+                assert_eq!(inclusion_path(position, length), None, "{position}");
+            }
+        }
+        assert_eq!(inclusion_path(0, 2), None, "not an MMR length");
     }
 
     /// Across every era: header commitments check through Heartwood and

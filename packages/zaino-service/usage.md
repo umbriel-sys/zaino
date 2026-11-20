@@ -79,6 +79,7 @@ by ChainView. Built on top:
 | `block_subsidy(height)` | the validator, at the tip when `None` |
 | `block_hash(index)` | Zaino's headers; `index` from genesis, or from the tip when negative (`-1` is the tip), as zebrad reads it |
 | `block_hashes(low, high)` | Zaino's headers: the blocks whose own time is in `[low, high)`, by time then hash. A median-time search brackets the heights (the drift rule per network); selected by `nTime`, since zcashd's logical times are not indexed, so a transport refuses `logicalTimes` |
+| `history_proof(block, tip)` | the ZIP 221 proof that `block` is in the tree `tip`'s header commits to (the tip's epoch, through the block before it; the snapshot's tip when `None`), from the history tree (C6): the leaf, its sibling at each level and the tree's peaks. `None` if either is off the best chain; `InvalidParameter` if the block is not below the tip, is in an earlier epoch, or the tip commits to no tree; ChainView's `NotServed` without the index |
 | `blockchain_info`, `node_info`, `peer_info`, `network_info`, `ping`, `mining_info`, `difficulty_at_tip`, `network_sol_ps`, `standard_fee`, `tx_out`, `send_raw_transaction` | the validator |
 
 The mempool reads (D6-02) never ask the validator:

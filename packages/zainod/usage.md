@@ -112,6 +112,28 @@ grpcurl -plaintext -import-path packages/zaino-proto/proto \
   127.0.0.1:8137 zaino.lightclient.v1.LightClientService/GetBlockHeaders
 ```
 
+### History proofs
+
+`zaino.lightclient.v1.LightClientService/GetHistoryProof` takes
+`{ block, tip }` (lightwalletd `BlockID`s; an unset `tip` is the latest) and
+answers the ZIP 221 proof that `block` is in the chain `tip`'s header
+commits to: the epoch's branch id, the tip, the tree's length, the block's
+leaf, its sibling at each level up to its peak, and the tree's peaks. A
+client combines the leaf with the path, checks the result is one of the
+peaks, bags the peaks into the root and compares it with the
+`hashChainHistoryRoot` its tip header commits to (from NU5, through
+`hashBlockCommitments`).
+
+- The tree is the one the tip's header commits to: the tip's epoch,
+  through the block before the tip. So the block must be below the tip and
+  in the same epoch (network upgrade); a tip within the block's own epoch
+  proves an older block.
+- `NOT_FOUND`: the block or the tip is not on the best chain.
+  `INVALID_ARGUMENT`: the block is not below the tip, is in an earlier epoch,
+  or the tip's header commits to no tree (before Heartwood).
+  `UNIMPLEMENTED`: the `history_tree` index is not enabled (it is part of
+  the `full` set).
+
 ### Indexed-tip subscription
 
 `zaino.index.v1.IndexedTipService/SubscribeIndexedTips` is a server-streaming

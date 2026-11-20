@@ -6254,6 +6254,7 @@ dependencies = [
  "zaino-source-mock",
  "zaino-source-zcash-rpc",
  "zaino-source-zebra",
+ "zcash_history",
 ]
 
 [[package]]

@@ -129,6 +129,35 @@ gRPC `GetBlockHeaders`: a range of full block headers under \
 `GetBlockRange`'s range rules, served from Zaino where it holds the header."""
 
 [[changes]]
+crate = "zaino-proto"
+kind = "feature"
+description = """
+`LightClientService::GetHistoryProof(HistoryProofRequest) returns \
+(HistoryProof)`, with `HistoryNode`."""
+
+[[changes]]
+crate = "zainod"
+kind = "feature"
+description = """
+gRPC `GetHistoryProof`: the ZIP 221 proof that a block is in the chain a \
+tip's header commits to, from the `history_tree` index."""
+
+[[changes]]
+crate = "zaino-service"
+kind = "feature"
+description = """
+`ServiceSnapshot::history_proof(block, tip)` with `HistoryProof` and \
+`HistoryNode`: the leaf, its inclusion path and the tree's peaks."""
+
+[[changes]]
+crate = "zaino-indexes"
+kind = "feature"
+description = """
+`history_tree::peaks(length)` and `history_tree::inclusion_path(leaf, \
+length)`: the MMR positions of a tree's peaks and of the siblings proving a \
+leaf."""
+
+[[changes]]
 crate = "zaino-chain"
 kind = "breaking"
 description = """

@@ -46,3 +46,4 @@ zaino-persistence-lsm-tree = { path = "../zaino-persistence-lsm-tree", features 
 zaino-source-mock.workspace = true
 zaino-source-zcash-rpc.workspace = true
 zaino-source-zebra.workspace = true
+zcash_history = "0.6"

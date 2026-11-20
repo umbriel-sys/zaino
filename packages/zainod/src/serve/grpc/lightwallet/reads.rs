@@ -18,7 +18,9 @@ use zaino_proto::compact::{
     compact_block_to_wire, compact_tx_to_wire, pool_filter_from_wire, whole_compact_block_to_wire,
 };
 use zaino_proto::proto::compact_formats::{CompactBlock, CompactTx};
-use zaino_proto::proto::light_client::BlockHeader;
+use zaino_proto::proto::light_client::{
+    BlockHeader, HistoryNode, HistoryProof, HistoryProofRequest,
+};
 use zaino_proto::proto::service::{
     Address, AddressList, Balance, BlockId, BlockRange, GetAddressUtxosArg, GetAddressUtxosReply,
     GetAddressUtxosReplyList, GetMempoolTxRequest, GetSubtreeRootsArg, LightdInfo, PingResponse,
@@ -434,6 +436,54 @@ impl<S: ServiceSource> Lightwallet<S> {
                         .collect()
                 })
             })
+        })
+    }
+
+    /// `GetHistoryProof`: that a block is in the history tree a tip's header
+    /// commits to.
+    pub(super) async fn history_proof(
+        &self,
+        request: HistoryProofRequest,
+    ) -> Result<HistoryProof, tonic::Status> {
+        let named = |block: Option<BlockId>, what: &str| {
+            block
+                .and_then(wanted)
+                .map(|wanted| match wanted {
+                    Wanted::Hash(hash) => Ok(At::Hash(hash)),
+                    Wanted::Height(height) => Height::try_from(height).map(At::Height),
+                })
+                .transpose()
+                .map_err(|_| {
+                    tonic::Status::invalid_argument(format!(
+                        "Error: the {what}'s height is out of range."
+                    ))
+                })
+        };
+        let block = named(request.block, "block")?
+            .ok_or_else(|| tonic::Status::invalid_argument("Error: no block given."))?;
+        let tip = named(request.tip, "tip")?;
+        let proof = self
+            .backend
+            .service
+            .snapshot()
+            .history_proof(block, tip)
+            .await
+            .map_err(status::of_service)?
+            .ok_or_else(|| {
+                tonic::Status::not_found("Error: the block or the tip is not on the best chain.")
+            })?;
+        let node = |node: zaino_service::HistoryNode| HistoryNode {
+            position: node.position,
+            node: node.node,
+        };
+        Ok(HistoryProof {
+            consensus_branch_id: u32::from(proof.branch),
+            tip_height: u64::from(u32::from(proof.tip.height)),
+            tip_hash: <[u8; 32]>::from(proof.tip.hash).to_vec(),
+            tree_length: proof.tree_length,
+            leaf: Some(node(proof.leaf)),
+            path: proof.path.into_iter().map(node).collect(),
+            peaks: proof.peaks.into_iter().map(node).collect(),
         })
     }
 

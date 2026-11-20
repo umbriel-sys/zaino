@@ -11,6 +11,51 @@ pub struct BlockHeader {
     #[prost(bytes = "vec", tag = "3")]
     pub header: ::prost::alloc::vec::Vec<u8>,
 }
+/// A request for the proof that a block is in the chain a tip commits to.
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct HistoryProofRequest {
+    /// The block to prove.
+    #[prost(message, optional, tag = "1")]
+    pub block: ::core::option::Option<crate::proto::service::BlockId>,
+    /// The tip to prove against; unset = the latest.
+    #[prost(message, optional, tag = "2")]
+    pub tip: ::core::option::Option<crate::proto::service::BlockId>,
+}
+/// One node of an epoch's ZIP 221 history tree.
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct HistoryNode {
+    /// Its position in the epoch's tree.
+    #[prost(uint32, tag = "1")]
+    pub position: u32,
+    /// The encoded ZIP 221 node.
+    #[prost(bytes = "vec", tag = "2")]
+    pub node: ::prost::alloc::vec::Vec<u8>,
+}
+/// That a block is in the history tree the tip's header commits to
+/// (`hashChainHistoryRoot`): the tree of the blocks before the tip.
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct HistoryProof {
+    /// The epoch (network upgrade) of the tree.
+    #[prost(uint32, tag = "1")]
+    pub consensus_branch_id: u32,
+    #[prost(uint64, tag = "2")]
+    pub tip_height: u64,
+    /// The 32-byte tip hash in Zcash protocol (internal) byte order.
+    #[prost(bytes = "vec", tag = "3")]
+    pub tip_hash: ::prost::alloc::vec::Vec<u8>,
+    /// Entries in the epoch's tree at the tip.
+    #[prost(uint32, tag = "4")]
+    pub tree_length: u32,
+    /// The proved block's leaf.
+    #[prost(message, optional, tag = "5")]
+    pub leaf: ::core::option::Option<HistoryNode>,
+    /// Siblings, leaf to peak.
+    #[prost(message, repeated, tag = "6")]
+    pub path: ::prost::alloc::vec::Vec<HistoryNode>,
+    /// The tree's peaks at the tip, left to right.
+    #[prost(message, repeated, tag = "7")]
+    pub peaks: ::prost::alloc::vec::Vec<HistoryNode>,
+}
 /// Generated client implementations.
 pub mod light_client_service_client {
     #![allow(
@@ -104,6 +149,36 @@ pub mod light_client_service_client {
             self.inner = self.inner.max_encoding_message_size(limit);
             self
         }
+        /// The ZIP 221 proof that `block` is in the chain `tip`'s header commits
+        /// to. `NOT_FOUND` if either is not on the best chain; `INVALID_ARGUMENT`
+        /// if the block is not below the tip, is in an earlier epoch than the
+        /// tip's tree, or the tip's header commits to no tree.
+        pub async fn get_history_proof(
+            &mut self,
+            request: impl tonic::IntoRequest<super::HistoryProofRequest>,
+        ) -> std::result::Result<tonic::Response<super::HistoryProof>, tonic::Status> {
+            self.inner
+                .ready()
+                .await
+                .map_err(|e| {
+                    tonic::Status::unknown(
+                        format!("Service was not ready: {}", e.into()),
+                    )
+                })?;
+            let codec = tonic_prost::ProstCodec::default();
+            let path = http::uri::PathAndQuery::from_static(
+                "/zaino.lightclient.v1.LightClientService/GetHistoryProof",
+            );
+            let mut req = request.into_request();
+            req.extensions_mut()
+                .insert(
+                    GrpcMethod::new(
+                        "zaino.lightclient.v1.LightClientService",
+                        "GetHistoryProof",
+                    ),
+                );
+            self.inner.unary(req, path, codec).await
+        }
         /// The headers of a block range, under `GetBlockRange`'s range rules: a
         /// start above the end is served descending, a range past the tip is served
         /// to the tip and then refused. `poolTypes` is checked as there and selects
@@ -152,6 +227,14 @@ pub mod light_client_service_server {
     /// Generated trait containing gRPC methods that should be implemented for use with LightClientServiceServer.
     #[async_trait]
     pub trait LightClientService: std::marker::Send + std::marker::Sync + 'static {
+        /// The ZIP 221 proof that `block` is in the chain `tip`'s header commits
+        /// to. `NOT_FOUND` if either is not on the best chain; `INVALID_ARGUMENT`
+        /// if the block is not below the tip, is in an earlier epoch than the
+        /// tip's tree, or the tip's header commits to no tree.
+        async fn get_history_proof(
+            &self,
+            request: tonic::Request<super::HistoryProofRequest>,
+        ) -> std::result::Result<tonic::Response<super::HistoryProof>, tonic::Status>;
         /// Server streaming response type for the GetBlockHeaders method.
         type GetBlockHeadersStream: tonic::codegen::tokio_stream::Stream<
                 Item = std::result::Result<super::BlockHeader, tonic::Status>,
@@ -248,6 +331,55 @@ pub mod light_client_service_server {
         }
         fn call(&mut self, req: http::Request<B>) -> Self::Future {
             match req.uri().path() {
+                "/zaino.lightclient.v1.LightClientService/GetHistoryProof" => {
+                    #[allow(non_camel_case_types)]
+                    struct GetHistoryProofSvc<T: LightClientService>(pub Arc<T>);
+                    impl<
+                        T: LightClientService,
+                    > tonic::server::UnaryService<super::HistoryProofRequest>
+                    for GetHistoryProofSvc<T> {
+                        type Response = super::HistoryProof;
+                        type Future = BoxFuture<
+                            tonic::Response<Self::Response>,
+                            tonic::Status,
+                        >;
+                        fn call(
+                            &mut self,
+                            request: tonic::Request<super::HistoryProofRequest>,
+                        ) -> Self::Future {
+                            let inner = Arc::clone(&self.0);
+                            let fut = async move {
+                                <T as LightClientService>::get_history_proof(
+                                        &inner,
+                                        request,
+                                    )
+                                    .await
+                            };
+                            Box::pin(fut)
+                        }
+                    }
+                    let accept_compression_encodings = self.accept_compression_encodings;
+                    let send_compression_encodings = self.send_compression_encodings;
+                    let max_decoding_message_size = self.max_decoding_message_size;
+                    let max_encoding_message_size = self.max_encoding_message_size;
+                    let inner = self.inner.clone();
+                    let fut = async move {
+                        let method = GetHistoryProofSvc(inner);
+                        let codec = tonic_prost::ProstCodec::default();
+                        let mut grpc = tonic::server::Grpc::new(codec)
+                            .apply_compression_config(
+                                accept_compression_encodings,
+                                send_compression_encodings,
+                            )
+                            .apply_max_message_size_config(
+                                max_decoding_message_size,
+                                max_encoding_message_size,
+                            );
+                        let res = grpc.unary(method, req).await;
+                        Ok(res)
+                    };
+                    Box::pin(fut)
+                }
                 "/zaino.lightclient.v1.LightClientService/GetBlockHeaders" => {
                     #[allow(non_camel_case_types)]
                     struct GetBlockHeadersSvc<T: LightClientService>(pub Arc<T>);

@@ -27,6 +27,7 @@ use zaino_source_mock::{
 
 use super::Lightwallet;
 use crate::serve::backend::{Backend, BuildInfo, ServeInfo};
+use zaino_proto::proto::light_client::light_client_service_server::LightClientService;
 
 /// The chain's tip.
 const TIP: u32 = 120;
@@ -69,6 +70,48 @@ async fn eventually(mut condition: impl FnMut() -> bool) -> bool {
 
 /// The service with no store over `chain`, its head and mempool at `SERVED`.
 async fn lightwallet(chain: &MockChain) -> Lightwallet<MockChain> {
+    let store = Store::ValidatorBacked {
+        network: Network::Regtest,
+    };
+    lightwallet_over(chain, store).await
+}
+
+/// The service over a primary store with every index, built to `SERVED`.
+async fn lightwallet_with_a_store(chain: &MockChain) -> Lightwallet<MockChain> {
+    use zaino_chain_store_service::{
+        ChainStoreServiceConfig, IndexesConfig, IngestConfig, NamedSet, OnCorruption,
+    };
+    use zaino_persistence_lsm_tree::{fs::SimFs, LsmConfig, LsmTreeStorage};
+    let store = Store::DiskAccelerated(Box::new(zaino_service::DiskStore {
+        store: ChainStoreServiceConfig {
+            root: std::path::PathBuf::from("/zainod-grpc-tests"),
+            network: Network::Regtest,
+            indexes: IndexesConfig {
+                set: Some(NamedSet::Full),
+                ..IndexesConfig::default()
+            },
+            on_corruption: OnCorruption::default(),
+            ingest: IngestConfig::default(),
+        },
+        storage: LsmTreeStorage {
+            fs: SimFs::new(),
+            lsm: LsmConfig::default(),
+            write_buffer: std::num::NonZeroUsize::new(1 << 20).expect("non-zero"),
+            threads: std::num::NonZeroUsize::new(1),
+            strict_manifest_read: false,
+        },
+        mode: zaino_service::Mode::Primary,
+    }));
+    let rpc = lightwallet_over(chain, store).await;
+    rpc.backend
+        .service
+        .wait_until_local()
+        .await
+        .expect("builds");
+    rpc
+}
+
+async fn lightwallet_over(chain: &MockChain, store: Store) -> Lightwallet<MockChain> {
     let mut chain_head = ChainHeadConfig::with_max_depth(
         NonZeroU32::new(FAST_TEST_MAX_NONFINALISED_DEPTH).expect("non-zero"),
     );
@@ -76,9 +119,7 @@ async fn lightwallet(chain: &MockChain) -> Lightwallet<MockChain> {
     let service = Service::spawn(
         Arc::new(chain.clone()),
         ServiceConfig {
-            store: Store::ValidatorBacked {
-                network: Network::Regtest,
-            },
+            store,
             chain_view: ChainViewConfig::default(),
             chain_head,
             mempool: MempoolConfig::default(),
@@ -732,6 +773,99 @@ async fn block_headers_follow_the_block_range_rules() {
     tokio::time::timeout(Duration::from_secs(1), server.close())
         .await
         .expect("closes");
+}
+
+/// GetHistoryProof over the wire is the service's proof; a block or tip off
+/// the best chain is `NOT_FOUND`; a block not below the tip, or no block,
+/// is `INVALID_ARGUMENT`; without the history tree it is `UNIMPLEMENTED`.
+#[tokio::test]
+async fn history_proofs_are_served_and_refused() {
+    use zaino_proto::proto::light_client::{
+        light_client_service_client::LightClientServiceClient, HistoryProofRequest,
+    };
+    let chain = chain();
+    let rpc = lightwallet_with_a_store(&chain).await;
+    let (mut server, connection) = serve(&rpc, Default::default()).await;
+    let mut client = LightClientServiceClient::new(connection.0);
+    let request = |block: Option<BlockId>, tip: Option<BlockId>| HistoryProofRequest { block, tip };
+
+    let served = client
+        .get_history_proof(request(Some(at(50)), Some(at(60))))
+        .await
+        .expect("answered")
+        .into_inner();
+    let expected = rpc
+        .backend
+        .service
+        .snapshot()
+        .history_proof(
+            zaino_chain::BlockId::Height(50.try_into().expect("small")),
+            Some(zaino_chain::BlockId::Height(60.try_into().expect("small"))),
+        )
+        .await
+        .expect("answers")
+        .expect("on the best chain");
+    assert_eq!(served.consensus_branch_id, u32::from(expected.branch));
+    assert_eq!(served.tip_height, 60);
+    assert_eq!(
+        served.tip_hash,
+        <[u8; 32]>::from(chain.block_at(60).expect("built").hash()).to_vec()
+    );
+    assert_eq!(served.tree_length, expected.tree_length);
+    let nodes = |nodes: &[zaino_service::HistoryNode]| {
+        nodes
+            .iter()
+            .map(|node| (node.position, node.node.clone()))
+            .collect::<Vec<_>>()
+    };
+    let wire = |nodes: &[zaino_proto::proto::light_client::HistoryNode]| {
+        nodes
+            .iter()
+            .map(|node| (node.position, node.node.clone()))
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(
+        wire(&[served.leaf.clone().expect("a leaf")]),
+        nodes(std::slice::from_ref(&expected.leaf))
+    );
+    assert!(!served.path.is_empty() && !served.peaks.is_empty());
+    assert_eq!(wire(&served.path), nodes(&expected.path));
+    assert_eq!(wire(&served.peaks), nodes(&expected.peaks));
+
+    let latest = client
+        .get_history_proof(request(Some(at(50)), None))
+        .await
+        .expect("answered")
+        .into_inner();
+    assert_eq!(latest.tip_height, u64::from(SERVED));
+
+    let unknown = BlockId {
+        height: 0,
+        hash: vec![9; 32],
+    };
+    for (block, tip, code) in [
+        (Some(unknown), None, tonic::Code::NotFound),
+        (Some(at(60)), Some(at(60)), tonic::Code::InvalidArgument),
+        (None, None, tonic::Code::InvalidArgument),
+    ] {
+        let refused = client
+            .get_history_proof(request(block, tip))
+            .await
+            .expect_err("refused");
+        assert_eq!(refused.code(), code, "{}", refused.message());
+    }
+    tokio::time::timeout(Duration::from_secs(1), server.close())
+        .await
+        .expect("closes");
+
+    let without = lightwallet(&chain).await;
+    let refused = LightClientService::get_history_proof(
+        &without,
+        tonic::Request::new(request(Some(at(50)), None)),
+    )
+    .await
+    .expect_err("no history tree");
+    assert_eq!(refused.code(), tonic::Code::Unimplemented);
 }
 
 /// Over the wire a range is served from encoded frames: a client decodes
