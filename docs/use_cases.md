@@ -19,7 +19,7 @@ Recently the newest GCC version on Arch has broken a build script in the `rocksd
 
    To generate a default config file: `$ zainod generate-config`
 
-NOTE: Unless the `no_db` option is set to true in the config file zaino will sync its internal `CompactBlock` cache with the validator it is connected to on launch. This can be a very slow process the first time Zaino's DB is synced with a new chain and zaino will not be operable until the database is fully synced. If Zaino exits during this process the database is saved in its current state, enabling the chain to be synced in several stages.
+NOTE: Unless `ephemeral_finalised_state` is set to true in the config file, Zaino builds its indexes from the validator it is connected to. Zaino serves as soon as its chain head has reached the validator's tip: while an index is still building, the validator answers in its place. The build resumes where it stopped if Zaino exits.
 
 - To launch Zingo-Cli running through Zaino [from #PATH_TO/zingolib]:
 5) Run `$ cargo run --release --package zingo-cli -- --chain "CHAIN_TYPE" --server "ZAINO_LISTEN_ADDR" --data-dir #PATH_TO_WALLET_DATA_DIR`
@@ -34,16 +34,18 @@ Zaino-State serves as Zaino's chain fetch and transaction submission library. Th
 
 The use of a `Service` and `ServiceSubscriber` separates the core chainstate maintainer processes from fetch fuctionality, enabling zaino to serve a large number of concurrent clients efficiently. In the future we will also be adding a lightweight tonic backend option for clients that do not want to run any chainstate processes locally.
 
-Currently 2 `Service's` are being implemented, with plans for several more:
-- FetchService: Zcash JsonRPC powered backend service enabling compatibility with JsonRPC validator options (zebrad).
-- StateService: Highly efficient chain fetch service tailored to run with ZebraD.
+One `Service` is implemented, `NodeBackedIndexerService`, over one validator source in two configurations:
+- JSON-RPC only (`backend = "fetch"`): compatible with any JSON-RPC validator (zebrad).
+- JSON-RPC plus Zebra's read-state (`backend = "state"`): reads Zebra's state directly where Zaino and zebrad share a host.
+
+`Zaino-State` is the legacy surface: it runs on `zaino_service::Service`, which new code builds on directly (see `packages/zaino-service/usage.md`).
 
 Future Planned backend Services:
 - TonicService: gRPC powered backend enabling lightclients and lightwieght users to use Zaino's unified chain fetch and transaction submission services.
 - DarksideService: Local test backend replacing functionality in lightwalletd.
 - NymService: Nym powered backend enabling clients to obfuscate their identities from zcash servers.
 
-An example of how to spawn an `IndexerService<FetchService>` and create a `Subscriber` can be seen in `zainod::indexer::Indexer::spawn()`.
+An example of how to spawn an `IndexerService<NodeBackedIndexerService>` and create a `Subscriber` can be seen in `packages/zainod/src/indexer.rs`.
 
 A system architecture diagram for this service can be seen at [Library System Architecture](./zaino_lib_system_architecture.pdf).
 

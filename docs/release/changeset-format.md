@@ -275,9 +275,9 @@ not double-consume prevention (a threat we do not have). On record; not planned.
   workspace changelog, with the PR auto-linked.
 - `breaking` entries additionally render their `migration` note in a
   per-release "Breaking changes" block.
-- The ZainoDB on-disk-schema changelog stays on its **own cadence** and is
-  **not** driven by these changesets ([pipeline.md § Changelog
-  policy](./pipeline.md#changelog-policy-inherited-from-adr-003-4)).
+- An index's on-disk format change is a changeset on `zaino-indexes` like any
+  other; the separate ZainoDB changelog went with ZainoDB ([pipeline.md §
+  Changelog policy](./pipeline.md#changelog-policy-inherited-from-adr-003-4)).
 
 ## Enforcement
 

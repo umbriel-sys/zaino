@@ -5,94 +5,23 @@ The Zaino repo consists of several crates that collectively provide an indexing 
 In dependency order. The source stack (`zaino-primitives` through
 `zaino-source-zebra`) is described by [ADR-0008](./adr/zaino/0008-source-ports-and-domain-primitives.md);
 each of its crates carries a `usage.md` beside its `Cargo.toml`.
-  - `Zaino-Primitives` — domain vocabulary
-  - `Zaino-Address` — address classification
-  - `Zaino-Source` — driven ports
-  - `Zaino-Rpc` — JSON-RPC transport
-  - `Zaino-Convert-Zebra` — zebra-chain → domain conversions
-  - `Zaino-Source-Zebra-Rpc` — JSON-RPC adapter
-  - `Zaino-Source-Zebra-Readstate` — ReadStateService adapter
-  - `Zaino-Source-Zebra` — the validator composite
-  - `Zaino-Common`
-  - `Zaino-Proto`
-  - `Zaino-State`
-  - `Zaino-Serve`
-  - `Zainod`
-  - `Zaino-Testutils`, `clientless`, `e2e` — the live-test suite
+The 27 workspace crates are listed, in dependency order, in the root
+[README](../README.md#project-structure). In outline:
+  - `Zaino-Logging`, `Zaino-Async`, `Zaino-Component` — logging, tasks, supervision
+  - `Zaino-Consensus`, `Zaino-Primitives`, `Zaino-Address` — constants and domain vocabulary
+  - `Zaino-Persistence`, `Zaino-Persistence-Lsm-Tree`, `Zaino-Indexes` — storage ports, the on-disk backend, the index set
+  - `Zaino-Source` (with `Zaino-Source-Macros`), `Zaino-Rpc`, `Zaino-Source-Zcash-Rpc`, `Zaino-Source-Zebra`, `Zaino-Source-Mock` — validator ports, adapters and the test validator
+  - `Zaino-Mempool`, `Zaino-Mempool-Service` — the mempool
+  - `Zaino-Chain-Head`, `Zaino-Chain-Head-Service` — the non-finalised chain head
+  - `Zaino-Chain-Store`, `Zaino-Chain-Store-Service` — the finalised store
+  - `Zaino-Chain` — ChainView, the composed read surface
+  - `Zaino-Service` — the one configurable indexer service
+  - `Zaino-Proto`, `Zaino-State` (the legacy surface), `Zaino-Serve`, `Zainod`
+  - `zaino-testutils`, `clientless`, `e2e` — the live-test suite (a separate workspace, `live-tests/`)
 
 ### Workspace Dependencies
-**Zingo Labs:**
-- zingolib
-- testvectors
-
-**Librustzcash:**
-- zcash_client_backend
-- zcash_protocol
-
-
-**Zebra:**
-- zebra-chain
-- zebra-state
-- zebra-rpc
-
-
-**Zingo-infra-services:**
-- zingo-infra-services
-
-**Runtime:**
-- tokio
-- tokio-stream
-
-**CLI:**
-- clap
-
-**Tracing:**
-- tracing
-- tracing-subscriber
-- tracing-futures
-
-**Network / RPC:**
-- http
-- url
-- reqwest
-- tower
-- tonic
-- tonic-build
-- prost
-- serde
-- serde_json
-- jsonrpsee-core
-- jsonrpsee-types
-
-**Hashmaps, channels, DBs:**
-- indexmap
-- crossbeam-channel
-- dashmap
-- lmdb
-
-**Async:**
-- async-stream
-- async-trait
-- futures
-
-**Utility:**
-- thiserror
-- lazy-regex
-- once_cell
-- ctrlc
-- chrono
-- which
-- whoami
-
-**Formats:**
-- base64
-- byteorder
-- sha2
-- hex
-- toml
-
-**Test:**
-- tempfile
+The root `Cargo.toml`'s `[workspace.dependencies]` is the list; `deny.toml`
+is the policy over it.
 
 
 Below is a detailed specification for each crate.
@@ -174,28 +103,24 @@ Full documentation for `Zaino-Serve` can be found [here](https://zingolabs.githu
   - Implementes a configurable backend service enabling clients to use a single interface for any validator set-up.
 
 - Finalised State (persistent or ephemeral):
-  - The finalised portion of the chain index (all but the top 100 blocks) is
-    served by a `FinalisedState` facade over a `FinalisedSource` backing. The
-    backing is either a versioned, LMDB-backed persistent database or, when
-    `ephemeral_finalised_state` is set, an ephemeral passthrough that serves
-    finalised reads directly from the backing validator and persists nothing.
-  - Sync and version migration are **background, non-blocking** operations. Large
-    syncs and migrations run in the background while an ephemeral passthrough
-    continues serving finalised reads from the source; small syncs run inline.
-    Background failures retry and escalate to a critical status.
-  - During a large background sync/migration, passthrough-served blocks carry a
-    chainwork of `0`. This is consistent for the non-finalised state's relative
-    fork-choice but leaves absolute chainwork offset-low until the persistent
-    database catches up. The non-finalised cache caps its in-memory retention at
-    a fixed depth below the tip so it cannot grow unbounded while `db_height`
-    lags or is pinned at `0`.
+  - `Zaino-State` is the legacy surface over `zaino-service`. The finalised
+    portion of the chain (below the chain head's window) is served by the
+    chain store (`zaino-chain-store-service`): a configurable set of indexes
+    on `zaino-persistence-lsm-tree`, or, when `ephemeral_finalised_state` is
+    set, no store at all, the backing validator answering instead.
+  - The store builds in the **background**. Startup waits only for the chain
+    head's blocks to reach the validator's tip; until an index has built,
+    ChainView answers its reads from the validator, capability by capability
+    (the service's manifest says which).
+  - A block the validator answers carries no chainwork: it is omitted, never
+    served as `0`, until the store has built that far.
 
 Full documentation for `Zaino-State` can be found [here](https://zingolabs.github.io/zaino/zaino_state/index.html).
 
 
 ## The source stack (`zaino-primitives` … `zaino-source-zebra`)
 Validator access is a hexagonal port/adapter stack rather than a single client
-library. It replaces `Zaino-Fetch`, which was deleted in this cycle. See
+library. It replaced `Zaino-Fetch`. See
 [ADR-0008](./adr/zaino/0008-source-ports-and-domain-primitives.md) for the reasoning
 and each crate's `usage.md` for practical guidance.
 
@@ -251,13 +176,10 @@ and each crate's `usage.md` for practical guidance.
 * We plan to eventually rely on `LibRustZcash`'s versions but hold our own here for development purposes.
 
 
-## Zaino-Testutils and Integration-Tests
-The `Zaino-Testutils` and `Integration-Tests` crates are dedicated to testing the Zaino project. They provide utilities and comprehensive tests to ensure the correctness, performance, and reliability of Zaino's components.
-- `Zaino-Testutils`: This crate contains common testing utilities and helper functions used across multiple test suites within the Zaino project.
-- `Integration-Tests`: This crate houses integration tests that validate the interaction between different Zaino components and external services like `Zebra` and `Zingolib`.
-
-### Test Modules
-- `wallet_to_validator`: Holds Wallet-to-Validator tests that test Zaino's functionality within the compete software stack.
-- `client_rpcs`: Holds RPC tests that test the functionality of the LightWallet gRPC services in Zaino and compares the outputs with the corresponding services in `Lightwalletd` to ensure compatibility.
-
-Full documentation for `Zaino-Testutils` can be found [here](https://zingolabs.github.io/zaino/zaino_testutils/index.html).
+## The live-test suite
+`live-tests/` is a standalone workspace: `zaino-testutils` (the harness: the
+validator and wallet ports, the in-process zainod launcher and the fixture
+cache), `clientless` (gRPC and JSON-RPC against a real zebrad, no wallet) and
+`e2e` (a wallet driving Zaino). See [testing](./testing.md) and
+`live-tests/CLAUDE.md`. Unit tests in `packages/` run against one shared fake
+validator, `zaino-source-mock`.

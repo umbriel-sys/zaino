@@ -50,12 +50,19 @@ Currently Zebra's `ReadStateService` only enables direct access to chain data (b
 ## Project Structure
 
 ```
-packages/                          Cargo workspace member crates, in dependency order
+packages/                          Cargo workspace member crates (27), in dependency order
+  zaino-logging/                     Tracing setup and the panic hook
+  zaino-async/                       Low-level async/tokio building blocks: named, panic-rendering tasks
   zaino-component/                   Supervised subsystems: lifecycle, health, and tasks
   zaino-consensus/                   Zcash consensus constants and protocol limits
   zaino-primitives/                  Domain vocabulary (thiserror only; no serde; `zebra` feature: zebra-chain -> domain conversions)
   zaino-address/                     Zcash address classification
+  zaino-persistence/                 Driven ports for index persistence (read/write)
+  zaino-persistence-lsm-tree/        On-disk persistence backend: positional files, an LSM tree, one manifest commit
+  zaino-indexes/                     The index set: record layouts, schemas, one pure fold per index
+  zaino-source-macros/               Procedural macros: the resilient ports from their OneShot* twins
   zaino-source/                      Driven ports: one trait per chain question
+  zaino-source-mock/                 One deterministic fake validator for every crate's tests
   zaino-rpc/                         JSON-RPC transport (no parsing)
   zaino-source-zcash-rpc/            zcash JSON-RPC adapter + response parsing (validator-agnostic)
   zaino-source-zebra/                Zebra ReadStateService adapter, zebrad quirk table, ZebraValidator composite + routing
@@ -65,9 +72,10 @@ packages/                          Cargo workspace member crates, in dependency 
   zaino-chain-head/                  Non-finalised chain head: vocabulary and ports
   zaino-chain-head-service/          Non-finalised chain head: the runtime
   zaino-chain-store/                 Finalised state: vocabulary and ports
+  zaino-chain-store-service/         Finalised state: the runtime, a configurable index set built from the validator
   zaino-chain/                       ChainView: the unified chain read surface, ports + composer
   zaino-service/                     The indexer service: store, chain head, ChainView, mempool, manifest
-  zaino-state/                       Chain state and indexer service library
+  zaino-state/                       The legacy indexer surface, on the service
   zaino-serve/                       gRPC + JSON-RPC servers, and the served JSON schema
   zainod/                            Daemon binary
 

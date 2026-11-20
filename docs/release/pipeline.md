@@ -46,17 +46,22 @@ landed. We do not cherry-pick from `dev` to cut releases — a release is always
 a **prefix** of `dev`'s history (the hotfix path, below, is the sole, contained
 exception).
 
-There are 23 publishable crates (`zainod`, `zaino-serve`, `zaino-state`,
-`zaino-proto`, `zaino-common`, `zaino-primitives`, `zaino-address`,
-`zaino-source`, `zaino-source-macros`, `zaino-rpc`, `zaino-convert-zebra`,
-`zaino-source-zebra-rpc`, `zaino-source-zebra-readstate`, `zaino-source-zebra`,
-`zaino-consensus`, `zaino-mempool`, `zaino-mempool-service`, `zaino-status`,
-`zaino-encoding`, `zaino-chain-head`, `zaino-chain-head-service`,
-`zaino-chain-store`, `zaino-chain-store-zainodb`) and 3 internal-only
-(`e2e`, `clientless`, `zaino-testutils`). Each public crate is versioned and
-released **independently**. The authoritative, machine-read list of governed
-targets is [`relman.toml`](../../../relman.toml) at the repo root; this prose
-list mirrors it.
+The workspace holds 27 crates (the root [README](../../README.md#project-structure)
+lists them) and 3 internal-only live-test crates (`e2e`, `clientless`,
+`zaino-testutils`). 19 are governed targets today (`zainod`, `zaino-serve`,
+`zaino-state`, `zaino-proto`, `zaino-primitives`, `zaino-address`,
+`zaino-source`, `zaino-source-macros`, `zaino-rpc`, `zaino-source-zcash-rpc`,
+`zaino-source-zebra`, `zaino-consensus`, `zaino-mempool`,
+`zaino-mempool-service`, `zaino-component`, `zaino-chain-head`,
+`zaino-chain-head-service`, `zaino-chain-store`, `zaino-chain`). Each is
+versioned and released **independently**. The authoritative, machine-read list
+of governed targets is [`relman.toml`](../../relman.toml) at the repo root;
+this prose list mirrors it.
+
+> Not yet targets: `zaino-logging`, `zaino-async`, `zaino-persistence`,
+> `zaino-persistence-lsm-tree`, `zaino-indexes`, `zaino-source-mock`,
+> `zaino-chain-store-service`, `zaino-service`. Governed crates depend on
+> several of them, so they join `relman.toml` before the next release.
 
 > Some worked examples below predate ADR-0008 (which deleted `zaino-fetch` and
 > added the source stack) and name the old 6-crate set. The release
@@ -964,6 +969,13 @@ From [ADR 003 §2, "Versioning strategy (SemVer)"](https://github.com/zingolabs/
 >
 > Due to this, version changes in ZainoDB may not dictate a change of the same type at the library level.
 
+> **Note (this document):** ZainoDB was deleted in the v2 rebuild. The store
+> is now a set of indexes, each in its own `<index>_<format>` directory
+> stamped with its schema digest (`zaino-indexes`); an index whose format
+> changes is rebuilt from the validator, so there is no database version line
+> and no migration. An index format change is recorded as a changeset on
+> `zaino-indexes`.
+
 ### Documentation publication (inherited from ADR 003 §3)
 
 From [ADR 003 §3, "GitHub Pages + crates.io documentation update strategy"](https://github.com/zingolabs/zingo-adrs/blob/dev/003-zaino-branching-versioning-and-release-strategy.md#3-github-pages--cratesio-documentation-update-strategy):
@@ -999,8 +1011,8 @@ This ADR implements the recording mechanism via changesets (see
 [Changesets](#changesets)): each governed public-interface change is declared in
 its own `[[changes]]` entry, and CI aggregates the changesets accumulated since
 the last stable to produce the workspace and per-crate changelogs at release
-time. The ZainoDB changelog is maintained separately on the ZainoDB versioning
-cadence.
+time. There is no separate ZainoDB changelog any more (see the note under
+ZainoDB versioning above).
 
 ### Governed public interfaces (inherited from ADR 003 §5)
 
@@ -1009,18 +1021,19 @@ From [ADR 003 §5, "Public interfaces governed by this ADR"](https://github.com/
 > This section defines the "compatibility surface" that drives SemVer bumps and stable-branch gatekeeping.
 
 **Authoritative crate list (this repo)**: [Context](#context) enumerates the
-**23 crates.io-published packages** and **3 internal-only packages** (`e2e`,
+**19 governed targets** and **3 internal-only packages** (`e2e`,
 `clientless`, `zaino-testutils`), mirroring the machine-read
-[`relman.toml`](../../../relman.toml). This list has grown since ADR 003:
+[`relman.toml`](../../relman.toml). This list has changed since ADR 003:
 `zaino-fetch` was **deleted** and the source stack (`zaino-source*`,
-`zaino-primitives`, `zaino-address`, `zaino-rpc`, `zaino-convert-zebra`)
-**added** by ADR-0008; `integration` was renamed `clientless` by ADR-0004; and
-`zaino-consensus`, `zaino-mempool`, `zaino-mempool-service`, `zaino-status` were
-added later and brought under governance. The per-crate public-interface
-subsections below still reflect the **older** set; deriving the governed
-public-item lists for the source-stack, consensus, mempool, and status crates is
-a **pending follow-up** (tracked with the drift note at the end of this
-section). The release *mechanism* in the body above is unaffected — it operates
+`zaino-primitives`, `zaino-address`, `zaino-rpc`, `zaino-source-zcash-rpc`,
+`zaino-source-zebra`) **added** by ADR-0008; `integration` was renamed
+`clientless` by ADR-0004; `zaino-consensus`, `zaino-mempool`,
+`zaino-mempool-service`, `zaino-component`, the chain head and chain store
+crates and `zaino-chain` were added later; `zaino-common`, `zaino-status`,
+`zaino-encoding` and the zainodb store were deleted. The per-crate
+public-interface subsections below still reflect the **older** set; deriving
+the governed public-item lists for the newer crates is a **pending follow-up**
+(tracked with the drift note at the end of this section). The release *mechanism* in the body above is unaffected — it operates
 over whatever the current crate list is.
 
 `zainodlib` exists as a library target inside the `zainod` package
@@ -1097,6 +1110,13 @@ corresponding package names (`Cargo.toml`) use the hyphenated form.
 > - `config::*`
 > - `error::*`
 > - ZainoDB's on disk schema.
+
+> **Note (this document):** the list above is the historical ADR-003 record.
+> In the v2 tree `zaino_state` is the legacy surface over `zaino-service`:
+> `backends`, `chain_index::source`, `chain_index::encoding` and ZainoDB are
+> gone; `IndexerService`, `ZcashService`, `ZcashIndexer`, `LightWalletIndexer`,
+> `ChainIndex`, `stream`, `config` and `error` remain (see
+> `packages/zaino-state/usage.md`).
 
 #### `zaino_fetch` (Zcash-specific JsonRPC client + parsing)
 
