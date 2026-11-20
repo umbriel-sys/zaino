@@ -1164,11 +1164,12 @@ impl zaino_source::OneShotGetTransaction for ZebraReadStateAdapter {
 
         let response = read(&self.state, ReadRequest::AnyChainTransaction(zebra_txid)).await?;
 
-        // The state service has no mempool: an absent transaction is "not
-        // mined", and the composite asks the RPC adapter next.
-        let found = match response {
-            ReadResponse::AnyChainTransaction(Some(found)) => found,
-            ReadResponse::AnyChainTransaction(None) => {
+        // Only a best-chain transaction is answered here. zebrad looks in its
+        // mempool before a side chain, and the state service has no mempool:
+        // anything else is "not found", and the composite asks the RPC adapter.
+        let mined = match response {
+            ReadResponse::AnyChainTransaction(Some(zebra_state::AnyTx::Mined(mined))) => mined,
+            ReadResponse::AnyChainTransaction(_) => {
                 return Err(QueryError::Domain(
                     zaino_source::GetTransactionError::NotFound(txid),
                 ))
@@ -1177,46 +1178,30 @@ impl zaino_source::OneShotGetTransaction for ZebraReadStateAdapter {
         };
 
         if verbosity == TransactionVerbosity::Raw {
-            let transaction: std::sync::Arc<zebra_chain::transaction::Transaction> = found.into();
             return Ok(zaino_source::TransactionAnswer::Raw(
-                transaction
+                mined
+                    .tx
                     .zcash_serialize_to_vec()
                     .map_err(ReadStateError::invalid_data)?,
             ));
         }
 
         // as zebrad's `getrawtransaction` builds it from the same response
-        let object = match found {
-            zebra_state::AnyTx::Mined(mined) => {
-                let block_hash =
-                    match read(&self.state, ReadRequest::BestChainBlockHash(mined.height)).await? {
-                        ReadResponse::BlockHash(hash) => hash,
-                        _ => return Err(unexpected_response("BestChainBlockHash").into()),
-                    };
-                TransactionObject::from_transaction(
-                    mined.tx.clone(),
-                    Some(mined.height),
-                    Some(mined.confirmations.into()),
-                    &self.network,
-                    Some(mined.block_time),
-                    block_hash,
-                    Some(true),
-                    zebra_txid,
-                )
-            }
-            zebra_state::AnyTx::Side((transaction, block_hash)) => {
-                TransactionObject::from_transaction(
-                    transaction,
-                    None,
-                    None,
-                    &self.network,
-                    None,
-                    Some(block_hash),
-                    Some(false),
-                    zebra_txid,
-                )
-            }
-        };
+        let block_hash =
+            match read(&self.state, ReadRequest::BestChainBlockHash(mined.height)).await? {
+                ReadResponse::BlockHash(hash) => hash,
+                _ => return Err(unexpected_response("BestChainBlockHash").into()),
+            };
+        let object = TransactionObject::from_transaction(
+            mined.tx.clone(),
+            Some(mined.height),
+            Some(mined.confirmations.into()),
+            &self.network,
+            Some(mined.block_time),
+            block_hash,
+            Some(true),
+            zebra_txid,
+        );
         let json = serde_json::to_value(&object).map_err(ReadStateError::invalid_data)?;
         let object = zaino_source_zcash_rpc::parse_transaction_object(&json)
             .map_err(ReadStateError::invalid_data)?;

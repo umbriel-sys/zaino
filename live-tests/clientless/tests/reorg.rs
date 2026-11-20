@@ -9,7 +9,10 @@ use std::time::Duration;
 use anyhow::{Context, Result};
 use rstest::rstest;
 use serde_json::json;
-use zaino_testutils::{Backend, ChainCache, Validator as _, Zainod, Zebrad, FILLER_ADDRESS};
+use zaino_testutils::{
+    assert_rpc_parity, Backend, ChainCache, Validator as _, Zainod, Zebrad, FILLER_ADDRESS,
+    TRANSPARENT_MINER_ADDRESS,
+};
 
 const READY: Duration = Duration::from_secs(120);
 
@@ -90,6 +93,61 @@ async fn a_ten_block_reorg_is_followed(#[case] backend: Backend) -> Result<()> {
     );
 
     assert_follows(&indexer, &zebrad, "10-deep").await
+}
+
+/// A transaction in a block a reorg displaced is served as the validator
+/// serves it: in its block, at height -1 with no confirmations.
+#[rstest]
+#[case::fetch(Backend::Fetch)]
+#[case::state(Backend::State)]
+#[tokio::test(flavor = "multi_thread")]
+async fn a_displaced_transaction_is_served_as_the_validators(
+    #[case] backend: Backend,
+) -> Result<()> {
+    let cache = ChainCache::ensure().await?;
+    let zebrad = Zebrad::launch(cache.zebrad_config()).await?;
+    let indexer = Zainod::launch(cache.indexer_config(&zebrad, backend)).await?;
+
+    // another miner than the fixture's branch: a coinbase only this block holds
+    let tip = zebrad
+        .generate_blocks_to(1, TRANSPARENT_MINER_ADDRESS)
+        .await?;
+    indexer.wait_for_block(tip, READY).await?;
+    let own = zebrad.best_block_hash().await?;
+    let block = zebrad
+        .rpc()
+        .call_value("getblock", json!([&own, 1]))
+        .await?;
+    let coinbase = block["tx"][0]
+        .as_str()
+        .context("the mined block lists its coinbase")?
+        .to_string();
+
+    let branch = cache.head_b_blocks()?;
+    zebrad.submit_block(&branch[0]).await?;
+    zebrad.submit_block(&branch[1]).await?;
+    assert_follows(&indexer, &zebrad, "1-deep").await?;
+
+    let served = assert_rpc_parity(
+        "getrawtransaction",
+        &format!(r#"["{coinbase}", 1]"#),
+        zebrad.rpc(),
+        &indexer.json_rpc(),
+        &[],
+    )
+    .await?;
+    assert_eq!(served["blockhash"], json!(own));
+    assert_eq!(served["height"], json!(-1));
+    assert_eq!(served["confirmations"], json!(0));
+    assert_rpc_parity(
+        "getrawtransaction",
+        &format!(r#"["{coinbase}", 0]"#),
+        zebrad.rpc(),
+        &indexer.json_rpc(),
+        &[],
+    )
+    .await?;
+    Ok(())
 }
 
 /// Zebra's deepest reorg, two blocks above zaino's seam: the served chain
