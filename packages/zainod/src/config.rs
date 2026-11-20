@@ -377,8 +377,8 @@ impl Default for ZainodConfig {
                 validator_grpc_listen_address: Some("127.0.0.1:18230".to_string()),
                 validator_jsonrpc_listen_address: "127.0.0.1:18232".to_string(),
                 validator_cookie_path: None,
-                validator_user: Some("xxxxxx".to_string()),
-                validator_password: Some("xxxxxx".to_string()),
+                validator_user: None,
+                validator_password: None,
             },
             service: ServiceConfig::default(),
             storage: StorageConfig::default(),
@@ -556,14 +556,8 @@ fn build_common(cfg: ZainodConfig) -> CommonBackendConfig {
     CommonBackendConfig {
         validator_rpc_address: cfg.validator_settings.validator_jsonrpc_listen_address,
         validator_cookie_path: cfg.validator_settings.validator_cookie_path,
-        validator_rpc_user: cfg
-            .validator_settings
-            .validator_user
-            .unwrap_or_else(|| "xxxxxx".to_string()),
-        validator_rpc_password: cfg
-            .validator_settings
-            .validator_password
-            .unwrap_or_else(|| "xxxxxx".to_string()),
+        validator_rpc_user: cfg.validator_settings.validator_user,
+        validator_rpc_password: cfg.validator_settings.validator_password,
         service: cfg.service,
         storage: cfg.storage,
         ephemeral_finalised_state: cfg.ephemeral_finalised_state,

@@ -47,12 +47,16 @@
     )
 )]
 
+mod connect;
 mod fallback;
+mod network;
 mod quirks;
 mod read_state;
 mod routing;
 mod secondary;
 
+pub use connect::{ConnectError, ReadStateSettings};
+pub use network::{adopt_network, AdoptError};
 pub use quirks::rpc_adapter;
 pub use read_state::ZebraReadStateAdapter;
 pub use routing::ZebraValidator;

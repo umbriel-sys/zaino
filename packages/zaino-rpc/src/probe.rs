@@ -30,6 +30,10 @@ pub enum ProbeError {
         source: std::io::Error,
     },
 
+    /// A user without a password, or a password without a user.
+    #[error("validator credentials need both a user and a password")]
+    IncompleteCredentials,
+
     /// The client could not be constructed.
     #[error("cannot build the validator RPC client: {0}")]
     Client(#[source] RpcError),
@@ -67,10 +71,11 @@ pub fn auth_from_parts(
             let token = token.strip_prefix("__cookie__:").unwrap_or(token);
             Ok(Some(("__cookie__".to_string(), token.to_string())))
         }
-        None => Ok(Some((
-            user.unwrap_or_else(|| "xxxxxx".to_string()),
-            password.unwrap_or_else(|| "xxxxxx".to_string()),
-        ))),
+        None => match (user, password) {
+            (Some(user), Some(password)) => Ok(Some((user, password))),
+            (None, None) => Ok(None),
+            _ => Err(ProbeError::IncompleteCredentials),
+        },
     }
 }
 
@@ -187,6 +192,23 @@ mod tests {
         .expect("cookie reads");
 
         assert_eq!(auth, Some(("__cookie__".to_string(), "sekrit".to_string())));
+    }
+
+    /// No credentials configured: none are sent, never a stand-in pair.
+    #[test]
+    fn nothing_is_sent_when_nothing_is_configured() {
+        assert_eq!(
+            auth_from_parts(None, None, None).expect("nothing to read"),
+            None
+        );
+        assert!(matches!(
+            auth_from_parts(None, Some("user".to_string()), None),
+            Err(ProbeError::IncompleteCredentials)
+        ));
+        assert!(matches!(
+            auth_from_parts(None, None, Some("pass".to_string())),
+            Err(ProbeError::IncompleteCredentials)
+        ));
     }
 
     #[test]

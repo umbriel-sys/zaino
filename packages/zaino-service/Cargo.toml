@@ -43,3 +43,5 @@ tokio = { workspace = true, features = ["macros", "rt", "time"] }
 zaino-consensus.workspace = true
 zaino-persistence-lsm-tree = { path = "../zaino-persistence-lsm-tree", features = ["testing"] }
 zaino-source-mock.workspace = true
+zaino-source-zcash-rpc.workspace = true
+zaino-source-zebra.workspace = true

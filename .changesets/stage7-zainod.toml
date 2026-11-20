@@ -5,3 +5,34 @@ description = """
 The crate names no zebra type: `blockid_to_hashorheight` is removed and the \
 `zebra-state` / `zebra-chain` dependencies are gone (the `heavy` feature \
 now only finds `protoc`)."""
+
+[[changes]]
+crate = "zaino-source-zebra"
+kind = "feature"
+description = """
+`ZebraValidator::connect` builds the source from plain settings (an RPC \
+client config, the network kind, `ReadStateSettings`), so a caller names no \
+zebra type. `adopt_network` and `AdoptError` (moved from zaino-state)."""
+
+[[changes]]
+crate = "zaino-rpc"
+kind = "breaking"
+description = """
+`auth_from_parts` sends no credentials when none are configured and refuses \
+a user without a password or the reverse (`ProbeError::IncompleteCredentials`); \
+the `"xxxxxx"` stand-in pair is gone."""
+
+[[changes]]
+crate = "zaino-state"
+kind = "breaking"
+description = """
+`CommonBackendConfig::{validator_rpc_user, validator_rpc_password}` are \
+`Option<String>`: no credentials are sent when none are configured. Network \
+adoption moved to `zaino-source-zebra`."""
+
+[[changes]]
+crate = "zainod"
+kind = "fix"
+description = """
+`validator_user` / `validator_password` default to unset; no stand-in \
+credentials are sent."""

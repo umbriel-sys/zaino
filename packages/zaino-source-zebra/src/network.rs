@@ -21,14 +21,15 @@
 //! that branch is already in force at the tip or the next block, in which case
 //! this build would index the chain under the wrong rules and adoption fails.
 
-use tracing::info;
 use zaino_primitives::types::NetworkUpgradeInfo;
 use zaino_source::GetBlockchainInfo;
 
-use crate::chain_index::source::BlockchainSourceError;
-use crate::config::CommonBackendConfig;
-
 mod zebra_bridge;
+
+/// The validator's schedule could not be adopted.
+#[derive(Debug, Clone, thiserror::Error)]
+#[error("{0}")]
+pub struct AdoptError(String);
 
 /// Constructs the runtime network at first contact with the validator.
 ///
@@ -47,28 +48,31 @@ mod zebra_bridge;
 /// mid-session with a different schedule is out of scope (the test harness
 /// restarts validator and indexer together); it would invalidate the index
 /// without being re-detected here.
-pub(crate) async fn adopt_network(
-    common: &CommonBackendConfig,
+///
+/// `validator` names the validator in errors (its RPC address).
+pub async fn adopt_network(
+    kind: zaino_primitives::types::Network,
+    validator: &str,
     source: &impl GetBlockchainInfo,
-) -> Result<zebra_chain::parameters::Network, BlockchainSourceError> {
+) -> Result<zebra_chain::parameters::Network, AdoptError> {
     // Read the schedule through the source port: the domain `BlockchainInfo`,
     // not the validator's own response shape. This never parses the value pools
     // (whose ZEC float zebra's type rejects when it does not round-trip to a
     // whole zatoshi — the mainnet-boot crash this replaced); only the upgrade
     // schedule below is used.
     let blockchain_info = source.get_blockchain_info().await.map_err(|error| {
-        BlockchainSourceError::Unrecoverable(format!(
+        AdoptError(format!(
             "cannot fetch activation heights from the validator at {}: {error}",
-            common.validator_rpc_address
+            validator
         ))
     })?;
     let upgrades = &blockchain_info.upgrades;
 
     verify_active_branches_known(&blockchain_info.consensus).map_err(|reason| {
-        BlockchainSourceError::Unrecoverable(format!(
+        AdoptError(format!(
             "the validator at {} is on a consensus branch this build of Zaino does not know: \
              {reason}",
-            common.validator_rpc_address
+            validator
         ))
     })?;
 
@@ -76,15 +80,15 @@ pub(crate) async fn adopt_network(
     // trusted after the validator's report agrees with it.
     let verified = |network: zebra_chain::parameters::Network| {
         verify_reported_upgrades(&network, upgrades).map_err(|reason| {
-            BlockchainSourceError::Unrecoverable(format!(
+            AdoptError(format!(
                 "the validator at {} disagrees with the compiled {network} parameters: {reason}",
-                common.validator_rpc_address
+                validator
             ))
         })?;
         Ok(network)
     };
 
-    match common.network {
+    match kind {
         zaino_primitives::types::Network::Mainnet => {
             verified(zebra_chain::parameters::Network::Mainnet)
         }
@@ -93,12 +97,13 @@ pub(crate) async fn adopt_network(
         }
         zaino_primitives::types::Network::Regtest => {
             let heights = activation_heights_from_upgrades(upgrades).map_err(|reason| {
-                BlockchainSourceError::Unrecoverable(format!(
+                AdoptError(format!(
                     "cannot adopt activation heights from the validator at {}: {reason}",
-                    common.validator_rpc_address
+                    validator
                 ))
             })?;
-            info!(?heights, "Adopted activation heights from the validator");
+            #[cfg(feature = "tracing")]
+            tracing::info!(?heights, "Adopted activation heights from the validator");
             Ok(heights.to_regtest_network())
         }
     }

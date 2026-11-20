@@ -58,6 +58,11 @@ let auth = auth_from_parts(user, password)?;
 let info = probe_node(&addr, auth).await?;   // 6 attempts, 3s apart
 ```
 
+`auth_from_parts(cookie_path, user, password)` sends nothing when nothing is
+configured (`Ok(None)`), a cookie where a path is given, the pair where both
+are given, and refuses a user without a password or the reverse
+(`IncompleteCredentials`). There is no stand-in pair.
+
 `probe_node` **returns an error**. Its predecessor in `zaino-fetch` called
 `std::process::exit(1)`, which made the startup path untestable and gave an
 embedding process no say in its own shutdown.

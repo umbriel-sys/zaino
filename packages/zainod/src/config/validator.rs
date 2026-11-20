@@ -35,8 +35,8 @@ impl Default for ValidatorConfig {
             validator_grpc_listen_address: Some("127.0.0.1:18230".to_string()),
             validator_jsonrpc_listen_address: "127.0.0.1:18232".to_string(),
             validator_cookie_path: None,
-            validator_user: Some("xxxxxx".to_string()),
-            validator_password: Some("xxxxxx".to_string()),
+            validator_user: None,
+            validator_password: None,
         }
     }
 }

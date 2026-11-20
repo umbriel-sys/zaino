@@ -44,6 +44,17 @@ with an `Opening` and passes the resulting `SecondaryStateDirs`. Opens are
 serialised across processes by a lock file in the temp directory, so each
 directory is attributed to the open that made it.
 
+## Connecting from plain settings
+
+`ZebraValidator::connect(rpc, network, read_state)` builds the whole source
+from an RPC client config, Zaino's network kind and `ReadStateSettings`
+(zebra's state directory and its indexer gRPC address); the caller names no
+zebra type. It waits for zebra to serve a tip, adopts the network from
+zebra's own upgrade schedule (`adopt_network`: verified against the compiled
+parameters on mainnet and testnet, adopted wholesale on regtest, refused on
+a consensus branch this build does not know), launches the read-state
+syncer and waits until it holds zebra's tip, by hash.
+
 ## The quirk table
 
 `zaino-source-zcash-rpc` reads every reply as the spec defines it and names

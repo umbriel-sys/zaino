@@ -6279,6 +6279,8 @@ dependencies = [
  "zaino-primitives",
  "zaino-source",
  "zaino-source-mock",
+ "zaino-source-zcash-rpc",
+ "zaino-source-zebra",
 ]
 
 [[package]]

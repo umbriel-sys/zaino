@@ -435,7 +435,7 @@ impl ZebraValidatorSource {
             rpc_adapter(common)?,
             zaino_source::RetryPolicy::default(),
         );
-        let network = super::network_adoption::adopt_network(common, &source).await?;
+        let network = adopt_network(common, &source).await?;
 
         let validator = zaino_source_zebra::ZebraValidator::rpc_only(adapter);
 
@@ -475,7 +475,7 @@ impl ZebraValidatorSource {
             rpc_adapter(common)?,
             zaino_source::RetryPolicy::default(),
         );
-        let network = super::network_adoption::adopt_network(common, &source).await?;
+        let network = adopt_network(common, &source).await?;
 
         tracing::info!(
             grpc_address = %direct.validator_grpc_address,
@@ -564,6 +564,16 @@ impl ZebraValidatorSource {
     }
 }
 
+/// The runtime network, adopted from the validator's schedule.
+async fn adopt_network(
+    common: &crate::config::CommonBackendConfig,
+    source: &impl zaino_source::GetBlockchainInfo,
+) -> Result<zebra_chain::parameters::Network, BlockchainSourceError> {
+    zaino_source_zebra::adopt_network(common.network, &common.validator_rpc_address, source)
+        .await
+        .map_err(|error| BlockchainSourceError::Unrecoverable(error.to_string()))
+}
+
 /// The JSON-RPC client for the new source stack.
 ///
 /// Cookie auth is resolved to a credential pair here. The connector this
@@ -575,8 +585,8 @@ fn rpc_client(
 ) -> Result<zaino_rpc::RpcClient, BlockchainSourceError> {
     let auth = zaino_rpc::auth_from_parts(
         common.validator_cookie_path.as_deref(),
-        Some(common.validator_rpc_user.clone()),
-        Some(common.validator_rpc_password.clone()),
+        common.validator_rpc_user.clone(),
+        common.validator_rpc_password.clone(),
     )
     .map_err(|e| invalid(e.to_string()))?;
 

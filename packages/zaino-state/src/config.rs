@@ -87,10 +87,10 @@ pub struct CommonBackendConfig {
     pub validator_rpc_address: String,
     /// Enable validator rpc cookie authentication with Some: path to the validator cookie file.
     pub validator_cookie_path: Option<PathBuf>,
-    /// Validator JsonRPC user.
-    pub validator_rpc_user: String,
+    /// Validator JsonRPC user; `None` with no password sends no credentials.
+    pub validator_rpc_user: Option<String>,
     /// Validator JsonRPC password.
-    pub validator_rpc_password: String,
+    pub validator_rpc_password: Option<String>,
     /// Service-level configuration (timeout, channel size)
     pub service: ServiceConfig,
     /// Storage configuration (cache and database)
@@ -126,9 +126,8 @@ pub struct CommonBackendConfig {
 }
 
 impl CommonBackendConfig {
-    /// Builds a [`CommonBackendConfig`], applying the default RPC user/password
-    /// placeholder (`"xxxxxx"`) and this crate's `CARGO_PKG_VERSION` as the
-    /// indexer version. Shared by the [`NodeBackedIndexerServiceConfig`] constructors.
+    /// Builds a [`CommonBackendConfig`] with this crate's `CARGO_PKG_VERSION`
+    /// as the indexer version. Shared by the [`NodeBackedIndexerServiceConfig`] constructors.
     #[allow(clippy::too_many_arguments)]
     pub fn new(
         validator_rpc_address: String,
@@ -144,8 +143,8 @@ impl CommonBackendConfig {
         CommonBackendConfig {
             validator_rpc_address,
             validator_cookie_path,
-            validator_rpc_user: validator_rpc_user.unwrap_or_else(|| "xxxxxx".to_string()),
-            validator_rpc_password: validator_rpc_password.unwrap_or_else(|| "xxxxxx".to_string()),
+            validator_rpc_user,
+            validator_rpc_password,
             service,
             storage,
             ephemeral_finalised_state,

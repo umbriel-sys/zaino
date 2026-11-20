@@ -26,7 +26,6 @@ use zebra_rpc::{
 mod chain_head;
 pub(crate) mod chain_view;
 mod getblock_wire;
-mod network_adoption;
 mod node_backed;
 mod reads;
 mod rpc_reads;
