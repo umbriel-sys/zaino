@@ -38,6 +38,7 @@ bytes.workspace = true
 tracing = { workspace = true }
 metrics = { workspace = true }
 zaino-component.workspace = true
+zaino-encoding.workspace = true
 
 [features]
 # Opt-in tip-coherence layer: the `CoherenceService` and its coherent read/stream

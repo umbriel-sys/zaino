@@ -66,6 +66,10 @@ pub(super) struct PollState {
     /// guess that can re-refuse in a loop.
     pub(super) refused: HashMap<TransactionId, u64>,
 
+    /// Transactions whose bytes did not decode, so they have no compact form
+    /// and are not admitted. Remembered so they are not re-fetched every
+    /// poll; one leaves the memo when it leaves the source's mempool.
+    pub(super) undecodable: HashSet<TransactionId>,
     /// Polls discarded in a row by the tag-stability guard, for the
     /// [`MAX_CONSECUTIVE_DISCARDS`](super::poll::MAX_CONSECUTIVE_DISCARDS) backstop.
     pub(super) consecutive_discards: u32,
@@ -81,7 +85,7 @@ pub(super) struct PollState {
 
 impl PollState {
     /// Every txid the source reported that is not in the published set: refused
-    /// by the capacity bound, or deferred awaiting metadata.
+    /// by the capacity bound, undecodable, or deferred awaiting metadata.
     ///
     /// Bounded by the txid-listing cap. Consumers use it to tell "Zaino is short
     /// this transaction, ask again" from "this transaction does not exist".
@@ -89,6 +93,7 @@ impl PollState {
         self.refused
             .keys()
             .copied()
+            .chain(self.undecodable.iter().copied())
             .chain(self.deferred.iter().copied())
             .collect()
     }

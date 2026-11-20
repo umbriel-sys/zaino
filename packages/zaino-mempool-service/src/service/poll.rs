@@ -11,7 +11,7 @@ use zaino_component::{Health, Lifecycle};
 use zaino_mempool::entry::MempoolEntry;
 use zaino_mempool::ports::MempoolSource;
 use zaino_mempool::snapshot::{MempoolCompleteness, MempoolSnapshot};
-use zaino_primitives::types::BlockRef;
+use zaino_primitives::types::{BlockRef, PreIndexCompactTx, TransactionId};
 use zaino_source::{GetRawMempoolTransactionError, MempoolTxMeta, QueryError};
 
 use super::state::{admission_key, PollState};
@@ -154,6 +154,7 @@ impl<S: MempoolSource> super::MempoolService<S> {
         // A refused transaction that has left the source's mempool is no longer
         // ours to admit, so it leaves the memo with it.
         state.refused.retain(|txid, _| source_txids.contains(txid));
+        state.undecodable.retain(|txid| source_txids.contains(txid));
         self.retry_refused_that_now_fit(&current, state);
 
         // Deferral is recomputed each poll: a txid deferred last poll is
@@ -163,7 +164,9 @@ impl<S: MempoolSource> super::MempoolService<S> {
         let added_txids: Vec<_> = txids
             .into_iter()
             .filter(|txid| {
-                !current.by_txid().contains_key(txid) && !state.refused.contains_key(txid)
+                !current.by_txid().contains_key(txid)
+                    && !state.refused.contains_key(txid)
+                    && !state.undecodable.contains(txid)
             })
             .collect();
 
@@ -271,7 +274,10 @@ impl<S: MempoolSource> super::MempoolService<S> {
             .fetch_added_entries_bounded(added_meta, next_generation)
             .await
         {
-            Some(entries) => entries,
+            Some((entries, undecodable)) => {
+                state.undecodable.extend(undecodable);
+                entries
+            }
             None => return self.source_error(state, "get_raw_mempool_transaction", None),
         };
 
@@ -381,14 +387,16 @@ impl<S: MempoolSource> super::MempoolService<S> {
 
     /// The completeness the next published set carries.
     ///
-    /// Both classes below are *short*, not *wrong* — the set accurately holds
+    /// The classes below are *short*, not *wrong* — the set accurately holds
     /// what it holds — but they are reported separately so operator telemetry
-    /// attributes the shortfall to the right cause. The capacity bound wins when
-    /// both apply: it is the more serious of the two, and it does not clear on
-    /// its own the way a deferral does.
+    /// attributes the shortfall to the right cause. The capacity bound wins,
+    /// then an undecodable transaction: neither clears on its own the way a
+    /// deferral does.
     pub(super) fn completeness_for(state: &PollState) -> MempoolCompleteness {
         if !state.refused.is_empty() {
             MempoolCompleteness::IncompleteCapacityLimited
+        } else if !state.undecodable.is_empty() {
+            MempoolCompleteness::IncompleteUndecodable
         } else if !state.deferred.is_empty() {
             MempoolCompleteness::IncompletePendingMetadata
         } else {
@@ -396,11 +404,14 @@ impl<S: MempoolSource> super::MempoolService<S> {
         }
     }
 
+    /// The entries for `added`, each decoded to its compact form here, once;
+    /// and the txids whose bytes did not decode to that transaction. `None`
+    /// when a fetch failed.
     async fn fetch_added_entries_bounded(
         &self,
         added: Vec<MempoolTxMeta>,
         next_generation: u64,
-    ) -> Option<Vec<Arc<MempoolEntry>>> {
+    ) -> Option<(Vec<Arc<MempoolEntry>>, Vec<TransactionId>)> {
         let concurrency = self.config.max_concurrent_raw_fetches();
         let source = &self.source;
 
@@ -416,32 +427,57 @@ impl<S: MempoolSource> super::MempoolService<S> {
                     // hiccup silently delete a transaction from a set that still
                     // publishes as complete.
                     Err(QueryError::Domain(GetRawMempoolTransactionError::NotFound(_))) => {
-                        return Ok(None)
+                        return Ok(Fetched::Gone)
                     }
                     Err(e) => return Err(zaino_mempool::MempoolError::source(e)),
                 };
 
+                let compact = match zaino_encoding::parse_transaction(&serialized_tx) {
+                    Ok(transaction) if transaction.txid == meta.txid => {
+                        PreIndexCompactTx::from(&transaction)
+                    }
+                    Ok(transaction) => {
+                        tracing::error!(
+                            asked = %meta.txid,
+                            decoded = %transaction.txid,
+                            "mempool transaction decodes to another txid; not admitted"
+                        );
+                        return Ok(Fetched::Undecodable(meta.txid));
+                    }
+                    Err(error) => {
+                        tracing::error!(
+                            txid = %meta.txid,
+                            %error,
+                            "mempool transaction does not decode; not admitted"
+                        );
+                        return Ok(Fetched::Undecodable(meta.txid));
+                    }
+                };
+
                 let raw_len = serialized_tx.len() as u64;
-                Ok(Some(Arc::new(MempoolEntry {
+                Ok(Fetched::Entry(Arc::new(MempoolEntry {
                     txid: meta.txid,
                     // One copy out of the validator's response, shared from here
                     // on (see `MempoolEntry::serialized_tx`).
                     serialized_tx: bytes::Bytes::from(serialized_tx),
                     raw_len,
+                    compact,
                     entry_height: meta.entry_height,
                     entry_time: meta.entry_time,
                     first_seen_generation: next_generation,
                 })))
             })
             .buffer_unordered(concurrency)
-            .collect::<Vec<Result<Option<Arc<MempoolEntry>>, zaino_mempool::MempoolError>>>()
+            .collect::<Vec<Result<Fetched, zaino_mempool::MempoolError>>>()
             .await;
 
         let mut entries = Vec::new();
+        let mut undecodable = Vec::new();
         for result in results {
             match result {
-                Ok(Some(entry)) => entries.push(entry),
-                Ok(None) => {}
+                Ok(Fetched::Entry(entry)) => entries.push(entry),
+                Ok(Fetched::Undecodable(txid)) => undecodable.push(txid),
+                Ok(Fetched::Gone) => {}
                 // Any raw-fetch error aborts this poll's update; the last set
                 // stays readable and the next poll retries. The error was fully
                 // built before this point, so dropping it unlogged would discard
@@ -455,6 +491,16 @@ impl<S: MempoolSource> super::MempoolService<S> {
                 }
             }
         }
-        Some(entries)
+        Some((entries, undecodable))
     }
+}
+
+/// What one addition's fetch came to.
+enum Fetched {
+    /// The entry, with its compact form.
+    Entry(Arc<MempoolEntry>),
+    /// It left the mempool between listing and fetch.
+    Gone,
+    /// Its bytes did not decode to this transaction.
+    Undecodable(TransactionId),
 }

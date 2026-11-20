@@ -6138,6 +6138,7 @@ dependencies = [
  "tokio-util",
  "tracing",
  "zaino-component",
+ "zaino-encoding",
  "zaino-mempool",
  "zaino-primitives",
  "zaino-source",

@@ -259,15 +259,46 @@ fn height(height: u32) -> Height {
     Height::try_from(height).expect("valid fixture height")
 }
 
+/// The outpoint the transaction of `seed` spends with its only input.
+fn spent_by(seed: u32) -> zaino_primitives::types::Outpoint {
+    let mut prev = [0u8; 32];
+    prev[..4].copy_from_slice(&seed.to_le_bytes());
+    zaino_primitives::types::Outpoint {
+        txid: TransactionId::from(prev),
+        index: 7,
+    }
+}
+
+/// A v1 transaction distinct per `seed`: one input, no outputs.
+fn raw_tx(seed: u32) -> Vec<u8> {
+    let spent = spent_by(seed);
+    let mut tx = 1u32.to_le_bytes().to_vec();
+    tx.push(1);
+    tx.extend(<[u8; 32]>::from(spent.txid));
+    tx.extend(spent.index.to_le_bytes());
+    tx.push(0);
+    tx.extend(u32::MAX.to_le_bytes());
+    tx.push(0);
+    tx.extend(0u32.to_le_bytes());
+    tx
+}
+
+/// Seeds [`txid_n`] draws from, clear of [`txid`]'s.
+const TXID_N_SEEDS: u32 = 1_000;
+
+fn txid_of(seed: u32) -> TransactionId {
+    zaino_encoding::parse_transaction(&raw_tx(seed))
+        .expect("fixture transaction decodes")
+        .txid
+}
+
 fn txid(byte: u8) -> TransactionId {
-    TransactionId::from([byte; 32])
+    txid_of(u32::from(byte))
 }
 
 /// A distinct txid derived from an index (for large-mempool tests).
 fn txid_n(n: u32) -> TransactionId {
-    let mut bytes = [0u8; 32];
-    bytes[..4].copy_from_slice(&n.to_le_bytes());
-    TransactionId::from(bytes)
+    txid_of(TXID_N_SEEDS + n)
 }
 
 fn mtx(byte: u8, entry_height: u32) -> MockTx {
@@ -275,7 +306,7 @@ fn mtx(byte: u8, entry_height: u32) -> MockTx {
         txid: txid(byte),
         entry_height,
         entry_time: None,
-        bytes: vec![byte],
+        bytes: raw_tx(u32::from(byte)),
     }
 }
 
@@ -525,7 +556,7 @@ mod core {
             txid: txid(1),
             entry_height: 100,
             entry_time: Some(1_700_000_000),
-            bytes: vec![1],
+            bytes: raw_tx(1),
         }]);
         let service =
             MempoolService::spawn(source.clone(), fast_config(), CancellationToken::new());
@@ -857,55 +888,98 @@ mod core {
 
         let info = subscriber.get_mempool_info();
         assert_eq!(info.size, 2);
-        assert_eq!(info.bytes, 2); // two 1-byte txs
+        assert_eq!(info.bytes, 2 * raw_tx(1).len() as u64);
         service.close();
     }
 
+    /// A suffix matching one txid excludes it; one matching none excludes
+    /// nothing. (A suffix matching several excludes none: `filter`'s tests.)
     #[tokio::test]
     async fn exclude_filter_semantics() {
-        // Two txs whose txids differ only in the leading byte; a suffix matching
-        // both excludes neither, a suffix matching one excludes it.
-        let mut a = [0u8; 32];
-        a[0] = 0x01;
-        let mut b = [0u8; 32];
-        b[0] = 0x02;
-        let source = MockSource::new();
-        source.set_tip(block_ref(100, 0xAB));
-        source.set_mempool(vec![
-            MockTx {
-                txid: TransactionId::from(a),
-                entry_height: 100,
-                entry_time: None,
-                bytes: vec![1],
-            },
-            MockTx {
-                txid: TransactionId::from(b),
-                entry_height: 100,
-                entry_time: None,
-                bytes: vec![2],
-            },
-        ]);
-        let service =
-            MempoolService::spawn(source.clone(), fast_config(), CancellationToken::new());
-        let subscriber = service.subscriber();
+        let (service, subscriber, _source) =
+            spawn_core(100, 0xAB, vec![mtx(1, 100), mtx(2, 100)], fast_config());
         wait_for(&subscriber, |s| s.tx_count() == 2).await;
 
-        // Suffix `[0x00; 31]` (the shared trailing bytes) matches both -> excludes
-        // neither.
-        let shared = subscriber
-            .validate_exclude_suffixes(&[vec![0u8; 31]])
+        let absent = subscriber
+            .validate_exclude_suffixes(&[<[u8; 32]>::from(txid(3)).to_vec()])
             .expect("valid");
-        assert_eq!(subscriber.get_filtered_entries(&shared).len(), 2);
+        assert_eq!(subscriber.get_filtered_entries(&absent).len(), 2);
 
-        // A suffix that uniquely identifies `a` excludes just it.
-        let mut unique = vec![0u8; 32];
-        unique[0] = 0x01;
         let unique = subscriber
-            .validate_exclude_suffixes(&[unique])
+            .validate_exclude_suffixes(&[<[u8; 32]>::from(txid(1))[28..].to_vec()])
             .expect("valid");
         let kept = subscriber.get_filtered_entries(&unique);
         assert_eq!(kept.len(), 1);
-        assert_eq!(kept[0].txid, TransactionId::from(b));
+        assert_eq!(kept[0].txid, txid(2));
+        service.close();
+    }
+
+    /// Each entry carries its compact form, decoded once at ingest, and the
+    /// snapshot finds a spender by the outpoint it spends.
+    #[tokio::test]
+    async fn entries_carry_their_compact_form_and_spends() {
+        let (service, subscriber, source) =
+            spawn_core(100, 0xAB, vec![mtx(1, 100), mtx(2, 100)], fast_config());
+        wait_for(&subscriber, |s| s.tx_count() == 2).await;
+
+        let snapshot = subscriber.snapshot();
+        let entry = subscriber.get_transaction(&txid(1)).expect("admitted");
+        assert_eq!(entry.compact.txid, txid(1));
+        assert_eq!(entry.compact.transparent_inputs.len(), 1);
+        assert_eq!(snapshot.spender(&spent_by(1)), Some((txid(1), 0)));
+        assert_eq!(snapshot.spender(&spent_by(2)), Some((txid(2), 0)));
+        assert_eq!(snapshot.spender(&spent_by(3)), None);
+        assert!(snapshot.memory_bytes() > snapshot.raw_bytes());
+
+        source.set_mempool(vec![mtx(2, 100)]);
+        wait_for(&subscriber, |s| s.tx_count() == 1).await;
+        assert_eq!(subscriber.snapshot().spender(&spent_by(1)), None);
+        service.close();
+    }
+
+    /// Bytes that do not decode, or decode to another txid, are never
+    /// admitted: the rest of the set is served, the txid is named as
+    /// unadmitted, and it is fetched once, not every poll.
+    #[tokio::test]
+    async fn an_undecodable_transaction_is_unadmitted_and_the_rest_served() {
+        let garbage = MockTx {
+            bytes: vec![0xFF; 20],
+            ..mtx(3, 100)
+        };
+        let mislabelled = MockTx {
+            bytes: raw_tx(5),
+            ..mtx(4, 100)
+        };
+        let (service, subscriber, source) = spawn_core(
+            100,
+            0xAB,
+            vec![mtx(1, 100), garbage, mislabelled],
+            fast_config(),
+        );
+        wait_for(&subscriber, |s| s.unadmitted().len() == 2).await;
+
+        let snapshot = subscriber.snapshot();
+        assert_eq!(snapshot.tx_count(), 1);
+        assert!(snapshot.by_txid().contains_key(&txid(1)));
+        assert!(snapshot.unadmitted().contains(&txid(3)));
+        assert!(snapshot.unadmitted().contains(&txid(4)));
+        assert_eq!(
+            snapshot.completeness(),
+            MempoolCompleteness::IncompleteUndecodable
+        );
+        assert!(!snapshot.completeness().may_be_wrong());
+
+        let polls = source.txid_list_count();
+        while source.txid_list_count() < polls + 5 {
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+        assert_eq!(source.raw_fetch_count(&txid(3)), 1);
+        assert_eq!(source.raw_fetch_count(&txid(4)), 1);
+
+        // gone from the validator's mempool: forgotten, and the set is whole
+        source.set_mempool(vec![mtx(1, 100)]);
+        wait_for(&subscriber, |s| s.completeness().is_whole()).await;
+        assert!(subscriber.snapshot().unadmitted().is_empty());
         service.close();
     }
 
@@ -1000,7 +1074,7 @@ mod core {
                 txid: txid_n(n),
                 entry_height: 100,
                 entry_time: None,
-                bytes: vec![(n % 251) as u8],
+                bytes: raw_tx(TXID_N_SEEDS + n),
             })
             .collect();
         source.set_mempool(flood);
@@ -1029,7 +1103,7 @@ mod core {
                 txid: txid_n(n),
                 entry_height: 100,
                 entry_time: None,
-                bytes: vec![(n % 251) as u8],
+                bytes: raw_tx(TXID_N_SEEDS + n),
             })
             .collect();
         source.set_mempool(mempool);
@@ -1455,17 +1529,11 @@ mod coherence {
         );
 
         // Initial set: the one transaction's bytes.
-        assert_eq!(
-            stream.next().await,
-            Some(Ok(bytes::Bytes::from_static(&[1])))
-        );
+        assert_eq!(stream.next().await, Some(Ok(bytes::Bytes::from(raw_tx(1)))));
 
         // Add a second transaction at the same epoch: it streams live.
         h.source.set_mempool(vec![mtx(1, 100), mtx(2, 100)]);
-        assert_eq!(
-            stream.next().await,
-            Some(Ok(bytes::Bytes::from_static(&[2])))
-        );
+        assert_eq!(stream.next().await, Some(Ok(bytes::Bytes::from(raw_tx(2)))));
         h.close();
     }
 
@@ -1486,10 +1554,7 @@ mod coherence {
                 .expect("coherent for this epoch"),
         );
         // Drain the initial set so the next item comes from the event feed.
-        assert_eq!(
-            stream.next().await,
-            Some(Ok(bytes::Bytes::from_static(&[1])))
-        );
+        assert_eq!(stream.next().await, Some(Ok(bytes::Bytes::from(raw_tx(1)))));
 
         // Flood far more coherent events than the buffer holds, without polling.
         let flood: Vec<MockTx> = (0..50)
@@ -1497,7 +1562,7 @@ mod coherence {
                 txid: txid_n(n),
                 entry_height: 100,
                 entry_time: None,
-                bytes: vec![(n % 251) as u8],
+                bytes: raw_tx(TXID_N_SEEDS + n),
             })
             .collect();
         h.source.set_mempool(flood);

@@ -121,11 +121,12 @@ can move it at runtime across every clone of the config.
 throughout). Read it through its accessors: `by_txid()` (lookup),
 `txids_sorted()` (reversed-byte order, for the shortened-txid exclude filter),
 `entries_in_order()`, `tx_count()`, `raw_bytes()`, `cost_bytes()`,
-`memory_bytes()`, `completeness()`, `unadmitted()`, `source_tip()`, and
-`is_ready()`. `cost_bytes()` is the ZIP-401 total the capacity bound is
-enforced against; `memory_bytes()` is what the set actually occupies (each
-entry's allocation and serialized bytes, and the tables indexing them), the
-`usage` of `getmempoolinfo`.
+`memory_bytes()`, `completeness()`, `unadmitted()`, `source_tip()`,
+`is_ready()`, and `spender(&outpoint)` (the transaction in the set spending a
+transparent output, and which of its inputs does). `cost_bytes()` is the
+ZIP-401 total the capacity bound is enforced against; `memory_bytes()` is what
+the set actually occupies (each entry's allocation, serialized bytes and
+compact form, and the tables indexing them), the `usage` of `getmempoolinfo`.
 
 Construction is sealed — `empty()`, `from_entries()` and `retag()` are the only
 ways to build one. The type's invariants (the reversed-byte ordering, the
@@ -137,13 +138,15 @@ yourself; consumers just read.
 Each `MempoolEntry`
 holds the full unmined transaction; call `serialized_bytes()` for a borrowed slice,
 `wire_bytes()` for the shared `Bytes` buffer (prefer this when handing it to a wire
-type — cloning is a refcount bump). It carries no parsed or wire forms at all —
-deserialize it, or derive a compact tx or a lightclient `RawTransaction` at wire
-height `0`, at your boundary. Keeping those out is what lets this crate depend on
-no node library.
+type — cloning is a refcount bump). `compact` is its compact form
+(`PreIndexCompactTx`), built once at ingest: serve `GetMempoolTx`-style reads
+from it, never by re-parsing the bytes. It carries no wire forms — encode the
+compact form, or wrap the bytes in a lightclient `RawTransaction`, at your
+boundary — and names no node library.
 
 `completeness` tells you whether the set is a full view, in two classes. **Short**
-(`IncompleteCapacityLimited`, `IncompletePendingMetadata`) — an *accurate* view
+(`IncompleteCapacityLimited`, `IncompleteUndecodable`,
+`IncompletePendingMetadata`) — an *accurate* view
 that is missing some txids it knows about; `is_whole()` is false but the set is
 still safe to serve for positive results. **Possibly-wrong**
 (`IncompleteSourceError`) — the set may not reflect the source; `may_be_wrong()`

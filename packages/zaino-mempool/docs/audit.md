@@ -49,13 +49,11 @@ path to save microseconds on the cold write path — a bad trade. **Kept
 
 ## Implemented efficiency improvements
 
-- **Foundational entry, wire shape at the boundary.** `MempoolEntry` holds only the
-  full unmined transaction (bytes + protocol metadata) and a `transaction()` parse;
-  it carries no RPC/wire forms. The compact / lightclient `RawTransaction`
-  conversions are derived on demand at the RPC boundary, which keeps `zaino-mempool`
-  free of `zaino-proto` and lets each layer own its own shape. (A shared compact
-  cache can return in the boundary/conversion layer if `GetMempoolTx` profiling
-  warrants it, without re-coupling the core to proto types.)
+- **Foundational entry, wire shape at the boundary.** `MempoolEntry` holds the
+  full unmined transaction (bytes + protocol metadata) and its compact form in
+  the domain's own type; it carries no RPC/wire forms. The protobuf and
+  lightclient `RawTransaction` encodings are made at the RPC boundary, which
+  keeps `zaino-mempool` free of `zaino-proto`.
 - **Re-fetch-free coherence.** The tip-aware layer reuses the core's already-fetched
   set (tagged with the validator tip `V`); it issues no source reads of its own,
   computing freeze/thaw purely from `(core set + source_tip, NS)`.
@@ -104,19 +102,18 @@ path to save microseconds on the cold write path — a bad trade. **Kept
   *change* over an unchanged mempool is detected, which the coherence layer needs in
   order to thaw. `getblockchaininfo` is cheap relative to the mempool calls, so the
   two-read shape is kept as-is.
-- **No compact-transaction cache.** `GetMempoolTx` re-parses each transaction into
-  its compact form per request. A cache belongs at the boundary (where the wire
-  types live), not in the core, and is deferred until profiling warrants it.
+- **Compact form held per entry (reversed 2026-11-20, C4).** The entry was
+  bytes only and `GetMempoolTx` re-parsed every transaction per request, which
+  at thousands of clients is thousands of parses per transaction. Each entry
+  now carries its compact form (`PreIndexCompactTx`, a domain type, so the core
+  still names no node library or proto type), decoded once at ingest, and the
+  snapshot derives its transparent spends from it.
 - **`get_filtered_entries` output is inherently `O(n)`** (it returns all
   non-excluded entries), so the binary-search match only dominates when a client
   sends a large exclude list; the improvement is real but situational.
 
 ## Follow-ups (out of scope here)
 
-- **Compact-form cache at the RPC boundary**, if `GetMempoolTx` profiling warrants
-  it (see the trade-off above). The recorded shape is an
-  `OnceLock<Arc<dyn Any + Send + Sync>>` on the entry, populated at the boundary
-  where the wire types live — not in the core.
 - **Completeness on the library stream (deferred with C2).** Returning a struct
   carrying `completeness` alongside `impl Stream` from
   `ChainIndex::get_mempool_stream`, for an embedder that must *refuse* a short set

@@ -1,0 +1,17 @@
+[[changes]]
+crate = "zaino-mempool"
+kind = "breaking"
+description = """
+`MempoolEntry` carries its compact form (`compact: PreIndexCompactTx`), built \
+once at ingest; `MempoolSnapshot::spender(&outpoint)` names the transaction in \
+the set spending a transparent output and which input does; `memory_bytes` \
+counts both. New `MempoolCompleteness::IncompleteUndecodable` (short, not \
+wrong) (C4)."""
+
+[[changes]]
+crate = "zaino-mempool-service"
+kind = "feature"
+description = """
+Each mempool transaction is decoded once at ingest with `zaino-encoding`. One \
+whose bytes do not decode to its txid is not admitted: logged, listed in \
+`unadmitted`, fetched once rather than every poll (C4)."""
