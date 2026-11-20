@@ -39,6 +39,11 @@ pub fn validate_address<P: Parameters>(raw_address: String, params: &P) -> Valid
             is_script: matches!(taddr, TransparentAddress::ScriptHash(_)),
             address: raw_address,
         },
+        // a TEX address (ZIP 320) is a transparent key hash, as zebrad reads it
+        Some(Address::Tex(_)) => ValidatedAddress::Transparent {
+            is_script: false,
+            address: raw_address,
+        },
         _ => ValidatedAddress::Invalid,
     }
 }
@@ -60,7 +65,8 @@ pub fn z_validate_address<P: Parameters>(raw_address: String, params: &P) -> ZVa
     // revision encoding, and `UnifiedAddress::encode` may pick a different one (and HRP)
     // than the caller sent.
     match parse_for_network(&raw_address, params) {
-        Some(Address::Transparent(TransparentAddress::PublicKeyHash(_))) => {
+        // a TEX address (ZIP 320) is a transparent key hash, as zebrad reads it
+        Some(Address::Transparent(TransparentAddress::PublicKeyHash(_)) | Address::Tex(_)) => {
             ZValidatedAddress::P2pkh {
                 address: raw_address,
             }
@@ -122,6 +128,28 @@ mod tests {
     /// A Sprout address. Zaino does not classify these — see
     /// [`ZValidatedAddress`]'s Sprout note.
     const SPROUT: &str = "ztfhKyLouqi8sSwjRm4YMQdWPjTmrJ4QgtziVQ1Kd1e9EsRHYKofjoJdF438FwcUQnix8yrbSrzPpJJNABewgNffs5d4YZJ";
+
+    /// A TEX address (ZIP 320) is valid for its network, a transparent key
+    /// hash to both RPCs, as zebrad classifies it (#41).
+    #[test]
+    fn a_tex_address_is_a_transparent_key_hash() {
+        use zcash_address::ToAddress as _;
+        let tex = zcash_address::ZcashAddress::from_tex(NetworkType::Test, [0x11; 20]).encode();
+        assert_eq!(
+            validate_address(tex.clone(), &TEST),
+            ValidatedAddress::Transparent {
+                address: tex.clone(),
+                is_script: false,
+            }
+        );
+        assert_eq!(
+            z_validate_address(tex.clone(), &TEST),
+            ZValidatedAddress::P2pkh {
+                address: tex.clone()
+            }
+        );
+        assert_eq!(validate_address(tex, &MAIN), ValidatedAddress::Invalid);
+    }
 
     #[test]
     fn unparseable_is_invalid() {

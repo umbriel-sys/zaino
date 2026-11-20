@@ -37,6 +37,9 @@ pub struct TxOut {
     /// Coinbase outputs are subject to a maturity delay, so a consumer cannot
     /// treat an unspent coinbase output as spendable on confirmations alone.
     pub coinbase: bool,
+
+    /// The version of the transaction that created the output.
+    pub version: u32,
 }
 
 /// A locking script, with the interpretation the validator derived from it.

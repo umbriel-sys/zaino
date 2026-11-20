@@ -20,31 +20,54 @@ pub enum GetPeerInfo {
 impl GetPeerInfo {
     /// Renders the domain listing as the served JSON shape.
     ///
-    /// Always the zebrad variant. The domain type models the two fields every
-    /// validator reports, which is exactly that shape; the richer the legacy full node
-    /// listing has no domain counterpart to render from. See
-    /// [`zaino_primitives::types::rpc::PeerInfo`] for why.
+    /// Always the zebrad variant: the domain type is zebrad's listing.
     pub fn from_domain(peers: Vec<zaino_primitives::types::rpc::PeerInfo>) -> Self {
         Self::Zebrad(
             peers
                 .into_iter()
                 .map(|peer| ZebradPeerInfo {
                     addr: peer.addr,
+                    services: format!("{:016x}", peer.services),
+                    lastrecv: peer.last_received,
                     inbound: peer.inbound,
+                    banscore: peer.ban_score,
+                    subver: peer.user_agent,
+                    version: peer.version,
+                    connection_state: peer.connection_state,
+                    pingtime: peer.ping_time,
+                    pingwait: peer.ping_wait,
                 })
                 .collect(),
         )
     }
 }
 
-/// Response to a `getpeerinfo` RPC request coming from `zebrad`.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+/// One peer as zebrad's `getpeerinfo` writes it.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct ZebradPeerInfo {
     /// Remote address `host:port`.
     pub addr: String,
+    /// The services offered, as 16 hex digits.
+    pub services: String,
+    /// When the last message arrived, in seconds since the Unix epoch.
+    pub lastrecv: u32,
     /// Whether the connection is inbound.
     pub inbound: bool,
+    /// The misbehaviour score.
+    pub banscore: u32,
+    /// The peer's user agent.
+    pub subver: String,
+    /// The negotiated protocol version.
+    pub version: u32,
+    /// The connection's state.
+    pub connection_state: String,
+    /// The round-trip ping time in seconds.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pingtime: Option<f64>,
+    /// How long a ping has been outstanding, in seconds.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pingwait: Option<f64>,
 }
 
 impl<'de> Deserialize<'de> for GetPeerInfo {
@@ -77,27 +100,49 @@ mod tests {
     use super::*;
     // use pretty_assertions::assert_eq;
 
-    /// A domain listing always renders as the zebrad shape, with the legacy full node's field
-    /// names and no wrapper object around the array.
+    /// A domain listing renders as zebrad's `getpeerinfo` entry (#35), with
+    /// no wrapper object around the array and no key for an absent ping.
     #[test]
     fn from_domain_renders_the_zebrad_shape() {
+        let peer = zaino_primitives::types::rpc::PeerInfo {
+            addr: "127.0.0.1:8233".to_string(),
+            services: 1,
+            last_received: 1_700_000_000,
+            inbound: false,
+            ban_score: 3,
+            user_agent: "/Zebra:2.1.0/".to_string(),
+            version: 170_140,
+            connection_state: "connected".to_string(),
+            ping_time: Some(0.5),
+            ping_wait: None,
+        };
         let wire = GetPeerInfo::from_domain(vec![
-            zaino_primitives::types::rpc::PeerInfo {
-                addr: "127.0.0.1:8233".to_string(),
-                inbound: false,
-            },
+            peer.clone(),
             zaino_primitives::types::rpc::PeerInfo {
                 addr: "example.onion:8233".to_string(),
                 inbound: true,
+                ping_time: None,
+                ..peer
             },
         ]);
 
+        let entry = |addr: &str, inbound: bool| {
+            serde_json::json!({
+                "addr": addr,
+                "services": "0000000000000001",
+                "lastrecv": 1_700_000_000u32,
+                "inbound": inbound,
+                "banscore": 3,
+                "subver": "/Zebra:2.1.0/",
+                "version": 170_140,
+                "connection_state": "connected",
+            })
+        };
+        let mut first = entry("127.0.0.1:8233", false);
+        first["pingtime"] = serde_json::json!(0.5);
         assert_eq!(
             serde_json::to_value(&wire).unwrap(),
-            serde_json::json!([
-                { "addr": "127.0.0.1:8233", "inbound": false },
-                { "addr": "example.onion:8233", "inbound": true },
-            ])
+            serde_json::json!([first, entry("example.onion:8233", true)])
         );
     }
 
@@ -115,8 +160,12 @@ mod tests {
     fn parses_zebrad_payload() {
         let zebrad_json = r#"
         [
-          { "addr": "1.2.3.4:8233", "inbound": true },
-          { "addr": "5.6.7.8:8233", "inbound": false }
+          { "addr": "1.2.3.4:8233", "services": "0000000000000001", "lastrecv": 1,
+            "inbound": true, "banscore": 0, "subver": "/Zebra:2.1.0/", "version": 170140,
+            "connection_state": "connected", "pingtime": 0.25 },
+          { "addr": "5.6.7.8:8233", "services": "0000000000000001", "lastrecv": 2,
+            "inbound": false, "banscore": 0, "subver": "/Zebra:2.1.0/", "version": 170140,
+            "connection_state": "connected" }
         ]
         "#;
 

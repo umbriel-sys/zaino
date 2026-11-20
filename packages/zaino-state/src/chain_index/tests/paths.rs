@@ -323,6 +323,50 @@ async fn with_no_store_reads_are_the_validators() {
     ));
 }
 
+/// getnetworksolps (Q-34): a non-positive count asks the validator for the
+/// difficulty averaging window, not its default; a negative height is the tip.
+#[tokio::test]
+async fn a_non_positive_solps_count_is_the_averaging_window() {
+    use zaino_source::SolutionRateWindow;
+    use zaino_source_mock::CallArg;
+    let rig = rig(true).await;
+    let asked = |blocks, height| {
+        let rig = &rig;
+        async move {
+            rig.rpc
+                .get_network_sol_ps(blocks, height)
+                .await
+                .expect("answered");
+            rig.chain
+                .call_log()
+                .into_iter()
+                .rev()
+                .find(|call| call.port == "get_network_sol_ps")
+                .map(|call| call.arg)
+        }
+    };
+    let window = |window, height| Some(CallArg::SolPs { window, height });
+    assert_eq!(
+        asked(Some(-1), Some(-1)).await,
+        window(SolutionRateWindow::DifficultyAveraging, None)
+    );
+    assert_eq!(
+        asked(Some(0), None).await,
+        window(SolutionRateWindow::DifficultyAveraging, None)
+    );
+    assert_eq!(
+        asked(None, None).await,
+        window(SolutionRateWindow::Default, None)
+    );
+    assert_eq!(
+        asked(Some(30), Some(7)).await,
+        window(
+            SolutionRateWindow::from_rpc(Some(30)),
+            Some(zaino_primitives::types::Height::try_from(7u32).expect("valid"))
+        )
+    );
+}
+
 /// Startup waits for the chain head to reach the validator's tip and never
 /// for the store: one that cannot finish building does not hold it up.
 #[tokio::test]
@@ -570,6 +614,72 @@ async fn sends_fees_and_ping_answer_as_lightwalletd_does() {
         .await
         .expect_err("not enabled");
     assert_eq!(code(disabled), tonic::Code::FailedPrecondition);
+}
+
+/// Verbose `getrawtransaction` as zebrad (#39): a mempool transaction has no
+/// `confirmations` key and is not in the active chain; one mined only on a
+/// side chain names that block, also not in the active chain.
+#[tokio::test]
+async fn verbose_raw_transactions_place_the_mempool_and_side_chains_as_zebrad() {
+    use zaino_source_mock::{next_block, BlockSpec, Mempool};
+    let rig = rig(true).await;
+    let activations = Activations::default();
+    let display = |bytes: [u8; 32]| {
+        let mut bytes = bytes;
+        bytes.reverse();
+        hex::encode(bytes)
+    };
+    let verbose = |txid: String| {
+        let rpc = rig.rpc.clone();
+        async move {
+            let answer = rpc.get_raw_transaction(txid, Some(1)).await.ok()?;
+            serde_json::to_value(&answer).ok()
+        }
+    };
+
+    let tip = rig.chain.tip().expect("a chain");
+    let pending = next_block(Some(&tip), &activations, BlockSpec::spends(1).seeded(5));
+    let spend = pending
+        .block
+        .transactions()
+        .get(1)
+        .expect("a spend")
+        .clone();
+    let bytes = pending.raw.as_ref().expect("built with bytes").transactions[1].clone();
+    let spend_id = display(spend.txid.into());
+    rig.chain
+        .set_mempool(Mempool::Explicit(vec![(spend, Some(bytes))]));
+    let in_mempool = poll_until(
+        "the mempool transaction is served",
+        Duration::from_secs(30),
+        Duration::from_millis(25),
+        || verbose(spend_id.clone()),
+    )
+    .await;
+    assert_eq!(in_mempool.get("confirmations"), None, "{in_mempool}");
+    assert_eq!(in_mempool.get("blockhash"), None);
+    assert_eq!(in_mempool["in_active_chain"], false);
+
+    let displaced = display(tip.block.transactions()[1].txid.into());
+    let parent = rig.chain.block_at(CHAIN_TIP - 1).expect("served");
+    let a = next_block(Some(&parent), &activations, BlockSpec::default().seeded(9));
+    let b = next_block(Some(&a), &activations, BlockSpec::default().seeded(9));
+    rig.chain.reorg(CHAIN_TIP, vec![a, b]);
+    let on_side = poll_until(
+        "the displaced transaction is placed on its side block",
+        Duration::from_secs(30),
+        Duration::from_millis(25),
+        || async {
+            // until the head has lived through the reorg
+            verbose(displaced.clone())
+                .await
+                .filter(|answer| answer["in_active_chain"] == false)
+        },
+    )
+    .await;
+    assert_eq!(on_side["blockhash"], display(tip.hash().into()));
+    assert_eq!(on_side["in_active_chain"], false);
+    assert_eq!(on_side["confirmations"], 0, "a side chain confirms nothing");
 }
 
 /// `GetMempoolTx` reads `pool_types` as lightwalletd does (#44): none is the

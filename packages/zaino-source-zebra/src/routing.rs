@@ -512,10 +512,10 @@ impl OneShotGetMiningInfo for ZebraValidator {
 impl OneShotGetNetworkSolPs for ZebraValidator {
     async fn get_network_sol_ps(
         &self,
-        blocks: Option<u32>,
+        window: zaino_source::SolutionRateWindow,
         height: Option<Height>,
     ) -> Result<u64, QueryError<GetNetworkSolPsError>> {
-        self.rpc.get_network_sol_ps(blocks, height).await
+        self.rpc.get_network_sol_ps(window, height).await
     }
 }
 

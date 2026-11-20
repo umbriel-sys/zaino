@@ -15,7 +15,7 @@ use zaino_primitives::types::{
 use zaino_source::{
     GetBlockDeltasError, GetBlockHeaderError, GetBlockSubsidyError, GetBlockVerboseError,
     GetBlockchainInfoError, GetDifficultyError, GetMiningInfoError, GetNetworkSolPsError,
-    GetNodeInfoError, GetPeerInfoError, GetStandardFeeError, QueryError,
+    GetNodeInfoError, GetPeerInfoError, GetStandardFeeError, QueryError, SolutionRateWindow,
 };
 
 use super::ledger::{address_of, pool_values, Ledger, POOLS};
@@ -423,22 +423,93 @@ impl zaino_source::OneShotGetDifficulty for MockChain {
     }
 }
 
+/// zebrad's solution rate (zebra-state `solution_rate`): the work of the
+/// `window` blocks ending at `height` (the tip when absent or above it) over
+/// the seconds they and the block below them span; 0 with no tip or no span.
+fn solution_rate(served: &Served<'_>, window: SolutionRateWindow, height: Option<Height>) -> u64 {
+    let Some((start, blocks)) = measured_blocks(served, window, height) else {
+        return 0;
+    };
+    // newest first, with one block below the window for when it began
+    let samples: Vec<(u32, u128)> = (0..=blocks)
+        .map_while(|back| {
+            let height = Height::try_from(u32::from(start).checked_sub(back)?).ok()?;
+            let header = &served.at(height)?.block.header;
+            let work = std::num::NonZeroU128::from(header.bits.to_work()).get();
+            Some((header.time, work))
+        })
+        .collect();
+    rate_over(&samples)
+}
+
+/// The block a solution rate is measured at and how many it averages:
+/// `height` clamped to the tip (the tip when absent), and the window, the
+/// difficulty averaging one being 17 blocks, 102 from NU7. `None` with no tip.
+pub(crate) fn measured_blocks(
+    served: &Served<'_>,
+    window: SolutionRateWindow,
+    height: Option<Height>,
+) -> Option<(Height, u32)> {
+    let tip = served.tip()?.height();
+    let start = height.map_or(tip, |height| height.min(tip));
+    let blocks = match window {
+        SolutionRateWindow::Default => 120,
+        SolutionRateWindow::DifficultyAveraging => {
+            let nu7 = ConsensusBranchId::new(crate::Upgrade::Nu7.branch_id());
+            match branch_at(&served.facts().upgrades, start) == Some(nu7) {
+                true => 102,
+                false => 17,
+            }
+        }
+        SolutionRateWindow::Blocks(blocks) => blocks.get(),
+    };
+    Some((start, blocks))
+}
+
+/// `(time, work)` samples, the last one the block below the window: the
+/// window's work (the last sample's left out) over the seconds every sample
+/// spans; 0 with no span.
+pub(crate) fn rate_over(samples: &[(u32, u128)]) -> u64 {
+    let times = || samples.iter().map(|(time, _)| *time);
+    let seconds = match (times().min(), times().max()) {
+        (Some(first), Some(last)) => u128::from(last.saturating_sub(first)),
+        _ => 0,
+    };
+    let Some((_below, measured)) = samples.split_last() else {
+        return 0;
+    };
+    let work = measured
+        .iter()
+        .fold(0u128, |total, (_, work)| total.saturating_add(*work));
+    match work.checked_div(seconds) {
+        Some(rate) => u64::try_from(rate).unwrap_or(u64::MAX),
+        None => 0,
+    }
+}
+
 impl zaino_source::OneShotGetMiningInfo for MockChain {
+    /// As zebrad: the last block's size and non-coinbase transaction count
+    /// above genesis, the default-window solution rate twice, no difficulty
+    /// or errors; `blocks` 0 with no tip.
     async fn get_mining_info(&self) -> Result<MiningInfo, QueryError<GetMiningInfoError>> {
         let served = self.enter("get_mining_info", CallArg::None).await?;
-        let Some(tip) = served.tip() else {
-            return refused(GetMiningInfoError::NotReady);
-        };
         let facts = served.facts();
+        let mined = served
+            .tip()
+            .filter(|tip| tip.height() != Height::GENESIS)
+            .map(|tip| &tip.block);
+        let rate = solution_rate(&served, SolutionRateWindow::Default, None);
         Ok(MiningInfo {
-            tip_height: tip.height(),
+            tip_height: served.tip().map_or(Height::GENESIS, MockBlock::height),
             chain: chain_name(facts.network).to_owned(),
             testnet: facts.network != Network::Mainnet,
-            current_block_size: None,
-            current_block_tx: None,
-            network_solution_rate: Some(facts.network_sol_ps),
-            network_hash_rate: Some(facts.network_sol_ps),
-            difficulty: Some(difficulty(tip.block.header.bits.as_bits(), facts.network)),
+            current_block_size: mined.map(|block| u64::from(block.size())),
+            current_block_tx: mined
+                .and_then(|block| u64::try_from(block.transactions().len()).ok())
+                .map(|transactions| transactions.saturating_sub(1)),
+            network_solution_rate: Some(rate),
+            network_hash_rate: Some(rate),
+            difficulty: None,
             errors: None,
         })
     }
@@ -447,16 +518,13 @@ impl zaino_source::OneShotGetMiningInfo for MockChain {
 impl zaino_source::OneShotGetNetworkSolPs for MockChain {
     async fn get_network_sol_ps(
         &self,
-        blocks: Option<u32>,
+        window: SolutionRateWindow,
         height: Option<Height>,
     ) -> Result<u64, QueryError<GetNetworkSolPsError>> {
         let served = self
-            .enter("get_network_sol_ps", CallArg::SolPs { blocks, height })
+            .enter("get_network_sol_ps", CallArg::SolPs { window, height })
             .await?;
-        match served.tip() {
-            Some(_) => Ok(served.facts().network_sol_ps),
-            None => refused(GetNetworkSolPsError::NotReady),
-        }
+        Ok(solution_rate(&served, window, height))
     }
 }
 
@@ -480,7 +548,9 @@ impl zaino_source::OneShotGetNodeInfo for MockChain {
             pay_tx_fee: facts.pay_tx_fee,
             relay_fee: facts.relay_fee,
             errors: None,
-            errors_timestamp: None,
+            // zebrad always sends it: with no error, the time of the reply,
+            // which the mock takes from its tip
+            errors_timestamp: Some(i64::from(tip.block.header.time)),
         })
     }
 }
@@ -563,5 +633,69 @@ impl zaino_source::OneShotGetStandardFee for MockChain {
             Some(fee) => Ok(fee),
             None => refused(GetStandardFeeError::Unsupported),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{measured_blocks, rate_over, GetNetworkSolPsError, SolutionRateWindow};
+    use crate::{Activations, CallArg, ChainBuilder, NodeFacts, Upgrade};
+    use zaino_primitives::types::Height;
+
+    fn height(h: u32) -> Height {
+        Height::try_from(h).expect("a valid height")
+    }
+
+    /// The window's work, the block below it left out, over the seconds
+    /// every sample spans; nothing to measure is 0.
+    #[test]
+    fn the_rate_is_the_windows_work_over_its_span() {
+        assert_eq!(rate_over(&[(130, 600), (120, 400), (100, 9_999)]), 33);
+        assert_eq!(rate_over(&[(100, 5), (100, 5)]), 0, "no span");
+        assert_eq!(rate_over(&[(100, 5)]), 0, "one block");
+        assert_eq!(rate_over(&[]), 0);
+    }
+
+    /// The height asked, clamped to the tip, and the window: 120 by default,
+    /// the difficulty averaging window 17 before NU7 and 102 from it.
+    #[tokio::test]
+    async fn the_window_and_the_height_choose_the_blocks() {
+        let chain = ChainBuilder::new().blocks(40).build();
+        let served = chain
+            .enter::<GetNetworkSolPsError>("test", CallArg::None)
+            .await
+            .expect("served");
+        let five = SolutionRateWindow::from_rpc(Some(5));
+        let chosen = |window, at: Option<u32>| measured_blocks(&served, window, at.map(height));
+        assert_eq!(
+            chosen(SolutionRateWindow::Default, None),
+            Some((height(40), 120))
+        );
+        assert_eq!(chosen(five, Some(20)), Some((height(20), 5)));
+        assert_eq!(chosen(five, Some(4_000)), Some((height(40), 5)), "the tip");
+        assert_eq!(
+            chosen(SolutionRateWindow::DifficultyAveraging, None),
+            Some((height(40), 17))
+        );
+
+        let nu7 = ChainBuilder::with(
+            NodeFacts::regtest(),
+            Activations::default().at(Upgrade::Nu7, 10),
+        )
+        .blocks(20)
+        .build();
+        let served = nu7
+            .enter::<GetNetworkSolPsError>("test", CallArg::None)
+            .await
+            .expect("served");
+        let averaging = |at| {
+            measured_blocks(
+                &served,
+                SolutionRateWindow::DifficultyAveraging,
+                Some(height(at)),
+            )
+        };
+        assert_eq!(averaging(20), Some((height(20), 102)));
+        assert_eq!(averaging(5), Some((height(5), 17)));
     }
 }

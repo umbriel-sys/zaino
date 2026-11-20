@@ -276,7 +276,7 @@ mod generated {
         GetMiningInfo / OneShotGetMiningInfo :: get_mining_info()
             -> zaino_primitives::types::rpc::MiningInfo, crate::GetMiningInfoError;
         GetNetworkSolPs / OneShotGetNetworkSolPs :: get_network_sol_ps(
-            blocks: Option<u32> = Some(120),
+            window: crate::SolutionRateWindow = crate::SolutionRateWindow::DifficultyAveraging,
             height: Option<Height> = Some(height(7))
         ) -> u64, crate::GetNetworkSolPsError;
         GetNodeInfo / OneShotGetNodeInfo :: get_node_info()

@@ -119,3 +119,10 @@ pools, as zebra does; `NodeFacts::subtree_pools` without Ironwood refuses it
 as zcashd does (`PoolUnavailable`). `get_address_txids` reads its range as
 zebrad does: bounds clamp to the tip, an end of 0 is the tip, then an
 inverted range is `InvalidRange`.
+
+The node-state ports answer as zebrad computes them, not from a configured
+value: `get_network_sol_ps` is the window's work over the seconds it spans, at
+the height asked; `get_mining_info` reports that rate with the last block's
+size and non-coinbase count and no difficulty; `get_node_info` always carries
+`errors_timestamp`; `get_tx_out` carries the creating transaction's version
+and a `scriptPubKey` rendered by zebra-rpc's own builder.

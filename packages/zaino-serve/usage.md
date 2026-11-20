@@ -61,6 +61,13 @@ they did:
 | address request refused (TEX or malformed address; >10,000 addresses; >100,000 matching rows) | `INVALID_ARGUMENT` | zebrad's own: `-5` address, `-8` limits |
 | validator unreachable or broken (on the methods above) | `INTERNAL` | `-32603` |
 
+The passthrough shapes are zebrad 7's: `getmininginfo` serves its key set (no
+null keys, no difficulty, errors or miner fields); `getpeerinfo` its full
+entry; `gettxout` carries `version`; `getinfo` the validator's
+`errorstimestamp`; `z_validateaddress` is `isvalid`, `address`,
+`address_type` and `ismine: false`; a `getblocksubsidy` funding stream with
+no address omits the key.
+
 The address checks match zebrad 7 whichever backend answers. `GetStandardFee`
 (lightwallet-protocol v0.6.0) passes the validator's ZIP 317 fee through as
 `feeZat` / `estimatorVersion`.

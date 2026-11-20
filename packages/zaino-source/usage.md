@@ -106,6 +106,12 @@ Write the variant that says what happened. A generic `NotFound` on every port
 throws away the thing the caller needs to act on — and, at the serving
 boundary, the thing that decides which the legacy full node error code the client sees.
 
+A parameter is typed the same way. `GetNetworkSolPs` takes a
+`SolutionRateWindow` (`Default`, `DifficultyAveraging`, `Blocks(n)`) rather
+than an optional count, because `getnetworksolps` reads an absent count and a
+non-positive one differently; `from_rpc` / `to_rpc` hold that rule.
+`GetChainTips` answers `Unsupported` where the validator has no such method.
+
 ## Two port layers: `OneShot*` and the canonical resilient ports
 
 Every question exists as **two** ports:

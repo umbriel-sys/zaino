@@ -58,9 +58,8 @@ pub struct NodeInfo {
     /// whose sentinel is an empty string instead.
     pub errors: Option<String>,
 
-    /// When [`Self::errors`] was raised, in seconds since the Unix epoch.
-    ///
-    /// `None` whenever `errors` is `None` — the wire form carries a matching
-    /// sentinel timestamp that means nothing on its own.
+    /// The validator's `errorstimestamp`, in seconds since the Unix epoch, as
+    /// sent: zebrad always sends it (when [`Self::errors`] was logged, else
+    /// the time of the reply). `None` only when the validator omits it.
     pub errors_timestamp: Option<i64>,
 }

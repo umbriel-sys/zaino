@@ -546,6 +546,80 @@ async fn the_call_log_records_ports_and_arguments() {
     );
 }
 
+/// `getmininginfo` as zebrad: the last block's size and non-coinbase count,
+/// the default window's solution rate twice, no difficulty or errors.
+#[tokio::test]
+async fn mining_info_is_as_zebrad_reports_it() {
+    use zaino_source::{
+        OneShotGetMiningInfo as _, OneShotGetNetworkSolPs as _, SolutionRateWindow,
+    };
+    let chain = ChainBuilder::new().blocks(40).build();
+    let info = chain.get_mining_info().await.expect("answered");
+    let tip = chain.block_at(40).expect("loaded");
+    assert_eq!(info.tip_height, height(40));
+    assert_eq!(info.current_block_size, Some(u64::from(tip.block.size())));
+    assert_eq!(
+        info.current_block_tx,
+        u64::try_from(tip.block.transactions().len() - 1).ok()
+    );
+    let rate = chain
+        .get_network_sol_ps(SolutionRateWindow::Default, None)
+        .await
+        .expect("answered");
+    assert_eq!(info.network_solution_rate, Some(rate));
+    assert_eq!(info.network_hash_rate, Some(rate));
+    assert_eq!((info.difficulty, info.errors), (None, None));
+
+    // at genesis there is no mined block to size
+    let genesis = ChainBuilder::new().build();
+    let info = genesis.get_mining_info().await.expect("answered");
+    assert_eq!(info.tip_height, height(0));
+    assert_eq!(
+        (info.current_block_size, info.current_block_tx),
+        (None, None)
+    );
+}
+
+/// `gettxout` as zebrad answers: the creating transaction's version, and a
+/// `scriptPubKey` with its disassembly and zebrad's type (#36).
+#[tokio::test]
+async fn tx_out_carries_the_version_and_zebrads_script() {
+    use zaino_source::OneShotGetTxOut as _;
+    use zebra_chain::serialization::ZcashDeserializeInto as _;
+    let chain = ChainBuilder::new().blocks(3).build();
+    let block = chain.block_at(3).expect("loaded");
+    let coinbase = &block.block.transactions()[0];
+    let bytes = &block.raw.as_ref().expect("built with bytes").transactions[0];
+    let zebra: zebra_chain::transaction::Transaction = bytes
+        .as_slice()
+        .zcash_deserialize_into()
+        .expect("consensus bytes");
+
+    let out = chain
+        .get_tx_out(coinbase.txid, 0, false)
+        .await
+        .expect("answered")
+        .expect("unspent");
+    assert_eq!(out.version, zebra.version());
+    assert!(out.coinbase);
+    assert_eq!(
+        out.script_pub_key.script_type.as_deref(),
+        Some("pubkeyhash")
+    );
+    assert_eq!(
+        out.script_pub_key.asm.as_deref(),
+        Some(
+            format!(
+                "OP_DUP OP_HASH160 {} OP_EQUALVERIFY OP_CHECKSIG",
+                "11".repeat(20)
+            )
+            .as_str()
+        )
+    );
+    assert_eq!(out.script_pub_key.required_signatures, Some(1));
+    assert_eq!(out.script_pub_key.addresses.len(), 1);
+}
+
 /// Concurrent calls overlap and are counted; sequential ones never do.
 #[tokio::test]
 async fn the_peak_in_flight_counts_overlapping_calls() {

@@ -463,7 +463,10 @@ async fn passthrough_reads_ask_the_validator() {
     snapshot.peer_info().await.expect("answers");
     snapshot.mining_info().await.expect("answers");
     snapshot.difficulty_at_tip().await.expect("answers");
-    snapshot.network_sol_ps(None, None).await.expect("answers");
+    snapshot
+        .network_sol_ps(zaino_source::SolutionRateWindow::Default, None)
+        .await
+        .expect("answers");
     assert_eq!(snapshot.standard_fee().await.expect("answers"), fee);
     for port in [
         "get_blockchain_info",

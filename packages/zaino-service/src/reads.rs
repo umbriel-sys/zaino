@@ -456,8 +456,12 @@ impl<S: ServiceSource> ServiceSnapshot<S> {
     }
 
     /// The validator's network solutions per second.
-    pub async fn network_sol_ps(&self, blocks: Option<u32>, height: Option<Height>) -> Result<u64> {
-        passthrough(self.source.get_network_sol_ps(blocks, height).await)
+    pub async fn network_sol_ps(
+        &self,
+        window: zaino_source::SolutionRateWindow,
+        height: Option<Height>,
+    ) -> Result<u64> {
+        passthrough(self.source.get_network_sol_ps(window, height).await)
     }
 
     /// The validator's standard fee.

@@ -174,8 +174,7 @@ mod zebra {
             state.wait_for_block(tip, READY).await?;
             let frpc = fetch.json_rpc();
             let srpc = state.json_rpc();
-            let ignore = &["errorstimestamp"];
-            let info = assert_rpc_parity("getmininginfo", "", &frpc, &srpc, ignore).await?;
+            let info = assert_rpc_parity("getmininginfo", "", &frpc, &srpc, &[]).await?;
             assert_eq!(
                 info.get("blocks").and_then(Value::as_u64),
                 Some(u64::from(tip)),

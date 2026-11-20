@@ -177,6 +177,7 @@ impl TxOutWire {
             "scriptPubKey".to_string(),
             serde_json::Value::Object(script),
         );
+        object.insert("version".to_string(), serde_json::Value::from(out.version));
         object.insert(
             "coinbase".to_string(),
             serde_json::Value::Bool(out.coinbase),
@@ -299,6 +300,7 @@ mod tests {
                 ],
             },
             coinbase: true,
+            version: 5,
         }));
 
         assert_eq!(
@@ -314,6 +316,7 @@ mod tests {
                     "reqSigs": 1,
                     "addresses": ["t1Hsc1LR8yKnbbe3twRp88p6vFfC5t7DLbs"],
                 },
+                "version": 5,
                 "coinbase": true,
             })
         );
@@ -335,6 +338,7 @@ mod tests {
                 addresses: Vec::new(),
             },
             coinbase: false,
+            version: 4,
         }));
 
         let script = &wire.0.as_ref().unwrap()["scriptPubKey"];

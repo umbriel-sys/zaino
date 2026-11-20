@@ -1076,7 +1076,7 @@ impl<V: ChainIndexSourcePorts + ServiceSource> ZcashIndexer
             serialized_transaction.as_slice(),
         )?;
 
-        let (best_chain_location, _non_best_chain_locations) = self
+        let (best_chain_location, non_best_chain_locations) = self
             .indexer
             .get_transaction_status(&snapshot, &txid)
             .await?;
@@ -1122,17 +1122,23 @@ impl<V: ChainIndexSourcePorts + ServiceSource> ZcashIndexer
                         Some(confirmations.is_in_best_chain()),
                     )
                 }
+                // as zebrad (#39): a mempool transaction has no confirmations
+                // key; one mined only on a side chain names that block
                 Some(types::BestChainLocation::Mempool(_height)) => {
-                    let confirmations = zaino_primitives::types::TxConfirmations::Mempool;
-                    (
-                        None,
-                        Some(confirmations.to_rpc_i64()),
-                        None,
-                        None,
-                        Some(confirmations.is_in_best_chain()),
-                    )
+                    (None, None, None, None, Some(false))
                 }
-                None => (None, None, None, None, Some(false)),
+                None => {
+                    let side_block =
+                        non_best_chain_locations
+                            .iter()
+                            .find_map(|location| match location {
+                                types::NonBestChainLocation::Block(hash, _) => {
+                                    Some(zebra_chain::block::Hash::from(*hash))
+                                }
+                                types::NonBestChainLocation::Mempool(_) => None,
+                            });
+                    (None, None, side_block, None, Some(false))
+                }
             };
 
         Ok(GetRawTransaction::Object(Box::new(

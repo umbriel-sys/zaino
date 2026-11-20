@@ -284,13 +284,17 @@ impl<V: ChainIndexSourcePorts + ServiceSource> ChainIndexRpcExt
         blocks: Option<i32>,
         height: Option<i32>,
     ) -> Result<u64, Self::Error> {
-        // Negative values are how this interface spells "use your default".
-        let blocks = blocks.and_then(|b| u32::try_from(b).ok());
+        // Q-34: a non-positive count is the difficulty averaging window, as
+        // zebrad reads it; a negative height is the tip; one past the
+        // protocol maximum is −8, never ignored
+        let window = zaino_source::SolutionRateWindow::from_rpc(blocks);
         let height = match height.and_then(|h| u32::try_from(h).ok()) {
-            Some(h) => Some(validator(super::validator_source::domain_height(h))?),
+            Some(h) => Some(domain_height(types::Height(h)).ok_or_else(|| {
+                invalid_parameter(format!("height {h} is above the maximum block height"))
+            })?),
             None => None,
         };
-        Ok(self.tip_reads().network_sol_ps(blocks, height).await?)
+        Ok(self.tip_reads().network_sol_ps(window, height).await?)
     }
 
     async fn send_raw_transaction(

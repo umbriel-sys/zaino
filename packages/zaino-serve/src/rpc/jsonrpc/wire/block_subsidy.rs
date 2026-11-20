@@ -24,8 +24,9 @@ pub struct FundingStream {
     #[serde(rename = "valueZat")]
     pub value_zat: Zatoshis,
 
-    /// The address of the funding stream recipient.
-    #[serde(default)]
+    /// The address of the funding stream recipient; the key is omitted when
+    /// there is none, as zebrad omits it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub address: Option<String>,
 }
 
@@ -215,6 +216,20 @@ mod from_domain_tests {
         let json = serde_json::to_value(GetBlockSubsidy::from_domain(sample())).unwrap();
 
         assert!(json["lockboxstreams"][0].get("address").is_none());
+    }
+
+    /// A funding stream with no address omits the key, never null (#56).
+    #[test]
+    fn a_funding_stream_without_an_address_omits_the_key() {
+        let mut subsidy = sample();
+        subsidy.funding_streams[0].address = None;
+        let json = serde_json::to_value(GetBlockSubsidy::from_domain(subsidy)).unwrap();
+
+        assert!(json["fundingstreams"][0].get("address").is_none());
+        assert_eq!(
+            json["fundingstreams"][0]["recipient"],
+            "Zcash Community Grants"
+        );
     }
 
     /// Heights with no active streams omit both arrays rather than emitting

@@ -4,21 +4,31 @@ use std::collections::HashMap;
 
 use serde::{Deserialize, Serialize};
 
-/// Wire superset compatible with the legacy full node and `zebrad`.
+/// The legacy full node's superset, an absent value an absent key (never
+/// null). What Zaino serves is zebrad's key set: see
+/// [`from_domain`](Self::from_domain).
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct GetMiningInfoWire {
     #[serde(rename = "blocks")]
     tip_height: u64,
 
-    #[serde(rename = "currentblocksize", default)]
+    #[serde(
+        rename = "currentblocksize",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
     current_block_size: Option<u64>,
 
-    #[serde(rename = "currentblocktx", default)]
+    #[serde(
+        rename = "currentblocktx",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
     current_block_tx: Option<u64>,
 
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     networksolps: Option<u64>,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     networkhashps: Option<u64>,
 
     // Present on both the legacy full node and zebrad
@@ -27,20 +37,20 @@ pub struct GetMiningInfoWire {
     #[serde(default)]
     testnet: bool,
 
-    // the legacy full node
-    #[serde(default)]
+    // the legacy full node only: never set by `from_domain`
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     difficulty: Option<f64>,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     errors: Option<String>,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     errorstimestamp: Option<serde_json::Value>,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     genproclimit: Option<i64>,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     localsolps: Option<u64>,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pooledtx: Option<u64>,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     generate: Option<bool>,
 
     #[serde(flatten)]
@@ -99,17 +109,10 @@ impl From<GetMiningInfoWire> for MiningInfo {
 }
 
 impl GetMiningInfoWire {
-    /// Renders the domain type as the served JSON shape.
-    ///
-    /// The legacy-only local-miner fields (`genproclimit`, `localsolps`,
-    /// `generate`, `errorstimestamp`, `pooledtx`) have no counterpart in the
-    /// domain type and are emitted as absent. They describe a mining daemon,
-    /// which Zaino is not, so there is nothing truthful to put in them — see
-    /// [`zaino_primitives::types::rpc::MiningInfo`] for the full reasoning.
-    ///
-    /// `extras` is likewise empty: the source layer drops fields it does not
-    /// model rather than carrying opaque values through, so there is nothing to
-    /// pass on.
+    /// Renders the domain type as the served JSON shape: zebrad's key set
+    /// (`blocks`, `currentblocksize` and `currentblocktx` when known,
+    /// `networksolps`, `networkhashps`, `chain`, `testnet`). No difficulty,
+    /// errors or local-miner key is served, whatever the validator sent.
     pub fn from_domain(info: zaino_primitives::types::rpc::MiningInfo) -> Self {
         Self {
             tip_height: info.tip_height.into(),
@@ -119,8 +122,8 @@ impl GetMiningInfoWire {
             networkhashps: info.network_hash_rate,
             chain: info.chain,
             testnet: info.testnet,
-            difficulty: info.difficulty,
-            errors: info.errors,
+            difficulty: None,
+            errors: None,
             errorstimestamp: None,
             genproclimit: None,
             localsolps: None,
@@ -163,47 +166,43 @@ mod from_domain_tests {
         assert_eq!(json["networkhashps"], 600);
         assert_eq!(json["chain"], "regtest");
         assert_eq!(json["testnet"], true);
-        assert_eq!(json["difficulty"], 1.5);
-        assert_eq!(json["errors"], "something");
     }
 
-    /// The local-miner fields describe a component Zaino does not have, so they
-    /// are emitted as JSON null rather than being given a plausible value.
+    /// The served keys are zebrad's (#33): no difficulty, errors or
+    /// local-miner key, and an absent value is an absent key, never null.
     #[test]
-    fn emits_the_local_miner_fields_as_absent() {
-        let json = serde_json::to_value(GetMiningInfoWire::from_domain(sample())).unwrap();
-
-        for field in [
-            "genproclimit",
-            "localsolps",
-            "generate",
-            "pooledtx",
-            "errorstimestamp",
-        ] {
-            assert!(
-                json[field].is_null(),
-                "{field} describes a mining daemon and must not be invented"
-            );
-        }
-    }
-
-    /// The domain type's `None`s survive as nulls rather than becoming zeros —
-    /// "the validator does not report this" and "the value is zero" are
-    /// different answers.
-    #[test]
-    fn absent_domain_values_stay_absent() {
-        let mut info = sample();
-        info.current_block_size = None;
-        info.network_solution_rate = None;
-        info.difficulty = None;
-        info.errors = None;
-
-        let json = serde_json::to_value(GetMiningInfoWire::from_domain(info)).unwrap();
-
-        assert!(json["currentblocksize"].is_null());
-        assert!(json["networksolps"].is_null());
-        assert!(json["difficulty"].is_null());
-        assert!(json["errors"].is_null());
+    fn serves_zebrads_key_set_with_no_null_keys() {
+        let keys = |info| -> Vec<String> {
+            let json = serde_json::to_value(GetMiningInfoWire::from_domain(info)).unwrap();
+            let mut keys: Vec<String> = json.as_object().expect("object").keys().cloned().collect();
+            keys.sort();
+            keys
+        };
+        assert_eq!(
+            keys(sample()),
+            [
+                "blocks",
+                "chain",
+                "currentblocksize",
+                "currentblocktx",
+                "networkhashps",
+                "networksolps",
+                "testnet"
+            ]
+        );
+        let mut absent = sample();
+        absent.current_block_size = None;
+        absent.current_block_tx = None;
+        assert_eq!(
+            keys(absent),
+            [
+                "blocks",
+                "chain",
+                "networkhashps",
+                "networksolps",
+                "testnet"
+            ]
+        );
     }
 }
 

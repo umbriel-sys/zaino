@@ -231,15 +231,7 @@ mod get {
 
     #[tokio::test(flavor = "multi_thread")]
     pub(crate) async fn mining_info() -> Result<()> {
-        let ignore: &[&str] = &[
-            "difficulty",
-            "errors",
-            "errorstimestamp",
-            "genproclimit",
-            "localsolps",
-            "pooledtx",
-            "generate",
-        ];
+        let ignore: &[&str] = &[];
 
         let cache = ChainCache::ensure().await?;
         let zebrad = Zebrad::launch(cache.zebrad_config()).await?;

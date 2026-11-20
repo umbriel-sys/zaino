@@ -55,8 +55,6 @@ pub struct NodeFacts {
     pub pay_tx_fee: zaino_primitives::types::Zatoshis,
     /// The relay fee.
     pub relay_fee: zaino_primitives::types::Zatoshis,
-    /// The estimated network solution rate.
-    pub network_sol_ps: u64,
     /// `getblockchaininfo`'s size on disk.
     pub size_on_disk: u64,
     /// The subsidy answered for every height up to the tip; `None` = a fault.
@@ -114,7 +112,7 @@ pub enum CallArg {
     /// A solution rate query.
     SolPs {
         /// The averaging window.
-        blocks: Option<u32>,
+        window: zaino_source::SolutionRateWindow,
         /// The height.
         height: Option<Height>,
     },
@@ -149,7 +147,6 @@ impl NodeFacts {
             peers: Vec::new(),
             pay_tx_fee: zaino_primitives::types::Zatoshis::ZERO,
             relay_fee: zaino_primitives::types::Zatoshis::ZERO,
-            network_sol_ps: 0,
             size_on_disk: 0,
             subsidy: None,
             standard_fee: None,

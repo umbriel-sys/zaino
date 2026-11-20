@@ -47,6 +47,11 @@ chain). Notable shapes:
 - `sendrawtransaction` keeps the validator's rejection code and message
   (−22, −25, −26, −27); invalid hex is −22 before the validator is asked.
 - `GetTransaction` for an unknown txid is `NotFound`.
+- `getnetworksolps`: a non-positive block count is the difficulty averaging
+  window, as zebrad reads it; a negative height is the tip.
+- Verbose `getrawtransaction`: a mempool transaction has no `confirmations`
+  key; one mined only on a side chain names that block; both are
+  `in_active_chain: false`.
 - `GetBlock` is the whole block: every pool and every transaction;
   `GetBlockNullifiers` keeps every transaction with only its nullifiers. A
   `GetBlockRange` past the tip serves to the tip, then `OutOfRange` naming the

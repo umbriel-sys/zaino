@@ -30,8 +30,12 @@ let result = z_validate_address(address_string, network);
 ```
 
 Both return domain types (`ValidatedAddress`, `ZValidatedAddress`) with **no
-serde**. The legacy-shaped JSON — including the exact field sets, which differ
-per address kind — is `zaino-serve`'s `wire/address.rs`, per ADR-0009.
+serde**. The served JSON, zebrad's shape, is `zaino-serve`'s
+`wire/address.rs`, per ADR-0009.
+
+A TEX address (ZIP 320) is valid for its network and is a transparent key
+hash to both: `Transparent { is_script: false }` and `P2pkh`, as zebrad
+classifies it.
 
 ## What is deliberately not classified
 

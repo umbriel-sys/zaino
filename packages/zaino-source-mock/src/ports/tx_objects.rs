@@ -107,7 +107,7 @@ fn spent_utxos<E: std::fmt::Debug + std::fmt::Display>(
 }
 
 /// zebra's network for the served chain's schedule.
-fn zebra_network<E: std::fmt::Debug + std::fmt::Display>(
+pub(super) fn zebra_network<E: std::fmt::Debug + std::fmt::Display>(
     served: &Served<'_>,
 ) -> Result<zebra_chain::parameters::Network, QueryError<E>> {
     let facts = served.facts();

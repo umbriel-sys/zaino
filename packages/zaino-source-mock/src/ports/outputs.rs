@@ -2,45 +2,39 @@
 
 use zaino_primitives::types::{
     rpc::{ScriptPubKey, SpentInfo, SpentOutpoint, TxOut},
-    BlockConfirmations, OutputIndex, ScriptType, TransactionId, TransparentAddressKey,
-    TxConfirmations,
+    BlockConfirmations, OutputIndex, TransactionId, TxConfirmations,
 };
 use zaino_source::{GetSpentInfoError, GetTxOutError, QueryError, SendRawTransactionError};
 
-use super::ledger::{address_of, Ledger};
+use super::fault;
+use super::ledger::Ledger;
 use crate::{CallArg, MockChain};
 
-/// zcashd's `scriptPubKey` for a script: disassembly, type, signatures and
-/// address for the standard forms.
-pub(crate) fn script_pub_key(
+/// zebrad's `scriptPubKey` for a script: rendered by zebra-rpc's own
+/// builder (the disassembly always, zebrad's script types) and read by the
+/// zcash RPC adapter's parser.
+fn script_pub_key(
     script: &zaino_primitives::types::Script,
-    network: zaino_primitives::types::Network,
-) -> ScriptPubKey {
-    let bytes = script.as_bytes();
-    let key = TransparentAddressKey::from_standard_script(bytes);
-    let (asm, kind) = match key.map(|key| (key.script_type, hex::encode(key.hash))) {
-        Some((ScriptType::P2PKH, hash)) => (
-            Some(format!(
-                "OP_DUP OP_HASH160 {hash} OP_EQUALVERIFY OP_CHECKSIG"
-            )),
-            "pubkeyhash",
-        ),
-        Some((ScriptType::P2SH, hash)) => {
-            (Some(format!("OP_HASH160 {hash} OP_EQUAL")), "scripthash")
-        }
-        _ => (None, "nonstandard"),
+    network: &zebra_chain::parameters::Network,
+) -> Result<ScriptPubKey, QueryError<GetTxOutError>> {
+    let output = zebra_chain::transparent::Output {
+        value: zebra_chain::amount::Amount::zero(),
+        lock_script: zebra_chain::transparent::Script::new(script.as_bytes()),
     };
-    let addresses = address_of(bytes, network)
-        .and_then(|encoded| zaino_primitives::types::TransparentAddress::try_new(encoded).ok())
-        .into_iter()
-        .collect::<Vec<_>>();
-    ScriptPubKey {
-        script: script.clone(),
-        asm,
-        script_type: Some(kind.to_owned()),
-        required_signatures: (!addresses.is_empty()).then_some(1),
-        addresses,
-    }
+    let object = zebra_rpc::client::ScriptPubKey::from_output(&output, network);
+    let json =
+        serde_json::to_value(&object).map_err(|error| fault(format!("scriptPubKey: {error}")))?;
+    zaino_source_zcash_rpc::parse_script_pub_key_object(&json)
+        .map_err(|error| fault(format!("scriptPubKey: {error}")))
+}
+
+/// A transaction's version from its consensus bytes: the header word less
+/// the Overwinter flag.
+fn version_of(bytes: Option<&Vec<u8>>) -> Result<u32, QueryError<GetTxOutError>> {
+    bytes
+        .and_then(|bytes| bytes.first_chunk::<4>())
+        .map(|header| u32::from_le_bytes(*header) & 0x7fff_ffff)
+        .ok_or_else(|| fault("a transaction built without its bytes".to_owned()))
 }
 
 impl zaino_source::OneShotGetTxOut for MockChain {
@@ -67,7 +61,7 @@ impl zaino_source::OneShotGetTxOut for MockChain {
             return Ok(None);
         };
         let (best_block, tip_height) = (tip.hash(), tip.height());
-        let network = served.facts().network;
+        let network = super::tx_objects::zebra_network(&served)?;
         let ledger = Ledger::of(&served);
         let mempool = served.mempool();
         let spent_in_mempool = include_mempool
@@ -86,6 +80,13 @@ impl zaino_source::OneShotGetTxOut for MockChain {
             .get(&(txid, index))
             .filter(|created| created.height != zaino_primitives::types::Height::GENESIS)
         {
+            let bytes = served.at(created.height).and_then(|block| {
+                block
+                    .raw
+                    .as_ref()?
+                    .transactions
+                    .get(usize::try_from(created.position).ok()?)
+            });
             return Ok(Some(TxOut {
                 best_block,
                 confirmations: TxConfirmations::Mined(BlockConfirmations::of_best_chain_block(
@@ -93,23 +94,32 @@ impl zaino_source::OneShotGetTxOut for MockChain {
                     tip_height,
                 )),
                 value: created.output.value,
-                script_pub_key: script_pub_key(&created.output.script, network),
+                script_pub_key: script_pub_key(&created.output.script, &network)?,
                 coinbase: created.coinbase,
+                version: version_of(bytes)?,
             }));
         }
         if !include_mempool {
             return Ok(None);
         }
-        let in_mempool = mempool
-            .iter()
-            .find(|(tx, _)| tx.txid == txid)
-            .and_then(|(tx, _)| tx.transparent.outputs.get(usize::try_from(index).ok()?));
-        Ok(in_mempool.map(|output| TxOut {
+        let Some((output, bytes)) =
+            mempool
+                .iter()
+                .find(|(tx, _)| tx.txid == txid)
+                .and_then(|(tx, bytes)| {
+                    let output = tx.transparent.outputs.get(usize::try_from(index).ok()?)?;
+                    Some((output, bytes))
+                })
+        else {
+            return Ok(None);
+        };
+        Ok(Some(TxOut {
             best_block,
             confirmations: TxConfirmations::Mempool,
             value: output.value,
-            script_pub_key: script_pub_key(&output.script, network),
+            script_pub_key: script_pub_key(&output.script, &network)?,
             coinbase: false,
+            version: version_of(bytes.as_ref())?,
         }))
     }
 }

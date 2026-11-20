@@ -1304,10 +1304,11 @@ impl zaino_source::OneShotGetBlockchainInfo for ZebraReadStateAdapter {
                 .unwrap_or(ConsensusBranchId::new(0))
         };
 
+        // `true`: as zebrad's own getblockchaininfo asks it (methods.rs)
         let difficulty = zebra_rpc::methods::chain_tip_difficulty(
             self.network.clone(),
             self.state.clone(),
-            false,
+            true,
         )
         .await
         .map_err(ReadStateError::unreachable)?;
@@ -1369,7 +1370,11 @@ impl zaino_source::OneShotGetBlockchainInfo for ZebraReadStateAdapter {
                 .map_err(ReadStateError::invalid_data)?,
             best_block_hash: BlockHash::from(hash.0),
             difficulty,
-            verification_progress: f64::from(height.0) / f64::from(estimated_height.0),
+            verification_progress: verification_progress(
+                self.network.is_regtest(),
+                height,
+                estimated_height,
+            ),
             // Zebra does not store cumulative work per height
             // (ZcashFoundation/zebra#7109), so it is genuinely unknown here
             // rather than zero.
@@ -1662,6 +1667,31 @@ impl zaino_source::OneShotGetBlockDeltas for ZebraReadStateAdapter {
             previous_block_hash: Some(BlockHash::from(block.header.previous_block_hash.0)),
             next_block_hash,
         })
+    }
+}
+
+/// `getblockchaininfo`'s `verificationprogress` as zebrad computes it: the
+/// tip over the estimated height, and 1.0 on regtest.
+fn verification_progress(
+    regtest: bool,
+    height: zebra_chain::block::Height,
+    estimated_height: zebra_chain::block::Height,
+) -> f64 {
+    match regtest {
+        true => 1.0,
+        false => f64::from(height.0) / f64::from(estimated_height.0),
+    }
+}
+
+#[cfg(test)]
+mod verification_progress_tests {
+    use super::verification_progress;
+    use zebra_chain::block::Height;
+
+    #[test]
+    fn regtest_is_fully_verified() {
+        assert_eq!(verification_progress(true, Height(5), Height(50)), 1.0);
+        assert_eq!(verification_progress(false, Height(5), Height(50)), 0.1);
     }
 }
 

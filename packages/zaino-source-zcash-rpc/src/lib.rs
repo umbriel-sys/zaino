@@ -42,3 +42,10 @@ pub fn parse_transaction_object(
 ) -> Result<zaino_primitives::types::rpc::TransactionVerbose, TransactionObjectError> {
     parse::parse_transaction_verbose(value).map_err(TransactionObjectError)
 }
+
+/// Reads a `scriptPubKey` object exactly as the adapter does.
+pub fn parse_script_pub_key_object(
+    value: &serde_json::Value,
+) -> Result<zaino_primitives::types::rpc::ScriptPubKey, TransactionObjectError> {
+    parse::parse_script_pub_key(value).map_err(TransactionObjectError)
+}

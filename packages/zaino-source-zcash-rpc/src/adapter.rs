@@ -1143,23 +1143,36 @@ impl zaino_source::OneShotGetBlockSubsidy for ZcashRpcAdapter {
     }
 }
 
+/// `getnetworksolps`'s positional parameters. A height cannot be sent without
+/// a count before it, so the default window is then spelled out (120).
+fn sol_ps_params(
+    window: zaino_source::SolutionRateWindow,
+    height: Option<Height>,
+) -> Vec<serde_json::Value> {
+    const DEFAULT_WINDOW: i64 = 120;
+    let mut params = Vec::new();
+    match (window.to_rpc(), height) {
+        (None, None) => {}
+        (count, _) => params.push(serde_json::Value::from(count.unwrap_or(DEFAULT_WINDOW))),
+    }
+    if let Some(height) = height {
+        params.push(serde_json::Value::from(u32::from(height)));
+    }
+    params
+}
+
 impl zaino_source::OneShotGetNetworkSolPs for ZcashRpcAdapter {
     async fn get_network_sol_ps(
         &self,
-        blocks: Option<u32>,
+        window: zaino_source::SolutionRateWindow,
         height: Option<Height>,
     ) -> Result<u64, QueryError<zaino_source::GetNetworkSolPsError>> {
-        // Both arguments are positional, so a height cannot be sent without a
-        // window before it; the validator's own default window fills the gap.
-        let mut params = Vec::new();
-        if blocks.is_some() || height.is_some() {
-            params.push(serde_json::Value::Number(blocks.unwrap_or(120).into()));
-        }
-        if let Some(height) = height {
-            params.push(serde_json::Value::Number(u32::from(height).into()));
-        }
-        self.call_parsed("getnetworksolps", params, parse::as_u64)
-            .await
+        self.call_parsed(
+            "getnetworksolps",
+            sol_ps_params(window, height),
+            parse::as_u64,
+        )
+        .await
     }
 }
 
@@ -1385,6 +1398,25 @@ mod classification_tests {
             malformed,
             Some(SendRawTransactionError::Malformed(_))
         ));
+
+        // getnetworksolps: nothing for the defaults, −1 for the averaging
+        // window, and the default count spelled out before a height
+        use zaino_source::SolutionRateWindow as Window;
+        let at = Height::try_from(7u32).expect("a valid height");
+        let params = |window, height| serde_json::Value::from(sol_ps_params(window, height));
+        assert_eq!(params(Window::Default, None), serde_json::json!([]));
+        assert_eq!(
+            params(Window::Default, Some(at)),
+            serde_json::json!([120, 7])
+        );
+        assert_eq!(
+            params(Window::DifficultyAveraging, None),
+            serde_json::json!([-1])
+        );
+        assert_eq!(
+            params(Window::from_rpc(Some(30)), Some(at)),
+            serde_json::json!([30, 7])
+        );
 
         for code in [-22, -25, -26, -27] {
             let rejection = submission_rejection(&rpc(code, "rejected").into());

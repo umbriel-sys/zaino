@@ -42,7 +42,7 @@ use zaino_source::{MempoolTxMeta, TransactionResponse};
 
 mod getblock;
 
-use getblock::parse_script_pub_key;
+pub(crate) use getblock::parse_script_pub_key;
 pub(crate) use getblock::{parse_block_verbose, parse_transaction_verbose};
 
 // ---------------------------------------------------------------------------
@@ -538,14 +538,11 @@ pub(crate) fn parse_node_info(value: &serde_json::Value) -> Result<NodeInfo, Par
             .transpose()?,
         pay_tx_fee: zec_to_zatoshis(as_f64(field(value, "paytxfee")?)?)?,
         relay_fee: zec_to_zatoshis(as_f64(field(value, "relayfee")?)?)?,
-        // The timestamp only means anything alongside a message; without one it
-        // is a sentinel describing nothing.
-        errors_timestamp: match errors {
-            Some(_) => opt_field(value, "errorstimestamp")
-                .map(as_i64)
-                .transpose()?,
-            None => None,
-        },
+        // carried as sent: zebrad always sends it, the time of the last
+        // logged error or of the reply
+        errors_timestamp: opt_field(value, "errorstimestamp")
+            .map(as_i64)
+            .transpose()?,
         errors,
     })
 }
@@ -592,9 +589,19 @@ pub(crate) fn parse_peer_info(value: &serde_json::Value) -> Result<Vec<PeerInfo>
     as_array(value)?
         .iter()
         .map(|peer| {
+            let services = as_str(field(peer, "services")?)?;
             Ok(PeerInfo {
                 addr: as_str(field(peer, "addr")?)?.to_owned(),
+                services: u64::from_str_radix(services, 16)
+                    .map_err(|e| ParseError::Hex(format!("services `{services}`: {e}")))?,
+                last_received: as_u32(field(peer, "lastrecv")?)?,
                 inbound: as_bool(field(peer, "inbound")?)?,
+                ban_score: as_u32(field(peer, "banscore")?)?,
+                user_agent: as_str(field(peer, "subver")?)?.to_owned(),
+                version: as_u32(field(peer, "version")?)?,
+                connection_state: as_str(field(peer, "connection_state")?)?.to_owned(),
+                ping_time: opt_field(peer, "pingtime").map(as_f64).transpose()?,
+                ping_wait: opt_field(peer, "pingwait").map(as_f64).transpose()?,
             })
         })
         .collect()
@@ -721,6 +728,7 @@ pub(crate) fn parse_tx_out(value: &serde_json::Value) -> Result<Option<TxOut>, P
             .transpose()?
             .unwrap_or(false),
         script_pub_key: parse_script_pub_key(field(value, "scriptPubKey")?)?,
+        version: as_u32(field(value, "version")?)?,
     }))
 }
 
@@ -1452,6 +1460,48 @@ mod tests {
             parse_health_sentinel(Some(&json!("disk full")), "no errors").unwrap(),
             Some("disk full".to_owned())
         );
+    }
+
+    /// zebrad's `getpeerinfo` entry is carried whole (#35); the ping fields
+    /// are absent until a ping completes.
+    #[test]
+    fn getpeerinfo_carries_zebrads_fields() {
+        let reply = json!([{
+            "addr": "1.2.3.4:8233", "services": "0000000000000401", "lastrecv": 9,
+            "inbound": true, "banscore": 2, "subver": "/Zebra:2.1.0/", "version": 170_140,
+            "connection_state": "connected", "pingwait": 0.5,
+        }]);
+        let peers = parse_peer_info(&reply).expect("parses");
+        assert_eq!(
+            peers,
+            vec![PeerInfo {
+                addr: "1.2.3.4:8233".to_owned(),
+                services: 0x401,
+                last_received: 9,
+                inbound: true,
+                ban_score: 2,
+                user_agent: "/Zebra:2.1.0/".to_owned(),
+                version: 170_140,
+                connection_state: "connected".to_owned(),
+                ping_time: None,
+                ping_wait: Some(0.5),
+            }]
+        );
+    }
+
+    /// zebrad always sends `errorstimestamp`: carried with a healthy reply
+    /// too (#30).
+    #[test]
+    fn getinfo_carries_the_errors_timestamp_when_healthy() {
+        let reply = json!({
+            "version": 1, "build": "b", "subversion": "/s/", "protocolversion": 1,
+            "blocks": 1, "connections": 0, "difficulty": 1.0, "testnet": true,
+            "paytxfee": 0.0, "relayfee": 0.0,
+            "errors": "no errors", "errorstimestamp": 1_700_000_000i64,
+        });
+        let info = parse_node_info(&reply).expect("parses");
+        assert_eq!(info.errors, None);
+        assert_eq!(info.errors_timestamp, Some(1_700_000_000));
     }
 
     /// The exact zatoshi field wins over its ZEC twin, so no amount is routed
