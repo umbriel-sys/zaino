@@ -31,7 +31,7 @@ use zaino_proto::proto::{
         PingResponse, RawTransaction, SendResponse, TransparentAddressBlockFilter, TreeState,
         TxFilter,
     },
-    utils::{blockid_to_hashorheight, PoolTypeFilter, ValidatedBlockRangeRequest},
+    utils::{PoolTypeFilter, ValidatedBlockRangeRequest},
 };
 
 use crate::legacy::status::{Status, StatusType};
@@ -349,6 +349,20 @@ fn light_wallet_height(
     } else {
         off_best(false).then_some(0)
     }
+}
+
+/// A `BlockId` as zebra's hash-or-height: a 32-byte hash, else the height.
+fn blockid_to_hashorheight(block_id: BlockId) -> Option<HashOrHeight> {
+    <[u8; 32]>::try_from(block_id.hash)
+        .map(zebra_chain::block::Hash)
+        .map(HashOrHeight::from)
+        .or_else(|_| {
+            block_id
+                .height
+                .try_into()
+                .map(|height| HashOrHeight::Height(Height(height)))
+        })
+        .ok()
 }
 
 fn no_such_transaction() -> NodeBackedIndexerServiceError {

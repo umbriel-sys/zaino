@@ -5464,6 +5464,7 @@ name = "zaino-source-zebra"
 version = "0.2.2"
 dependencies = [
  "chrono",
+ "librocksdb-sys",
  "serde_json",
  "thiserror 2.0.21",
  "tokio",

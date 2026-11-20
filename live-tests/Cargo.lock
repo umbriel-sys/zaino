@@ -6040,15 +6040,12 @@ dependencies = [
 name = "zaino-proto"
 version = "0.6.1"
 dependencies = [
- "librocksdb-sys",
  "prost",
  "tonic",
  "tonic-prost",
  "tonic-prost-build",
  "which",
  "zaino-primitives",
- "zebra-chain",
- "zebra-state",
 ]
 
 [[package]]
@@ -6163,6 +6160,7 @@ name = "zaino-source-zebra"
 version = "0.2.2"
 dependencies = [
  "chrono",
+ "librocksdb-sys",
  "serde_json",
  "thiserror 2.0.20",
  "tokio",

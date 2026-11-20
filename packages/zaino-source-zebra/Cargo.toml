@@ -26,6 +26,14 @@ chrono.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
 zaino-consensus.workspace = true
+# Not used by this crate's code: it fixes a feature-unification bug that
+# breaks every cold build reaching `zebra-state`. `libzcash_script` builds
+# with bindgen 0.73, whose `runtime` feature makes clang-sys' stubs
+# dynamic-loading for the whole graph; `rocksdb` builds with bindgen 0.72
+# without it, so nothing loads libclang and the first stub panics. Naming
+# the feature here puts it back. Remove once `rocksdb` enables a
+# `bindgen-*` feature itself or the two bindgen versions converge.
+librocksdb-sys = { version = "0.17.3", features = ["bindgen-runtime"] }
 
 [dev-dependencies]
 tempfile.workspace = true
