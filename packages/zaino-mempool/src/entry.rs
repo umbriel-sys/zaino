@@ -56,6 +56,16 @@ impl MempoolEntry {
         crate::config::tx_cost(self.raw_len)
     }
 
+    /// The memory holding this entry: its shared allocation (the two
+    /// reference counts and the entry) and its serialized bytes.
+    pub fn memory_bytes(&self) -> u64 {
+        let allocation = 2usize
+            .saturating_mul(size_of::<usize>())
+            .saturating_add(size_of::<Self>())
+            .saturating_add(self.serialized_tx.len());
+        u64::try_from(allocation).unwrap_or(u64::MAX)
+    }
+
     /// The raw serialized transaction bytes.
     pub fn serialized_bytes(&self) -> &[u8] {
         self.serialized_tx.as_ref()

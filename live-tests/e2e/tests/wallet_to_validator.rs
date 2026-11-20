@@ -725,10 +725,9 @@ mod wallet {
     /// Σ serialized sizes), so they are compared directly — that is the
     /// cross-check that zaino's mirror holds the transactions the validator
     /// does, rather than that zaino agrees with itself. `usage` is not:
-    /// zaino reports the ZIP-401 cost total, each transaction floored at
-    /// `max(size, 10_000)` because that is the figure its own memory bound
-    /// is enforced against, while zebra reports its own memory estimate.
-    /// The floor makes `usage >= bytes` the only contractual relation.
+    /// zaino reports the memory its own set occupies (serialized bytes plus
+    /// the structures holding them), while zebra reports `bytes` again.
+    /// `usage >= bytes` is the only contractual relation.
     #[rstest]
     #[case::fetch(Backend::Fetch)]
     #[case::state(Backend::State)]

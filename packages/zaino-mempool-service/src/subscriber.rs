@@ -29,7 +29,8 @@ pub struct MempoolInfo {
     pub size: u64,
     /// Sum of serialized transaction sizes, in bytes.
     pub bytes: u64,
-    /// Approximate memory usage, in bytes (the ZIP-401 cost total).
+    /// The memory the set occupies, in bytes: each entry's allocation and
+    /// serialized bytes and the tables indexing them (C3).
     pub usage: u64,
 }
 
@@ -94,7 +95,7 @@ impl MempoolSubscriber {
         MempoolInfo {
             size: snapshot.tx_count() as u64,
             bytes: snapshot.raw_bytes(),
-            usage: snapshot.cost_bytes(),
+            usage: snapshot.memory_bytes(),
         }
     }
 

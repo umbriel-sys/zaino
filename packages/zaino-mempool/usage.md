@@ -121,7 +121,11 @@ can move it at runtime across every clone of the config.
 throughout). Read it through its accessors: `by_txid()` (lookup),
 `txids_sorted()` (reversed-byte order, for the shortened-txid exclude filter),
 `entries_in_order()`, `tx_count()`, `raw_bytes()`, `cost_bytes()`,
-`completeness()`, `unadmitted()`, `source_tip()`, and `is_ready()`.
+`memory_bytes()`, `completeness()`, `unadmitted()`, `source_tip()`, and
+`is_ready()`. `cost_bytes()` is the ZIP-401 total the capacity bound is
+enforced against; `memory_bytes()` is what the set actually occupies (each
+entry's allocation and serialized bytes, and the tables indexing them), the
+`usage` of `getmempoolinfo`.
 
 Construction is sealed — `empty()`, `from_entries()` and `retag()` are the only
 ways to build one. The type's invariants (the reversed-byte ordering, the

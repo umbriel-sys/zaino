@@ -145,6 +145,8 @@ pub struct MempoolSnapshot {
     raw_bytes: u64,
     /// Sum of per-entry ZIP-401 costs (the value bounded by `max_cost_bytes`).
     cost_bytes: u64,
+    /// The memory the set occupies: its entries and the tables indexing them.
+    memory_bytes: u64,
     /// Completeness of the transaction set.
     completeness: MempoolCompleteness,
     /// Txids the source reported that are **not** in the set.
@@ -175,9 +177,30 @@ impl MempoolSnapshot {
             tx_count: 0,
             raw_bytes: 0,
             cost_bytes: 0,
+            memory_bytes: 0,
             completeness: MempoolCompleteness::Complete,
             unadmitted: Arc::new(HashSet::new()),
         }
+    }
+
+    /// The memory a set occupies: every entry, and the capacity of the txid
+    /// table, the two ordered lists and the unadmitted set (a table slot is
+    /// its key, its value and one control byte).
+    fn memory_of(
+        by_txid: &HashMap<TransactionId, Arc<MempoolEntry>>,
+        unadmitted: &HashSet<TransactionId>,
+    ) -> u64 {
+        let txid = size_of::<TransactionId>();
+        let pointer = size_of::<Arc<MempoolEntry>>();
+        let tables = by_txid
+            .capacity()
+            .saturating_mul(txid.saturating_add(pointer).saturating_add(1))
+            .saturating_add(by_txid.len().saturating_mul(txid.saturating_add(pointer)))
+            .saturating_add(unadmitted.capacity().saturating_mul(txid.saturating_add(1)));
+        by_txid.values().map(|entry| entry.memory_bytes()).fold(
+            u64::try_from(tables).unwrap_or(u64::MAX),
+            u64::saturating_add,
+        )
     }
 
     /// The next published set, built from the entries it should hold.
@@ -220,6 +243,7 @@ impl MempoolSnapshot {
 
         let raw_bytes = entries_in_order.iter().map(|entry| entry.raw_len).sum();
         let cost_bytes = entries_in_order.iter().map(|entry| entry.cost()).sum();
+        let memory_bytes = Self::memory_of(&by_txid, &unadmitted);
 
         Self {
             source_tip,
@@ -231,6 +255,7 @@ impl MempoolSnapshot {
             entries_in_order: Arc::from(entries_in_order),
             raw_bytes,
             cost_bytes,
+            memory_bytes,
             completeness,
             unadmitted: Arc::new(unadmitted),
         }
@@ -269,6 +294,7 @@ impl MempoolSnapshot {
             tx_count: self.tx_count,
             raw_bytes: self.raw_bytes,
             cost_bytes: self.cost_bytes,
+            memory_bytes: Self::memory_of(&self.by_txid, &unadmitted),
             completeness,
             unadmitted,
         }
@@ -328,6 +354,13 @@ impl MempoolSnapshot {
     /// Sum of per-entry ZIP-401 costs (the value bounded by `max_cost_bytes`).
     pub fn cost_bytes(&self) -> u64 {
         self.cost_bytes
+    }
+
+    /// The memory the set occupies (`getmempoolinfo`'s `usage`): each
+    /// entry's allocation and serialized bytes, and the capacity of the
+    /// tables indexing them. Derived whenever the set is built or re-tagged.
+    pub fn memory_bytes(&self) -> u64 {
+        self.memory_bytes
     }
 
     /// Completeness of the transaction set.
@@ -457,6 +490,44 @@ mod tests {
             snapshot.cost_bytes(),
             crate::config::MEMPOOL_TRANSACTION_COST_THRESHOLD + 40_000
         );
+    }
+
+    /// The memory the set occupies is its entries' allocations and bytes
+    /// plus its tables, grows and shrinks with the set, and is nothing for
+    /// an empty one: never the ZIP-401 cost.
+    #[test]
+    fn memory_is_accounted_per_entry_and_table() {
+        assert_eq!(MempoolSnapshot::empty().memory_bytes(), 0);
+        let build = |entries: Vec<(TransactionId, Arc<MempoolEntry>)>| {
+            MempoolSnapshot::from_entries(
+                &MempoolSnapshot::empty(),
+                entries.into_iter().collect(),
+                Some(tip()),
+                MempoolCompleteness::Complete,
+                HashSet::new(),
+            )
+        };
+        let one = build(vec![entry(0x01, 500)]);
+        let two = build(vec![entry(0x01, 500), entry(0x02, 40_000)]);
+
+        let small = entry(0x01, 500).1.memory_bytes();
+        let allocation =
+            u64::try_from(2 * size_of::<usize>() + size_of::<MempoolEntry>()).expect("fits");
+        assert_eq!(small, allocation + 500);
+        assert!(one.memory_bytes() > small, "the tables are counted");
+        assert!(
+            one.memory_bytes() < one.cost_bytes(),
+            "not the ZIP-401 floor"
+        );
+        assert!(two.memory_bytes() >= one.memory_bytes() + allocation + 40_000);
+        assert!(two.memory_bytes() >= two.raw_bytes());
+
+        let retagged = two.retag(
+            Some(tip()),
+            MempoolCompleteness::Complete,
+            Arc::new(HashSet::new()),
+        );
+        assert_eq!(retagged.memory_bytes(), two.memory_bytes());
     }
 
     /// A re-tag republishes the same set: the generation must hold, or the

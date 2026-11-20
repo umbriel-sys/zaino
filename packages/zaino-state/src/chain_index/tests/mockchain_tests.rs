@@ -395,9 +395,16 @@ async fn get_mempool_info_agrees_with_the_served_set() {
         served.iter().map(|entry| entry.raw_len).sum::<u64>(),
         "getmempoolinfo's byte total does not match the transactions served"
     );
-    // `usage` is the ZIP-401 cost total, which floors each transaction at the
-    // cost threshold — so it is at least `bytes`, never below it.
-    assert!(info.usage >= info.bytes);
+    // `usage` is the memory the set occupies: the serialized bytes plus each
+    // entry's allocation and the tables, so it is above `bytes` and, for
+    // these small transactions, far below the ZIP-401 cost floor.
+    assert!(info.usage > info.bytes);
+    let cost_floor = u64::try_from(served.len()).expect("fits") * 10_000;
+    assert!(
+        info.usage < cost_floor,
+        "{} is not the cost total",
+        info.usage
+    );
 }
 
 /// An index on the active chain whose mempool has converged and is coherent;
