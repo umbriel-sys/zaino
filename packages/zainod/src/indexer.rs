@@ -164,7 +164,7 @@ impl<S: ServiceSource> Indexer<S> {
             loop {
                 // every tick: the heartbeat `/livez` answers from
                 #[cfg(feature = "prometheus")]
-                crate::admin::heartbeat();
+                crate::admin::heartbeat(indexer.readiness());
                 if last_log.elapsed() >= Duration::from_secs(10) {
                     indexer.log_status();
                     last_log = Instant::now();
@@ -233,6 +233,28 @@ impl<S: ServiceSource> Indexer<S> {
         statuses.push(grpc.status());
         statuses.extend(self.json_server.as_ref().map(JsonRpcServer::status));
         Some(statuses)
+    }
+
+    /// What `/readyz` reports: the components requests go through, the
+    /// store and its sync, and every index.
+    #[cfg(feature = "prometheus")]
+    fn readiness(&self) -> crate::admin::Readiness {
+        let service = self.service.statuses();
+        let server =
+            |status: Option<ComponentStatus>, name| status.unwrap_or_else(|| offline(name));
+        let mut serving = vec![
+            service.head,
+            service.mempool,
+            service.coherence,
+            server(self.server.as_ref().map(TonicServer::status), "gRPC"),
+        ];
+        serving.extend(self.json_server.as_ref().map(JsonRpcServer::status));
+        crate::admin::Readiness {
+            serving,
+            building: std::iter::once(service.store).chain(service.sync).collect(),
+            indexes: self.service.index_states(),
+            local: self.service.is_local(),
+        }
     }
 
     /// Logs every component's status, and whether every answer is local yet:

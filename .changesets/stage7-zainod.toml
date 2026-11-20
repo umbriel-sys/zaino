@@ -98,3 +98,17 @@ kind = "breaking"
 description = """
 Verbose `getrawtransaction` is served only for a transaction in a best-chain \
 block; a mempool or side-chain transaction answers −1."""
+
+[[changes]]
+crate = "zainod"
+kind = "feature"
+description = """
+Admin `/readyz`: `200` while the daemon answers requests (a store still \
+building does not make it unready), `503` otherwise; the JSON body lists \
+every component's lifecycle and health and how far every index serves."""
+
+[[changes]]
+crate = "zaino-service"
+kind = "feature"
+description = """
+`Service::index_states()`: how far each index of the store serves."""

@@ -92,10 +92,21 @@ async fn wait_until_local_resolves_when_nothing_is_building() {
         .filter(|(_, provision)| matches!(provision, Provision::Building { .. }))
         .collect();
     assert!(building.is_empty(), "{building:?}");
+    // every index of the full set is built; without a store none exists
+    use zaino_chain_store_service::Serviceability;
+    let states = service.index_states();
+    assert_eq!(states.len(), zaino_indexes::IndexId::ALL.len());
+    assert!(states
+        .iter()
+        .all(|(_, state)| matches!(state, Serviceability::ToHeight(_))));
 
     let remote = common::remote(&chain()).await;
     remote.wait_until_local().await.expect("nothing to build");
     assert!(remote.is_local());
+    assert!(remote
+        .index_states()
+        .iter()
+        .all(|(_, state)| *state == Serviceability::Absent));
     service.shutdown().await.expect("stops");
     remote.shutdown().await.expect("stops");
 }

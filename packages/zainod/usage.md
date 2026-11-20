@@ -158,20 +158,38 @@ timed-out liveness probe kills the pod). Feature `prometheus`.
 | ---------- | -------------------------------------- | ---------------------------- |
 | `/metrics` | Prometheus exposition: quantities only | never (render panic → `500`) |
 | `/livez`   | indexer loop still running             | no heartbeat for 30s         |
-| `/readyz`  | TODO                                   | TODO                         |
+| `/readyz`  | every component and index, as JSON     | the daemon is not answering requests |
 
-- Heartbeat republished by the indexer loop every 100ms
+- Heartbeat and readiness republished by the indexer loop every 100ms
 
-### `/readyz` — TODO
+### `/readyz`
 
-Status code: `200` iff every component `Ready` + `Healthy`. Body, per component (`zaino-component`
-`ComponentStatus`):
+`200` while the daemon answers requests: the chain head, the mempool and its
+coherence layer, the gRPC server and (when configured) the JSON-RPC server
+are `Ready` and neither `Critical` nor `Offline`, and the store and its
+background sync have not failed. A store that is still building does not
+make the daemon unready: the validator answers meanwhile. `503` otherwise,
+and until the loop first reports. The body is the same either way:
 
-| Field       | Values                                                  |
-| ----------- | ------------------------------------------------------- |
-| `name`      | chain index, finalised state, chain head, mempool, gRPC, JSON-RPC |
-| `lifecycle` | `Offline`, `Spawning`, `Syncing`, `Ready`, `Closing`    |
-| `health`    | `Healthy`, `Recoverable`, `Critical`, `Offline`         |
+```json
+{
+  "ready": true,
+  "local": false,
+  "components": [
+    { "name": "Mempool", "lifecycle": "Ready", "health": "Healthy", "reason": null }
+  ],
+  "indexes": [
+    { "name": "txid_location", "state": "building", "height": 1200000 }
+  ]
+}
+```
+
+| Field | Values |
+| --- | --- |
+| `local` | whether every answer is Zaino's own yet (nothing still building) |
+| `components[].lifecycle` | `Offline`, `Spawning`, `Syncing`, `Ready`, `Closing` |
+| `components[].health` | `Healthy`, `Recoverable`, `Critical`, `Offline` |
+| `indexes[].state` | `absent` (not enabled), `building`, `built`; `height` is how far it serves |
 
 ## Quantities on `/metrics`, modes on `/readyz`
 

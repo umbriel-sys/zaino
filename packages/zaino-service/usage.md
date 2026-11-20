@@ -133,7 +133,9 @@ resolves once a primary store has caught up with the head's floor
 still building: the store built and the chain head's extensions folded over
 it (`is_local()` asks now). `spawn` never waits for either; they are for a
 caller that wants only local answers, such as a test comparing two
-deployments. `store_tip()` is the store's committed tip and
+deployments. `index_states()` lists how far each index of the store serves
+(`Absent`, `Building(height)`, `ToHeight(height)`), for a readiness report.
+`store_tip()` is the store's committed tip and
 `mempool_frozen_for()` how long the coherent mempool has been frozen.
 `chain_snapshot()`, `with_chain(chain)` and `subscribe_tip()` give the chain
 view's snapshot, the service's reads over one, and the epochs as published.

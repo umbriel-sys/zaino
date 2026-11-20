@@ -10,6 +10,7 @@ use tokio_util::sync::CancellationToken;
 use zaino_chain::{ChainView as _, ChainViewComposer, ChainViewSync, StoreIndexes};
 use zaino_chain_head_service::{ChainHeadInitError, ChainHeadService, ChainHeadSubscriber};
 use zaino_chain_store::{ChainStoreError, ChainStoreIngest as _, Provenance};
+use zaino_chain_store_service::Serviceability;
 use zaino_chain_store_service::{BootError, ChainStore, LinkedChainStore, LinkedError, Polling};
 use zaino_component::{ComponentStatus, Lifecycle, StatusSource as _};
 use zaino_indexes::IndexId;
@@ -262,6 +263,15 @@ impl<S: ServiceSource> Service<S> {
     pub fn manifest(&self) -> ServiceManifest {
         let store = &self.store;
         ServiceManifest::derive(&self.view.serviceability(), |id| store.serviceability(id))
+    }
+
+    /// How far each index of the store serves, in index order; every index
+    /// is `Absent` without a store.
+    pub fn index_states(&self) -> Vec<(IndexId, Serviceability)> {
+        IndexId::ALL
+            .iter()
+            .map(|id| (*id, self.store.serviceability(*id)))
+            .collect()
     }
 
     /// Each component's status.

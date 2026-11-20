@@ -1,8 +1,7 @@
-//! Admin surface: `/metrics`, `/livez`, on a runtime of its own.
+//! Admin surface: `/metrics`, `/livez`, `/readyz`, on a runtime of its own.
 //!
 //! - Own thread + current-thread runtime: a probe answered from the saturated serving runtime
 //!   measures its queue, and a timed-out liveness probe gets the pod killed
-//! - `/readyz` TODO: per-component `ComponentStatus` (see `usage.md`)
 
 use std::{
     convert::Infallible,
@@ -16,6 +15,9 @@ use hyper::{body::Bytes, server::conn::http1, service::service_fn, Request, Resp
 use hyper_util::rt::{TokioIo, TokioTimer};
 use metrics_exporter_prometheus::PrometheusHandle;
 use tracing::{error, info, warn};
+use zaino_chain_store_service::Serviceability;
+use zaino_component::{ComponentStatus, Lifecycle};
+use zaino_indexes::IndexId;
 
 use crate::error::IndexerError;
 
@@ -34,15 +36,85 @@ const HEARTBEAT_MAX_AGE: Duration = Duration::from_secs(30);
 
 static HEARTBEAT: Mutex<Option<Instant>> = Mutex::new(None);
 
+/// What `/readyz` answers from: every component and every index, as the
+/// indexer loop last saw them.
+#[derive(Debug, Clone)]
+pub(crate) struct Readiness {
+    /// The components requests are answered through: all must be ready.
+    pub(crate) serving: Vec<ComponentStatus>,
+    /// The store and its background sync, which build while the validator
+    /// answers: they must be live.
+    pub(crate) building: Vec<ComponentStatus>,
+    /// How far each index serves.
+    pub(crate) indexes: Vec<(IndexId, Serviceability)>,
+    /// Whether every answer is Zaino's own yet.
+    pub(crate) local: bool,
+}
+
+impl Readiness {
+    /// Whether the daemon answers requests now.
+    fn is_ready(&self) -> bool {
+        self.serving
+            .iter()
+            .all(|status| status.lifecycle == Lifecycle::Ready && status.is_live())
+            && self.building.iter().all(ComponentStatus::is_live)
+    }
+
+    fn to_json(&self) -> serde_json::Value {
+        let component = |status: &ComponentStatus| {
+            serde_json::json!({
+                "name": status.name.to_string(),
+                "lifecycle": format!("{:?}", status.lifecycle),
+                "health": format!("{:?}", status.health),
+                "reason": status.reason,
+            })
+        };
+        let index = |(id, state): &(IndexId, Serviceability)| {
+            let (state, height) = match state {
+                Serviceability::Absent => ("absent", None),
+                Serviceability::Building(height) => ("building", *height),
+                Serviceability::ToHeight(height) => ("built", Some(*height)),
+            };
+            serde_json::json!({
+                "name": id.name(),
+                "state": state,
+                "height": height.map(u32::from),
+            })
+        };
+        serde_json::json!({
+            "ready": self.is_ready(),
+            "local": self.local,
+            "components": self
+                .serving
+                .iter()
+                .chain(&self.building)
+                .map(component)
+                .collect::<Vec<_>>(),
+            "indexes": self.indexes.iter().map(index).collect::<Vec<_>>(),
+        })
+    }
+}
+
+static READINESS: Mutex<Option<Readiness>> = Mutex::new(None);
+
 /// Called by the indexer loop every tick
-pub(crate) fn heartbeat() {
-    // Poison-tolerant: the lock only guards a `Copy` swap
+pub(crate) fn heartbeat(readiness: Readiness) {
+    // Poison-tolerant: each lock only guards a swap
     *HEARTBEAT.lock().unwrap_or_else(PoisonError::into_inner) = Some(Instant::now());
+    *READINESS.lock().unwrap_or_else(PoisonError::into_inner) = Some(readiness);
 }
 
 /// Supervisor restart: back to "still starting" (the respawn stops the loop, may outlast 30s)
 pub(crate) fn clear_heartbeat() {
     *HEARTBEAT.lock().unwrap_or_else(PoisonError::into_inner) = None;
+    *READINESS.lock().unwrap_or_else(PoisonError::into_inner) = None;
+}
+
+fn last_readiness() -> Option<Readiness> {
+    READINESS
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .clone()
 }
 
 fn last_heartbeat() -> Option<Instant> {
@@ -103,7 +175,7 @@ async fn serve(listener: std::net::TcpListener, handle: PrometheusHandle) {
         Ok(listener) => listener,
         Err(e) => return error!(%e, "admin listener failed to register with its runtime"),
     };
-    info!(endpoint = ?endpoint, "admin endpoint started: /metrics, /livez");
+    info!(endpoint = ?endpoint, "admin endpoint started: /metrics, /livez, /readyz");
 
     let connections = Arc::new(tokio::sync::Semaphore::new(MAX_CONNECTIONS));
     loop {
@@ -173,9 +245,29 @@ async fn route(
                 "unavailable".to_string(),
             ),
         },
+        "/readyz" => readyz(last_readiness()),
         _ => body(StatusCode::NOT_FOUND, PLAIN_CONTENT_TYPE, String::new()),
     }
 }
+
+/// `200` while the daemon answers requests, else `503`; the body lists every
+/// component and index either way. Not ready until the loop has reported.
+fn readyz(readiness: Option<Readiness>) -> Response<Full<Bytes>> {
+    let (ready, report) = match readiness {
+        Some(readiness) => (readiness.is_ready(), readiness.to_json()),
+        None => (
+            false,
+            serde_json::json!({ "ready": false, "local": false, "components": [], "indexes": [] }),
+        ),
+    };
+    let status = match ready {
+        true => StatusCode::OK,
+        false => StatusCode::SERVICE_UNAVAILABLE,
+    };
+    body(status, JSON_CONTENT_TYPE, report.to_string())
+}
+
+const JSON_CONTENT_TYPE: &str = "application/json";
 
 /// Prometheus text exposition format
 ///
@@ -195,6 +287,8 @@ fn body(status: StatusCode, content_type: &'static str, payload: String) -> Resp
 #[cfg(test)]
 mod tests {
     use super::*;
+    use zaino_component::{ComponentName, Health};
+    use zaino_primitives::types::Height;
 
     /// End-to-end over a real socket: bind, accept loop, hyper wiring, routing
     #[tokio::test]
@@ -243,7 +337,72 @@ mod tests {
             "{metrics}"
         );
         assert!(get("/livez").await.starts_with("HTTP/1.1 200"));
-        assert!(get("/readyz").await.starts_with("HTTP/1.1 404"));
+        let starting = get("/readyz").await;
+        assert!(starting.starts_with("HTTP/1.1 503"), "{starting}");
+        assert!(get("/nope").await.starts_with("HTTP/1.1 404"));
+    }
+
+    fn status(name: &'static str, lifecycle: Lifecycle, health: Health) -> ComponentStatus {
+        ComponentStatus::new(ComponentName(name), lifecycle, health)
+    }
+
+    fn readiness(head: Lifecycle, sync: Health) -> Readiness {
+        Readiness {
+            serving: vec![
+                status("chain head", head, Health::Healthy),
+                status("gRPC", Lifecycle::Ready, Health::Healthy),
+            ],
+            building: vec![status("sync", Lifecycle::Syncing, sync)],
+            indexes: vec![
+                (IndexId::CompactBlock, Serviceability::Absent),
+                (
+                    IndexId::TreeState,
+                    Serviceability::Building(Height::try_from(7).ok()),
+                ),
+                (
+                    IndexId::Spent,
+                    Serviceability::ToHeight(Height::try_from(9).expect("in range")),
+                ),
+            ],
+            local: false,
+        }
+    }
+
+    fn report(response: &Response<Full<Bytes>>) -> StatusCode {
+        response.status()
+    }
+
+    /// Ready while the serving components are ready, whatever is still
+    /// building; not ready while one is not, when the sync has failed, or
+    /// before the loop has reported.
+    #[test]
+    fn readyz_gates_on_serving_not_on_building() {
+        let ready = readiness(Lifecycle::Ready, Health::Healthy);
+        assert_eq!(report(&readyz(Some(ready.clone()))), StatusCode::OK);
+        for unready in [
+            readiness(Lifecycle::Syncing, Health::Healthy),
+            readiness(Lifecycle::Ready, Health::Critical),
+        ] {
+            assert_eq!(
+                report(&readyz(Some(unready))),
+                StatusCode::SERVICE_UNAVAILABLE
+            );
+        }
+        assert_eq!(report(&readyz(None)), StatusCode::SERVICE_UNAVAILABLE);
+
+        let json = ready.to_json();
+        assert_eq!(json["ready"], true);
+        assert_eq!(json["local"], false);
+        assert_eq!(json["components"][0]["name"], "chain head");
+        assert_eq!(json["components"][2]["lifecycle"], "Syncing");
+        assert_eq!(
+            json["indexes"],
+            serde_json::json!([
+                { "name": IndexId::CompactBlock.name(), "state": "absent", "height": null },
+                { "name": IndexId::TreeState.name(), "state": "building", "height": 7 },
+                { "name": IndexId::Spent.name(), "state": "built", "height": 9 },
+            ])
+        );
     }
 
     /// A port held by another socket fails the bind with an error that names the endpoint.
