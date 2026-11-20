@@ -180,6 +180,11 @@ that already exist. They cannot, and each split is load-bearing:
 - **`GetRawMempoolTransaction` is separate from `GetTransaction`** because
   `GetTransaction` may be routed to a state database that has no mempool. Bytes
   assembled from one source against a listing from another are not a mempool.
+  `get_transaction(txid, verbosity)` is `getrawtransaction` itself:
+  `TransactionVerbosity::Raw` answers `TransactionAnswer::Raw` (the bytes),
+  `Object` the validator's `TransactionVerbose`, whose `location()` is its
+  placement: a best-chain height, a side-chain block (no height, no
+  confirmations) or the mempool (no block).
 - **`GetMempoolSourceTip` is separate from `GetChainTip`** for the same reason,
   and this is the subtle one. `GetChainTip` is free to answer from whichever
   transport is fastest, and `ZebraValidator` prefers the state database. But a

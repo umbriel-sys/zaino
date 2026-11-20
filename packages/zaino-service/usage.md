@@ -70,7 +70,7 @@ by ChainView. Built on top:
 | `block_deltas(hash)` | composed from the indexed block and `previous_outputs`, with its chainwork where the store has built it; the validator's `getblockdeltas` where prevouts are not local |
 | `spent_info(outpoint)` | `Spend::Mined` from the spend index (I-09 and the head); else `Spend::Mempool` from the mempool coherent with the snapshot (`MempoolIncoherent` if only a mempool for another tip holds a spender); else the validator, `NotServed` if it lacks the method |
 | `txout_set_info()` | I-11 and the head; `NotServed` without them, ChainView's `Building` while the store has not reached the window, a fault if the head's set failed |
-| `raw_transaction(txid, block)` | ChainView's, only from `block` when given |
+| `transaction(txid, verbosity, block)` | the validator's `getrawtransaction` answer (`TransactionAnswer::Raw` bytes or the `Object`) for a transaction Zaino's state knows: one ChainView places (best chain, side chain, or a hole), or one the tip-agnostic mempool set lists, unadmitted ones included; raw bytes the mempool holds are served from it. `None` otherwise, whatever the validator would answer. With `block`, only a transaction ChainView places in that block. Its height is `transaction_status`'s to give |
 | `address_utxos(addresses, page)` | ChainView's page and the tip it describes |
 | `address_txids(addresses, start, end)` | ChainView's, over zebrad's `build_height_range`: an absent start is genesis, an absent or zero end the tip, both clamp to the snapshot's tip; a start above the end is `ServiceError::InvalidRange` (zebrad's message) |
 | `address_deltas(request)` | ChainView's, over the same range rule (the single-address form reads the whole chain); with `chain_info`, the range's bounding blocks |
@@ -88,7 +88,6 @@ The mempool reads (D6-02) never ask the validator:
 | --- | --- |
 | `mempool_txids`, `mempool_info`, `mempool_entries(exclude)` | the tip-agnostic set; a malformed exclude is `InvalidParameter`, never trimmed |
 | `mempool_stream(pinned)` | the coherent view until the tip moves; `pinned` asks for one coherent with this snapshot (`None` otherwise); a lag ends it with `MempoolStreamLagged` |
-| `transaction(txid)` | the coherent mempool (to be mined at the tip's successor), else the chain; a mempool not coherent with this snapshot that holds a txid the chain lacks is `MempoolIncoherent` |
 | `transaction_status(txid)` | its blocks, and the mempool: `best` when coherent with this snapshot, `elsewhere` (at the successor of the mempool's tip as the chain holds it now) when not |
 
 The listings and the stream need no snapshot, so `Service` has them too:

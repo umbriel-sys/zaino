@@ -188,8 +188,14 @@ answered in kind.
 64 hex digits: Zaino's own where it holds the block, else the validator's;
 the key is absent when neither is known.
 
-Verbose `getrawtransaction` is served for a transaction in a best-chain
-block; for a mempool or side-chain transaction it answers −1.
+`getrawtransaction` is the validator's answer at either verbosity for a
+transaction Zaino's state knows: mined on the best chain, in a side-chain
+block (verbose: `height` −1, `confirmations` 0, as zebrad) or listed in the
+mempool (verbose: no block fields). A transaction Zaino knows nothing of is
+−5 whatever the validator holds. With `blockhash`, Zaino checks the
+transaction is in that block and then asks the validator by txid alone: the
+answer is refused (−5) unless Zaino places it there, but a transaction mined
+in several blocks is described by the validator's choice of block.
 
 With `cookie_dir` set the server writes `<cookie_dir>/.cookie`
 (`__cookie__:<secret>`, owner-only) and requires it as the Basic password.

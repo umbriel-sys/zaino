@@ -92,8 +92,8 @@ every built block does; a hand-made `MockBlock` may not.
 
 ## The contract
 
-`contract::{blocks, tree_roots, treestates, transactions, subtrees,
-address_index, mempool, chain_info}` check, through the ports alone, what
+`contract::{blocks, tree_roots, treestates, transactions, side_chain,
+subtrees, address_index, mempool, chain_info}` check, through the ports alone, what
 every source must answer: heights and hashes agree and link, refusals are the
 ports' domain errors (an unknown hash, a height past the tip, a malformed
 address or one for another network), treestates carry no root, genesis
@@ -108,6 +108,13 @@ zebra-rpc's own `TransactionObject` builder (prevouts from the served best
 chain) and reads it back with the zcash RPC adapter's parser, so the mock
 answers exactly as an adapter reading zebrad does; `chain_info` checks every
 verbosity names the block's hash, height, parent and transactions.
+
+`get_transaction` answers at either verbosity and, as zebrad, looks in the
+mempool first, then the best chain, then side blocks; its object is the same
+builder's (a side-chain one with its block and no height, a mempool one
+unplaced). `MockChain::zebrad_transaction(txid)` is that builder's JSON, the
+oracle for a transport's verbose `getrawtransaction`. `CallArg::Transaction`
+logs the verbosity asked.
 
 Where zcashd and zebra legitimately differ the mock has a `NodeFacts` switch
 and the contract accepts both. `NodeFacts::chainwork = false` answers

@@ -118,6 +118,11 @@ It implements 23 ports: block and header reads, chain tip, address queries
 commitment trees, subtree roots, transactions, block deltas, blockchain info,
 and the block/tip subscriptions.
 
+`get_transaction` answers both verbosities for a mined transaction, on the
+best chain or a side chain, building the object with zebra-rpc's own
+`TransactionObject`; one the state does not hold (a mempool transaction)
+falls through to the RPC client.
+
 It does **not** implement the mempool ports, the passthrough ports
 (`getpeerinfo`, `getmininginfo`, `getnetworksolps`, …) or `SubscribeChainTip`.
 That is the capability model working, not a gap to fill: a state service

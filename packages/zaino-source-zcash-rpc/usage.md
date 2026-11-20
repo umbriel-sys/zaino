@@ -29,6 +29,8 @@ adapter is an optional accelerator, not an alternative.
   the part most likely to be got wrong.
 - `parse_transaction_object` reads a verbose `getblock` transaction object
   exactly as the adapter does, so the mock answers through the same parser.
+  A side-chain placement (`height` −1 with 0 confirmations and a `blockhash`)
+  is read as no height and no confirmations; any other negative is refused.
 - `raw_block.rs` — raw block bytes → domain `Block` through
   [`zaino-encoding`](../zaino-encoding/usage.md)'s decoder, plus the `Full`
   level's cross-check against zebra's own parse.

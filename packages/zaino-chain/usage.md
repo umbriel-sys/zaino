@@ -260,6 +260,13 @@ best-chain-only index is correct there rather than deficient. In a hole
 between them (no store, or one still building) the validator places the
 transaction: its mined height, then its index in that block.
 
+`raw_transaction(txid, verbosity)` is the validator's `getrawtransaction`
+answer (`TransactionAnswer::Raw` or `Object`) for a transaction the view
+places by that same rule, a side-chain one included; `None` for any other,
+the validator's mempool included. A locally placed transaction is asked at
+the verbosity given; one in a hole is asked as an object, which places it and
+carries its bytes.
+
 `block_height` returns `None` for a branch hash — it answers about the chain the
 caller is reading. `fork_point` is the branch question, and still finds it.
 

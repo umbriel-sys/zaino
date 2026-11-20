@@ -99,10 +99,40 @@ and shutdown is bounded by `serve.grpc.limits.shutdown_timeout_secs` \
 
 [[changes]]
 crate = "zainod"
+kind = "fix"
+description = """
+Verbose `getrawtransaction` is the validator's object for every transaction \
+Zaino's state knows: best chain, side chain (`height` −1, `confirmations` 0) \
+and mempool. `getaddressdeltas` checks its addresses as the other address \
+methods do."""
+
+[[changes]]
+crate = "zaino-source"
 kind = "breaking"
 description = """
-Verbose `getrawtransaction` is served only for a transaction in a best-chain \
-block; a mempool or side-chain transaction answers −1."""
+`get_transaction(txid, verbosity)` answers `TransactionAnswer` (`Raw` bytes \
+or the validator's `Object`); `TransactionResponse` is removed."""
+
+[[changes]]
+crate = "zaino-chain"
+kind = "breaking"
+description = """
+`raw_transaction(txid, verbosity)` answers `TransactionAnswer` only for a \
+transaction the view places; `RawTransaction` is removed."""
+
+[[changes]]
+crate = "zaino-service"
+kind = "breaking"
+description = """
+`ServiceSnapshot::transaction(txid, verbosity, block)` replaces \
+`transaction(txid)` and `raw_transaction(txid, block)`; `ServedTransaction` \
+is removed."""
+
+[[changes]]
+crate = "zaino-chain-store"
+kind = "breaking"
+description = """
+`ChainStoreSource` no longer requires `OneShotGetTransaction`."""
 
 [[changes]]
 crate = "zainod"
