@@ -38,7 +38,7 @@ impl PolledChainTip {
     /// Start polling `source` every `interval`.
     ///
     /// Takes one reading before returning, so the subscription always has a
-    /// real tip to hand out and never a placeholder. That makes construction
+    /// real tip to hand out and never an invented one. That makes construction
     /// fallible: a source that cannot answer once cannot seed a subscription,
     /// and failing here is better than handing back a channel that may never
     /// carry anything.
@@ -123,8 +123,8 @@ mod tests {
         (polled, source)
     }
 
-    /// The constructor must not hand back a subscription seeded with a
-    /// placeholder, so it reads once and fails if that read fails.
+    /// The constructor must not hand back a subscription seeded with an
+    /// invented tip, so it reads once and fails if that read fails.
     #[tokio::test(start_paused = true)]
     async fn spawn_fails_when_the_source_has_no_tip() {
         let result = PolledChainTip::spawn(Scripted::default(), INTERVAL).await;

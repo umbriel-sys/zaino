@@ -440,7 +440,7 @@ fn test_service_parts(
 
 #[cfg(test)]
 impl<V: ChainIndexSourcePorts + ServiceSource> NodeBackedIndexerService<V> {
-    /// Wraps a chain index in a service for tests, with placeholder
+    /// Wraps a chain index in a service for tests, with test-only
     /// metadata/config. Lets unit tests exercise the service lifecycle over a
     /// mock source (no real validator). Production builds go through
     /// [`ZcashService::spawn`].
@@ -459,7 +459,7 @@ impl<V: ChainIndexSourcePorts + ServiceSource> NodeBackedIndexerService<V> {
 
 #[cfg(test)]
 impl<V: ChainIndexSourcePorts + ServiceSource> NodeBackedIndexerServiceSubscriber<V> {
-    /// Wraps a chain-index subscriber in a service subscriber for tests, with placeholder
+    /// Wraps a chain-index subscriber in a service subscriber for tests, with test-only
     /// metadata/config. Lets unit tests drive the service RPC layer over a mock source
     /// (no real validator). Production builds go through [`ZcashService::get_subscriber`].
     pub(crate) fn new_for_test(

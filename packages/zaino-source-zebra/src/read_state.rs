@@ -378,7 +378,7 @@ impl zaino_source::OneShotGetSubtreeRoots for ZebraReadStateAdapter {
         // the pair. Sapling roots serialise via `to_bytes`; Orchard and
         // Ironwood share a representation and use `to_repr`.
         // An out-of-range end height is propagated rather than defaulted:
-        // substituting a placeholder would put a subtree at the wrong point in
+        // substituting another height would put a subtree at the wrong point in
         // the chain, which is worse than failing the query.
         let roots: Result<Vec<_>, ReadStateError> = match (pool, response) {
             (ShieldedPool::Sapling, ReadResponse::SaplingSubtrees(subtrees)) => subtrees
@@ -497,7 +497,7 @@ fn within_result_cap<E>(rows: usize, too_many: impl FnOnce(usize) -> E) -> Resul
     }
 }
 
-/// Convert a zebra height, failing rather than substituting a placeholder.
+/// Convert a zebra height, failing rather than substituting another.
 fn subtree_end_height(height: zebra_chain::block::Height) -> Result<Height, ReadStateError> {
     Height::try_from(height.0).map_err(ReadStateError::invalid_data)
 }

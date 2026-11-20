@@ -167,7 +167,7 @@ fn initialise_counters() {
     }
 }
 
-/// Labels unknown until emission; a partial seed is a different series, not a placeholder
+/// Labels unknown until emission; a partial seed is a different series, not this one's zero
 ///
 /// - `rate()` over an absent series yields no data, so alerts need `or vector(0)`
 const UNSEEDABLE_COUNTERS: &[&str] = &[

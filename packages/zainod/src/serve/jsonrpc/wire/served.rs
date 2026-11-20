@@ -785,7 +785,7 @@ mod tests {
 
     /// `getblockchaininfo` is zebrad's serialization (captured from
     /// zebra-rpc v7's `GetBlockchainInfoResponse`) but for `chainwork`,
-    /// which zebrad serves as a placeholder `0` and Zaino omits when unknown.
+    /// which zebrad always serves as `0` and Zaino omits when unknown.
     #[test]
     fn getblockchaininfo_is_zebrads_json_but_for_chainwork() {
         let pool = |id: &str, zec: f64, zat: u64, monitored: bool| json!({ "id": id, "chainValue": zec, "chainValueZat": zat, "monitored": monitored });

@@ -708,7 +708,7 @@ where
     /// ```
     ///
     /// `None` when the anchor's chainwork is not known, which is the honest
-    /// answer rather than a placeholder: see [`ChainBlock::chainwork`].
+    /// answer rather than a made-up value: see [`ChainBlock::chainwork`].
     ///
     /// Correct for a competing block as well as a canonical one. Every block
     /// the head retains accumulates from the same anchor, and a competing
