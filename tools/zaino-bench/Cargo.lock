@@ -5337,6 +5337,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "zaino-encoding"
+version = "0.1.0"
+dependencies = [
+ "blake2b_simd",
+ "orchard",
+ "sapling-crypto",
+ "sha2 0.10.9",
+ "thiserror 2.0.21",
+ "zaino-consensus",
+ "zaino-primitives",
+]
+
+[[package]]
 name = "zaino-indexes"
 version = "0.1.0"
 dependencies = [
@@ -5430,17 +5443,15 @@ dependencies = [
 name = "zaino-source-zcash-rpc"
 version = "0.2.2"
 dependencies = [
- "blake2b_simd",
  "hex",
  "incrementalmerkletree",
  "orchard",
  "sapling-crypto",
  "serde",
  "serde_json",
- "sha2 0.10.9",
  "thiserror 2.0.21",
  "tokio",
- "zaino-consensus",
+ "zaino-encoding",
  "zaino-primitives",
  "zaino-rpc",
  "zaino-source",
