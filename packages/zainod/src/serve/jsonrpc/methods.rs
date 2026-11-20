@@ -18,7 +18,7 @@ use zaino_service::{Placement, ServiceError, ServiceSnapshot, ServiceSource};
 use zaino_source::{SolutionRateWindow, UtxoPage};
 
 use self::errors::{
-    chain_error, internal, not_served, rpc_error, service_error, DESERIALIZATION,
+    chain_error, internal, invalid_params, not_served, rpc_error, service_error, DESERIALIZATION,
     INVALID_ADDRESS_OR_KEY, INVALID_PARAMETER, MISC,
 };
 use super::wire::address::{AddressNetwork, ZValidateAddressWire};
@@ -409,6 +409,11 @@ impl<S: ServiceSource + 'static> ZainoRpcServer for JsonRpcMethods<S> {
             .map_err(|error| match error {
                 // zebrad's answer for a best-chain height without a block
                 ServiceError::MissingBlock(_) => rpc_error(INVALID_PARAMETER, "Block not found"),
+                // zebrad's invalid params, which the server answers as −1
+                ServiceError::InvalidParameter(_) => invalid_params(match index >= 0 {
+                    true => "Provided index is greater than the current tip",
+                    false => "Provided negative index ends up with a negative height",
+                }),
                 error => service_error(error),
             })
     }

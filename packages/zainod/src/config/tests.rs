@@ -41,6 +41,22 @@ fn the_generated_default_round_trips() {
     );
 }
 
+/// The chain head runs at the consensus depth, and at a tenth of it under
+/// `fast-test-seam`.
+#[test]
+fn the_seam_depth_follows_the_fast_test_seam_feature() {
+    let depth = ZainodConfig::default()
+        .service_config()
+        .chain_head
+        .max_depth();
+    #[cfg(not(feature = "fast-test-seam"))]
+    assert_eq!(depth, zaino_consensus::MAX_NONFINALISED_DEPTH);
+    #[cfg(feature = "fast-test-seam")]
+    assert_eq!(depth, zaino_consensus::FAST_TEST_MAX_NONFINALISED_DEPTH);
+    assert_eq!(zaino_consensus::MAX_NONFINALISED_DEPTH, 1_001);
+    assert_eq!(zaino_consensus::FAST_TEST_MAX_NONFINALISED_DEPTH, 100);
+}
+
 /// The example config in `docs/` is the generated default but for its store
 /// path, which the default takes from this machine.
 #[test]

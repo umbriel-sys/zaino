@@ -33,7 +33,7 @@ pub(super) fn not_served(message: impl std::fmt::Display) -> ErrorObjectOwned {
 }
 
 /// A request's parameters contradict each other (−32602).
-fn invalid_params(message: impl std::fmt::Display) -> ErrorObjectOwned {
+pub(super) fn invalid_params(message: impl std::fmt::Display) -> ErrorObjectOwned {
     rpc_error(ErrorCode::InvalidParams.code(), message)
 }
 

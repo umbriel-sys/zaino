@@ -2,7 +2,13 @@
 
 The binary and `zainodlib`: the daemon that runs `zaino-service` over one
 validator source and serves it over gRPC and JSON-RPC. `zainod` is the one
-crate that names source adapters; everything below it is built on ports.
+crate that names source adapters; everything below it is built on ports. It
+names no zebra crate or type itself: zebra's code (the read-state service
+among it) is linked through the `zaino-source-zebra` adapter.
+
+The finalised seam is `zaino_consensus::MAX_NONFINALISED_DEPTH` (1,001)
+blocks below the tip. The test-only cargo feature `fast-test-seam` makes it
+100, for tests that need a seam without a thousand-block chain.
 
 ## Configuration
 
@@ -65,11 +71,11 @@ the `zebra` kind's.
 `[indexes].set = "empty"` runs without a store: every read is the
 validator's.
 
-At startup the validator's reported chain is checked against `network`: a
-mainnet validator under a test-network config, or the reverse, is refused
-before anything is indexed. The chain name cannot tell regtest from the
-public testnet (zebrad reports `test` for both); the `zebra` kind also
-verifies the activation schedule.
+At startup, for either kind, the validator's activation schedule is verified
+against `network` before anything is indexed: on Mainnet and the public
+testnet every upgrade the validator reports must activate where the compiled
+parameters say; on regtest the validator's schedule is adopted; a consensus
+branch this build does not know is refused when it is in force.
 
 ## Serving
 
@@ -175,7 +181,7 @@ answered in kind.
 | bytes that are not a transaction | −22 |
 | a submission the validator refuses | the validator's own (−25, −26, −27) |
 | a method this deployment or its validator does not answer | −32601 |
-| parameters jsonrpsee cannot decode; a start above an end | −1 (zcashd's code for invalid parameters) |
+| parameters jsonrpsee cannot decode; a start above an end; a `getblockhash` index past the tip | −1 (zcashd's code for invalid parameters), as zebrad |
 | the validator is unreachable, or Zaino failed | −32603 |
 
 `getblockchaininfo.chainwork` is the best block's cumulative work as zcashd's

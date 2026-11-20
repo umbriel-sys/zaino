@@ -22,6 +22,9 @@ path = "src/lib.rs"
 [features]
 default = []
 
+# TEST-ONLY seam: non-finalised depth 1001 -> 100 (NFS tests mine no 1k-block chain)
+fast-test-seam = []
+
 # Removes network restrictions.
 no_tls_use_unencrypted_traffic = ["tonic/tls-native-roots"]
 

@@ -6,7 +6,7 @@ use std::sync::Arc;
 
 use tracing::info;
 use zaino_rpc::{auth_from_parts, probe_node, RpcClient, RpcClientConfig};
-use zaino_source::OneShotGetChainTip as _;
+use zaino_source::{GetBlockchainInfo, OneShotGetChainTip as _, RetryPolicy, ValidatorClient};
 use zaino_source_zcash_rpc::ZcashRpcAdapter;
 use zaino_source_zebra::{ReadStateSettings, ZebraValidator};
 
@@ -16,6 +16,26 @@ use crate::indexer::{Indexer, Listeners, Running};
 
 /// How long between looks at a validator that serves no block yet.
 const NOT_READY_RETRY: std::time::Duration = std::time::Duration::from_secs(3);
+
+/// Verifies the validator's activation schedule against the configured
+/// network, exactly as the zebra source does when it connects: on Mainnet
+/// and the public testnet every reported upgrade must activate where the
+/// compiled parameters say, regtest's schedule is the validator's, and a
+/// consensus branch this build does not know is refused when in force.
+async fn verify_network<V>(
+    network: zaino_primitives::types::Network,
+    address: &str,
+    validator: V,
+) -> Result<(), IndexerError>
+where
+    ValidatorClient<V>: GetBlockchainInfo,
+{
+    let client = ValidatorClient::new(validator, RetryPolicy::default());
+    zaino_source_zebra::adopt_network(network, address, &client)
+        .await
+        .map(drop)
+        .map_err(IndexerError::from)
+}
 
 /// Connects to the configured validator and launches the indexer on it.
 pub(crate) async fn launch(
@@ -65,12 +85,48 @@ pub(crate) async fn launch(
                 info!(%error, "waiting for the validator to serve its first block");
                 tokio::time::sleep(NOT_READY_RETRY).await;
             }
+            let adopting = RpcClient::new(rpc())
+                .map_err(|error| IndexerError::Validator(error.to_string()))?;
+            verify_network(
+                config.network,
+                &validator.rpc_address,
+                ZcashRpcAdapter::new(adopting),
+            )
+            .await?;
             Indexer::launch(Arc::new(source), config, listeners).await
         }
         (ValidatorKind::Zebra, None) | (ValidatorKind::ZcashRpc, Some(_)) => {
             Err(IndexerError::ConfigError(
                 "validator.kind and [validator.read_state] disagree".to_string(),
             ))
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use zaino_primitives::types::Network;
+    use zaino_source_mock::{MockChain, NodeFacts};
+
+    use super::*;
+
+    /// A generic validator's schedule is verified as the zebra source's is:
+    /// a regtest schedule is adopted under `Regtest`, and refused under
+    /// Mainnet and the public testnet, whose upgrades activate elsewhere.
+    #[tokio::test]
+    async fn a_generic_validators_schedule_is_verified() {
+        let validator = || MockChain::new(NodeFacts::regtest(), crate::serve::testing::blocks(20));
+        verify_network(Network::Regtest, "mock", validator())
+            .await
+            .expect("regtest adopts the validator's schedule");
+        for network in [Network::Mainnet, Network::PubTestnet] {
+            let refused = verify_network(network, "mock", validator())
+                .await
+                .expect_err("another network's schedule");
+            assert!(
+                matches!(refused, IndexerError::Network(_)),
+                "{network:?}: {refused}"
+            );
         }
     }
 }

@@ -25,14 +25,9 @@ pub enum IndexerError {
     /// The validator could not be connected to.
     #[error("validator connection error: {0}")]
     Validator(String),
-    /// The validator is on another network than the one configured.
-    #[error("the validator is on `{validator}`, but `network = {configured:?}` is configured")]
-    WrongNetwork {
-        /// The configured network.
-        configured: zaino_primitives::types::Network,
-        /// The chain the validator reports.
-        validator: String,
-    },
+    /// The validator's activation schedule is not the configured network's.
+    #[error("{0}")]
+    Network(#[from] zaino_source_zebra::AdoptError),
     /// The service did not start.
     #[error("service error: {0}")]
     Service(#[from] zaino_service::SpawnError),

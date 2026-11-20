@@ -25,6 +25,14 @@ use crate::serve::config::{GrpcServerConfig, JsonRpcServerConfig};
 
 pub mod paths;
 
+/// How deep the chain head runs below the tip, the finalised seam: the
+/// consensus reorg bound, or a tenth of it under the test-only
+/// `fast-test-seam` feature.
+#[cfg(not(feature = "fast-test-seam"))]
+pub(crate) const NONFINALISED_DEPTH: u32 = zaino_consensus::MAX_NONFINALISED_DEPTH;
+#[cfg(feature = "fast-test-seam")]
+pub(crate) const NONFINALISED_DEPTH: u32 = zaino_consensus::FAST_TEST_MAX_NONFINALISED_DEPTH;
+
 /// The header `generate-config` writes above the defaults.
 pub const GENERATED_CONFIG_HEADER: &str = r#"# Zaino Configuration
 #
@@ -284,7 +292,9 @@ impl ZainodConfig {
         ServiceConfig {
             store,
             chain_view: zaino_chain::ChainViewConfig::default(),
-            chain_head: zaino_chain_head::ChainHeadConfig::default(),
+            chain_head: zaino_chain_head::ChainHeadConfig::with_max_depth(
+                std::num::NonZeroU32::new(NONFINALISED_DEPTH).unwrap_or(std::num::NonZeroU32::MIN),
+            ),
             mempool: self.mempool.to_mempool_config(),
         }
     }

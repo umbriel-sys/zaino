@@ -42,7 +42,9 @@ crate = "zainod"
 kind = "breaking"
 description = """
 **The daemon runs on `zaino-service`.** zainod no longer depends on \
-`zaino-state` or any zebra crate: it picks one validator source from config \
+`zaino-state` and names no zebra crate or type itself; zebra's code is \
+linked only through the `zaino-source-zebra` adapter. It picks one \
+validator source from config \
 (`kind = "zebra"` with `[validator.read_state]`, or `kind = "zcash_rpc"`), \
 spawns the service over it, and serves it. `zainodlib::indexer::launch` \
 returns the task and a `ServiceHandle` (`wait_until_local`, `store_tip`, \
@@ -70,7 +72,10 @@ lightwalletd service and the indexed-tip service over `Backend<S>`) and \
 `JsonRpcServer::spawn` takes the method table. `GrpcClient`, \
 `JsonRpcClient`, `grpc_routes` and the zebra-typed wire modules are removed; \
 the JSON-RPC shapes are Zaino types pinned to JSON captured from zebra-rpc \
-v7. The cargo features `test_dependencies` and `fast-test-seam` are removed."""
+v7. The cargo feature `test_dependencies` is removed (serving on pre-bound \
+listeners is part of the normal launch path); `fast-test-seam` stays and now \
+sets the chain head's depth in zainod itself (1,001 blocks, or 100 with the \
+feature)."""
 
 [[changes]]
 crate = "zainod"
@@ -117,10 +122,11 @@ description = """
 crate = "zainod"
 kind = "fix"
 description = """
-The daemon refuses to start when the validator's reported chain is not the \
-configured `network` (mainnet against a test network, or the reverse): \
-`IndexerError::WrongNetwork`. A panicked gRPC stream task ends its stream \
-with `INTERNAL` instead of as if it had finished."""
+The validator's activation schedule is verified against the configured \
+`network` for the generic `zcash_rpc` source as it is for `zebra` \
+(`IndexerError::Network`). A panicked gRPC stream task ends its stream with \
+`INTERNAL` instead of as if it had finished. `getblockhash` past the tip \
+answers zebrad's invalid-params error."""
 
 [[changes]]
 crate = "zaino-proto"

@@ -261,11 +261,9 @@ async fn jsonrpc_tip_and_hashes_are_the_chains() {
         ok(&rpc, "getblockhash", json!([-2])).await,
         json!(hash(&chain, SERVED - 1))
     );
+    // as zebrad: invalid params, which the server answers as −1
     for past in [json!([SERVED + 1]), json!([-(i64::from(SERVED) + 2)])] {
-        assert_eq!(
-            call(&rpc, "getblockhash", past).await,
-            Err(INVALID_PARAMETER)
-        );
+        assert_eq!(call(&rpc, "getblockhash", past).await, Err(INVALID_PARAMS));
     }
 
     let time = block(&chain, 50).block.header.time;
