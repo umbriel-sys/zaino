@@ -41,6 +41,24 @@ fn the_generated_default_round_trips() {
     );
 }
 
+/// The example config in `docs/` is the generated default but for its store
+/// path, which the default takes from this machine.
+#[test]
+fn the_documented_example_is_the_generated_default() {
+    let example = include_str!("../../../../docs/example_configs/zainod.toml");
+    let loaded = load(example, "ZAINOTEST_NONE").expect("loads");
+    assert_eq!(loaded.persistence.path, PathBuf::from("/var/cache/zaino"));
+    let mut expected = ZainodConfig::default();
+    expected.persistence.path = loaded.persistence.path.clone();
+    assert_eq!(loaded, expected);
+    let generated = generate_default_config().expect("generates");
+    let path_line = |line: &&str| !line.starts_with("path = ");
+    assert_eq!(
+        example.lines().filter(path_line).collect::<Vec<_>>(),
+        generated.lines().filter(path_line).collect::<Vec<_>>()
+    );
+}
+
 /// Every section is read; the JSON-RPC server and the admin endpoint are
 /// off unless their tables are present.
 #[test]

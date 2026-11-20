@@ -22,7 +22,7 @@
 //! The types here are domain types. They carry raw key material as bytes, not
 //! hex, and they do not derive `Serialize`. The legacy-compatible JSON shapes
 //! these RPCs return — field names, hex encoding, the `type` / `address_type`
-//! duplication — are the serving layer's concern and live in `zaino-serve`.
+//! duplication — are the serving layer's concern and live in `zainod::serve`.
 //!
 //! # Network parameterisation
 //!

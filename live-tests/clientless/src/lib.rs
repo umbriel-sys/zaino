@@ -5,8 +5,8 @@
 pub mod rpc {
     pub mod json_rpc {
         // One vector is enough here: the per-kind table (including Sprout,
-        // which Zaino reports invalid) is a unit test in `zaino-serve`'s
-        // `wire::address`.
+        // which Zaino reports invalid) is a unit test in zainod's
+        // `serve::jsonrpc::wire::address`.
         pub const VALID_SAPLING_ADDRESS: &str = "zregtestsapling1jalqhycwumq3unfxlzyzcktq3n478n82k2wacvl8gwfxk6ahshkxmtp2034qj28n7gl92ka5wca";
     }
 

@@ -77,8 +77,7 @@ packages/                          Cargo workspace member crates (28), in depend
   zaino-chain/                       ChainView: the unified chain read surface, ports + composer
   zaino-service/                     The indexer service: store, chain head, ChainView, mempool, manifest
   zaino-state/                       The legacy indexer surface, on the service
-  zaino-serve/                       gRPC + JSON-RPC servers, and the served JSON schema
-  zainod/                            Daemon binary
+  zainod/                            Daemon: source selection, gRPC + JSON-RPC servers, the served JSON schema
 
 live-tests/                        Live-test suite — standalone workspace over a real zebrad and an in-process zainod
   e2e/                               End-to-end partition (wallet client -> Zaino -> validator)
@@ -232,8 +231,7 @@ mistakes its design is trying to prevent.
 - [`zaino-chain`](./packages/zaino-chain/usage.md): ChainView's ports, how coverage decides which provider answers, and what a hole between the tiers degrades versus what it refuses.
 - [`zaino-service`](./packages/zaino-service/usage.md): the one configurable service, its store modes, and the manifest of who answers each capability.
 - [`zaino-state`](./packages/zaino-state/usage.md): the legacy indexer surface on the service, and its legacy vocabulary.
-- [`zaino-serve`](./packages/zaino-serve/usage.md): served RPCs.
-- [`zainod`](./packages/zainod/usage.md): the admin listener — what goes on `/metrics`, `/metrics` (quantities) vs `/readyz` (per-component health & modes).
+- [`zainod`](./packages/zainod/usage.md): the daemon: configuration, the two validator sources, the served gRPC and JSON-RPC surfaces (headers and history proofs included), and the admin listener (`/metrics`, `/livez`, `/readyz`).
 
 
 ## Security Vulnerability Disclosure

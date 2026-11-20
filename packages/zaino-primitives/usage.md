@@ -11,8 +11,8 @@ optional features a consumer opts into (`zebra`, `serde`,
 `txout-commitment`). Keeping the
 list this short is not an accident of the current implementation — it is the
 property that makes every other crate able to depend on it. Adding a dependency
-here adds it to `zaino-source`, both adapters, `zaino-state`, `zaino-serve` and
-`zainod` at once, so each addition has to earn its place.
+here adds it to `zaino-source`, both adapters, `zaino-state` and `zainod` at
+once, so each addition has to earn its place.
 
 The rule is about *what a dependency lets in*, not a fixed name list. Two things
 must never enter through it, because both would let some other layer's decisions
@@ -49,7 +49,7 @@ Serialization, by contrast, lives at the boundary that owns the format:
 | direction | who owns the format |
 |---|---|
 | validator reply → domain | `zaino-source-zcash-rpc/src/parse.rs` |
-| domain → served JSON | `zaino-serve/src/rpc/jsonrpc/wire/` |
+| domain → served JSON | `zainod/src/serve/jsonrpc/wire/` |
 | domain → disk | `zaino-state`'s `Persistent*` types |
 | domain → gRPC | `zaino-proto`, generated from `.proto` |
 

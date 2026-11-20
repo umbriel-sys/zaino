@@ -30,8 +30,8 @@ let result = z_validate_address(address_string, network);
 ```
 
 Both return domain types (`ValidatedAddress`, `ZValidatedAddress`) with **no
-serde**. The served JSON, zebrad's shape, is `zaino-serve`'s
-`wire/address.rs`, per ADR-0009.
+serde**. The served JSON, zebrad's shape, is `zainod`'s
+`serve/jsonrpc/wire/address.rs`, per ADR-0009.
 
 A TEX address (ZIP 320) is valid for its network and is a transparent key
 hash to both: `Transparent { is_script: false }` and `P2pkh`, as zebrad
@@ -65,4 +65,4 @@ carries no notice.
 
 ## Related
 
-- ADR-0009 — why the serde impls live in `zaino-serve` rather than here.
+- ADR-0009 — why the serde impls live in the serving layer (now `zainod::serve`) rather than here.

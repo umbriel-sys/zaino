@@ -40,7 +40,7 @@ RpcError::Auth                    // credentials rejected
 
 The `code` on `RpcError::Rpc` is the thing a legacy-compatible client keys on,
 so it must survive to the served response. It does, via
-`FailureMode::RpcError(i64)` and the downcast walk in `zaino-serve`.
+`FailureMode::RpcError(i64)` and the error mapping in `zainod::serve`.
 
 ## The one retry this crate does
 
