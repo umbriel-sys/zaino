@@ -528,6 +528,55 @@ mod wallet {
         Ok(())
     }
 
+    /// The indexer serves a mempool transaction's verbose `getrawtransaction`
+    /// as the validator does: its object, with no block placement.
+    #[rstest]
+    #[case::fetch(Backend::Fetch)]
+    #[case::state(Backend::State)]
+    #[tokio::test(flavor = "multi_thread")]
+    async fn get_raw_transaction_verbose_mempool(#[case] backend: Backend) -> Result<()> {
+        let cache = ChainCache::ensure().await?;
+        let zebrad = Zebrad::launch(cache.zebrad_config()).await?;
+        let indexer = Zainod::launch(cache.indexer_config(&zebrad, backend)).await?;
+        let faucet = cache.wallet(Party::Faucet, &zebrad, &indexer).await?;
+        let recipient = cache.wallet(Party::Recipient, &zebrad, &indexer).await?;
+
+        let taddr = recipient.address(Pool::Transparent).await?;
+        let sent = faucet.send(&taddr, SEND_AMOUNT).await?.to_string();
+
+        // Zaino's mempool is a polled mirror: wait until it lists the send.
+        let irpc = indexer.json_rpc();
+        let deadline = tokio::time::Instant::now() + READY;
+        loop {
+            let listed = irpc.call_value("getrawmempool", json!([])).await?;
+            if listed
+                .as_array()
+                .is_some_and(|txids| txids.iter().any(|txid| txid.as_str() == Some(&sent)))
+            {
+                break;
+            }
+            anyhow::ensure!(
+                tokio::time::Instant::now() < deadline,
+                "the indexer's mempool never listed {sent}: {listed}"
+            );
+            tokio::time::sleep(Duration::from_millis(500)).await;
+        }
+
+        let served = assert_rpc_parity(
+            "getrawtransaction",
+            &format!(r#"["{sent}", 1]"#),
+            zebrad.rpc(),
+            &irpc,
+            &[],
+        )
+        .await?;
+        assert_eq!(served.get("txid").and_then(Value::as_str), Some(&*sent));
+        for placed in ["height", "confirmations", "blockhash"] {
+            assert_eq!(served.get(placed), None, "a mempool transaction's {placed}");
+        }
+        Ok(())
+    }
+
     /// `get_mempool_tx` returns the two unmined transactions, and the
     /// exclude-by-txid-suffix filter drops one.
     #[tokio::test(flavor = "multi_thread")]
