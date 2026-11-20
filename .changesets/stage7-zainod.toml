@@ -114,6 +114,15 @@ description = """
 `Service::index_states()`: how far each index of the store serves."""
 
 [[changes]]
+crate = "zainod"
+kind = "fix"
+description = """
+The daemon refuses to start when the validator's reported chain is not the \
+configured `network` (mainnet against a test network, or the reverse): \
+`IndexerError::WrongNetwork`. A panicked gRPC stream task ends its stream \
+with `INTERNAL` instead of as if it had finished."""
+
+[[changes]]
 crate = "zaino-proto"
 kind = "feature"
 description = """

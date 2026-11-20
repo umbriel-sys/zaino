@@ -113,6 +113,17 @@ impl<S: ServiceSource> Indexer<S> {
             .await
             .map_err(|error| IndexerError::Validator(error.to_string()))?;
         info!(build = %node.build, subversion = %node.subversion, "connected to the validator");
+        // an index of one network is never built from another's validator
+        let chain = zaino_source::OneShotGetBlockchainInfo::get_blockchain_info(source.as_ref())
+            .await
+            .map_err(|error| IndexerError::Validator(error.to_string()))?
+            .chain;
+        if !serves_chain(config.network, &chain) {
+            return Err(IndexerError::WrongNetwork {
+                configured: config.network,
+                validator: chain,
+            });
+        }
 
         let service = Arc::new(Service::spawn(source, config.service_config()).await?);
         wait_for_head(&service).await?;
@@ -292,6 +303,19 @@ async fn wait_for_head<S: ServiceSource>(service: &Service<S>) -> Result<(), Ind
     }
 }
 
+/// Whether a validator on `network` reports `chain` in `getblockchaininfo`:
+/// BIP 70's names, under which zebrad's regtest is `test` and zcashd's
+/// `regtest`. So the name tells mainnet from the test networks, not the
+/// test networks from each other.
+fn serves_chain(network: zaino_primitives::types::Network, chain: &str) -> bool {
+    use zaino_primitives::types::Network;
+    match network {
+        Network::Mainnet => chain == "main",
+        Network::PubTestnet => chain == "test",
+        Network::Regtest => matches!(chain, "test" | "regtest"),
+    }
+}
+
 /// Whether any component is closing.
 fn closing(statuses: &[ComponentStatus]) -> bool {
     statuses
@@ -363,4 +387,103 @@ fn startup_message() {
 ****** Please note Zaino is currently in development and should not be used to run mainnet nodes. ******
     "#;
     println!("{welcome_message}");
+}
+
+#[cfg(test)]
+mod tests {
+    use zaino_chain_store_service::{IndexesConfig, NamedSet};
+    use zaino_primitives::types::Network;
+    use zaino_proto::proto::service::{
+        compact_tx_streamer_client::CompactTxStreamerClient, ChainSpec,
+    };
+    use zaino_source_mock::{MockChain, NodeFacts};
+
+    use super::*;
+
+    /// A store-less config for `network`, serving gRPC on a loopback port.
+    fn config(network: Network) -> (ZainodConfig, Listeners, std::net::SocketAddr) {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("binds");
+        let address = listener.local_addr().expect("bound");
+        let mut config = ZainodConfig {
+            network,
+            indexes: IndexesConfig {
+                set: Some(NamedSet::Empty),
+                ..IndexesConfig::default()
+            },
+            ..ZainodConfig::default()
+        };
+        config.serve.grpc.listen_address = address;
+        let listeners = Listeners {
+            grpc: Some(listener),
+            jsonrpc: None,
+        };
+        (config, listeners, address)
+    }
+
+    fn validator() -> Arc<MockChain> {
+        Arc::new(MockChain::new(
+            NodeFacts::regtest(),
+            crate::serve::testing::blocks(20),
+        ))
+    }
+
+    /// The daemon launches on a validator of its configured network and
+    /// serves that validator's tip.
+    #[tokio::test]
+    async fn the_indexer_launches_and_serves() {
+        let (config, listeners, address) = config(Network::Regtest);
+        let running = Indexer::launch(validator(), config, listeners)
+            .await
+            .expect("launches");
+        running.service.wait_until_local().await.expect("local");
+        assert!(running.service.is_caught_up());
+        assert_eq!(running.service.store_tip(), None, "no store");
+        let mut client = CompactTxStreamerClient::connect(format!("http://{address}"))
+            .await
+            .expect("connects");
+        let tip = client
+            .get_latest_block(ChainSpec {})
+            .await
+            .expect("answered")
+            .into_inner();
+        assert_eq!(tip.height, 20);
+        running.task.abort();
+    }
+
+    /// Mainnet is told from the test networks; zebrad's regtest reports
+    /// `test`, zcashd's `regtest`.
+    #[test]
+    fn the_chain_name_tells_mainnet_from_the_test_networks() {
+        for (network, chain, serves) in [
+            (Network::Mainnet, "main", true),
+            (Network::Mainnet, "test", false),
+            (Network::PubTestnet, "test", true),
+            (Network::PubTestnet, "main", false),
+            (Network::PubTestnet, "regtest", false),
+            (Network::Regtest, "test", true),
+            (Network::Regtest, "regtest", true),
+            (Network::Regtest, "main", false),
+        ] {
+            assert_eq!(serves_chain(network, chain), serves, "{network:?} {chain}");
+        }
+    }
+
+    /// A validator on another network than the configured one is refused
+    /// before anything is indexed or served.
+    #[tokio::test]
+    async fn a_validator_on_another_network_is_refused() {
+        let (config, listeners, _) = config(Network::Mainnet);
+        let refused = Indexer::launch(validator(), config, listeners)
+            .await
+            .map(drop)
+            .expect_err("the wrong network");
+        assert!(
+            matches!(
+                &refused,
+                IndexerError::WrongNetwork { configured: Network::Mainnet, validator }
+                    if validator == "regtest"
+            ),
+            "{refused}"
+        );
+    }
 }

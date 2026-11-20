@@ -65,6 +65,12 @@ the `zebra` kind's.
 `[indexes].set = "empty"` runs without a store: every read is the
 validator's.
 
+At startup the validator's reported chain is checked against `network`: a
+mainnet validator under a test-network config, or the reverse, is refused
+before anything is indexed. The chain name cannot tell regtest from the
+public testnet (zebrad reports `test` for both); the `zebra` kind also
+verifies the activation schedule.
+
 ## Serving
 
 ### gRPC limits
