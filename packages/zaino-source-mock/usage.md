@@ -109,10 +109,10 @@ chain) and reads it back with the zcash RPC adapter's parser, so the mock
 answers exactly as an adapter reading zebrad does; `chain_info` checks every
 verbosity names the block's hash, height, parent and transactions.
 
-Where zcashd and zebra legitimately differ (zebra omits chain work; its
-difficulty divides by its exact 256-bit limit), the mock answers as zcashd
-does and the contract accepts both. `NodeFacts::chainwork = false` answers
-chain work as zebra does: never. `get_chain_tips` is refused (`Unsupported`)
+Where zcashd and zebra legitimately differ the mock has a `NodeFacts` switch
+and the contract accepts both. `NodeFacts::chainwork = false` answers
+chain work as zebra does: never. `NodeFacts::standard_fee = false` refuses
+`get_standard_fee` (`Unsupported`), as zcashd has no such method. `get_chain_tips` is refused (`Unsupported`)
 as zebra refuses it; `NodeFacts::chain_tips = true` answers as zcashd does,
 and the contract accepts both. Subtree roots are answered for all three
 pools, as zebra does; `NodeFacts::subtree_pools` without Ironwood refuses it
@@ -125,4 +125,12 @@ value: `get_network_sol_ps` is the window's work over the seconds it spans, at
 the height asked; `get_mining_info` reports that rate with the last block's
 size and non-coinbase count and no difficulty; `get_node_info` always carries
 `errors_timestamp`; `get_tx_out` carries the creating transaction's version
-and a `scriptPubKey` rendered by zebra-rpc's own builder.
+and a `scriptPubKey` rendered by zebra-rpc's own builder. `get_difficulty` is
+zebrad's `getdifficulty`: the next block's expected difficulty against the
+limit (regtest never retargets, so 1.0); `get_standard_fee` is ZIP 317's
+marginal fee for the block after the tip; `get_block_subsidy` answers
+`NodeFacts::subsidy` at any height, from NU7 only up to the block after the
+tip. The mempool lists its txids ascending as displayed, each entered at the
+tip's time; `get_transaction` on a transaction built without bytes is a
+fault, never empty bytes. A side-chain block's verbose `getblock` has no
+supply and no pools, as zebrad's.

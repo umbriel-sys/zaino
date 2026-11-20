@@ -131,7 +131,8 @@ fn verbose<E: std::fmt::Debug + std::fmt::Display>(
     block: &MockBlock,
     verbosity: BlockVerbosity,
 ) -> Result<BlockVerbose, QueryError<E>> {
-    // value pools along a side chain would need its own ledger: best chain only
+    // as zebrad: its block info is the best chain's, so a side-chain block
+    // has no supply and no pools
     let (supply, balances) = match served.is_best(block.hash()) {
         true => {
             let (supply, balances) = pools(served, block.height(), true)?;
@@ -411,15 +412,29 @@ impl zaino_source::OneShotGetBlockchainInfo for MockChain {
 }
 
 impl zaino_source::OneShotGetDifficulty for MockChain {
+    /// zebrad's `getdifficulty` (`chain_tip_difficulty`): the next block's
+    /// expected difficulty against the network's limit, each by its high
+    /// 128 bits. Regtest never retargets, so it expects the limit; on other
+    /// networks the mock, which runs no retargeting, expects the tip's.
     async fn get_difficulty(&self) -> Result<Difficulty, QueryError<GetDifficultyError>> {
+        use zebra_chain::work::difficulty::{CompactDifficulty, ParameterDifficulty as _, U256};
         let served = self.enter("get_difficulty", CallArg::None).await?;
-        match served.tip() {
-            Some(tip) => Ok(difficulty(
-                tip.block.header.bits.as_bits(),
-                served.facts().network,
-            )),
-            None => refused(GetDifficultyError::NotReady),
-        }
+        let Some(tip) = served.tip() else {
+            return refused(GetDifficultyError::NotReady);
+        };
+        let network = super::tx_objects::zebra_network(&served)?;
+        let limit = network.target_difficulty_limit();
+        let expected = match network.is_regtest() {
+            true => limit,
+            false => CompactDifficulty::from_bytes_in_display_order(
+                &tip.block.header.bits.as_bits().to_be_bytes(),
+            )
+            .ok()
+            .and_then(CompactDifficulty::to_expanded)
+            .ok_or_else(|| fault("the tip's bits expand to no difficulty"))?,
+        };
+        let high_bits = |difficulty| (U256::from(difficulty) >> 128).as_u128() as f64;
+        Ok(high_bits(limit) / high_bits(expected))
     }
 }
 
@@ -603,8 +618,9 @@ impl zaino_source::OneShotPing for MockChain {
 }
 
 impl zaino_source::OneShotGetBlockSubsidy for MockChain {
-    /// The configured subsidy for a height up to the tip; past it,
-    /// `HeightNotReached`.
+    /// The configured subsidy at any height, as zebrad answers one; from
+    /// NU7 (NSM reissuance) only up to the block after the tip, past which
+    /// it is `HeightNotReached`.
     async fn get_block_subsidy(
         &self,
         height: Height,
@@ -612,10 +628,10 @@ impl zaino_source::OneShotGetBlockSubsidy for MockChain {
         let served = self
             .enter("get_block_subsidy", CallArg::Height(height))
             .await?;
-        if served
-            .tip_height()
-            .is_none_or(|tip| u32::from(height) > tip)
-        {
+        let nu7 = ConsensusBranchId::new(crate::Upgrade::Nu7.branch_id());
+        let reissuing = branch_at(&served.facts().upgrades, height) == Some(nu7);
+        let known_through = served.tip_height().map_or(0, |tip| tip.saturating_add(1));
+        if reissuing && u32::from(height) > known_through {
             return refused(GetBlockSubsidyError::HeightNotReached(height));
         }
         served
@@ -627,12 +643,27 @@ impl zaino_source::OneShotGetBlockSubsidy for MockChain {
 }
 
 impl zaino_source::OneShotGetStandardFee for MockChain {
+    /// zebrad's `getstandardfee`: ZIP 317's marginal fee for the block after
+    /// the tip (1,000 on test networks and on Mainnet from 3,590,000, 5,000
+    /// before), version 0; `Unsupported` from a node without the method.
     async fn get_standard_fee(&self) -> Result<StandardFee, QueryError<GetStandardFeeError>> {
+        const MARGINAL_FEE: u64 = 1_000;
+        const LEGACY_MARGINAL_FEE: u64 = 5_000;
+        const MAINNET_ACTIVATION: u32 = 3_590_000;
         let served = self.enter("get_standard_fee", CallArg::None).await?;
-        match served.facts().standard_fee {
-            Some(fee) => Ok(fee),
-            None => refused(GetStandardFeeError::Unsupported),
+        let facts = served.facts();
+        if !facts.standard_fee {
+            return refused(GetStandardFeeError::Unsupported);
         }
+        let next = served.tip_height().map_or(0, |tip| tip.saturating_add(1));
+        let fee = match facts.network == Network::Mainnet && next < MAINNET_ACTIVATION {
+            true => LEGACY_MARGINAL_FEE,
+            false => MARGINAL_FEE,
+        };
+        Ok(StandardFee {
+            fee_per_action: Zatoshis::new(fee).map_err(|error| fault(error.to_string()))?,
+            version: 0,
+        })
     }
 }
 

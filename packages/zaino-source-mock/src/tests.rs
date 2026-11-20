@@ -546,6 +546,73 @@ async fn the_call_log_records_ports_and_arguments() {
     );
 }
 
+/// As zebrad: regtest's `getdifficulty` is its limit against itself;
+/// `getstandardfee` is ZIP 317's marginal fee, absent from a node without the
+/// method; the subsidy is answered past the tip, and from NU7 only up to the
+/// block after it.
+#[tokio::test]
+async fn node_state_is_answered_as_zebrad_computes_it() {
+    use crate::{Activations, NodeFacts, Upgrade};
+    use zaino_primitives::types::{rpc::BlockSubsidy, Zatoshis};
+    use zaino_source::{
+        GetBlockSubsidyError, GetStandardFeeError, OneShotGetBlockSubsidy as _,
+        OneShotGetDifficulty as _, OneShotGetStandardFee as _,
+    };
+    let subsidy = BlockSubsidy {
+        miner: Zatoshis::ZERO,
+        founders: Zatoshis::ZERO,
+        funding_streams_total: Zatoshis::ZERO,
+        lockbox_total: Zatoshis::ZERO,
+        total_block_subsidy: Zatoshis::ZERO,
+        funding_streams: Vec::new(),
+        lockbox_streams: Vec::new(),
+    };
+    let facts = || NodeFacts {
+        subsidy: Some(subsidy.clone()),
+        ..NodeFacts::regtest()
+    };
+    let chain = ChainBuilder::with(facts(), Activations::default())
+        .blocks(3)
+        .build();
+    assert_eq!(chain.get_difficulty().await.expect("answered"), 1.0);
+    let fee = chain.get_standard_fee().await.expect("answered");
+    assert_eq!((fee.fee_per_action.as_u64(), fee.version), (1_000, 0));
+    assert_eq!(
+        chain
+            .get_block_subsidy(height(500))
+            .await
+            .expect("any height"),
+        subsidy
+    );
+
+    let zcashd = ChainBuilder::with(
+        NodeFacts {
+            standard_fee: false,
+            ..NodeFacts::regtest()
+        },
+        Activations::default(),
+    )
+    .build();
+    assert!(matches!(
+        zcashd.get_standard_fee().await,
+        Err(QueryError::Domain(GetStandardFeeError::Unsupported))
+    ));
+
+    let reissuing = ChainBuilder::with(facts(), Activations::default().at(Upgrade::Nu7, 2))
+        .blocks(3)
+        .build();
+    reissuing
+        .get_block_subsidy(height(4))
+        .await
+        .expect("the block after the tip");
+    assert!(matches!(
+        reissuing.get_block_subsidy(height(5)).await,
+        Err(QueryError::Domain(GetBlockSubsidyError::HeightNotReached(
+            _
+        )))
+    ));
+}
+
 /// `getmininginfo` as zebrad: the last block's size and non-coinbase count,
 /// the default window's solution rate twice, no difficulty or errors.
 #[tokio::test]
@@ -750,17 +817,41 @@ async fn sends_answer_as_scripted() {
 
 #[tokio::test]
 async fn an_explicit_mempool_is_served() {
+    use zaino_source::{OneShotGetMempoolMetadata as _, OneShotGetMempoolTxids as _};
     let chain = ChainBuilder::new().matured().blocks(2).build();
-    let tx = chain
+    let block = chain
         .block_at(crate::COINBASE_MATURITY + 2)
-        .expect("loaded")
-        .block
-        .transactions()[1]
-        .clone();
-    let mut pending = tx.clone();
+        .expect("loaded");
+    let bytes = block.raw.as_ref().expect("built with bytes").transactions[1].clone();
+    let mut pending = block.block.transactions()[1].clone();
     pending.txid = zaino_primitives::types::TransactionId::from([4; 32]);
-    chain.set_mempool(Mempool::Explicit(vec![(pending.clone(), None)]));
+    let mut later = pending.clone();
+    later.txid = zaino_primitives::types::TransactionId::from([2; 32]);
+    chain.set_mempool(Mempool::Explicit(vec![
+        (pending.clone(), Some(bytes.clone())),
+        (later.clone(), Some(bytes.clone())),
+    ]));
     let found = chain.get_transaction(pending.txid).await.expect("known");
     assert_eq!(found.location, TransactionLocation::Mempool);
+    assert_eq!(found.bytes, bytes);
+    // as zebrad lists them: ascending as displayed, with their entry time
+    assert_eq!(
+        chain.get_mempool_txids().await.expect("answered"),
+        vec![later.txid, pending.txid]
+    );
+    let tip_time = i64::from(chain.tip().expect("a chain").block.header.time);
+    assert!(chain
+        .get_mempool_metadata()
+        .await
+        .expect("answered")
+        .iter()
+        .all(|meta| meta.entry_time == Some(tip_time)));
     contract::mempool(&chain).await.expect("mempool contract");
+
+    // a transaction without bytes is a fault, never empty bytes
+    chain.set_mempool(Mempool::Explicit(vec![(pending.clone(), None)]));
+    assert!(matches!(
+        chain.get_transaction(pending.txid).await,
+        Err(QueryError::NonDomain(_))
+    ));
 }

@@ -37,7 +37,7 @@ use crate::{
     ChainIndexConfig,
 };
 use zaino_chain_head::ChainHeadConfig;
-use zaino_primitives::types::{rpc::StandardFee, ShieldedPool, Zatoshis};
+use zaino_primitives::types::ShieldedPool;
 
 /// The mock as ChainIndex consumes it: through the same `ValidatorSource`
 /// conversion production runs.
@@ -78,17 +78,13 @@ fn chain_blocks() -> Vec<MockBlock> {
 }
 
 /// The fee the suites' validator answers `getstandardfee` with: ZIP 317's
-/// marginal fee.
-const STANDARD_FEE: u64 = 5_000;
+/// marginal fee on a test network.
+const STANDARD_FEE: u64 = 1_000;
 
 /// `blocks` on `activations`, served through `ValidatorSource`.
 fn mock_source(activations: &Activations, blocks: Vec<MockBlock>) -> MockSource {
     let facts = NodeFacts {
         upgrades: activations.upgrades(),
-        standard_fee: Some(StandardFee {
-            fee_per_action: Zatoshis::new(STANDARD_FEE).expect("the fee is in range"),
-            version: 0,
-        }),
         ..NodeFacts::regtest()
     };
     ValidatorSource::new(

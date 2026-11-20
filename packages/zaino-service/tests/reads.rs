@@ -385,13 +385,13 @@ async fn passthrough_reads_ask_the_validator() {
         funding_streams: Vec::new(),
         lockbox_streams: Vec::new(),
     };
+    // zebrad's ZIP 317 marginal fee on a test network
     let fee = StandardFee {
-        fee_per_action: zat(5_000),
-        version: 1,
+        fee_per_action: zat(1_000),
+        version: 0,
     };
     let chain = common::chain_with(NodeFacts {
         subsidy: Some(subsidy.clone()),
-        standard_fee: Some(fee),
         ..NodeFacts::regtest()
     });
     let service = local(&chain).await;

@@ -12,7 +12,8 @@ use super::{fault, refused};
 use crate::{CallArg, MockChain};
 
 impl zaino_source::OneShotGetTransaction for MockChain {
-    /// Where `txid` is, with its bytes where the chain has them (else empty).
+    /// Where `txid` is, with its bytes; a transaction the chain was built
+    /// without bytes for is a fault, never empty bytes.
     async fn get_transaction(
         &self,
         txid: TransactionId,
@@ -34,44 +35,53 @@ impl zaino_source::OneShotGetTransaction for MockChain {
                 .and_then(|(_, bytes)| bytes),
         };
         Ok(TransactionResponse {
-            bytes: bytes.unwrap_or_default(),
+            bytes: bytes.ok_or_else(|| fault(format!("transaction {txid} has no bytes")))?,
             location,
         })
     }
 }
 
 impl zaino_source::OneShotGetMempoolTxids for MockChain {
+    /// The mempool's txids in zebrad's order: ascending as displayed.
     async fn get_mempool_txids(
         &self,
     ) -> Result<Vec<TransactionId>, QueryError<GetMempoolTxidsError>> {
         let served = self.enter("get_mempool_txids", CallArg::None).await?;
-        Ok(served
+        let mut txids: Vec<TransactionId> = served
             .mempool()
             .into_iter()
             .map(|(tx, _)| tx.txid)
-            .collect())
+            .collect();
+        txids.sort_by_key(|txid| {
+            let mut displayed = <[u8; 32]>::from(*txid);
+            displayed.reverse();
+            displayed
+        });
+        Ok(txids)
     }
 }
 
 impl zaino_source::OneShotGetMempoolMetadata for MockChain {
-    /// Every transaction entered at the mempool height; no arrival time.
+    /// Every transaction entered at the mempool height, at that block's
+    /// time (the mock's clock), as zebrad's verbose listing carries `time`.
     async fn get_mempool_metadata(
         &self,
     ) -> Result<Vec<MempoolTxMeta>, QueryError<GetMempoolMetadataError>> {
         let served = self.enter("get_mempool_metadata", CallArg::None).await?;
-        let Some(height) = served
+        let Some(tip) = served
             .mempool_height()
-            .and_then(|height| Height::try_from(height).ok())
+            .and_then(|height| served.at(Height::try_from(height).ok()?))
         else {
             return refused(GetMempoolMetadataError::Unavailable);
         };
+        let (height, time) = (tip.height(), i64::from(tip.block.header.time));
         Ok(served
             .mempool()
             .into_iter()
             .map(|(tx, _)| MempoolTxMeta {
                 txid: tx.txid,
                 entry_height: height,
-                entry_time: None,
+                entry_time: Some(time),
             })
             .collect())
     }

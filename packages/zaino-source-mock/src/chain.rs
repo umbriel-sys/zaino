@@ -57,10 +57,11 @@ pub struct NodeFacts {
     pub relay_fee: zaino_primitives::types::Zatoshis,
     /// `getblockchaininfo`'s size on disk.
     pub size_on_disk: u64,
-    /// The subsidy answered for every height up to the tip; `None` = a fault.
+    /// The subsidy answered for a height; `None` = a fault.
     pub subsidy: Option<zaino_primitives::types::rpc::BlockSubsidy>,
-    /// The standard fee; `None` = `Unsupported` (a validator without it).
-    pub standard_fee: Option<zaino_primitives::types::rpc::StandardFee>,
+    /// Whether `getstandardfee` is answered, as zebrad does; zcashd has no
+    /// such method (`Unsupported`).
+    pub standard_fee: bool,
     /// Whether chain work is answered, as zcashd does; zebra answers none.
     pub chainwork: bool,
     /// Whether `getchaintips` is answered, as zcashd does; zebra refuses it
@@ -149,7 +150,7 @@ impl NodeFacts {
             relay_fee: zaino_primitives::types::Zatoshis::ZERO,
             size_on_disk: 0,
             subsidy: None,
-            standard_fee: None,
+            standard_fee: true,
             chainwork: true,
             chain_tips: false,
             subtree_pools: zaino_primitives::types::ShieldedPool::ALL.to_vec(),
