@@ -29,8 +29,16 @@ use crate::zebrad::{Zebrad, ZebradConfig};
 
 /// Bump when the builder's recipe changes without a fixture change.
 const RECIPE: u32 = 5;
-/// The indexer database format the cache holds; bump with the store.
-const ZAINO_DB_FORMAT: &str = "zainodb-v1-1.3.0";
+/// The indexer store's format: every index's directory name (its name and
+/// schema version), so a changed layout rebuilds the cache and no test
+/// starts on a store zainod has to rebuild.
+fn zaino_db_format() -> String {
+    zaino_indexes::IndexId::ALL
+        .iter()
+        .map(|index| index.schema().dir_name())
+        .collect::<Vec<_>>()
+        .join(",")
+}
 /// The main fixture's tip: past the real seam with a 1,200-block finalised band.
 pub const MAIN_HEIGHT: u32 = 2_200;
 /// How far the competing heads extend the main chain; zebra reorgs at most
@@ -238,7 +246,7 @@ impl ChainCache {
         let manifest = Manifest {
             recipe: RECIPE,
             zebrad,
-            zaino_db: ZAINO_DB_FORMAT.into(),
+            zaino_db: zaino_db_format(),
             fixture: fixture.clone(),
             tip_hash: String::new(),
             faucet: PartyState::default(),
@@ -420,8 +428,15 @@ async fn build(mut manifest: Manifest, dir: &Path) -> Result<Manifest> {
     faucet.sync().await?;
     recipient.sync().await?;
     if tip > zaino_consensus_seam() {
-        crate::finalised::wait_for_finalised(&zaino, tip - zaino_consensus_seam(), FINALISE)
-            .await?;
+        // the cache then holds a store no test has to rebuild; a head that
+        // lived through the chain keeps its floor a margin below the seam
+        crate::process::poll(
+            "zainod's store caught up",
+            Duration::from_millis(500),
+            FINALISE,
+            || async { zaino.store_caught_up().then_some(()) },
+        )
+        .await?;
     }
 
     manifest.tip_hash = zebrad.best_block_hash().await?;
@@ -602,7 +617,7 @@ mod tests {
         let base = Manifest {
             recipe: RECIPE,
             zebrad: "zebrad 7.0.0".into(),
-            zaino_db: ZAINO_DB_FORMAT.into(),
+            zaino_db: zaino_db_format(),
             fixture: Fixture::main(),
             tip_hash: String::new(),
             faucet: PartyState::default(),

@@ -6235,6 +6235,7 @@ dependencies = [
  "tracing",
  "wire_serialized_transaction_test_data",
  "zaino-consensus",
+ "zaino-indexes",
  "zaino-logging",
  "zaino-primitives",
  "zaino-proto",

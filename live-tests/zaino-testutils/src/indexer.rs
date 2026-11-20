@@ -232,6 +232,12 @@ impl Zainod {
         self.subscriber.indexer.finalised_tip_height()
     }
 
+    /// Whether the store has caught up with the chain head's floor.
+    pub fn store_caught_up(&self) -> bool {
+        self.subscriber.indexer.finalised_state_mode()
+            == zaino_state::FinalisedStateMode::Persistent
+    }
+
     /// GetLatestBlock height.
     pub async fn latest_block_height(&self) -> Result<u32> {
         let block = self
