@@ -1,5 +1,7 @@
 name: Live tests
 
+# Started by hand: the suite drives a real zebrad and is too long for every
+# pull request.
 on:
   workflow_dispatch:
     inputs:
@@ -7,12 +9,9 @@ on:
         description: PR number to run the suite against (blank = this branch)
         required: false
         type: string
-  pull_request:
-    types: [opened, synchronize, reopened]
 
-# Per-PR: a push supersedes its own run, never another PR's.
 concurrency:
-  group: ${{ github.workflow }}-${{ github.head_ref || github.run_id }}
+  group: ${{ github.workflow }}-${{ inputs.pr || github.ref }}
   cancel-in-progress: true
 
 permissions:

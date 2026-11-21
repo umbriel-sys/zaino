@@ -1,27 +1,14 @@
 name: Trigger Integration Tests
 
+# Started by hand: asks zcash/integration-tests to run its suite against this
+# ref. Needs the DISPATCH_APP_ID and DISPATCH_APP_PRIVATE_KEY secrets.
 on:
-  pull_request:
-    branches: [dev]
-    paths:
-      - "**/*.rs"
-      - "**/Cargo.toml"
-      - "**/Cargo.lock"
-      - .cargo/config.toml
-      - .github/workflows/trigger-integration-tests.yml
-
-  push:
-    branches: [dev]
-    paths:
-      - "**/*.rs"
-      - "**/Cargo.toml"
-      - "**/Cargo.lock"
-      - .cargo/config.toml
-      - .github/workflows/trigger-integration-tests.yml
-
-concurrency:
-  group: ${{ github.workflow }}-${{ github.head_ref || github.run_id }}
-  cancel-in-progress: true
+  workflow_dispatch:
+    inputs:
+      test_sha:
+        description: Revision of zcash/integration-tests to run (blank = its default)
+        required: false
+        type: string
 
 permissions: {}
 
@@ -29,14 +16,6 @@ jobs:
   trigger-integration:
     name: Trigger integration tests
     runs-on: ubuntu-latest
-    # The app-token step needs repository secrets. GitHub withholds them from
-    # pull requests that come from a fork and from runs that Dependabot triggers,
-    # so skip the dispatch there rather than fail it. Only pull-request events are
-    # restricted; every other trigger runs. See issue #991.
-    if: >-
-      github.event_name != 'pull_request' ||
-      (github.event.pull_request.head.repo.full_name == github.repository &&
-      github.actor != 'dependabot[bot]')
     steps:
       - name: Generate app token
         id: app-token
@@ -47,25 +26,13 @@ jobs:
           owner: zcash
           repositories: integration-tests
 
-      - name: Get requested test branch, if any
-        if: github.event_name == 'pull_request'
-        id: test-branch
-        env:
-          GH_TOKEN: ${{ github.token }}
-          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
-        run: |
-          TEST_SHA=$(gh pr -R zingolabs/zaino list --search "${HEAD_SHA}" --json body | jq '.[0].body' | sed '/[^ ]ZIT-Revision/!d' | sed -E 's/.*ZIT-Revision: ([^\\]*)\\.*/\1/')
-          echo "test_sha=${TEST_SHA}" >> $GITHUB_OUTPUT
-
       - name: Trigger integration tests
         env:
           GH_TOKEN: ${{ steps.app-token.outputs.token }}
-          SHA: ${{ github.event.pull_request.head.sha || github.sha }}
-          TEST_SHA: ${{ steps.test-branch.outputs.test_sha }}
-          # Stable per-source key so the integration repo can cancel a superseded
-          # run: the PR number for pull requests, otherwise the branch name
-          # (e.g. `dev`).
-          SOURCE_REF: ${{ github.event_name == 'pull_request' && format('pr-{0}', github.event.pull_request.number) || github.ref_name }}
+          SHA: ${{ github.sha }}
+          TEST_SHA: ${{ inputs.test_sha }}
+          # Stable per-source key so the integration repo can cancel a superseded run
+          SOURCE_REF: ${{ github.ref_name }}
         run: >
           gh api repos/zcash/integration-tests/dispatches
           --field event_type="zaino-interop-request"
