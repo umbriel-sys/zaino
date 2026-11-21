@@ -58,7 +58,7 @@ zaino-consensus = { path = "../../packages/zaino-consensus" }
 # `legacy_parser` only.
 zebra-chain = { workspace = true }
 orchard = { workspace = true }
-zaino-indexes = { version = "0.2.0", path = "../../packages/zaino-indexes" }
+zaino-indexes = { path = "../../packages/zaino-indexes" }
 
 [dev-dependencies]
 # Drives `legacy_parser::transaction`'s own round-trip tests.

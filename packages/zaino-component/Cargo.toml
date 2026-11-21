@@ -9,4 +9,4 @@ description = "A supervised in-process subsystem (a Component): its health, life
 strum = { workspace = true }
 thiserror = { workspace = true }
 tokio = { workspace = true }
-zaino-async = { version = "0.1.1", path = "../zaino-async" }
+zaino-async = { workspace = true }

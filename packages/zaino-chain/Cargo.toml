@@ -50,7 +50,7 @@ tokio-util = { workspace = true }
 thiserror = { workspace = true }
 tracing = { workspace = true }
 bytes = { workspace = true, optional = true }
-zaino-proto = { version = "0.7.0", path = "../zaino-proto", default-features = false, features = ["zaino-primitives"], optional = true }
+zaino-proto = { workspace = true, features = ["zaino-primitives"], optional = true }
 
 [dev-dependencies]
 # The compile-time check that a real validator satisfies `ChainViewSource`.

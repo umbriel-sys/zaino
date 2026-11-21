@@ -77,7 +77,7 @@ toml = { workspace = true }
 config = { workspace = true }
 zaino-mempool.workspace = true
 zaino-component.workspace = true
-zaino-proto = { workspace = true, features = ["zaino-primitives"] }
+zaino-proto = { workspace = true, features = ["heavy", "zaino-primitives"] }
 futures.workspace = true
 tower.workspace = true
 hex.workspace = true
@@ -88,10 +88,10 @@ zaino-consensus.workspace = true
 zaino-address.workspace = true
 tonic = { workspace = true, features = ["tls-native-roots", "tls-aws-lc"] }
 jsonrpsee = { workspace = true, features = ["server", "macros"] }
-zaino-service = { version = "0.2.0", path = "../zaino-service" }
+zaino-service = { workspace = true }
 zaino-chain.workspace = true
 zaino-mempool-service.workspace = true
-zaino-indexes = { version = "0.2.0", path = "../zaino-indexes" }
+zaino-indexes = { workspace = true }
 zaino-chain-store-service.workspace = true
 zaino-chain-head.workspace = true
 zaino-source-zebra.workspace = true

@@ -27,10 +27,10 @@ zaino-chain-store-service.workspace = true
 zaino-component.workspace = true
 zaino-consensus.workspace = true
 zaino-encoding.workspace = true
-zaino-indexes = { version = "0.2.0", path = "../zaino-indexes" }
+zaino-indexes = { workspace = true }
 zaino-mempool = { workspace = true, features = ["tip_aware_mempool"] }
 zaino-mempool-service = { workspace = true, features = ["tip_aware_mempool"] }
-zaino-persistence-lsm-tree = { version = "0.2.0", path = "../zaino-persistence-lsm-tree" }
+zaino-persistence-lsm-tree = { workspace = true }
 zaino-primitives.workspace = true
 zaino-source.workspace = true
 

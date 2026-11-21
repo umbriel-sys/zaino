@@ -13,8 +13,8 @@ categories = { workspace = true }
 
 [dependencies]
 zaino-chain-store = { workspace = true }
-zaino-indexes = { version = "0.2.0", path = "../zaino-indexes" }
-zaino-persistence = { version = "0.2.0", path = "../zaino-persistence" }
+zaino-indexes = { workspace = true }
+zaino-persistence = { workspace = true }
 zaino-primitives = { workspace = true, features = ["serde"] }
 zaino-source = { workspace = true }
 blake2 = { workspace = true }
@@ -29,7 +29,7 @@ metrics.workspace = true
 [dev-dependencies]
 tempfile.workspace = true
 tokio = { workspace = true, features = ["macros", "rt", "test-util"] }
-zaino-persistence = { version = "0.2.0", path = "../zaino-persistence", features = ["testing"] }
+zaino-persistence = { workspace = true, features = ["testing"] }
 zaino-persistence-lsm-tree = { path = "../zaino-persistence-lsm-tree" }
 zaino-source-mock.workspace = true
 

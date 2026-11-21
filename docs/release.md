@@ -83,12 +83,13 @@ relman changeset consume --cycle <name> --yes
 - Run them in that order: `changelog` derives its headings from the pending
   bump, and `consume` leaves nothing pending.
 - `bump` rewrites each crate's own version and the pins in the root
-  `[workspace.dependencies]`. It does not rewrite a version requirement
-  written directly in a member manifest
-  (`zaino-x = { version = "..", path = ".." }`), in `packages/` or in
-  `live-tests/`: when such a dependency takes a minor bump, `bump` ends with a
-  resolution error, and those requirements are raised by hand before
-  `cargo update --workspace` refreshes each lockfile.
+  `[workspace.dependencies]`, nothing else. So a crate depends on another
+  workspace crate only as `zaino-x = { workspace = true }`: a version
+  requirement written directly in a member manifest would be left behind and
+  break resolution at the next minor bump. `live-tests/` and the tools name
+  workspace crates by path alone, with no version.
+- After `bump`, refresh the other lockfiles: `cargo update --workspace` in
+  `live-tests/` and `tools/zaino-bench/`.
 - `versions`, `bump --dry-run` and `changelog --dry-run` change nothing.
 - relman derives each crate's version from its own changesets: before 1.0, a
   `breaking` entry is a minor bump and everything else a patch. A crate whose
