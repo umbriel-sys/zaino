@@ -5,8 +5,7 @@ use std::fmt;
 /// The network *kind* zaino runs against. Deliberately payload-free:
 /// activation heights are chain facts the validator owns, so a config value
 /// cannot carry them — the indexer adopts the runtime schedule from the
-/// validator's `getblockchaininfo.upgrades` at spawn
-/// (<https://github.com/zingolabs/zaino/issues/1076>). A pre-adoption height
+/// validator's `getblockchaininfo.upgrades` at spawn. A pre-adoption height
 /// read is unrepresentable: this type has no heights to read.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(serde::Deserialize, serde::Serialize))]

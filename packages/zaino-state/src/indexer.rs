@@ -283,7 +283,7 @@ pub trait ZcashIndexer: Send + Sync + 'static {
     ) -> impl SendFut<Result<zaino_primitives::types::AddressBalance, Self::Error>>;
 
     /// Sends the raw bytes of a signed transaction to the local node's mempool, if the transaction is valid.
-    /// Returns the [`TransactionHash`](zaino_primitives::types::TransactionHash) for the transaction, as a JSON string.
+    /// Returns the transaction's id, as a JSON string.
     ///
     /// Zcash RPC reference: [`sendrawtransaction`](https://zcash.github.io/rpc/sendrawtransaction.html)
     /// method: post
@@ -409,7 +409,7 @@ pub trait ZcashIndexer: Send + Sync + 'static {
     /// Zcash RPC reference: [`z_validateaddress`](https://zcash.github.io/rpc/z_validateaddress.html)
     /// method: post
     /// tags: util
-    #[deprecated(note = "https://github.com/zingolabs/zaino/issues/992#issuecomment-4245596178")]
+    #[deprecated(note = "see `zaino_address::DEPRECATION_NOTICE`")]
     fn z_validate_address(
         &self,
         address: String,

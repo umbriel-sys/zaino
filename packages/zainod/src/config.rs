@@ -44,7 +44,7 @@ pub const GENERATED_CONFIG_HEADER: &str = r#"# Zaino Configuration
 #   3. Built-in defaults
 #
 # For detailed documentation, see:
-#   https://github.com/zingolabs/zaino
+#   https://github.com/umbriel-sys/zaino
 "#;
 
 /// Top-level keys of the configuration before the service rewrite, and what

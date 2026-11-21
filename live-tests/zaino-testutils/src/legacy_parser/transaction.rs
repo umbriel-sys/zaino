@@ -15,7 +15,7 @@ use zebra_chain::{
     transparent,
 };
 
-/// Zingo-Indexer struct for a full zcash transaction.
+/// A full zcash transaction.
 #[derive(Debug, Clone)]
 pub struct FullTransaction {
     /// Parsed Zebra transaction.

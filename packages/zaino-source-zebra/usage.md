@@ -128,8 +128,9 @@ It does **not** implement the mempool ports, the passthrough ports
 That is the capability model working, not a gap to fill: a state service
 **has no mempool**. An implementation here could not see unconfirmed
 transactions, so it would silently answer a different question than the one
-asked. ADR-0008's structural-capability rule means routing a mempool query
-here is a compile error rather than a wrong answer.
+asked. Capability is structural: an adapter implements only the ports it can
+answer, so routing a mempool query here is a compile error rather than a
+wrong answer.
 
 Two contracts the adapter keeps so that both transports answer alike:
 
@@ -211,6 +212,6 @@ them). The 10,000-address and TEX checks run above the adapters, in
 
 ## Related
 
-- ADR-0008 — capability vs preference, and why the enum went; structural
-  capability, and why partial ports are not allowed.
+- [`zaino-source`](../zaino-source/usage.md) — the ports, and why capability
+  is structural and partial ports are not allowed.
 - `zaino-source-zcash-rpc` — the JSON-RPC adapter and its error classification.

@@ -120,7 +120,6 @@ mod tests {
     const MAIN: Net = Net(NetworkType::Main);
 
     // Canonical source: zainod serve::jsonrpc::wire::address::served_vectors
-    // Tracked for DRY consolidation: https://github.com/zingolabs/zaino/issues/988
     const TESTNET_P2PKH: &str = "tmVqEASZxBNKFTbmASZikGa5fPLkd68iJyx";
     const TESTNET_P2SH: &str = "t2MjoXQ2iDrjG9QXNZNCY9io8ecN4FJYK1u";
     const REGTEST_SAPLING: &str = "zregtestsapling1jalqhycwumq3unfxlzyzcktq3n478n82k2wacvl8gwfxk6ahshkxmtp2034qj28n7gl92ka5wca";

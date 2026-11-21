@@ -20,7 +20,7 @@ leak into the domain vocabulary:
 
 - **No serialization framework on the domain types.** A serde derive on a
   chain type would let the wire format and the domain model start deciding
-  each other, which is exactly what ADR-0009 exists to prevent. The optional
+  each other: the served schema lives in the serving layer. The optional
   `serde` feature covers only the configuration vocabulary (`Network`,
   `ActivationHeights`).
 - **No node, transport, or storage implementation.** A validator client, a gRPC
@@ -146,8 +146,7 @@ already done the work.
 ## The zatoshi quantity family
 
 Three types share the zatoshi unit but carry different invariants, so summing
-and differencing amounts is done through them rather than a bare integer. See
-ADR-0013 for the doctrine.
+and differencing amounts is done through them rather than a bare integer.
 
 | type | range | is |
 |---|---|---|
@@ -420,5 +419,4 @@ constants against zebra's, and `difficulty_agreement` sweeps the
 
 ## Related
 
-- ADR-0008 — validator access is a set of single-question ports over these types.
 - `zaino-source` — the ports themselves.

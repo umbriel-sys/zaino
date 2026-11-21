@@ -15,7 +15,7 @@ pub(crate) struct BuildInfo {
     build_date: String,
     /// Build user.
     build_user: String,
-    /// Zingo-Indexer version.
+    /// Zaino version.
     version: String,
 }
 
@@ -52,7 +52,7 @@ impl fmt::Display for BuildInfo {
     }
 }
 
-/// Returns build info for Zingo-Indexer.
+/// Returns build info for Zaino.
 ///
 /// `version` is the version of the deployed indexer binary (e.g. `zainod`),
 /// supplied by the caller. Library crates do not know which binary embeds

@@ -253,6 +253,5 @@ always exists: a feature nothing enables means it silently never runs.
 
 ## Related
 
-- ADR-0008 — the split, and why the bound-swap approach was abandoned.
 - `zaino-primitives` — the vocabulary these ports speak.
 - `zaino-source-zebra` — the composite that routes questions to transports.

@@ -1,4 +1,4 @@
-//! Regression test for zingolabs/zaino#1081.
+//! Regression test for a bind failure swallowed by the serve task.
 //!
 //! `TonicServer::spawn` must perform its TCP bind synchronously so a
 //! bind failure (e.g. `EADDRINUSE`) surfaces as `Err` to the caller
@@ -45,8 +45,8 @@ async fn returns_err_when_port_is_in_use() {
 
     assert!(
         result.is_err(),
-        "TonicServer::spawn must propagate bind failures synchronously \
-         (zingolabs/zaino#1081), but returned Ok against an occupied \
+        "TonicServer::spawn must propagate bind failures synchronously, \
+         but returned Ok against an occupied \
          port. The bind error was swallowed inside the spawned serve task."
     );
 

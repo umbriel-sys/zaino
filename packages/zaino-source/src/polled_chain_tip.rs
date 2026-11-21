@@ -11,7 +11,7 @@ use crate::{GetChainTipError, OneShotGetChainTip, QueryError, SubscribeChainTip,
 ///
 /// A decorator rather than something baked into each adapter, matching
 /// [`ValidatorClient`](crate::ValidatorClient): the capability is synthesised on top of any
-/// source that can answer [`GetChainTip`], so one implementation serves every
+/// source that can answer [`OneShotGetChainTip`], so one implementation serves every
 /// pollable source rather than each adapter growing its own poll loop.
 ///
 /// Deliberately not a wrapper that re-exposes the source's other traits. It

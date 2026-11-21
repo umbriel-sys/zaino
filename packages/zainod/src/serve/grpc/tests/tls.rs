@@ -1,4 +1,4 @@
-//! Regression test for zingolabs/zaino#1360.
+//! Regression test for the TLS spawn panic without a rustls CryptoProvider.
 //!
 //! Spawning the gRPC server with TLS enabled must succeed and serve a
 //! working TLS handshake. In 0.5.0, dependency feature-unification
@@ -8,7 +8,7 @@
 //! the process-level CryptoProvider") — but only on TLS-enabled
 //! deployments, a path no test exercised because every existing test
 //! ran plaintext. The fix pins the feature graph to a single provider —
-//! `aws-lc-rs`, the preferred provider per ADR-0006 — and installs it
+//! `aws-lc-rs`, the preferred provider — and installs it
 //! explicitly (`ensure_default_crypto_provider`); this test covers
 //! the full TLS startup + handshake path so a future provider-selection
 //! or certificate-wiring regression fails in CI instead of production.
@@ -61,7 +61,7 @@ async fn tls_spawn_serves_a_handshake() {
         TcpIncoming::from(listener),
     )
     .await
-    .expect("TLS-enabled spawn must succeed (zingolabs/zaino#1360)");
+    .expect("TLS-enabled spawn must succeed");
 
     let channel = Endpoint::try_from(format!("https://127.0.0.1:{}", local_addr.port()))
         .expect("loopback endpoint URI is valid")

@@ -42,8 +42,8 @@ pub use probe::{auth_from_parts, probe_node, ProbeError};
 /// Prometheus metric names emitted by this crate.
 ///
 /// The single source of truth, shared with `zainod`'s `describe_*`
-/// registrations, which carry the descriptions. Moved here from `zaino-fetch`
-/// with the outbound RPC transport these name.
+/// registrations, which carry the descriptions. They live here with the
+/// outbound RPC transport they name.
 #[allow(missing_docs)] // names are self-describing; descriptions live in zainod
 pub mod metric_names {
     // Errors only: volume = the duration histogram's `_count` (as inbound gRPC & JSON-RPC)

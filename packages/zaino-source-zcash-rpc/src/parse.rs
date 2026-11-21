@@ -1620,9 +1620,6 @@ mod tests {
     /// Every pool the validator reports must reach the domain, keyed by its own
     /// `id`. The list is positional on the wire, so a dropped or misordered
     /// entry silently attributes value to the wrong pool.
-    ///
-    /// This covers what `zaino-fetch`'s `parses_five_value_pools` covered before
-    /// its crate was deleted; the parse it exercised now lives here.
     #[test]
     fn every_reported_value_pool_reaches_the_domain() {
         let info = parse_blockchain_info(&serde_json::json!({

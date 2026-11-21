@@ -134,7 +134,7 @@ what made every height cost three root computations before.
 
 ## Related
 
-- ADR-0008 — the port model and the domain/fetch distinction.
+- [`zaino-source`](../zaino-source/usage.md) — the port model and the domain/fetch distinction.
 - `zaino-rpc` — the transport underneath; it does no parsing.
 - `zaino-source-zebra` — zebrad's quirk table, and the composite over both
   transports.

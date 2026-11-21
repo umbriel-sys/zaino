@@ -70,7 +70,7 @@ pub(crate) fn eviction_key(tip: &ChainHeadBlock) -> (u128, u32, [u8; 32]) {
 /// The retained graph: the trunk, the branches and the directory.
 ///
 /// `directory = trunk ∪ branches`, each block once (two branches may share a
-/// prefix). The branches are strongest first by [`eviction_key`].
+/// prefix). The branches are strongest first by `eviction_key`.
 #[derive(Debug, Clone)]
 pub struct PersistentSnapshot {
     trunk: Trunk,

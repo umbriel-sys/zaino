@@ -37,15 +37,15 @@ members = [
 resolver = "2"
 
 [workspace.package]
-authors = ["Zingo Lab Cyan"]
-repository = "https://github.com/zingolabs"
-homepage = "https://www.zingolabs.org/"
+authors = ["Umbriel Systems Ltd"]
+repository = "https://github.com/umbriel-sys/zaino"
+homepage = "https://github.com/umbriel-sys/zaino"
 edition = "2021"
 license = "Apache-2.0"
 # Publish metadata shared by every published crate, inherited via
 # `readme.workspace = true` etc. crates.io requires `description` + `license`;
 # `readme`/`keywords`/`categories` round out what `clippy::cargo_common_metadata`
-# checks (see the `clippy` task in tools/makefiles/lints.toml). `readme` is
+# checks (see the `clippy` task in Makefile.toml). `readme` is
 # resolved from the workspace root.
 readme = "README.md"
 keywords = ["zcash", "blockchain", "indexer", "lightwallet"]
@@ -154,7 +154,7 @@ zaino-consensus = { path = "packages/zaino-consensus", version = "0.2.0" }
 zaino-encoding = { path = "packages/zaino-encoding", version = "0.1.0" }
 # Zero-dependency domain vocabulary. Every crate that needs chain-level types
 # (heights, hashes, blocks, transactions) depends on this rather than on
-# `zebra-chain` or on another zaino crate. See docs/adr/zaino/0010. The
+# `zebra-chain` or on another zaino crate. The
 # `zebra` feature adds the `zebra_chain` → domain conversions; only the crates
 # that hold zebra types turn it on.
 zaino-primitives = { path = "packages/zaino-primitives", version = "0.3.0" }
@@ -181,7 +181,7 @@ zaino-source-zebra = { path = "packages/zaino-source-zebra", version = "0.2.2" }
 # ChainHead: the bounded non-finalised block graph, its canonical chain, and the
 # competing branches retained alongside it. This crate is the domain half —
 # types and ports only, no runtime — so a consumer can name what ChainHead
-# answers without depending on the service that answers it. See docs/adr/zaino/0011.
+# answers without depending on the service that answers it.
 zaino-chain-head = { path = "packages/zaino-chain-head", version = "0.2.0" }
 # The ChainHead runtime: owns the writer task that keeps the graph reconciled
 # with the validator, and publishes each snapshot. Separate from the domain
@@ -194,7 +194,7 @@ zaino-chain-head-service = { path = "packages/zaino-chain-head-service", version
 # depending on the implementation that answers it, and a second implementation
 # is a matter of satisfying the traits. It also owns Zaino's UTXO-set
 # commitment, which is a contract between implementations rather than any one
-# implementation's business. See docs/adr/zaino/0012.
+# implementation's business.
 zaino-chain-store = { path = "packages/zaino-chain-store", version = "0.1.1" }
 # The new chain store runtime: a configurable set of indexes over any Storage.
 zaino-chain-store-service = { path = "packages/zaino-chain-store-service", version = "0.1.0" }

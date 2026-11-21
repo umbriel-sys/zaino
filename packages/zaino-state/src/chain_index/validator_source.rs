@@ -11,8 +11,7 @@ use super::source_ports::ChainIndexSourcePorts;
 
 /// ChainIndex's validator source, backed by the `zaino-source` stack.
 ///
-/// The single adapter between ChainIndex's driven port
-/// ([`BlockchainSource`], still in wire types) and the driving ports
+/// The single adapter between ChainIndex and the driving ports
 /// ([`zaino_source`], in domain types). It is generic over the source so that
 /// conversion is written once: the production composite and the test mocks
 /// reach ChainIndex through the same code, which makes the mock-backed suites
@@ -125,10 +124,9 @@ impl<V> std::fmt::Debug for ValidatorSource<V> {
 /// The distinction becomes usable again as consumers move onto the port errors.
 ///
 /// The transport fault is carried as the error's `source` rather than only
-/// formatted into the message. `zaino-serve` recovers legacy-compatible RPC
-/// error codes by downcast-walking [`std::error::Error::source`] (see
-/// `getblock_error_object_from_indexer_error` in
-/// `zaino-serve/src/rpc/jsonrpc/service.rs`), so flattening a [`NonDomainError`] to
+/// formatted into the message. A serving layer recovers legacy-compatible RPC
+/// error codes by downcast-walking [`std::error::Error::source`], so
+/// flattening a [`NonDomainError`] to
 /// a string would strip the [`FailureMode::RpcError`] code those clients key
 /// on.
 ///
@@ -427,10 +425,8 @@ impl ZebraValidatorSource {
         // here. Wrapping buys resilience to transient unreachability for this
         // one boot RPC — not readiness: waiting for the validator to *become*
         // ready is a lifecycle concern the caller owns (that is what the
-        // tip-serving wait above does), never the client's. The remaining
-        // `OneShotGet*` calls stay on the bare adapter for now; migrating
-        // every consumer onto `ValidatorClient` is follow-up work, kept out to
-        // bound this PR's size.
+        // tip-serving wait above does), never the client's. The other
+        // `OneShotGet*` calls here are single attempts on the bare adapter.
         let source = zaino_source::ValidatorClient::new(
             rpc_adapter(common)?,
             zaino_source::RetryPolicy::default(),
@@ -470,7 +466,7 @@ impl ZebraValidatorSource {
 
         // As in `spawn_rpc`: `adopt_network` needs the sealed resilient port,
         // so wrap the adapter in a `ValidatorClient`. The `OneShotGet*` call
-        // above stays on the bare adapter for now (see the note there).
+        // above is a single attempt on the bare adapter (see the note there).
         let source = zaino_source::ValidatorClient::new(
             rpc_adapter(common)?,
             zaino_source::RetryPolicy::default(),
@@ -647,7 +643,7 @@ mod tests {
 
     /// The inverse of the display-order parsers under test.
     ///
-    /// Production rendering moved to `zaino-serve`'s wire module along with the
+    /// Production rendering lives in the serving layer's wire module with the
     /// responses that need it; what remains here is parsing. This oracle stays
     /// so the parsers can still be pinned against a round trip.
     fn display_hex(mut bytes: [u8; 32]) -> String {
@@ -725,11 +721,9 @@ mod tests {
 mod error_source_chain {
     use super::*;
 
-    /// `zaino-serve` recovers legacy-compatible RPC error codes by
-    /// downcast-walking [`std::error::Error::source`] chains (see
-    /// `getblock_error_object_from_indexer_error` and
-    /// `legacy_error_object_from_indexer_error` in
-    /// `zaino-serve/src/rpc/jsonrpc/service.rs`). This boundary must therefore
+    /// A serving layer recovers legacy-compatible RPC error codes by
+    /// downcast-walking [`std::error::Error::source`] chains. This boundary
+    /// must therefore
     /// preserve the typed cause instead of flattening it to a string, or
     /// failures surface as generic internal errors rather than the legacy codes
     /// lightwalletd-family clients key on.
@@ -737,7 +731,7 @@ mod error_source_chain {
     ///
     /// Before the adapters learned to distinguish a missing object from an
     /// unreachable node, "block not found" arrived here as a `Fetch` error
-    /// carrying `-8`, and `zaino-serve` recovered that code. Now it arrives as
+    /// carrying `-8`, and the serving layer recovered that code. Now it arrives as
     /// a `Domain` rejection, so this boundary must attach the code itself —
     /// otherwise the reclassification would silently downgrade every
     /// not-found response to a generic internal error.
@@ -766,7 +760,7 @@ mod error_source_chain {
         );
     }
 
-    /// Recovers the legacy code a rejection carries, the way `zaino-serve`
+    /// Recovers the legacy code a rejection carries, the way a serving layer
     /// does: by walking the `source()` chain and downcasting.
     fn recovered_code(error: &BlockchainSourceError) -> Option<i64> {
         std::iter::successors(Some(error as &(dyn std::error::Error + 'static)), |error| {

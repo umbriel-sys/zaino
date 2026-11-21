@@ -117,7 +117,8 @@ every crate shares; the test module drives it by block id (`MockValidator`).
 `spawn_without_writer` is not a `sync` method under another name — it does not
 exist in a production build, and it advances nothing on its own. Do not
 "promote" either of these to production visibility for a caller's convenience;
-see ADR-0011 for why the chain head cannot be driven from outside.
+see [`zaino-chain-head`'s guide](../zaino-chain-head/usage.md) for why the
+chain head cannot be driven from outside.
 
 The `testing` feature is for downstream test crates only, and belongs in
 `[dev-dependencies]`. In-crate tests get the same paths from `cfg(test)` without

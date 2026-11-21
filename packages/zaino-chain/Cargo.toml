@@ -21,9 +21,8 @@ frames = ["dep:zaino-proto", "dep:bytes"]
 zaino-primitives = { workspace = true }
 
 # The two tiers ChainView composes. Depended on as domain crates — their ports
-# and their vocabulary — never as their implementations: no `*-service` and no
-# `*-zainodb` appears here, which is what lets the composer be generic over
-# both.
+# and their vocabulary — never as their implementations: no `*-service`
+# appears here, which is what lets the composer be generic over both.
 zaino-chain-head = { workspace = true }
 zaino-chain-store = { workspace = true }
 

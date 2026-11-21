@@ -1,7 +1,6 @@
-//! Guarantees exported from zingolib's regtest suite under its regtest
-//! removal (zingolib `docs/testing/regtest-port-plan.md`, ruling 4): each one
-//! is about the validator or the indexer rather than the wallet, so it lives
-//! here, on the harness that launches both.
+//! Guarantees a wallet relies on that are about the validator or the indexer
+//! rather than the wallet, so they live here, on the harness that launches
+//! both.
 //!
 //! - the indexer's mempool view trails the validator's acceptance within a bound;
 //! - the indexer converges with the validator after a generated block;
@@ -25,7 +24,7 @@ const READY: Duration = Duration::from_secs(300);
 const SEND_AMOUNT: u64 = 250_000;
 /// The spend the acceptance cells make back toward the faucet.
 const SPEND_AMOUNT: u64 = 20_000;
-/// zingolib's bound on the indexer's mempool ingestion after validator acceptance.
+/// The bound on the indexer's mempool ingestion after validator acceptance.
 const MEMPOOL_INGEST_BOUND: Duration = Duration::from_secs(10);
 /// The indexer mirrors the validator's mempool on a 500 ms cadence.
 const MEMPOOL_POLL: Duration = Duration::from_millis(50);

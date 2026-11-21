@@ -1,6 +1,6 @@
 //! Hold error types for the server and related functionality.
 
-/// Zingo-Indexer server errors.
+/// Server errors.
 #[derive(Debug, thiserror::Error)]
 pub enum ServerError {
     /// Server configuration errors.

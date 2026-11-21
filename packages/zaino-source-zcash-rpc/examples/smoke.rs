@@ -1,7 +1,7 @@
 //! Smoke test: connect to a live Zebra, fetch tip + one block.
 //!
 //! Usage:
-//!   cargo run -p zaino-source-zebra-rpc --example smoke
+//!   cargo run -p zaino-source-zcash-rpc --example smoke
 //!
 //! Requires a Zebra RPC at http://127.0.0.1:8232 (e.g. via port-forward).
 

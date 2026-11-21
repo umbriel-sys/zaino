@@ -6,9 +6,8 @@ holds no runtime — the concrete services live in
 consume recipes. This guide explains the model and the contracts a consumer or
 adapter author must honour.
 
-For *why* the subsystem is shaped this way, see
-[ADR-0010](https://github.com/zingolabs/zingo-adrs/blob/dev/zaino/0010-mempool-subsystem-separation.md); for the
-state machine and lifecycle, see [`mempool_lifecycle.md`](./mempool_lifecycle.md).
+For the state machine and lifecycle, see
+[`mempool_lifecycle.md`](./docs/mempool_lifecycle.md).
 
 ## The two layers
 

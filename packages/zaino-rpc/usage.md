@@ -16,14 +16,15 @@ let value = client.call("getblockchaininfo", vec![]).await?;
 // -> serde_json::Value; interpreting it is zaino-source-zcash-rpc's problem
 ```
 
-This is the boundary that lets one client serve both the production adapter
-(`zaino-source-zcash-rpc`, which parses into domain types) and the live tests'
-`ValidatorOracle` (which compares raw JSON against Zaino's answers). An oracle
-that shared the parser under test would not be an oracle.
+This is the boundary that keeps parsing out of the transport: the production
+adapter (`zaino-source-zcash-rpc`) parses into domain types on top of it, and
+a caller that wants the raw JSON gets it untouched. The live tests compare
+raw JSON from the validator against Zaino's answers through a client of
+their own, because an oracle that shared the parser under test would not be
+an oracle.
 
-It is also why replacing `zaino-fetch` took two crates and not one:
-`zaino-fetch` did transport *and* parsing *and* server-side serialization in one
-place, and each of the three has a different owner now.
+Transport, parsing and server-side serialization each have a different owner:
+this crate, `zaino-source-zcash-rpc` and `zainod`.
 
 ## Errors
 
@@ -63,9 +64,9 @@ configured (`Ok(None)`), a cookie where a path is given, the pair where both
 are given, and refuses a user without a password or the reverse
 (`IncompleteCredentials`). There is no stand-in pair.
 
-`probe_node` **returns an error**. Its predecessor in `zaino-fetch` called
-`std::process::exit(1)`, which made the startup path untestable and gave an
-embedding process no say in its own shutdown.
+`probe_node` **returns an error**. It never exits the process: an exit would
+make the startup path untestable and give an embedding process no say in its
+own shutdown.
 
 ## Address resolution and the crypto provider
 
@@ -79,7 +80,7 @@ to pull in a configuration crate to get them:
 - `ensure_default_crypto_provider`: installs rustls's `aws-lc-rs` provider as
   the process default if none is installed. `RpcClient::new` calls it; a TLS
   server must call it before building its acceptor. First-install-wins, so an
-  embedder that installed its own provider keeps it (ADR-0006).
+  embedder that installed its own provider keeps it.
 
 ## Metrics
 
@@ -96,4 +97,4 @@ to pull in a configuration crate to get them:
 ## Related
 
 - `zaino-source-zcash-rpc` — parses what this returns.
-- ADR-0008 — where this sits in the crate graph.
+- [Architecture](../../docs/architecture.md) — where this sits in the crate graph.

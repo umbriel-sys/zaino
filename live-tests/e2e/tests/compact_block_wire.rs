@@ -3,8 +3,8 @@
 //! coinbase pays its era's pool (orchard-only, ironwood-only, and the
 //! orchard→ironwood flip at the NU6.3 activation height).
 //!
-//! Known failure: served ironwood actions are missing at the first ironwood-era
-//! height — <https://github.com/zingolabs/zaino/issues/1368>.
+//! Guards against served ironwood actions missing at the first ironwood-era
+//! height.
 
 use std::time::Duration;
 

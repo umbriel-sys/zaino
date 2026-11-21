@@ -37,8 +37,8 @@ impl TonicServer {
     /// callers build one from an indexer subscriber via
     /// [`lightwallet::routes`]. Decoupling the dispatcher from the
     /// transport layer keeps this function focused on bind / TLS /
-    /// shutdown and lets the bind-race regression test (see
-    /// zingolabs/zaino#1081) pass [`Routes::default`] instead of a full
+    /// shutdown and lets the bind-race regression test
+    /// pass [`Routes::default`] instead of a full
     /// trait-stubbed indexer.
     pub async fn spawn(
         routes: Routes,
@@ -56,8 +56,7 @@ impl TonicServer {
         BuildRoutes: FnOnce(watch::Receiver<()>) -> Routes,
     {
         // Bind synchronously so EADDRINUSE / EACCES propagate to the caller
-        // instead of being swallowed inside the spawned serve task. See
-        // zingolabs/zaino#1081.
+        // instead of being swallowed inside the spawned serve task.
         let tcp_incoming = TcpIncoming::bind(server_config.listen_address)
             .map_err(|e| ServerError::ServerConfigError(format!("gRPC bind failed: {e}")))?;
         Self::spawn_inner(build_routes, server_config, tcp_incoming).await
@@ -121,7 +120,7 @@ impl TonicServer {
             )));
         if let Some(tls_config) = server_config.get_valid_tls().await? {
             // Building the TLS acceptor requires a process-level rustls
-            // CryptoProvider (zingolabs/zaino#1360).
+            // CryptoProvider.
             zaino_rpc::ensure_default_crypto_provider();
             server_builder = server_builder.tls_config(tls_config).map_err(|e| {
                 ServerError::ServerConfigError(format!("TLS configuration error: {e}"))
@@ -179,8 +178,7 @@ impl TonicServer {
     /// If the spawned serve task has finished (panic, tonic-internal
     /// error, etc.), reports `Offline` regardless of the cached status —
     /// otherwise a serve task that died after reporting `Ready` would
-    /// keep the indexer's critical-error check from firing. See
-    /// zingolabs/zaino#1081.
+    /// keep the indexer's critical-error check from firing.
     pub fn status(&self) -> ComponentStatus {
         if self.server_handle.as_ref().is_some_and(|h| h.is_finished()) {
             return ComponentStatus::new(ComponentName(NAME), Lifecycle::Offline, Health::Offline);

@@ -94,7 +94,7 @@ const PROBE_INTERVAL: Duration = Duration::from_secs(3);
 ///
 /// # Failure is returned, not fatal
 ///
-/// The version of this that lived in `zaino-fetch` called
+/// An earlier version of this called
 /// `std::process::exit(1)` when the budget ran out. That made it unusable from
 /// a test — it would take the test process with it — and unrecoverable for any
 /// caller that might want to retry or report. It returns an error now; the one

@@ -54,7 +54,7 @@ pub use node_backed::{NodeBackedChainIndex, NodeBackedChainIndexSubscriber};
 /// cross-crate live tests that enable the `fast-test-seam` feature — so short mock
 /// fixtures and small live chains still exercise a *moving* finalised seam. At the
 /// real depth `finalized_height_floor` saturates to genesis for those fixtures and
-/// the eviction/seam invariants become untestable (see zingolabs/zaino#1288). Both
+/// the eviction/seam invariants become untestable. Both
 /// arms derive from the same upstream reorg bound, so neither is a hard-coded literal.
 ///
 /// [`MAX_NONFINALISED_DEPTH`]: zaino_consensus::MAX_NONFINALISED_DEPTH
@@ -70,8 +70,7 @@ pub(crate) const OPERATIONAL_NFS_DEPTH: u32 = zaino_consensus::FAST_TEST_MAX_NON
 /// After a chain-shortening reorg this floor can move backwards while
 /// the on-disk `finalized_height` does not — finalized blocks are
 /// never evicted. Callers comparing this floor against
-/// `finalized_height` should account for the asymmetry
-/// (see zingolabs/zaino#1128).
+/// `finalized_height` should account for the asymmetry.
 #[cfg(test)]
 pub(crate) fn finalized_height_floor(chain_tip: u32) -> crate::Height {
     crate::Height(chain_tip.saturating_sub(OPERATIONAL_NFS_DEPTH))
@@ -409,8 +408,7 @@ pub trait ChainIndexRpcExt: ChainIndex {
 
     /// Returns the raw serialised header of the block with the given hash.
     ///
-    /// The non-verbose half of `getblockheader`; see
-    /// [`BlockchainSource::get_raw_block_header`](source::BlockchainSource::get_raw_block_header).
+    /// The non-verbose half of `getblockheader`.
     fn get_raw_block_header(
         &self,
         hash: String,

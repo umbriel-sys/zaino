@@ -978,7 +978,7 @@ impl<S: ServiceSource> Lightwallet<S> {
         let height = |height: Height| u64::from(u32::from(height));
         Ok(LightdInfo {
             version: info.build.version.to_owned(),
-            vendor: "ZingoLabs ZainoD".to_owned(),
+            vendor: "Umbriel Systems ZainoD".to_owned(),
             taddr_support: true,
             chain_name: chain.chain.clone(),
             sapling_activation_height: schedule.sapling_activation.map_or(0, height),

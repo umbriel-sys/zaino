@@ -67,7 +67,7 @@ impl<S: ServiceSource> ServiceHandle for Service<S> {
     }
 }
 
-/// Zaino, the Zingo-Indexer.
+/// Zaino, the indexer.
 pub struct Indexer<S: ServiceSource> {
     /// JsonRPC server; off unless configured.
     json_server: Option<JsonRpcServer>,
@@ -355,9 +355,7 @@ fn startup_message() {
        ▒▒▒▓████▒▒▒▒▒▒▒▒▓▓▓▓▓▓▓▓▓▓▓▓▓▓▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒
        ▒▒▒▒░▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒
        ▒▒▒▒░▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒
-             Thank you for using ZingoLabs Zaino!
-
-       - Donate to us at https://free2z.cash/zingolabs.
+                  Thank you for using Zaino!
 
 ****** Please note Zaino is currently in development and should not be used to run mainnet nodes. ******
     "#;

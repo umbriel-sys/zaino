@@ -58,7 +58,7 @@
 //!
 //! Every fold is checked. Neither bound is reachable on a real chain; they stay
 //! checked so a corrupt input fails loud instead of wrapping into a small value
-//! that would then sort as a light chain. See ADR-0013 for the doctrine.
+//! that would then sort as a light chain.
 //!
 //! [`SingleBlockWork`] is derived from a difficulty target by
 //! [`CompactDifficulty::to_work`](super::CompactDifficulty::to_work).

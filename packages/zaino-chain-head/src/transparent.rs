@@ -8,7 +8,7 @@
 //! # Addresses are keyed, not encoded
 //!
 //! Every address here is a
-//! [`TransparentAddressKey`](zaino_primitives::types::TransparentAddressKey):
+//! [`TransparentAddressKey`]:
 //! a 20-byte hash and the script form it came from, which is what
 //! [`classify_script`](zaino_primitives::types::classify_script) produces.
 //!

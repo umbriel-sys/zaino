@@ -6,7 +6,7 @@ use zaino_primitives::types::TransactionId;
 
 use super::{QueryError, ValidatorSource};
 
-/// Domain error for [`SendRawTransaction`].
+/// Domain error for [`OneShotSendRawTransaction`].
 #[derive(Debug, thiserror::Error, Clone, PartialEq, Eq)]
 pub enum SendRawTransactionError {
     /// The transaction could not be deserialised (legacy code −22).

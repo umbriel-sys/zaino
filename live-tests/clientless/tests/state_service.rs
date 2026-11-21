@@ -71,7 +71,7 @@ mod zebra {
             // peerless regtest node, so the two sides sample different text.
             assert_rpc_parity("getinfo", "", &frpc, &srpc, &["errorstimestamp", "errors"]).await?;
 
-            // TODO: Fix this! (ignored due to [https://github.com/zingolabs/zaino/issues/235]).
+            // TODO: Fix this! (the two backends' value pools disagree).
             // assert_eq!(
             //     fetch_service_blockchain_info.value_pools(),
             //     state_service_blockchain_info.value_pools()

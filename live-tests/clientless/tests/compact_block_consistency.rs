@@ -204,7 +204,7 @@ async fn orchard_only_coinbase_routing_zebrad() -> Result<()> {
     // Two independent halves per height, collected across the whole chain so one run
     // separates them: the raw-block predicate is class 1 (zebrad's own consensus
     // routing, zaino uninvolved), the raw-vs-served comparison is class 2 (zaino's
-    // pool routing on the wire). <https://github.com/zingolabs/zaino/issues/1368>
+    // pool routing on the wire).
     let vrpc = zebrad.rpc();
     let mut violations: Vec<String> = Vec::new();
     for (index, served) in blocks.iter().enumerate() {
@@ -296,7 +296,7 @@ async fn ironwood_only_coinbase_routing_zebrad() -> Result<()> {
     // Two independent halves per height, collected across the whole chain so one run
     // separates them: the raw-block predicate is class 1 (zebrad's own consensus
     // routing, zaino uninvolved), the raw-vs-served comparison is class 2 (zaino's
-    // pool routing on the wire). <https://github.com/zingolabs/zaino/issues/1368>
+    // pool routing on the wire).
     let vrpc = zebrad.rpc();
     let mut violations: Vec<String> = Vec::new();
     let mut ironwood_coinbases = 0usize;
@@ -403,7 +403,7 @@ async fn orchard_coinbase_routing_flips_to_ironwood_at_activation_zebrad() -> Re
     // Two independent halves per height, collected across the whole chain so one run
     // separates them: the raw-block predicate is class 1 (zebrad's own consensus
     // routing, zaino uninvolved), the raw-vs-served comparison is class 2 (zaino's
-    // pool routing on the wire). <https://github.com/zingolabs/zaino/issues/1368>
+    // pool routing on the wire).
     let vrpc = zebrad.rpc();
     let mut violations: Vec<String> = Vec::new();
     for (index, served) in blocks.iter().enumerate() {

@@ -7,9 +7,9 @@ members = [
 resolver = "2"
 
 [workspace.package]
-authors = ["Zingo Lab Cyan"]
-repository = "https://github.com/zingolabs"
-homepage = "https://www.zingolabs.org/"
+authors = ["Umbriel Systems Ltd"]
+repository = "https://github.com/umbriel-sys/zaino"
+homepage = "https://github.com/umbriel-sys/zaino"
 edition = "2021"
 license = "Apache-2.0"
 version = "0.2.0"

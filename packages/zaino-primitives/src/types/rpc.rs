@@ -23,7 +23,7 @@
 //!    validate or reason about, and it has no place in a business type.
 //!
 //! Leniency buys compatibility; it does not require passthrough. Those were
-//! conflated in the previous `zaino-fetch` wire types, which were inconsistent
+//! conflated in the wire types these replace, which were inconsistent
 //! about it: one type forwarded unknown fields via `#[serde(flatten)]` while
 //! four others set `deny_unknown_fields` and *failed* on them — the latter
 //! being outright hostile to a generic backend.

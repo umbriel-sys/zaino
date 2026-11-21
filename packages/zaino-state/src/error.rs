@@ -14,8 +14,7 @@ use zaino_proto::proto::utils::GetBlockRangeError;
 /// lightwalletd-family clients key on, rather than a generic internal error.
 /// Carried as a typed `source` through the error chain so the serving layer can
 /// downcast to it — `ChainIndexError::internal_from` is what preserves it on
-/// the way out, and `legacy_code_from_error_source` in
-/// `zaino-serve/src/rpc/jsonrpc/service.rs` is what recovers it.
+/// the way out.
 ///
 /// Distinct from [`NonDomainError`](zaino_source::NonDomainError), which carries a code
 /// the *validator* produced. This one is Zaino's.
@@ -277,7 +276,7 @@ impl ChainIndexError {
     }
 
     /// Constructs an `InternalServerError`-kind error from a typed error,
-    /// preserving it as `source` so zaino-serve's RPC-error-code recovery
+    /// preserving it as `source` so a serving layer's RPC-error-code recovery
     /// walks can downcast to it (e.g. the legacy `-8` code carried by an
     /// [`LegacyRpcError`]).
     pub(crate) fn internal_from(error: impl std::error::Error + Send + Sync + 'static) -> Self {

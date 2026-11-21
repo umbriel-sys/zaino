@@ -1,7 +1,7 @@
 //! Fetch block data for test fixtures.
 //!
 //! Usage:
-//!   cargo run -p zaino-source-zebra-rpc --example fetch_fixtures
+//!   cargo run -p zaino-source-zcash-rpc --example fetch_fixtures
 
 use zaino_primitives::types::Height;
 use zaino_rpc::{RpcClient, RpcClientConfig};

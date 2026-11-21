@@ -330,10 +330,10 @@ and this library adheres to Rust's notion of
 - `get_address_utxos` now bounds the number of addresses fanned out per request,
   preventing an unbounded multi-address query from amplifying backend load
   (#974).
-- Integration tests now use `corez`, with Zcash, Zebra, and Zingo dependencies
+- Integration tests now use `corez`, with Zcash, Zebra, and wallet dependencies
   updated to releases and companion branches that no longer depend on the
   yanked `core2` crate.
-- Integration tests now follow the companion Zingo corez migration branches and
+- Integration tests now follow the companion wallet corez migration branches and
   use `zcash_client_backend` 0.22, with deprecated nullifier-range client calls
   allowed locally until they are replaced.
 - `JsonRpSeeConnector::get_tree_state` now returns a `GetTreestateResponse`

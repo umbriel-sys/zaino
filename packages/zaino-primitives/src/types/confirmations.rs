@@ -58,7 +58,7 @@ const MEMPOOL: i64 = 0;
 /// count that is strictly positive by construction (the block itself is its
 /// own first confirmation) — or not on it. There is no mempool state for a
 /// block; a type that carried one would force dead match arms on every
-/// consumer. See the [module docs](self) for the state model and the wire
+/// consumer. See the module docs for the state model and the wire
 /// scheme.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum BlockConfirmations {
@@ -179,7 +179,7 @@ impl fmt::Display for BlockConfirmations {
 ///
 /// A transaction adds one state a block does not have — the mempool — and a
 /// mined transaction's confirmation state *is* its block's, so the block
-/// state is embedded rather than restated. See the [module docs](self) for
+/// state is embedded rather than restated. See the module docs for
 /// why this is composition and not a shared trait.
 ///
 /// # Extraction trigger

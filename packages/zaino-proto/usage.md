@@ -17,6 +17,27 @@ files under `lightwallet-protocol/` stay identical to upstream.
 `light_client.proto` borrows `BlockRange` and `BlockID` from the lightwalletd
 package; the generated code names `proto::service::{BlockRange, BlockId}`.
 
+## The vendored protocol
+
+`lightwallet-protocol/` is a `git subtree` of
+<https://github.com/zcash/lightwallet-protocol>, at upstream tag v0.6.0.
+`proto/compact_formats.proto` and `proto/service.proto` are symlinks into it.
+It is vendored because Zaino is a server and upstream publishes the `.proto`
+files, not Rust server bindings. The generated Rust is checked in under
+`src/proto/`; `build.rs` regenerates it only when `PROTOC` is set, or, with
+the `heavy` feature, when `protoc` is on `PATH`.
+
+To adopt a new upstream release:
+
+```sh
+git subtree pull --prefix=packages/zaino-proto/lightwallet-protocol \
+    https://github.com/zcash/lightwallet-protocol.git <tag> --squash
+```
+
+Keep the branch linear: the subtree commit, then the regenerated files, then
+the compile fixes, then the changeset recording the version adopted. Never
+edit a file under `lightwallet-protocol/` by hand.
+
 ## Domain compact blocks on the wire
 
 `compact` sits below every crate that serves compact blocks (store, chain

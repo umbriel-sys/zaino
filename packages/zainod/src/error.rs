@@ -2,7 +2,7 @@
 
 use crate::serve::error::ServerError;
 
-/// Zingo-Indexer errors.
+/// Zainod errors.
 #[derive(Debug, thiserror::Error)]
 pub enum IndexerError {
     /// Server based errors.

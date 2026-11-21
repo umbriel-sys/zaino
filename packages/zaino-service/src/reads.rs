@@ -394,7 +394,7 @@ impl<S: ServiceSource> ServiceSnapshot<S> {
     }
 
     /// The ids of the transactions touching the addresses over zebrad's
-    /// range (`getaddresstxids`): see [`height_range`].
+    /// range (`getaddresstxids`): see `height_range`.
     pub async fn address_txids(
         &self,
         addresses: &[TransparentAddress],

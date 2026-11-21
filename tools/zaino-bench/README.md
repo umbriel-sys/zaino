@@ -12,7 +12,7 @@ under `--store-dir/lsm/`). Nothing here reads a store's internals.
 
 ```sh
 cd tools/zaino-bench
-cargo run --release -- --cache /mnt/framework_ssd/.cache/zebra \
+cargo run --release -- --cache <zebra cache root> \
     build --store lsm --set full --to 100000 --fresh
 ```
 

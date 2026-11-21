@@ -10,17 +10,17 @@
 /// unreliable here: it works only when exactly one of rustls's `ring` /
 /// `aws-lc-rs` features is enabled, and dependency feature-unification
 /// can silently enable both, which panicked at runtime on TLS-enabled
-/// deployments (zingolabs/zaino#1360). Installing explicitly removes
+/// deployments. Installing explicitly removes
 /// that dependence on the feature graph.
 ///
-/// aws-lc-rs is the preferred provider (ADR-0006): it is the only rustls
+/// aws-lc-rs is the preferred provider: it is the only rustls
 /// provider with post-quantum key exchange, and the workspace enables
 /// rustls's `prefer-post-quantum` feature so the X25519MLKEM768 hybrid
 /// group leads this provider's defaults. That ordering governs zaino's
 /// outbound (client-role) handshakes; rustls servers follow the client's
 /// group preference, so inbound hybrid uptake is decided by the
 /// connecting wallet's TLS stack. Classical key-exchange groups remain
-/// offered and accepted, but are deprecated (see the ADR).
+/// offered and accepted, but are deprecated.
 ///
 /// The process default is first-install-wins and is not constrained by
 /// our crates' rustls features, so an embedder (e.g. zallet) that has

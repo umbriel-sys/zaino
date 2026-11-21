@@ -37,8 +37,8 @@ use syn::{
 ///
 /// Placed on a `OneShotX` trait, it emits the original trait unchanged, plus a
 /// canonical `X` trait whose methods return
-/// [`SourceError`](zaino_source::SourceError) instead of
-/// [`QueryError`](zaino_source::QueryError), plus
+/// `zaino_source::SourceError` instead of
+/// `zaino_source::QueryError`, plus
 /// `impl X for ValidatorClient<V> where V: OneShotX`. The twin name is the annotated
 /// name with the `OneShot` prefix stripped.
 ///

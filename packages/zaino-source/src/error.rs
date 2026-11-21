@@ -41,7 +41,7 @@ pub enum FailureMode {
 /// `NonDomainError` cannot name every adapter's error type, so at this one forced
 /// seam the cause is boxed, never stringified.
 ///
-/// [`message`](Self::message) is a human note for the case ADR-0020 allows a
+/// [`message`](Self::message) is a human note for the one case that takes a
 /// message: when there is **no** underlying error value — a validator's coded
 /// refusal (`RpcError` mode) or a self-detected condition. It is empty when a
 /// typed cause is present.
@@ -207,7 +207,7 @@ mod tests {
 
     #[test]
     fn new_is_the_no_error_value_case() {
-        // A coded refusal carries a message and no source — the ADR-permitted
+        // A coded refusal carries a message and no source — the
         // "no underlying error value" case the serve layer reads back out.
         let refusal = NonDomainError::new(FailureMode::RpcError(-8), "rejected");
         assert!(refusal.source().is_none());

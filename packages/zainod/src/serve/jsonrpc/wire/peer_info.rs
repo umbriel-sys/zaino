@@ -155,7 +155,7 @@ mod tests {
         );
     }
 
-    // TODO: get a real testvector
+    // Hand-built: a peerless regtest zebrad answers `[]`.
     #[test]
     fn parses_zebrad_payload() {
         let zebrad_json = r#"
@@ -203,7 +203,7 @@ mod tests {
         }
     }
 
-    // TODO: get a real testvector
+    // Hand-built: no validator sends this shape.
     #[test]
     fn falls_back_to_unknown_for_unrecognized_shape() {
         let unknown_json = r#"
@@ -223,7 +223,7 @@ mod tests {
         }
     }
 
-    // TODO: get a real testvector
+    // Hand-built: no validator sends this shape.
     #[test]
     fn fails_on_non_array() {
         let non_array_json = r#"{"foo": 1, "bar": "baz"}"#;

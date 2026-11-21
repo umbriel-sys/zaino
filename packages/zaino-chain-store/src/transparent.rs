@@ -105,7 +105,7 @@ impl StoreAddressEffects {
     /// the money supply, so each side accumulates into a [`ZatoshisFlowSum`],
     /// which is bounded only by machine representability and fails loud only on
     /// that overflow — unreachable here, where each element is a supply-bounded
-    /// [`Zatoshis`](zaino_primitives::types::Zatoshis) and the count is a `Vec`
+    /// [`Zatoshis`] and the count is a `Vec`
     /// length.
     ///
     /// The *net* — received minus spent — is the change in the addresses'

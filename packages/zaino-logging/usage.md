@@ -13,9 +13,10 @@ initialise them.
 zaino_logging::init();
 ```
 
-`init` installs the global subscriber and the panic hook, panicking if a
-subscriber is already set. `try_init` is the idempotent variant for tests, where
-several test functions may each try to initialise.
+`init` installs the global subscriber and the panic hook and returns an error
+if a subscriber is already set. `try_init` is the idempotent variant for tests,
+where several test functions may each try to initialise: the first subscriber
+stays.
 
 ## Configuration
 
@@ -23,8 +24,8 @@ Read from the environment when logging is initialised:
 
 | Variable | Effect |
 |---|---|
-| `RUST_LOG` | Standard tracing filter. Unset, only zaino crates log; `RUST_LOG=info` includes every crate, or filter explicitly (`RUST_LOG=zaino=debug,zebra_state=info`). |
-| `ZAINOLOG_FORMAT` | `stream` (flat chronological, default), `tree` (span nesting), or `json` (machine-parseable). |
+| `RUST_LOG` | Standard tracing filter. Unset, it is `zaino=info,zainod=info,zainodlib=info`: only Zaino's crates log. `RUST_LOG=info` includes every crate, or filter explicitly (`RUST_LOG=zaino=debug,zebra_state=info`). |
+| `ZAINOLOG_FORMAT` | `stream` (chronological, default, standard output), `tree` (span nesting, standard error), or `json` (one object per line, standard output). |
 | `ZAINOLOG_COLOR` | `true`/`false` to force ANSI colour, `auto` to detect a TTY. Colour on by default. |
 | `ZAINOLOG_LOCATION` | Show each event's source `file:line`. Off by default — opt in when debugging. |
 

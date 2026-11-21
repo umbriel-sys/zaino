@@ -20,7 +20,7 @@ thiserror.workspace = true
 tokio = { workspace = true, features = ["time"] }
 metrics = { workspace = true }
 # The process-level provider `ensure_default_crypto_provider` installs
-# (ADR-0006: aws-lc-rs, post-quantum key exchange preferred).
+# (aws-lc-rs, post-quantum key exchange preferred).
 rustls = { version = "0.23", default-features = false, features = [
     "aws_lc_rs",
     "prefer-post-quantum",

@@ -1,5 +1,5 @@
 //! Guard: one rustls CryptoProvider — aws-lc-rs — plus the single tolerated
-//! ring path through zebra (ADR-0006).
+//! ring path through zebra.
 //!
 //! Two checks against the production workspace's resolved dependency graph:
 //!
@@ -7,13 +7,13 @@
 //! 2. The set of feature edges that select ring anywhere in the graph must
 //!    equal [`RING_EDGE_ALLOWLIST`] — today, the single chain rooted in
 //!    zebra-node-services' `rpc-client` feature (its reqwest `rustls-tls`;
-//!    reqwest 0.12 offers no aws-lc alternative). That ring is compiled but
+//!    that reqwest offers no aws-lc alternative). That ring is compiled but
 //!    dormant: reqwest consults the process-default provider first and zaino
 //!    installs aws-lc-rs at both TLS boundaries.
 //!
 //! Loud in both directions. A NEW edge means a second provider path is
 //! creeping back in via feature unification — the regression this guard
-//! exists to catch (zingolabs/zaino#1360). A MISSING edge — in particular
+//! exists to catch. A MISSING edge — in particular
 //! ring vanishing from the graph entirely — means zebra dropped its ring
 //! dependence: delete [`RING_EDGE_ALLOWLIST`], make this check assert ring's
 //! absence, and close the classical-deprecation tracking issue's zebra item.
@@ -82,9 +82,9 @@ fn check_preferred_provider(features_line: &str) -> Result<(), Vec<String>> {
         Ok(())
     } else {
         Err(vec![format!(
-            "rustls resolved without {} (got: {}) — the preferred provider per \
-             ADR-0006 is aws-lc-rs with prefer-post-quantum; check \
-             packages/zaino-common/Cargo.toml's rustls features",
+            "rustls resolved without {} (got: {}) — the preferred provider \
+             is aws-lc-rs with prefer-post-quantum; check \
+             packages/zaino-rpc/Cargo.toml's rustls features",
             missing.join(" + "),
             features_line.trim(),
         )])
@@ -107,7 +107,7 @@ fn check_ring_edges(ring_tree: &str) -> Result<(), Vec<String>> {
     for new in found.difference(&expected) {
         msg.push(format!(
             "NEW ring-selecting feature edge: {new} — a second CryptoProvider path is \
-             creeping back in (zingolabs/zaino#1360); remove the enabling feature",
+             creeping back in; remove the enabling feature",
         ));
     }
     for gone in expected.difference(&found) {
@@ -116,7 +116,6 @@ fn check_ring_edges(ring_tree: &str) -> Result<(), Vec<String>> {
              this guard (see the module docs in check-crypto-provider.rs)",
         ));
     }
-    msg.push("see zingo-adrs zaino/0006".to_string());
     Err(msg)
 }
 

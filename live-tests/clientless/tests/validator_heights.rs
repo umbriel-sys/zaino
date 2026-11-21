@@ -1,5 +1,5 @@
 //! Regression tests for the single source of truth for activation heights
-//! (zaino#1076, `zainod-heights-from-validator-spec.md`).
+//! (zaino#1076).
 //!
 //! The invariant: the validator's configured activation heights are
 //! authoritative. zainod's config carries only a network kind — its regtest

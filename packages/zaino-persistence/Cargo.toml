@@ -22,7 +22,7 @@ serde = { workspace = true, features = ["derive"], optional = true }
 [features]
 # `in_memory` backend + `conformance` (the suite every backend runs)
 testing = ["dep:proptest"]
-# `Serialize` on the verify and footprint reports (`zainod verify` output)
+# `Serialize` on the verify and footprint reports
 serde = ["dep:serde"]
 
 [lints.rust]

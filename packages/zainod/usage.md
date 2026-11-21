@@ -10,6 +10,18 @@ The finalised seam is `zaino_consensus::MAX_NONFINALISED_DEPTH` (1,001)
 blocks below the tip. The test-only cargo feature `fast-test-seam` makes it
 100, for tests that need a seam without a thousand-block chain.
 
+## The CLI
+
+```text
+zainod generate-config [--output FILE]   # write a config file holding every default
+zainod start [--config FILE]             # start the daemon
+```
+
+Without `--config` / `--output` the path is
+`$XDG_CONFIG_HOME/zaino/zainod.toml`, else `$HOME/.config/zaino/zainod.toml`.
+[Running Zaino](../../docs/running.md) walks through a first start, the
+container image and the validator's side.
+
 ## Configuration
 
 One TOML file; every key can be set from the environment as

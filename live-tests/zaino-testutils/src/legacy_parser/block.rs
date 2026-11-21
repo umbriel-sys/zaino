@@ -80,7 +80,7 @@ impl FullBlockHeader {
     }
 }
 
-/// Zingo-Indexer Block.
+/// A parsed block.
 #[derive(Debug, Clone)]
 pub struct FullBlock {
     /// The block header, containing block metadata.

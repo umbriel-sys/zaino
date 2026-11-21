@@ -11,7 +11,7 @@ pub enum BlockchainSourceError {
     #[error("critical error in backing block source: {0}")]
     Unrecoverable(String),
     /// Unrecoverable error whose typed cause is preserved as
-    /// [`std::error::Error::source`]. zaino-serve recovers legacy-compatible
+    /// [`std::error::Error::source`]. A serving layer recovers legacy-compatible
     /// RPC error codes by downcast-walking `source()` chains, so errors that
     /// wrap a typed transport or RPC error must use this variant rather than
     /// [`Self::Unrecoverable`] with a stringified cause.

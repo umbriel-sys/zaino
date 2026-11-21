@@ -837,7 +837,7 @@ impl<V: ChainIndexSourcePorts + ServiceSource> ZcashIndexer
     }
 
     /// Sends the raw bytes of a signed transaction to the local node's mempool, if the transaction is valid.
-    /// Returns the [`TransactionHash`](zaino_primitives::types::TransactionHash) for the transaction, as a JSON string.
+    /// Returns the transaction's id, as a JSON string.
     ///
     /// Zcash RPC reference: [`sendrawtransaction`](https://zcash.github.io/rpc/sendrawtransaction.html)
     /// method: post
@@ -1778,7 +1778,7 @@ impl<V: ChainIndexSourcePorts + ServiceSource> LightWalletIndexer
 
         Ok(LightdInfo {
             version: self.data.build_info().version(),
-            vendor: "ZingoLabs ZainoD".to_string(),
+            vendor: "Umbriel Systems ZainoD".to_string(),
             taddr_support: true,
             chain_name: blockchain_info.chain.clone(),
             sapling_activation_height: schedule
