@@ -24,17 +24,17 @@ fi
 # The Dockerfile creates symlinks: /app/config -> ~/.config/zaino, /app/data -> ~/.cache/zaino
 # So we handle /app/* paths directly for container users.
 #
-# Database path (symlinked from ~/.cache/zaino)
-: "${ZAINO_STORAGE__DATABASE__PATH:=/app/data}"
+# Store path (`persistence.path`; symlinked from ~/.cache/zaino)
+: "${ZAINO_PERSISTENCE__PATH:=/app/data}"
 #
-# Cookie dir (runtime, ephemeral)
-: "${ZAINO_JSON_SERVER_SETTINGS__COOKIE_DIR:=${XDG_RUNTIME_DIR:-/tmp}/zaino}"
+# Cookie dir (`serve.jsonrpc.cookie_dir`; runtime, ephemeral)
+: "${ZAINO_SERVE__JSONRPC__COOKIE_DIR:=${XDG_RUNTIME_DIR:-/tmp}/zaino}"
 #
 # Config directory (symlinked from ~/.config/zaino)
 ZAINO_CONFIG_DIR="/app/config"
 
 # Create directories if they don't exist
-for dir in "${ZAINO_STORAGE__DATABASE__PATH}" "${ZAINO_JSON_SERVER_SETTINGS__COOKIE_DIR}" "${ZAINO_CONFIG_DIR}"; do
+for dir in "${ZAINO_PERSISTENCE__PATH}" "${ZAINO_SERVE__JSONRPC__COOKIE_DIR}" "${ZAINO_CONFIG_DIR}"; do
   [[ -z "${dir}" ]] && continue
   if ! mkdir -p "${dir}" 2>/dev/null; then
     echo "WARN: Cannot create ${dir} (read-only or permission denied), skipping" >&2

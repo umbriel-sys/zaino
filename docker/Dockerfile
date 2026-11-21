@@ -1,3 +1,5 @@
+# Build from the repository root: `podman build -f docker/Dockerfile .`
+
 ############################
 # Global build args
 ############################
@@ -32,10 +34,17 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
       protobuf-compiler=3.21.12-3+deb12u1 \
   && rm -rf /var/lib/apt/lists/*
 
-# rust-toolchain.toml lists these components; installing them here keeps
-# the download in a cached layer instead of re-syncing the channel on
-# every build of the workspace layer below.
-RUN rustup component add clippy rustfmt
+# The toolchain rust-toolchain.toml pins, in a cached layer: the base image's
+# own toolchain is only rustup's host.
+COPY rust-toolchain.toml ./
+RUN rustup toolchain install \
+      "$(sed -n 's/^channel = "\(.*\)"/\1/p' rust-toolchain.toml)" \
+      --profile minimal --component clippy,rustfmt
+
+# The context has no .git: the build script takes these instead.
+ARG ZAINO_GIT_COMMIT_ID=unknown
+ARG ZAINO_GIT_BRANCH=unknown
+ENV ZAINO_GIT_COMMIT_ID=${ZAINO_GIT_COMMIT_ID} ZAINO_GIT_BRANCH=${ZAINO_GIT_BRANCH}
 
 # Copy entire workspace (prevents missing members)
 COPY . .
@@ -90,7 +99,7 @@ RUN mkdir -p /app/config /app/data && \
 
 # Copy binary and entrypoint
 COPY --from=builder /out/bin/zainod /usr/local/bin/zainod
-COPY entrypoint.sh /entrypoint.sh
+COPY docker/entrypoint.sh /entrypoint.sh
 RUN chmod +x /entrypoint.sh
 
 # Default ports
