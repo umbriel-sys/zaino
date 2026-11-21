@@ -1,4 +1,4 @@
-# Updating Zebra crates ~best~ possible practices.
+# Updating Zebra crates
 
 Zaino depends on Zebra as its main validator. Zainod and Zebrad are
 tightly coupled. Keeping up-to-date with latest Zebra crates is
@@ -48,18 +48,20 @@ Cargo honours `[patch.crates-io]` only from a workspace root, so member
 manifests must **not** carry their own patch sections (they would be silently
 ignored).
 
-## Bump the zebrad test image
+## Bump the zebrad the live tests need
 
-The live tests run the `zfnd/zebra:<version>` image named by
-`zaino_testutils::ZEBRAD_VERSION` (`live-tests/zaino-testutils/src/lib.rs`).
-Set it to the zebrad release whose crates the workspaces now use.
+The live tests run the `zebrad` binary on `PATH` (or `ZEBRAD_BIN`) and refuse
+one older than `zaino_testutils::ZEBRAD_MIN_VERSION`
+(`live-tests/zaino-testutils/src/zebrad.rs`). Raise it to the zebrad release
+whose crates the workspaces now use, and set the same version as
+`ZEBRAD_VERSION` in `.github/workflows/live-tests.yaml`, which takes the
+binary from the `zfnd/zebra` image.
 
 ## Check the direct-reader database format
 
 `zebra-state` opens the state format it was built for (`state/v<N>/<network>`),
 and `zaino-source-zebra`'s read-state adapter is a read-only secondary that never migrates.
-A zebra bump that raises the format (zebra-state 15 / zebrad 7.0.0-rc.0 moved
-v28 → v29) is a deployment requirement for direct-reader users: zebrad must be
+A zebra bump that raises the format (zebrad 7.0.0 moved v28 → v29) is a deployment requirement for direct-reader users: zebrad must be
 upgraded and run first. Say so in the changeset and in that crate's `usage.md`.
 
 ## Librustzcash pins follow zebra's

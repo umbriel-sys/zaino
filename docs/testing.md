@@ -3,12 +3,14 @@
 Zaino has two kinds of tests, run by two different commands:
 
 - **Unit tests** — the unit and crate-level integration tests of the
-  `packages/*` crates (the root workspace `default-members`). They need no live
-  validator and run on your host with a plain `cargo nextest run`.
+  `packages/*` crates (the root workspace). They run against the shared fake
+  validator (`zaino-source-mock`), need no live validator, and run on your
+  host with a plain `cargo nextest run`. CI runs these.
 - **Live tests** — tests that stand up a real `zebrad` and an in-process
   `zainod`, with an in-process librustzcash wallet for the `e2e` partition,
   and exercise the assembled, running system. They live in the standalone
-  `live-tests/` workspace.
+  `live-tests/` workspace. CI does not run them on pull requests: run them
+  locally, or start the `Live tests` workflow by hand.
 
 ## Quick start
 
@@ -26,7 +28,7 @@ cargo nextest run -E 'test(/seam/)'      # a filter
 
 | Set          | Where it runs          | What it covers                                                                                                                                                      |
 | ------------ | ---------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `packages/*` | host (`cargo nextest`) | The production crates. No live validator — but *not* network-free: e.g. `zaino-serve`'s gRPC regression test binds a loopback socket and stands up a tonic server. |
+| `packages/*` | host (`cargo nextest`) | The production crates. No live validator — but *not* network-free: e.g. `zainod`'s gRPC regression tests bind a loopback socket and stand up a tonic server. |
 | `clientless` | host, `live-tests/`    | Drives `zainod` over its gRPC and JSON-RPC surfaces against a live `zebrad`, with no wallet — fetch-vs-state backend parity, validator-vs-Zaino oracle checks, reorgs. |
 | `e2e`        | host, `live-tests/`    | A librustzcash wallet drives `zainod` end to end — a wallet's full-stack view of the indexer.                                                                       |
 
@@ -76,5 +78,4 @@ restores a `zebrad` and an indexer, so the bound is memory (about 1.5 GB per
 test) and proving CPU rather than cores. The rule is the smaller of half the
 cores and memory divided by 1.5 GB. Measured on a 16-core, 61 GB host: 4
 threads 24 min, 8 threads 11 min, 16 threads 9 min with most tests past the
-slow mark. A standard GitHub runner (4 vCPU, 16 GB) gets 2. Override with
-`--test-threads`.
+slow mark. On a smaller machine lower it with `--test-threads`.
