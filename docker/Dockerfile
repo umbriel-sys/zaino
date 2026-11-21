@@ -76,7 +76,7 @@ ARG HOME
 # docker.io/library/debian:bookworm-slim; bump together with the base image.
 RUN apt-get -qq update && \
     apt-get -qq install -y --no-install-recommends \
-      ca-certificates=20250419~deb12u1 \
+      ca-certificates=20250419~deb12u2 \
       libgcc-s1=12.2.0-14+deb12u1 \
     && rm -rf /var/lib/apt/lists/*
 
