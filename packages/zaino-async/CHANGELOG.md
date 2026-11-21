@@ -23,3 +23,7 @@ and this library adheres to Rust's notion of
 - `catch_panic` / `panic_message` — run a future and turn a panic into a value.
 - Re-exports `CancellationToken`, so a consumer naming it in a signature need not
   depend on `tokio-util` directly.
+
+## [0.1.1] - 2026-11-21
+### Internal
+- Denies panicking code in production.

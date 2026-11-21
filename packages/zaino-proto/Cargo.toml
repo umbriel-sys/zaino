@@ -9,7 +9,7 @@ license = { workspace = true }
 readme = { workspace = true }
 keywords = { workspace = true }
 categories = { workspace = true }
-version = "0.6.1"
+version = "0.7.0"
 # Upstream subtree tooling (CI, buf config), not crate content.
 exclude = ["lightwallet-protocol/.github", "lightwallet-protocol/buf.yaml"]
 

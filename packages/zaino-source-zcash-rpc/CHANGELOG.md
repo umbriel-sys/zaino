@@ -13,6 +13,39 @@ and this library adheres to Rust's notion of
 ### Removed
 ### Fixed
 
+## [0.3.0] - 2026-11-21
+### Added
+- `Quirks::unchecked_address_network`: the adapter refuses another network's address as `InvalidAddress` itself, reading the node's network once from `getblockchaininfo`.
+- Answers `getstandardfee` by calling the validator and parsing zebrad's response; `-32601` is `GetStandardFeeError::Unsupported`.
+- Raw blocks from `getblock` are parsed by zaino's own parser rather than `zebra-chain`'s deserializer: structure is checked as upstream checks it, but no curve point is decompressed, and txids are computed directly (SHA-256d to v4, ZIP 244 / ZIP 229 from v5, including v6 with Ironwood). The domain block is unchanged; about 29x faster on zebra's shielded block vectors.
+- `ZcashRpcAdapter::with_block_verification(BlockVerification)`: `Light` also checks the header's merkle root and canonical field elements (~13% over the default), `Full` also requires zebra's parse to give the same block. Default `Off`, unchanged behaviour.
+- The raw block parser is public: `parse_block`, `RawBlockError`, `merkle_root` and `GENESIS_COINBASE_SCRIPT_SIG`.
+- The adapter reads `getblock` at verbosity 1 to 3 in full; `parse_transaction_object` reads one transaction object as the adapter does.
+### Changed
+- `parse_block(bytes, verification)`: the parsed block carries no chain metadata (see `zaino-primitives`).
+- Renamed from `zaino-source-zebra-rpc`, and `ZebraRpcAdapter` to `ZcashRpcAdapter`: the adapter speaks the zcash JSON-RPC interface and names no validator. What the spec leaves to the node is read through a `Quirks` table (`ZcashRpcAdapter::with_quirks`); `new` reads every reply as the spec says, so a node's result cap is a failure unless its table reads it.
+- `merkle_root` is removed: use `zaino_primitives::types::MerkleRoot::of`.
+- `getinfo` carries `errorstimestamp` with a healthy reply (#30); `getpeerinfo` and `gettxout` read zebrad's full shapes (#35, #36); `getnetworksolps` sends −1 for the difficulty averaging window (Q-34). New `parse_script_pub_key_object`.
+- Built against zebra-chain 15 and the zebra 7.0.0 librustzcash release.
+  _Migration:_ Upgrade `zebra-chain` to 15 and the `zcash_*` crates to the same versions.
+- The raw block decoder moved to `zaino-encoding`. `parse_block` and `BlockVerification` are unchanged; `RawBlockError` is now `Decode` (the decoder's `DecodeError`), `Upstream` and `UpstreamMismatch` (C4).
+- dependency `zaino-encoding` 0.1.0→0.2.0 crossed the requirement `^0.1.0`
+- dependency `zaino-primitives` 0.3.0→0.4.0 crossed the requirement `^0.3.0`
+- dependency `zaino-rpc` 0.3.0→0.4.0 crossed the requirement `^0.3.0`
+- dependency `zaino-source` 0.2.2→0.3.0 crossed the requirement `^0.2.2`
+### Fixed
+- A parsed block's size is the length of the bytes it was parsed from.
+- `getchaintips` answered with −32601 is `GetChainTipsError::Unsupported`.
+- Header fields are read by zebrad's rules into the header's own bytes (F2, #8, #16): the nonce and `finalsaplingroot` reversed, an all-zero root (below Sapling) absent, `blockcommitments` raw below Sapling and reversed from it, in `getblockheader`, `getblock` and `getblockdeltas`. `chainwork` is read where sent; absent or zebrad's `0` is `None` (CW-6). A `z_gettreestate` pool with no `finalState` is absent, not an empty tree (F4).
+- zebrad 7's address-query result cap (`-8 more than {cap} … match`) is classified as `TooManyResults` on txids and utxos, rather than as an unreachable validator.
+- The raw-block parser reads each JoinSplit's `vpub_old` and `vpub_new` into the transaction's Sprout value balance instead of skipping them.
+- `z_getsubtreesbyindex`'s `-8` (zcashd refusing a pool it lacks) is `PoolUnavailable`, not a fault.
+- The commitment-tree root ports read Sapling and Orchard roots and sizes from the verbose `getblock` reply instead of hashing every pool's frontier from `z_gettreestate`; only Ironwood, which the block reply lacks, is still hashed, and that hash now runs on the blocking pool so fetches in flight hash in parallel. A root cost about 3 ms per pool per height on the async thread, which left the chain head's window build and the store's sync CPU-bound at startup. `tokio` (`rt`) becomes a regular dependency.
+### Internal
+- Denies panicking code in production.
+- Implement `ValidatorSource` (`type NonDomain = NonDomainError`) and adapt to the renamed seam error; classification is unchanged.
+- Documentation and comments only; the examples name the right package.
+
 ## [0.2.2] - 2026-09-26
 ### Changed
 - dependency `zaino-convert-zebra` 0.2.1→0.3.0 crossed the requirement `^0.2.1`

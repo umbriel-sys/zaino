@@ -1,3 +1,4 @@
+consumed_in = "zainod-0-11-0"
 # NU7 on zebrad 7.0.0 (zebra-chain 15 / zebra-state 16 / zebra-rpc 19), the
 # librustzcash finals, and lightwallet-protocol v0.6.0.
 

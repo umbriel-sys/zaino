@@ -13,6 +13,17 @@ and this library adheres to Rust's notion of
 ### Removed
 ### Fixed
 
+## [0.2.0] - 2026-11-21
+### Changed
+- Built against zcash_address 0.14, zcash_keys 0.17 and zcash_protocol 0.11, the librustzcash release zebra 7.0.0 links.
+  _Migration:_ Upgrade the `zcash_*` crates to the same versions.
+### Fixed
+- A TEX address (ZIP 320) is valid: a transparent key hash to `validateaddress` and `z_validateaddress`, as zebrad classifies it (#41).
+- `z_validateaddress` echoes a unified address as the caller sent it instead of re-encoding it, which could change its ZIP 316 revision and prefix.
+### Internal
+- Denies panicking code in production.
+- Documentation and comments only.
+
 ## [0.1.2] - 2026-09-26
 ### Internal
 - The packaged lockfile picks up the workspace's minor and patch dependency updates.

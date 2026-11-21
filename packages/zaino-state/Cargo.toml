@@ -9,7 +9,7 @@ license = { workspace = true }
 readme = { workspace = true }
 keywords = { workspace = true }
 categories = { workspace = true }
-version = "0.10.0"
+version = "0.11.0"
 
 [features]
 default = []
@@ -64,9 +64,9 @@ zaino-chain-head = { workspace = true }
 zaino-chain-head-service = { workspace = true }
 zaino-component.workspace = true
 zaino-chain = { workspace = true }
-zaino-service = { version = "0.1.0", path = "../zaino-service" }
+zaino-service = { version = "0.2.0", path = "../zaino-service" }
 zaino-chain-store-service.workspace = true
-zaino-persistence-lsm-tree = { version = "0.1.0", path = "../zaino-persistence-lsm-tree" }
+zaino-persistence-lsm-tree = { version = "0.2.0", path = "../zaino-persistence-lsm-tree" }
 
 [dev-dependencies]
 tempfile = { workspace = true }

@@ -19,3 +19,9 @@ and this library adheres to Rust's notion of
   panic on a worker thread is not lost as a distant `JoinError`. It forces the
   `panic` target on so no filter drops the event, and chains to the existing hook
   so the default backtrace is unchanged.
+
+## [0.2.0] - 2026-11-21
+### Changed
+- `init()` returns `Result<(), TryInitError>` instead of panicking when a global subscriber is already set. The crate denies panicking code in production.
+### Internal
+- The guide states the default filter, where each format writes, and that `init` returns an error when a subscriber is already set.

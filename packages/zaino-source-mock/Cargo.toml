@@ -1,6 +1,6 @@
 [package]
 name = "zaino-source-mock"
-version = "0.1.0"
+version = "0.2.0"
 description = "One deterministic fake validator implementing every zaino-source port, for every crate's tests."
 publish = false
 authors = { workspace = true }

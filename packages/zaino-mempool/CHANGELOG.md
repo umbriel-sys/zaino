@@ -13,6 +13,19 @@ and this library adheres to Rust's notion of
 ### Removed
 ### Fixed
 
+## [0.3.0] - 2026-11-21
+### Added
+- `MempoolSnapshot::memory_bytes()` and `MempoolEntry::memory_bytes()`: the memory the set occupies (each entry's allocation and serialized bytes, and the tables indexing them), derived whenever the set is built or re-tagged (C3).
+### Changed
+- `MempoolEntry` carries its compact form (`compact: PreIndexCompactTx`), built once at ingest; `MempoolSnapshot::spender(&outpoint)` names the transaction in the set spending a transparent output and which input does; `memory_bytes` counts both. New `MempoolCompleteness::IncompleteUndecodable` (short, not wrong) (C4).
+- dependency `zaino-primitives` 0.3.0→0.4.0 crossed the requirement `^0.3.0`
+- dependency `zaino-source` 0.2.2→0.3.0 crossed the requirement `^0.2.2`
+### Fixed
+- Compiles again with default features off: the `ChainStateEpoch` import is gated behind `tip_aware_mempool` like its only uses.
+### Internal
+- Denies panicking code in production.
+- Documentation only: a broken link fixed, a stale design note removed.
+
 ## [0.2.2] - 2026-09-26
 ### Changed
 - dependency `zaino-primitives` 0.2.1→0.3.0 crossed the requirement `^0.2.1`

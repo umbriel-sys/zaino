@@ -1,6 +1,6 @@
 [package]
 name = "zaino-logging"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2024"
 publish = false
 description = "Zaino's tracing/logging setup and panic hook: structured-log initialisation as its own cross-cutting crate, depending only on the tracing stack."

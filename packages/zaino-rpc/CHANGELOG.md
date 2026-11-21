@@ -13,6 +13,17 @@ and this library adheres to Rust's notion of
 ### Removed
 ### Fixed
 
+## [0.4.0] - 2026-11-21
+### Added
+- Home of the network utilities every endpoint needs: `net` (address resolution: `resolve_socket_addr`, `try_resolve_address`, `AddressResolution`) and `ensure_default_crypto_provider` (the process-level rustls provider), both moved from `zaino-common`. No longer depends on `zaino-common`.
+### Changed
+- `From<RpcError>` now converts into `zaino_source::NonDomainError` (renamed from `FetchError`); a coded JSON-RPC refusal carries the server's message directly rather than a `to_string()` of the whole error.
+- `auth_from_parts` sends no credentials when none are configured and refuses a user without a password or the reverse (`ProbeError::IncompleteCredentials`); the `"xxxxxx"` stand-in pair is gone.
+- dependency `zaino-source` 0.2.2→0.3.0 crossed the requirement `^0.2.2`
+### Internal
+- Denies panicking code in production: address validation splits strings instead of indexing them, and counters saturate.
+- Documentation and comments only.
+
 ## [0.3.0] - 2026-09-26
 ### Changed
 - `RpcClient::call` / `call_with_timeout` take `method: &'static str` (bounds metric-label cardinality). Outbound metrics are now `zaino.rpc.outbound.duration_seconds{method}` and `zaino.rpc.outbound.errors_total{method,outcome}` (`transport_error`, `rpc_error`, `retried`).

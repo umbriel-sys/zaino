@@ -9,7 +9,7 @@ license = { workspace = true }
 readme = { workspace = true }
 keywords = { workspace = true }
 categories = { workspace = true }
-version = "0.2.0"
+version = "0.3.0"
 
 [features]
 default = []
@@ -48,8 +48,8 @@ tracing = { workspace = true }
 
 metrics = { workspace = true }
 imbl.workspace = true
-zaino-indexes = { version = "0.1.0", path = "../zaino-indexes", optional = true }
-zaino-persistence = { version = "0.1.0", path = "../zaino-persistence", optional = true }
+zaino-indexes = { version = "0.2.0", path = "../zaino-indexes", optional = true }
+zaino-persistence = { version = "0.2.0", path = "../zaino-persistence", optional = true }
 
 [dev-dependencies]
 proptest.workspace = true
@@ -57,7 +57,7 @@ tokio = { workspace = true, features = ["macros", "test-util"] }
 zaino-consensus = { workspace = true }
 zaino-source-mock.workspace = true
 # The in-memory backend folds the oracles the extension tests compare against.
-zaino-persistence = { version = "0.1.0", path = "../zaino-persistence", features = ["testing"] }
+zaino-persistence = { version = "0.2.0", path = "../zaino-persistence", features = ["testing"] }
 # The crate's own tests run with every extension on.
 zaino-chain-head-service = { path = ".", features = [
     "transactions",

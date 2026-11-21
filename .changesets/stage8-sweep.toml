@@ -1,3 +1,4 @@
+consumed_in = "zainod-0-11-0"
 # Stage 8: the repository sweep. Ownership moves to Umbriel Systems Ltd
 # (https://github.com/umbriel-sys/zaino); docs, CI and tooling are rebuilt
 # around the v2 tree.

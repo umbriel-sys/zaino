@@ -5259,7 +5259,7 @@ dependencies = [
 
 [[package]]
 name = "zaino-async"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "futures",
  "thiserror 2.0.21",
@@ -5289,7 +5289,7 @@ dependencies = [
 
 [[package]]
 name = "zaino-chain-store"
-version = "0.1.1"
+version = "0.2.0"
 dependencies = [
  "futures",
  "thiserror 2.0.21",
@@ -5301,7 +5301,7 @@ dependencies = [
 
 [[package]]
 name = "zaino-chain-store-service"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "blake2",
  "futures",
@@ -5320,7 +5320,7 @@ dependencies = [
 
 [[package]]
 name = "zaino-component"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "strum 0.28.0",
  "thiserror 2.0.21",
@@ -5330,7 +5330,7 @@ dependencies = [
 
 [[package]]
 name = "zaino-consensus"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "hex",
  "thiserror 2.0.21",
@@ -5338,7 +5338,7 @@ dependencies = [
 
 [[package]]
 name = "zaino-encoding"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "blake2b_simd",
  "orchard",
@@ -5351,7 +5351,7 @@ dependencies = [
 
 [[package]]
 name = "zaino-indexes"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "blake2",
  "imbl",
@@ -5365,7 +5365,7 @@ dependencies = [
 
 [[package]]
 name = "zaino-persistence"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "imbl",
  "thiserror 2.0.21",
@@ -5374,7 +5374,7 @@ dependencies = [
 
 [[package]]
 name = "zaino-persistence-lsm-tree"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "arc-swap",
  "bytes",
@@ -5394,7 +5394,7 @@ dependencies = [
 
 [[package]]
 name = "zaino-primitives"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "blake2",
  "orchard",
@@ -5408,7 +5408,7 @@ dependencies = [
 
 [[package]]
 name = "zaino-rpc"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "metrics",
  "reqwest 0.13.1",
@@ -5422,7 +5422,7 @@ dependencies = [
 
 [[package]]
 name = "zaino-source"
-version = "0.2.2"
+version = "0.3.0"
 dependencies = [
  "thiserror 2.0.21",
  "tokio",
@@ -5432,7 +5432,7 @@ dependencies = [
 
 [[package]]
 name = "zaino-source-macros"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -5441,7 +5441,7 @@ dependencies = [
 
 [[package]]
 name = "zaino-source-zcash-rpc"
-version = "0.2.2"
+version = "0.3.0"
 dependencies = [
  "hex",
  "incrementalmerkletree",
@@ -5461,7 +5461,7 @@ dependencies = [
 
 [[package]]
 name = "zaino-source-zebra"
-version = "0.2.2"
+version = "0.3.0"
 dependencies = [
  "chrono",
  "librocksdb-sys",

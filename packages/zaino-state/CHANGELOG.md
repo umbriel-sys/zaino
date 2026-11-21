@@ -13,6 +13,83 @@ and this library adheres to Rust's notion of
 ### Removed
 ### Fixed
 
+## [0.11.0] - 2026-11-21
+### Added
+- `WithChainViewSource` reaches ChainView from `ChainIndex`'s source vocabulary, and the mockchain source answers the remaining validator ports a chain view passes through. `ChainIndex` still reads through its existing path; this makes the view reachable, not yet load-bearing.
+- `legacy::status::component_status` maps a `ZcashService`'s legacy status to a `ComponentStatus`.
+- `get_standard_fee` on `ZcashIndexer`, `ChainIndex` and `BlockchainSource`, answered by the validator's `getstandardfee`.
+- `NodeBackedChainIndexSubscriber::finalised_tip_height` reports the finalised store's committed tip (`None` while empty or passed through), so an in-process consumer can gate on finalisation without a metrics scrape.
+### Changed
+- `getaddresstxids` and `getaddressdeltas` use zebrad's range rule; a start above the end is −32602 with zebrad's message (S-11). gRPC `GetTaddressTransactions` requires a start, reads an absent or zero end as the tip and refuses an inverted range instead of swapping it (#42); it and `GetSubtreeRoots` read one snapshot per request (#49). `GetAddressUtxos` and its stream page by the request's `startHeight` and `maxEntries` (#46). `GetTaddressBalanceStream` counts each address once, in one query over one snapshot, and refuses more than 10,000 addresses (Q-45).
+- `ChainIndexRpcExt::get_tx_out_set_info` and `ZcashIndexer::get_tx_out_set_info` return `TxOutSetInfo`, not `Option`: a set not built is `Unimplemented`, one building `Unavailable`. Service errors keep their cause as `source`; a capability not served is `Unimplemented`. `sendrawtransaction` keeps the validator's rejection code and message, and refuses invalid hex with −22. `GetTransaction` for an unknown txid is `NotFound`; GetBlock by hash keeps a failed lookup's cause; verbose `getrawtransaction` reports a transaction it cannot parse as a serialization error, not as missing.
+- `zaino_state::legacy` holds what the legacy stack keeps for its users: `legacy::config` (`ServiceConfig`, `StorageConfig`, `CacheConfig`, `DatabaseConfig`, re-exporting the store's budget types) and `legacy::xdg`, both from the removed `zaino-common`. The network kind is `zaino_primitives::types::Network`. Builds its validator through `zaino_source_zebra::rpc_adapter` and the `zaino_primitives::zebra` conversions.
+- gRPC parity with lightwalletd. `GetBlock` serves the whole block, every pool and every transaction, and `GetBlockNullifiers` every transaction with only its nullifiers (#18, #19). A `GetBlockRange` past the tip names the first height it could not serve (#17). `SendTransaction` returns the JSON-quoted txid, answers a rejection as an OK reply with the validator's code and message, and is `Unavailable` when the validator is unreachable (#38). `GetMempoolTx` reads `pool_types`, refuses an invalid pool and drops a transaction with nothing in the pools asked for (#44). `GetStandardFee` refuses a zero fee and is `Unavailable` when unreachable; `Ping` is `FailedPrecondition` (#59).
+- `get_spent_info` (`ZcashIndexer`, `ChainIndexRpcExt`) returns `zaino_service::Spend`, re-exported as `zaino_state::Spend`. `GetMempoolTx` serves each mempool entry's compact form instead of parsing every transaction with `zebra_chain` per request (C4).
+- `NodeBackedIndexerServiceSubscriber::read_state_service` (test_dependencies) returns `Option`, `None` over an RPC connection, instead of panicking.
+- `NodeBackedIndexerService::spawn` no longer waits for the store to build: it waits only for the chain head's blocks to reach the validator's tip, then serves from the validator where an index is building (S-04). `status()` reports serving health and folds the mempool's coherence layer; a store still building is serving, build progress is `finalised_state_mode()`, the manifest and the metrics.
+- Built against zebra-chain 15, zebra-state 16 and zebra-rpc 19 (zebrad 7.0.0); public traits use their types.
+  _Migration:_ Upgrade `zebra-chain` to 15, `zebra-state` to 16 and `zebra-rpc` to 19.
+- `LightWalletIndexer` gains `get_standard_fee`, returning the gRPC `StandardFee`; `ZcashIndexer` keeps its domain-typed method of the same name, so call sites with both traits in scope must name the trait. `GetLightdInfo` reports `lightwalletProtocolVersion` `v0.6.0`.
+  _Migration:_ Implement `LightWalletIndexer::get_standard_fee`, and disambiguate calls as `ZcashIndexer::get_standard_fee(..)` / `LightWalletIndexer::get_standard_fee(..)`.
+- Validator answers carry their kind to gRPC: a validator without the method is `ChainIndexErrorKind::Unimplemented` (gRPC `UNIMPLEMENTED`), and a rejected request is `InvalidArgument` (gRPC `INVALID_ARGUMENT`), where both were `InternalServerError`.
+  _Migration:_ Callers matching on `ChainIndexError::kind()` or the gRPC status must accept `Unimplemented` and `InvalidArgument` for validator rejections.
+- The entry points `IndexerService::spawn` and `NodeBackedChainIndex::new` are `#[deprecated]` (#52). `storage.database.delete_stale` (default true) reaches the store's stale-directory sweep (C6). The `ChainIndex` doctest compiles (S-05). Tests run on the current-thread runtime unless their body needs more (S-02).
+- `CommonBackendConfig::{validator_rpc_user, validator_rpc_password}` are `Option<String>`: no credentials are sent when none are configured. Network adoption moved to `zaino-source-zebra`.
+- `GetLightdInfo.vendor` is "Umbriel Systems ZainoD". `ChainIndexSourcePorts` and `FinalisedSourceCaps` no longer require `OneShotGetTransaction`, which nothing behind them called. `z_validate_address`'s deprecation note names `zaino_address::DEPRECATION_NOTICE`.
+  _Migration:_ Code that relied on either bound to imply `OneShotGetTransaction` names that port itself.
+- `ChainIndex`'s chain vocabulary (`BlockHash`, `TransactionHash`, `Height`, `Outpoint`, `BlockIndex`, `ChainScope`, `Best`/`NonBestChainLocation`, `ShieldedPool`) and `FinalisedStateMode` are defined in `zaino_state::legacy::chain` (still re-exported where they were), `ChannelStream` in `zaino_state`, and the deprecated store knobs (`DatabaseSize`, `SyncWriteBatchSize`, `AccumulatorRebuildMemorySize`, `DEFAULT_SYNC_CHECKPOINT_INTERVAL_SECS`) in `zaino_state::legacy::config`, none of them from zainodb any more (D6-09). They carry no disk encoding.
+- Removed, as nothing produces or calls them since the index runs on the service: `ChainIndex::get_indexed_block_by_hash` and `get_indexed_block_by_height` (and `IndexedBlock`), `FinalisedStateError`, `StatusError`, `SyncError`, `BlockCacheError` with `NodeBackedIndexerServiceError::BlockCacheError`, `MempoolError::StatusError`, `InitError::{MempoolInitialzationError, FinalisedStateInitialzationError, ChainHeadInitialisationError}`, `FinalisedStateMode::EphemeralMigrating`, `ChainIndexConfig::{chain_store_config, zainodb_config}`, and the `zaino_encoding::*` re-export.
+- `NodeBackedChainIndex` runs on `zaino_service::Service`. A persistent index builds every index but `history_tree` at `storage.database.path` (D6-13); an ephemeral one is validator-backed. The old store's tuning knobs (`storage.database.size`, `sync_write_batch_size`, `accumulator_rebuild_memory_size`, `sync_checkpoint_interval`, `storage.cache`) are no longer read and are warned when set (D6-14). `BlockchainSource` no longer requires the mempool ports nor declares `get_block_header`, `get_raw_block_header`, `get_block_deltas`, `get_spent_info` or `get_address_deltas`. `NodeBackedIndexerServiceSubscriber::mempool` (test_dependencies) returns the subscriber by value. `InitError::ServiceInitialisationError` is new.
+- `BlockchainSource` and the `WithChainHeadSource`, `WithChainStoreSource` and `WithChainViewSource` traits are deleted (S-06), with the `chain_index::chain_store` module. `NodeBackedChainIndex`, its subscriber, `NodeBackedIndexerService` and its subscriber are generic over the `zaino-source` validator `V` (default `ZebraValidator`); `NodeBackedChainIndex::new` takes a `ValidatorSource<V>`. Every legacy read goes through the service. `getblock` is the validator's answer at verbosity 0 to 3, by the hash the snapshot holds; another verbosity is −8. `InitError::InvalidNodeData` (S-07) and `ChainIndexConfig::db_version` (S-08) are removed.
+- The re-exported chain head snapshot type is `PersistentSnapshot` (was `MapBackedSnapshot`), following `zaino-chain-head-service`.
+- Removed unused public items: `chain_index::chain_head::indexed_block` and `ChainHeadConversionError`, `chain_index::wire_types::block_index_from_wire` and `WireBlockIdError`, and `chain_index::source::InvalidData`.
+- The `zaino-status` crate is removed. Components report `zaino_component::ComponentStatus`; the legacy `StatusType`, `Status`, `NamedAtomicStatus`, the probe traits and `component_status` are in `zaino_state::legacy::status`.
+- Removed: `MempoolError` with `NodeBackedIndexerServiceError::MempoolError` (never produced), the `experimental_features` and `transparent_address_history_experimental` features (they gated nothing), and twelve unused dependencies.
+- dependency `zaino-address` 0.1.2→0.2.0 crossed the requirement `^0.1.2`
+- dependency `zaino-chain` 0.1.0→0.2.0 crossed the requirement `^0.1.0`
+- dependency `zaino-chain-head` 0.2.0→0.3.0 crossed the requirement `^0.2.0`
+- dependency `zaino-chain-head-service` 0.2.0→0.3.0 crossed the requirement `^0.2.0`
+- dependency `zaino-chain-store` 0.1.1→0.2.0 crossed the requirement `^0.1.1`
+- dependency `zaino-chain-store-service` 0.1.0→0.2.0 crossed the requirement `^0.1.0`
+- dependency `zaino-component` 0.1.0→0.2.0 crossed the requirement `^0.1.0`
+- dependency `zaino-mempool` 0.2.2→0.3.0 crossed the requirement `^0.2.2`
+- dependency `zaino-mempool-service` 0.2.2→0.3.0 crossed the requirement `^0.2.2`
+- dependency `zaino-persistence-lsm-tree` 0.1.0→0.2.0 crossed the requirement `^0.1.0`
+- dependency `zaino-primitives` 0.3.0→0.4.0 crossed the requirement `^0.3.0`
+- dependency `zaino-proto` 0.6.1→0.7.0 crossed the requirement `^0.6.1`
+- dependency `zaino-rpc` 0.3.0→0.4.0 crossed the requirement `^0.3.0`
+- dependency `zaino-service` 0.1.0→0.2.0 crossed the requirement `^0.1.0`
+- dependency `zaino-source` 0.2.2→0.3.0 crossed the requirement `^0.2.2`
+- dependency `zaino-source-zcash-rpc` 0.2.2→0.3.0 crossed the requirement `^0.2.2`
+- dependency `zaino-source-zebra` 0.2.2→0.3.0 crossed the requirement `^0.2.2`
+### Fixed
+- `z_gettreestate` is ChainView's answer: the pre-check and the second validator call are gone, and a block it does not hold is −8 (S-03). `getblock` writes the header fields as zebrad does.
+- `getnetworksolps` passes a non-positive count as the difficulty averaging window (Q-34). Verbose `getrawtransaction` omits `confirmations` for a mempool transaction and names the block of one mined only on a side chain, both `in_active_chain: false` (#39).
+- Address-index requests (balance, txids, utxos, deltas) are checked as zebrad 7 checks them, whichever backend answers: more than 10,000 addresses is refused with `-8`, and a TEX or malformed address with `-5`, each with zebrad's message. TEX addresses previously answered empty on the direct reader.
+- Network adoption rejects a validator whose chain-tip or next-block consensus branch this build does not know, instead of silently indexing the chain under an older rule set. Scheduled future upgrades are still tolerated.
+- `GetLightdInfo` reports the latest *active* network upgrade; a scheduled-but-pending upgrade (NU7 before its activation height) no longer appears as the current one.
+- gRPC `GetTransaction` no longer reports height 0 for a transaction whose bytes are found but which nothing places: it is `Unavailable`. Height 0 is a mempool transaction only. `MapBackedSnapshot` is back as a deprecated alias of `PersistentSnapshot`.
+- Compact blocks go to the wire through `zaino_proto::compact`. The nullifier methods' docs now say what they return: Sapling, Orchard and Ironwood nullifiers, and zero tree sizes.
+- `get_lightd_info` returns an error for a validator whose upgrade schedule has no Sapling activation instead of reporting activation height 0.
+- `GetTransaction` for a just-mined transaction no longer fails with "mempool is not coherent with the requested snapshot" while zaino's mempool still lists it. A transaction mined in the requested snapshot is now served from the chain. (#1611)
+- getblockheader, getblockdeltas, getspentinfo, getaddressdeltas and gettxoutsetinfo read Zaino's indexes, the validator only where they do not reach (they always went to the validator). getblock by height asks the validator by the hash the snapshot holds. `NodeBackedIndexerService::spawn` waits until every built index answers locally, the head's half included, so window compact blocks carry their fees from the first request (D6-10).
+- GetLightdInfo: `upgradeName`/`upgradeHeight` are the next pending upgrade (empty and 0 when none), as the protocol defines them, not the latest active one; an unscheduled Sapling is 0, not 1 (K-02).
+- GetBlockNullifiers and GetBlockRangeNullifiers read only the nullifier columns (D6-18), with the same responses as before: shielded data only, outputs-only transactions served empty, tree sizes 0.
+- `ChainIndex::get_block_range` streams in descending order when `start` is above `end`, and yields an error when either bound is above the snapshot's tip instead of clamping `end` or returning `None`. A missing `end` is the tip.
+- `GetTaddressTransactions` reads every transaction from one snapshot rather than one per transaction, so a reorg mid-stream can no longer mix chains.
+- Indexer RPC fixes: `GetBlock`/`GetBlockNullifiers` no longer report the tip height itself as out of range; `GetBlockNullifiers` rejects heights *below* Sapling activation (the check was inverted) and names the activation height; `getrawtransaction` with `verbose = 0` returns raw hex; `RawTransaction.height` is `u64::MAX` for a transaction mined only on a non-best chain and 0 in the mempool, per the protocol, in `GetTransaction` and `GetTaddressTransactions`; `GetLatestTreeState` reads the tip's treestate by hash, so a moving tip cannot mix two blocks; timeout errors name the RPC that timed out. Block and transaction reads that fail now return the failure's own gRPC status (`unavailable`, `internal`, `not_found`, ...) instead of `unknown`.
+### Internal
+- A store's `Unsupported` maps to `Unimplemented`.
+- The legacy `IndexedBlock` is built from the chain view's block with per-pool value balances `None`; the indexes no longer hold them (D-97).
+- The test chain is 300 blocks, so the mock's spends (from height 101) fall on both sides of the finalised seam.
+- Denies panicking code in production (feature `test_dependencies` helpers excepted). A failed shutdown is logged rather than ignored.
+- A store `TooManyRows` maps to an invalid argument.
+- Adapt to the renamed seam error; the legacy source delegators implement `ValidatorSource` (pass-through non-domain type).
+- Tests run on the shared mock validator (`zaino-source-mock`): `MockchainSource`, `ProptestMockchain` and the regtest vector files are gone, the index syncs its finalised state through the real ingest path, and the era walks build their chains per network-upgrade schedule.
+- The sync and coherence-freeze gauges and the 120 s freeze warning moved to `zaino-chain-head-service` and `zaino-mempool-service`. `metric_names` re-exports the constants; its `GAUGES` table is gone.
+- `NodeBackedChainIndex` is a thin adapter: it launches the chain store, chain head, ChainView (with its sync loop) and the mempool, and answers the `ChainIndex` traits through ChainView and the mempool. The legacy sync loop is gone; the chain head's retry ladder now drives the index's error status, and the mempool is woken by the chain head's tip changes.
+- `NodeBackedIndexerService` reads through ChainView directly where it used to rebuild legacy shapes: treestates and subtree roots come from one snapshot read, and the streaming RPCs share one spawn-and-timeout helper. RPC signatures, statuses and messages are unchanged, except that `GetTaddressBalanceStream` reports a single timeout message.
+
 ## [0.10.0] - 2026-09-26
 ### Added
 - Add a stream of indexed-tip changes, driven by the existing watch notifications instead of polling.

@@ -13,6 +13,42 @@ and this library adheres to Rust's notion of
 ### Removed
 ### Fixed
 
+## [0.3.0] - 2026-11-21
+### Added
+- The extensions (D-50): `transactions`, `txout_set`, `address_history`, `tree_state` and `history_tree`, each a cargo feature enabled through `ChainHeadService::builder(..).extensions(schedule, root)`. Each folds one `zaino-indexes` index over the window above the store watermark; every retained block carries the index after it, a reorg needs no refold, the views rebase onto the watermark every 32 blocks, and a failing extension darkens its slot alone (`extension_failures`, `zaino.chain_head.extension_failures_total`). A head with no extension pulls in neither the indexes nor the persistence port.
+- The window build prefetches `fetch_concurrency` heights at a time instead of one height per round trip; a 1,001-block window at startup takes about a second instead of fifteen. Linking stays sequential and a reorg mid-build drops the reads in flight.
+- The map-backed snapshot records its work anchor, and keeps it across pruning and re-anchoring of the retention floor.
+- The `compact_blocks` extension (cargo feature, `with_compact_blocks`) folds I-05 over the window with every prevout resolved, so window fees equal the store's.
+- The chain head emits `CHAIN_TIP_HEIGHT`, `SYNC_CONSECUTIVE_FAILURES` and `SYNC_BACKOFF_SECONDS` from its own poll loop, listed in a new `metric_names::GAUGES`. Metric names are unchanged.
+### Changed
+- The `transparent_address_history_experimental` forwarding feature is gone.
+- `PersistentSnapshot` replaces `MapBackedSnapshot` (D-49): the canonical chain as an `imbl` trunk, the retained side chains as a table of at most nine branches (a tenth tip evicts the lowest by tip work, then height, then hash), every retained block once in an `imbl` directory. Publishes share what did not change instead of cloning every block per tick; a reorg splits and pushes; chain tips and fork points are reads. The port and every consumer are unchanged beyond the type's name.
+- `ChainHeadBuilder::extensions(schedule, store_tip)` takes the store's tip as a `StoreTip` port instead of a watch. A tick with no new block advances the extensions when the store's tip moved since they last ran, so a store catching up builds them within one poll.
+- Status held in a `StatusCell`; `zaino-status` dropped.
+- Both concrete handles report through `zaino_component::StatusSource` rather than `zaino_status::Status`, and answer a `ComponentStatus`.
+  _Migration:_ `ChainHeadService::status` and `ChainHeadSubscriber::status` return `ComponentStatus` instead of `StatusType`; read `.lifecycle` and `.health` where a `StatusType` was matched. The trait to import is `StatusSource`. The runtime still folds a tick outcome into one fused value internally and splits it at the reporting boundary, so no transition changes.
+- The heaviest retained chain is the best chain (HEAD-1): a strictly heavier retained branch is followed, even a shorter one; on equal work the validator's tip stays. A validator tip lighter than a retained branch makes the status `Ready | Recoverable`, naming both tips, and counts `zaino.chain_head.tip_disagreements_total`. Once after its first advance the head seeds the validator's fully validated side-chain tips inside the window from `GetChainTips` (HEAD-2).
+- Each capability is implemented only under its extension's feature; without it the trait default answers `NotBuilt`. Transaction locations and spenders keep the window scan when the `transactions` extension is not built.
+- dependency `zaino-chain-head` 0.2.0→0.3.0 crossed the requirement `^0.2.0`
+- dependency `zaino-component` 0.1.0→0.2.0 crossed the requirement `^0.1.0`
+- dependency `zaino-indexes` 0.1.0→0.2.0 crossed the requirement `^0.1.0`
+- dependency `zaino-persistence` 0.1.0→0.2.0 crossed the requirement `^0.1.0`
+- dependency `zaino-primitives` 0.3.0→0.4.0 crossed the requirement `^0.3.0`
+- dependency `zaino-source` 0.2.2→0.3.0 crossed the requirement `^0.2.2`
+### Fixed
+- The extensions start from a store tip that is the floor's parent (the store built to the floor, then the floor moved), and keep their views while the floor descends from their starting block. Before, every seeded extension failed on each new block under `ChainViewSync`, which builds the store exactly to the floor.
+- `capabilities()` always includes transactions: they are answered by a window scan where the extension is not built.
+- An extension whose layouts cannot be declared fails to seed (`Failure`) instead of panicking.
+- The first tick publishes the block window, `Ready`, before the extensions' first fold, then publishes again with them: readiness never waits on an extension.
+- The window's `address_effects` stops at the query's row limit, reported as `TooManyRows` rather than a read failure.
+- Every extension answer that read its own rows turned a failed read or an inconsistency into a plausible answer: a transaction 'not in the window', an outpoint 'not spent', no subtree roots, no history root or entry, address events skipped, a missing view answered as nothing. Each now fails as `ChainHeadError::ReadFailed`, and in-window prevout resolution during a fold fails the extension for the tick instead of asking below the root. The oracle test covers branch views (D-52).
+### Internal
+- The freeze broadcast and its per-publication collection are removed.
+- The internal `_extensions` feature is removed: `transactions`, `tree_state` and `history_tree` each pull in `zaino-indexes` and `zaino-persistence` themselves, so no feature combination builds the shared extension code with nothing to run. Each port wrapper and graph accessor is compiled only with the extensions that use it. A built extension that fails to read answers `ReadFailed`, not `NotBuilt`.
+- Denies panicking code in production: poisoned task locks keep their handle, and backoff and counters saturate.
+- Adapt to the renamed non-domain seam error.
+- Documentation only: rustdoc builds without warnings.
+
 ## [0.2.0] - 2026-09-26
 ### Added
 - The catch-up walk fetches each block and its tree roots concurrently, through the height-addressed `OneShotGetCommitmentTreeRootsByHeight` port. The two reads can straddle a reorg, so the walk compares the hash that the roots answer names against the block it fetched, and refetches the roots by hash on a mismatch.

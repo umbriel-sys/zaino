@@ -142,52 +142,52 @@ toml = "1.1"
 tempfile = "3.2"
 # The tracing subscriber a binary installs, and the panic hook that logs
 # through it.
-zaino-logging = { path = "packages/zaino-logging", version = "0.1.0" }
+zaino-logging = { path = "packages/zaino-logging", version = "0.2.0" }
 # What a supervised component is: a lifecycle phase and a health condition as
 # two independent axes, plus the ports to read and watch them.
-zaino-component = { path = "packages/zaino-component", version = "0.1.0" }
+zaino-component = { path = "packages/zaino-component", version = "0.2.0" }
 # Consensus-derived constants (reorg bound, coinbase maturity, block size limit)
 # and the protocol-limit validation built on them. A leaf that depends on no
 # node implementation, so referencing a consensus fact costs neither a
 # general-purpose dependency nor a peer's reading of the specification.
-zaino-consensus = { path = "packages/zaino-consensus", version = "0.2.0" }
-zaino-encoding = { path = "packages/zaino-encoding", version = "0.1.0" }
+zaino-consensus = { path = "packages/zaino-consensus", version = "0.2.1" }
+zaino-encoding = { path = "packages/zaino-encoding", version = "0.2.0" }
 # Zero-dependency domain vocabulary. Every crate that needs chain-level types
 # (heights, hashes, blocks, transactions) depends on this rather than on
 # `zebra-chain` or on another zaino crate. The
 # `zebra` feature adds the `zebra_chain` → domain conversions; only the crates
 # that hold zebra types turn it on.
-zaino-primitives = { path = "packages/zaino-primitives", version = "0.3.0" }
+zaino-primitives = { path = "packages/zaino-primitives", version = "0.4.0" }
 # Zcash address parsing and classification, for the two address-validation RPCs.
 # A leaf: it isolates the librustzcash address stack from everything else.
-zaino-address = { path = "packages/zaino-address", version = "0.1.2" }
+zaino-address = { path = "packages/zaino-address", version = "0.2.0" }
 # Driven port traits for validator access: one trait per question a consumer can
 # ask, so each consumer's bound names exactly the capabilities it uses and an
 # adapter that cannot answer a question simply does not implement it.
-zaino-source = { path = "packages/zaino-source", version = "0.2.2" }
+zaino-source = { path = "packages/zaino-source", version = "0.3.0" }
 # One fake validator implementing every source port, for every crate's tests (dev-only).
 zaino-source-mock = { path = "packages/zaino-source-mock" }
-zaino-source-macros = { path = "packages/zaino-source-macros", version = "0.1.1" }
-zaino-mempool = { path = "packages/zaino-mempool", version = "0.2.2" }
-zaino-mempool-service = { path = "packages/zaino-mempool-service", version = "0.2.2" }
+zaino-source-macros = { path = "packages/zaino-source-macros", version = "0.1.2" }
+zaino-mempool = { path = "packages/zaino-mempool", version = "0.3.0" }
+zaino-mempool-service = { path = "packages/zaino-mempool-service", version = "0.3.0" }
 # JSON-RPC 2.0 transport shared by the RPC-backed source adapters.
-zaino-rpc = { path = "packages/zaino-rpc", version = "0.3.0" }
+zaino-rpc = { path = "packages/zaino-rpc", version = "0.4.0" }
 # Source adapters. The RPC adapter answers every question over the Zcash
 # JSON-RPC interface and names no validator; the zebra crate holds the
 # ReadState adapter (the subset zebra's in-process state can serve), zebrad's
 # RPC quirk table, and the composite that routes between the two.
-zaino-source-zcash-rpc = { path = "packages/zaino-source-zcash-rpc", version = "0.2.2" }
-zaino-source-zebra = { path = "packages/zaino-source-zebra", version = "0.2.2" }
+zaino-source-zcash-rpc = { path = "packages/zaino-source-zcash-rpc", version = "0.3.0" }
+zaino-source-zebra = { path = "packages/zaino-source-zebra", version = "0.3.0" }
 # ChainHead: the bounded non-finalised block graph, its canonical chain, and the
 # competing branches retained alongside it. This crate is the domain half —
 # types and ports only, no runtime — so a consumer can name what ChainHead
 # answers without depending on the service that answers it.
-zaino-chain-head = { path = "packages/zaino-chain-head", version = "0.2.0" }
+zaino-chain-head = { path = "packages/zaino-chain-head", version = "0.3.0" }
 # The ChainHead runtime: owns the writer task that keeps the graph reconciled
 # with the validator, and publishes each snapshot. Separate from the domain
 # crate so a consumer can name what ChainHead answers without depending on the
 # machinery that answers it.
-zaino-chain-head-service = { path = "packages/zaino-chain-head-service", version = "0.2.0" }
+zaino-chain-head-service = { path = "packages/zaino-chain-head-service", version = "0.3.0" }
 # ChainStore: the finalised half of the chain — everything below the reorg
 # seam, and the indexes built over it. This crate is the domain half: types and
 # ports only, no storage, so a consumer can name what a store answers without
@@ -195,17 +195,17 @@ zaino-chain-head-service = { path = "packages/zaino-chain-head-service", version
 # is a matter of satisfying the traits. It also owns Zaino's UTXO-set
 # commitment, which is a contract between implementations rather than any one
 # implementation's business.
-zaino-chain-store = { path = "packages/zaino-chain-store", version = "0.1.1" }
+zaino-chain-store = { path = "packages/zaino-chain-store", version = "0.2.0" }
 # The new chain store runtime: a configurable set of indexes over any Storage.
-zaino-chain-store-service = { path = "packages/zaino-chain-store-service", version = "0.1.0" }
+zaino-chain-store-service = { path = "packages/zaino-chain-store-service", version = "0.2.0" }
 # ChainView: the unified chain read surface, composed from the two tiers above
 # and validator passthrough. Unlike the subsystems it composes, this is one
 # crate rather than a domain/adapter pair — the composer is generic over the
 # ports either side, so it names no implementation and can sit beside the
 # vocabulary it implements. A consumer bringing its own store and head depends
 # on the same crate and writes its own composer against the same ports.
-zaino-chain = { path = "packages/zaino-chain", version = "0.1.0" }
-zaino-proto = { path = "packages/zaino-proto", version = "0.6.1" }
+zaino-chain = { path = "packages/zaino-chain", version = "0.2.0" }
+zaino-proto = { path = "packages/zaino-proto", version = "0.7.0" }
 
 
 config = { version = "0.15", default-features = false, features = ["toml"] }
