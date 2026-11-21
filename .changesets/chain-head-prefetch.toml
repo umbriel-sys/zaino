@@ -24,9 +24,3 @@ one height per round trip; a 1,001-block window at startup takes about a \
 second instead of fifteen. Linking stays sequential and a reorg mid-build \
 drops the reads in flight."""
 
-[[changes]]
-crate = "zaino-chain-store-zainodb"
-kind = "internal"
-description = """
-The build's fetch concurrency is the store's `CpuBudget` share rather than \
-every core but one."""

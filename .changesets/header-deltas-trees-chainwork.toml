@@ -17,7 +17,7 @@ description = """
 `blockcommitments`, `finalsaplingroot` and nonce as zebrad writes them."""
 
 [[changes]]
-crate = "zaino-serve"
+crate = "zainod"
 kind = "fix"
 description = """
 `getblockheader` writes the nonce, `finalsaplingroot` (all zeros below \

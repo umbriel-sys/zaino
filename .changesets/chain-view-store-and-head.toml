@@ -15,7 +15,7 @@ the head)."""
 
 [[changes]]
 crate = "zaino-chain-head-service"
-kind = "change"
+kind = "fix"
 description = """
 `capabilities()` always includes transactions: they are answered by a window \
 scan where the extension is not built."""
@@ -32,13 +32,6 @@ kind = "feature"
 description = """
 Readers answer `network()` from the store's configuration."""
 
-[[changes]]
-crate = "zaino-chain-store-zainodb"
-kind = "change"
-description = """
-`network()` from its configuration; `TreeStateIndex` answers `Unsupported` \
-(no frontiers kept) and the address-history stub is always compiled, since \
-ChainView's treestate and address reads require the ports."""
 
 [[changes]]
 crate = "zaino-primitives"
@@ -51,7 +44,7 @@ holds the address under."""
 
 [[changes]]
 crate = "zaino-indexes"
-kind = "change"
+kind = "breaking"
 description = """
 `frontier_from_legacy_tree` and `LegacyTreeError` moved to `zaino-primitives`."""
 

@@ -6,7 +6,7 @@ description = """
 
 [[changes]]
 crate = "zaino-chain-head-service"
-kind = "change"
+kind = "breaking"
 description = """
 `ChainHeadBuilder::extensions(schedule, store_tip)` takes the store's tip as a \
 `StoreTip` port instead of a watch. A tick with no new block advances the \

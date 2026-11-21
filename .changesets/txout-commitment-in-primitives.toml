@@ -19,7 +19,7 @@ an output's value and address rather than a `StoredTxOut`."""
 
 [[changes]]
 crate = "zaino-indexes"
-kind = "change"
+kind = "breaking"
 description = """
 Stored tx and input indexes are `u16` (I-03, I-09, I-10), checked, with \
 `LayoutError::OutOfRange` past the width. I-10 depends on I-03 for the \

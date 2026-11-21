@@ -1,24 +1,19 @@
 [[changes]]
 crate = "zaino-chain-store"
-kind = "change"
+kind = "breaking"
 description = """
 `SpenderRef` carries the spending `input_index` (I-09 stores it, D-62)."""
 
 [[changes]]
 crate = "zaino-chain-store-service"
-kind = "change"
+kind = "feature"
 description = """
 `outpoint_spenders` reports each spender's input index from I-09."""
 
-[[changes]]
-crate = "zaino-chain-store-zainodb"
-kind = "change"
-description = """
-`outpoint_spenders` reads each spender's input index off its transaction."""
 
 [[changes]]
 crate = "zaino-chain-head"
-kind = "change"
+kind = "breaking"
 description = """
 `SpenderLocation` carries the spending `input_index`."""
 
@@ -36,7 +31,7 @@ oracle test covers branch views (D-52)."""
 
 [[changes]]
 crate = "zaino-chain"
-kind = "change"
+kind = "breaking"
 description = """
 `SpendStatus::SpentBy` carries the spending txid, input index and height, \
 what `getspentinfo` answers. A transaction the store places at a height it \
@@ -44,7 +39,7 @@ holds no hash for is `Fatal`, not 'not found'."""
 
 [[changes]]
 crate = "zaino-primitives"
-kind = "change"
+kind = "internal"
 description = """
 `BlockTxPosition`'s doc no longer suggests merging it with the chain head's \
 position type."""

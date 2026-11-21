@@ -79,14 +79,14 @@ nullifiers-only read of an included pool left out."""
 
 [[changes]]
 crate = "zaino-indexes"
-kind = "change"
+kind = "feature"
 description = """
 `compact_block::Reader::transactions` reports each transaction's unread \
 Sapling outputs under a nullifiers-only filter, from the layout."""
 
 [[changes]]
 crate = "zaino-chain"
-kind = "change"
+kind = "fix"
 description = """
 Compact blocks projected from the validator or the window's parsed blocks \
 report unread Sapling outputs under a nullifiers-only filter, as the store's \

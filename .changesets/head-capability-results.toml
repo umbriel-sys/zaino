@@ -1,6 +1,6 @@
 [[changes]]
 crate = "zaino-chain-head"
-kind = "change"
+kind = "breaking"
 description = """
 Every capability method (`ChainHeadTransactionService`, \
 `ChainHeadTxOutSetService`, `ChainHeadTreeStateService`, \
@@ -13,7 +13,7 @@ the `txout` module and `ChainHeadError::BelowWindow` are removed (D-51). \
 
 [[changes]]
 crate = "zaino-chain-head-service"
-kind = "change"
+kind = "breaking"
 description = """
 Each capability is implemented only under its extension's feature; without it \
 the trait default answers `NotBuilt`. Transaction locations and spenders keep \
@@ -21,7 +21,7 @@ the window scan when the `transactions` extension is not built."""
 
 [[changes]]
 crate = "zaino-chain"
-kind = "change"
+kind = "breaking"
 description = """
 `TxOutSetRead::txout_set` is a lookup of the chain head's `txout_set` \
 extension (D-51); the store-plus-delta merge is removed. A capability the \

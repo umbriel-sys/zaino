@@ -10,7 +10,7 @@ transaction's remaining counted outputs."""
 
 [[changes]]
 crate = "zaino-chain-store-service"
-kind = "change"
+kind = "internal"
 description = """
 The fold-block assembly derives frontiers and completed subtrees through \
 `zaino_indexes::assemble`; only the two validator calls remain here."""

@@ -8,7 +8,7 @@ own contract (an in-process state answering off-shape). Non-retryable, like \
 
 [[changes]]
 crate = "zaino-source-zebra"
-kind = "change"
+kind = "fix"
 description = """
 The read-state adapter's `InvalidData` and `OffContract` faults map to \
 `FailureMode::InvalidSourceData` instead of `Parse`."""

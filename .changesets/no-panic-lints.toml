@@ -28,7 +28,7 @@ production.
 """
 
 [[changes]]
-crate = "zaino-serve"
+crate = "zainod"
 kind = "breaking"
 description = """
 `UnixTime::as_system_time` returns `Option<SystemTime>`, `None` past what \

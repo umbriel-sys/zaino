@@ -9,7 +9,7 @@ actions as `CompactAction { nullifier, output: Option<ActionOutput> }`, \
 
 [[changes]]
 crate = "zaino-chain-store"
-kind = "change"
+kind = "internal"
 description = """
 `PoolFilter` is re-exported from `zaino-primitives`."""
 

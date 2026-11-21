@@ -8,7 +8,7 @@ serialized size."""
 
 [[changes]]
 crate = "zaino-source-zcash-rpc"
-kind = "change"
+kind = "fix"
 description = """
 A parsed block's size is the length of the bytes it was parsed from."""
 
@@ -28,7 +28,7 @@ description = """
 
 [[changes]]
 crate = "zaino-chain-store-service"
-kind = "change"
+kind = "feature"
 description = """
 `headers_chunk` answers each block's size from I-01."""
 

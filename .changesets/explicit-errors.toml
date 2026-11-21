@@ -51,7 +51,7 @@ failed lookup's cause; verbose `getrawtransaction` reports a transaction it \
 cannot parse as a serialization error, not as missing."""
 
 [[changes]]
-crate = "zaino-serve"
+crate = "zainod"
 kind = "breaking"
 description = """
 `TxOutSetInfoWire::Empty` and `EmptyTxOutSetInfo` are removed: \

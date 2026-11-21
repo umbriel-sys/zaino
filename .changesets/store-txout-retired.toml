@@ -1,6 +1,6 @@
 [[changes]]
 crate = "zaino-chain-store"
-kind = "change"
+kind = "breaking"
 description = """
 `StoredTxOut` retired (D-51), with `SpentOutputIndex::previous_outputs`, \
 `unspent_output` and `transparent_outputs`; `outputs_by_outpoint` answers \
@@ -10,15 +10,8 @@ outputs as the chain holds them. `LocatedOutput` carries the queried \
 
 [[changes]]
 crate = "zaino-chain-store-service"
-kind = "change"
+kind = "breaking"
 description = """
 Address effects read each received output from I-04 at the event's position \
 and report each spend's input index; the three retired reads are removed."""
 
-[[changes]]
-crate = "zaino-chain-store-zainodb"
-kind = "change"
-description = """
-The three retired reads and `stored_tx_out` are removed. The experimental \
-address history answers `Unsupported`: zainodb stores script hashes, not \
-scripts."""

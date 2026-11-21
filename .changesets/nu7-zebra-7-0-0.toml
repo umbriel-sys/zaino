@@ -50,53 +50,32 @@ crate       = "zaino-state"
 kind        = "fix"
 description = "`GetLightdInfo` reports the latest *active* network upgrade; a scheduled-but-pending upgrade (NU7 before its activation height) no longer appears as the current one."
 
-[[changes]]
-crate       = "zaino-chain-store-zainodb"
-kind        = "breaking"
-description = "Built against zebra-chain 15 and zebra-rpc 19 (zebrad 7.0.0); the config's network is a zebra-chain 15 `Network`."
-migration   = "Upgrade `zebra-chain` to 15 and `zebra-rpc` to 19."
 
 [[changes]]
-crate       = "zaino-chain-store-zainodb"
-kind        = "fix"
-description = "`FinalisedState::build_to` returns only once the persistent database holds the target. A gap wider than the background-build threshold ran in the background and returned at once, so the composer's immediate re-freeze was refused and the frozen block dropped, stalling the finalised index one block short of the seam until the chain moved again."
-
-[[changes]]
-crate       = "zaino-source-zebra-readstate"
+crate       = "zaino-source-zebra"
 kind        = "breaking"
 description = "Built against zebra-chain 15 and zebra-state 16 (zebrad 7.0.0): opens the v29 state format, so the primary zebrad must be 7.0.0 and already migrated."
 migration   = "Upgrade `zebra-chain` to 15 and `zebra-state` to 16. Run zebrad 7.0.0 once before pointing the adapter at its state directory."
 
 [[changes]]
-crate       = "zaino-source-zebra-readstate"
+crate       = "zaino-source-zebra"
 kind        = "fix"
 description = "Address txids, utxos and deltas enforce zebrad 7's 100,000-row cap (`TooManyResults`) instead of answering without bound, and TEX addresses are refused rather than answered empty."
 
-[[changes]]
-crate       = "zaino-convert-zebra"
-kind        = "breaking"
-description = "Built against zebra-chain 15 and orchard 0.16 (zebrad 7.0.0); public functions take their types."
-migration   = "Upgrade `zebra-chain` to 15 and `orchard` to 0.16."
 
 [[changes]]
-crate       = "zaino-common"
-kind        = "breaking"
-description = "Built against zebra-chain 15 (zebrad 7.0.0); network conversions use its `Network`."
-migration   = "Upgrade `zebra-chain` to 15."
-
-[[changes]]
-crate       = "zaino-serve"
+crate       = "zainod"
 kind        = "breaking"
 description = "Built against zebra-chain 15 and zebra-rpc 19 (zebrad 7.0.0); wire types expose their types."
 migration   = "Upgrade `zebra-chain` to 15 and `zebra-rpc` to 19."
 
 [[changes]]
-crate       = "zaino-serve"
+crate       = "zainod"
 kind        = "feature"
 description = "The `getstandardfee` JSON-RPC method, in zebrad's wire shape (`standard_fee` in zatoshis per logical action, `version`), and the `GetStandardFee` gRPC method (lightwallet-protocol v0.6.0: `feeZat`, `estimatorVersion`; `UNIMPLEMENTED` when the validator lacks it)."
 
 [[changes]]
-crate       = "zaino-serve"
+crate       = "zainod"
 kind        = "fix"
 description = "`getaddressbalance`, `getaddresstxids`, `getaddressutxos`, `getaddressdeltas` and `getstandardfee` serve the legacy error code their error carries (zebrad's `-5`/`-8`, `-32601`) instead of a generic one; an unreachable validator on these methods is `-32603`."
 
@@ -140,18 +119,18 @@ description = "`MAX_ADDRESS_QUERY_RESULTS` (100,000, zebrad 7's cap), and `TooMa
 migration   = "Exhaustive matches on these error enums must handle the new variants."
 
 [[changes]]
-crate       = "zaino-source-zebra-rpc"
+crate       = "zaino-source-zcash-rpc"
 kind        = "breaking"
 description = "Built against zebra-chain 15 and the zebra 7.0.0 librustzcash release."
 migration   = "Upgrade `zebra-chain` to 15 and the `zcash_*` crates to the same versions."
 
 [[changes]]
-crate       = "zaino-source-zebra-rpc"
+crate       = "zaino-source-zcash-rpc"
 kind        = "feature"
 description = "Answers `getstandardfee` by calling the validator and parsing zebrad's response; `-32601` is `GetStandardFeeError::Unsupported`."
 
 [[changes]]
-crate       = "zaino-source-zebra-rpc"
+crate       = "zaino-source-zcash-rpc"
 kind        = "fix"
 description = "zebrad 7's address-query result cap (`-8 more than {cap} … match`) is classified as `TooManyResults` on txids and utxos, rather than as an unreachable validator."
 

@@ -15,9 +15,3 @@ description = """
 Both new reads served from I-03 + I-04 and I-11; `previous_outputs` is the \
 same lookup projected to value and address key."""
 
-[[changes]]
-crate = "zaino-chain-store-zainodb"
-kind = "change"
-description = """
-`outputs_by_outpoint` and `remaining_outputs` answer `Unsupported`: zainodb \
-stores script hashes and no per-transaction counts."""

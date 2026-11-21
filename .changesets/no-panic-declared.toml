@@ -12,14 +12,14 @@ declaration. Every index tests its declarations; digests are unchanged."""
 
 [[changes]]
 crate = "zaino-chain-store-service"
-kind = "change"
+kind = "fix"
 description = """
 An index whose layouts this build cannot declare fails its open \
 (`OpenError::Unavailable`) instead of panicking."""
 
 [[changes]]
 crate = "zaino-chain-head-service"
-kind = "change"
+kind = "fix"
 description = """
 An extension whose layouts cannot be declared fails to seed (`Failure`) \
 instead of panicking."""

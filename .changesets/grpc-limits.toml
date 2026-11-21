@@ -1,5 +1,5 @@
 [[changes]]
-crate = "zaino-serve"
+crate = "zainod"
 kind = "feature"
 description = """
 `GrpcServerConfig::limits` (AP-02): per-connection concurrency limit (32), \

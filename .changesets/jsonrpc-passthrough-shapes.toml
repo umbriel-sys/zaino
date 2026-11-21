@@ -33,7 +33,7 @@ The read-state `getblockchaininfo` reports `verificationprogress` 1.0 on \
 regtest and asks the tip difficulty as zebrad's own does (#54)."""
 
 [[changes]]
-crate = "zaino-serve"
+crate = "zainod"
 kind = "breaking"
 description = """
 JSON-RPC shapes follow zebrad 7. `getmininginfo` serves zebrad's key set: no \

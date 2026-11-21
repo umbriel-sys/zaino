@@ -19,7 +19,7 @@ description = """
 `CoherentSubscriber` report `ComponentStatus`; `zaino-status` dropped."""
 
 [[changes]]
-crate = "zaino-serve"
+crate = "zainod"
 kind = "breaking"
 description = """
 `TonicServer` and `JsonRpcServer` report `ComponentStatus` through a \

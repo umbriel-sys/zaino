@@ -8,7 +8,7 @@ resources can share them out (nothing by default)."""
 
 [[changes]]
 crate = "zaino-persistence-lsm-tree"
-kind = "change"
+kind = "fix"
 description = """
 `LsmTreeStorage { threads: None }` shares the machine's parallelism over the \
 backends `shared_by` announced, at least `MIN_SHARED_THREADS` (2) each, \
@@ -18,7 +18,7 @@ the process's CPU time 31 %."""
 
 [[changes]]
 crate = "zaino-chain-store-service"
-kind = "change"
+kind = "internal"
 description = """
 `ChainStore::boot` announces the resolved set's size to the storage \
 (`Storage::shared_by`) before opening the indexes."""

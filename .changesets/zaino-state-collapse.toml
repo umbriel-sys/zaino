@@ -71,13 +71,6 @@ description = """
 than one per transaction, so a reorg mid-stream can no longer mix chains.
 """
 
-[[changes]]
-crate = "zaino-chain-store-zainodb"
-kind = "feature"
-description = """
-`conversion::compact_tx_to_wire` is public, temporarily, so the indexer \
-renders mempool transactions with the same conversion as stored blocks.
-"""
 
 [[changes]]
 crate = "zaino-state"

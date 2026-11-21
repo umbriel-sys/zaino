@@ -1,15 +1,15 @@
 [[changes]]
-crate = "zaino-chain-store-zainodb"
+crate = "zainod"
 kind = "breaking"
 description = """
-Removed. The store is `zaino-chain-store-service`; an existing zainodb \
-directory is not read."""
+The `zaino-chain-store-zainodb` crate is removed. The store is \
+`zaino-chain-store-service`; an existing zainodb directory is not read."""
 
 [[changes]]
-crate = "zaino-status"
+crate = "zaino-state"
 kind = "breaking"
 description = """
-Removed. Components report `zaino_component::ComponentStatus`; the legacy \
+The `zaino-status` crate is removed. Components report `zaino_component::ComponentStatus`; the legacy \
 `StatusType`, `Status`, `NamedAtomicStatus`, the probe traits and \
 `component_status` are in `zaino_state::legacy::status`."""
 
@@ -36,13 +36,6 @@ Removed: `MempoolError` with `NodeBackedIndexerServiceError::MempoolError` \
 (never produced), the `experimental_features` and \
 `transparent_address_history_experimental` features (they gated nothing), \
 and twelve unused dependencies."""
-
-[[changes]]
-crate = "zaino-serve"
-kind = "breaking"
-description = """
-The `experimental_features` and `transparent_address_history_experimental` \
-features are removed; they gated nothing."""
 
 [[changes]]
 crate = "zainod"

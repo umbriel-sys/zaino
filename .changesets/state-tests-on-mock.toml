@@ -16,11 +16,3 @@ gone, the index syncs its finalised state through the real ingest path, and \
 the era walks build their chains per network-upgrade schedule.
 """
 
-[[changes]]
-crate = "zaino-chain-store-zainodb"
-kind = "internal"
-description = """
-The domain-block conversion tests against the vector chain moved here from \
-`zaino-state`; `fill_store_with_blockdata`, whose only user that was, is \
-removed.
-"""

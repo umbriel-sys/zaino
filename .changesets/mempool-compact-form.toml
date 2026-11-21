@@ -35,7 +35,7 @@ serves each mempool entry's compact form instead of parsing every \
 transaction with `zebra_chain` per request (C4)."""
 
 [[changes]]
-crate = "zaino-serve"
+crate = "zainod"
 kind = "breaking"
 description = """
 `getspentinfo` answers a spend still in the mempool, with height −1 as zcashd \

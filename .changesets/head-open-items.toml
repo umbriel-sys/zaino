@@ -1,6 +1,6 @@
 [[changes]]
 crate = "zaino-chain-head-service"
-kind = "change"
+kind = "internal"
 description = """
 The internal `_extensions` feature is removed: `transactions`, `tree_state` \
 and `history_tree` each pull in `zaino-indexes` and `zaino-persistence` \
@@ -11,7 +11,7 @@ the extensions that use it. A built extension that fails to read answers \
 
 [[changes]]
 crate = "zaino-chain-head"
-kind = "change"
+kind = "breaking"
 description = """
 `ChainHeadAddressEffects::local_spends` is renamed `spends` (every spend \
 inside the window, as the store's half names it). `ChainHeadError::ReadFailed` \
@@ -19,6 +19,6 @@ for a built capability whose read failed."""
 
 [[changes]]
 crate = "zaino-chain"
-kind = "change"
+kind = "fix"
 description = """
 A chain-head `ReadFailed` is `ChainViewError::Fatal`."""

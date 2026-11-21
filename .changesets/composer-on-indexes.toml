@@ -58,14 +58,6 @@ Address history declares the indexes its read joins: txids and transparent \
 (the spent input's prevout), not spent.
 """
 
-[[changes]]
-crate = "zaino-chain-store-zainodb"
-kind = "internal"
-description = """
-Implements the new header, chainwork and tree-root reads by projecting its \
-block rows; its freeze sink and stored-block port are removed. `StoredBlock` \
-and `StoredTx` live here now, for the legacy `IndexedBlock` conversion.
-"""
 
 [[changes]]
 crate = "zaino-state"
