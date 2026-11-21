@@ -1768,9 +1768,14 @@ impl<V: ChainIndexSourcePorts + ServiceSource> LightWalletIndexer
     /// Return information about this lightwalletd instance and the blockchain
     async fn get_lightd_info(&self) -> Result<LightdInfo, Self::Error> {
         let blockchain_info = self.get_blockchain_info().await?;
-        // proto3's zero and empty string are "not scheduled" (K-02)
         let schedule =
             zaino_service::schedule_at(&blockchain_info.upgrades, blockchain_info.blocks);
+        // a schedule without Sapling is refused, never reported as height 0 (K-02)
+        let sapling_activation = schedule.sapling_activation.ok_or_else(|| {
+            tonic::Status::internal(
+                "Error: the validator's upgrade schedule has no Sapling activation.",
+            )
+        })?;
         let consensus_branch_id = zebra_chain::parameters::ConsensusBranchId::from(u32::from(
             blockchain_info.consensus.chain_tip,
         ))
@@ -1781,9 +1786,7 @@ impl<V: ChainIndexSourcePorts + ServiceSource> LightWalletIndexer
             vendor: "Umbriel Systems ZainoD".to_string(),
             taddr_support: true,
             chain_name: blockchain_info.chain.clone(),
-            sapling_activation_height: schedule
-                .sapling_activation
-                .map_or(0, |height| u64::from(u32::from(height))),
+            sapling_activation_height: u64::from(u32::from(sapling_activation)),
             consensus_branch_id,
             block_height: u64::from(u32::from(blockchain_info.blocks)),
             git_commit: self.data.build_info().commit_hash(),

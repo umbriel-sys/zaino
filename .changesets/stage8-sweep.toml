@@ -30,6 +30,20 @@ Code that relied on either bound to imply `OneShotGetTransaction` names that \
 port itself."""
 
 [[changes]]
+crate = "zainod"
+kind = "fix"
+description = """
+`GetLightdInfo` refuses (`INTERNAL`) a validator whose upgrade schedule has \
+no Sapling activation instead of reporting activation height 0."""
+
+[[changes]]
+crate = "zaino-state"
+kind = "fix"
+description = """
+`get_lightd_info` returns an error for a validator whose upgrade schedule \
+has no Sapling activation instead of reporting activation height 0."""
+
+[[changes]]
 crate = "zaino-source-macros"
 kind = "internal"
 description = """

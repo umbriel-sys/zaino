@@ -973,15 +973,21 @@ impl<S: ServiceSource> Lightwallet<S> {
             .blockchain_info()
             .await
             .map_err(status::of_service)?;
-        // proto3's zero and empty string are "not scheduled" (K-02)
         let schedule = zaino_service::schedule_at(&chain.upgrades, chain.blocks);
         let height = |height: Height| u64::from(u32::from(height));
+        // every network schedules Sapling: a schedule without it is refused,
+        // never reported as height 0 (K-02)
+        let sapling_activation = schedule.sapling_activation.ok_or_else(|| {
+            tonic::Status::internal(
+                "Error: the validator's upgrade schedule has no Sapling activation.",
+            )
+        })?;
         Ok(LightdInfo {
             version: info.build.version.to_owned(),
             vendor: "Umbriel Systems ZainoD".to_owned(),
             taddr_support: true,
             chain_name: chain.chain.clone(),
-            sapling_activation_height: schedule.sapling_activation.map_or(0, height),
+            sapling_activation_height: height(sapling_activation),
             consensus_branch_id: chain.consensus.chain_tip.to_string(),
             block_height: height(chain.blocks),
             git_commit: info.build.commit.to_owned(),
@@ -992,6 +998,7 @@ impl<S: ServiceSource> Lightwallet<S> {
             zcashd_build: info.validator_build.clone(),
             zcashd_subversion: info.validator_subversion.clone(),
             donation_address: info.donation_address.clone().unwrap_or_default(),
+            // proto3's empty string and zero are "no pending upgrade"
             upgrade_name: schedule
                 .next_upgrade
                 .map(|upgrade| upgrade.name.clone())

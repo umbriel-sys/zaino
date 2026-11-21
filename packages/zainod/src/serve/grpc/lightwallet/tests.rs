@@ -185,6 +185,34 @@ async fn the_tip_and_the_daemons_facts_are_served() {
     assert_eq!(info.zcashd_subversion, "/Test:1.0/");
     assert_eq!(info.donation_address, "donate-here");
     assert!(info.taddr_support);
+    assert_eq!(
+        info.sapling_activation_height, 1,
+        "regtest: every upgrade at 1"
+    );
+}
+
+/// A validator whose schedule has no Sapling is refused by GetLightdInfo,
+/// not reported as activation height 0 (K-02).
+#[tokio::test]
+async fn lightd_info_refuses_a_schedule_without_sapling() {
+    use zaino_source_mock::{Activations, BlockSpec, ChainBuilder};
+    let mut facts = NodeFacts::regtest();
+    facts.upgrades = Vec::new();
+    let blocks = (1..=TIP)
+        .fold(
+            ChainBuilder::with(facts.clone(), Activations::none()),
+            |builder, _| builder.block(BlockSpec::spends(2)),
+        )
+        .into_blocks();
+    let chain = MockChain::new(facts, blocks);
+    chain.serve_to(SERVED);
+    let rpc = lightwallet(&chain).await;
+    let refused = rpc
+        .get_lightd_info(request(Empty {}))
+        .await
+        .expect_err("no Sapling in the schedule");
+    assert_eq!(refused.code(), tonic::Code::Internal);
+    assert!(refused.message().contains("Sapling"), "{refused}");
 }
 
 /// One block is the whole block, by height or hash (#18); a nullifier read

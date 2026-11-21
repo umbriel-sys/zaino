@@ -118,6 +118,13 @@ client opening many streams slows itself, not the server.
   frames: each block is encoded once and the bytes are shared by every
   client through `zaino-chain`'s frame cache.
 
+### GetLightdInfo
+
+`saplingActivationHeight` is the validator's. A validator whose upgrade
+schedule has no Sapling activation is refused with `INTERNAL`; the height is
+never reported as 0. `upgradeName` and `upgradeHeight` are empty and 0 when
+no upgrade is pending, as the protocol defines.
+
 ### Block headers
 
 `zaino.lightclient.v1.LightClientService/GetBlockHeaders` takes the
