@@ -16,7 +16,7 @@ use super::folded::Folded;
 use super::{below, due_for_rebase, failed, inputs, Enabled, Failure, Slot};
 use crate::snapshot::PersistentSnapshot;
 
-const NAME: &str = "tree_state";
+pub(super) const NAME: &str = "tree_state";
 
 type BoxFuture<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
 

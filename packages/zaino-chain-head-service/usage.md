@@ -213,6 +213,13 @@ nothing. A fold or port failure darkens that extension alone
 `zaino.chain_head.extension_failures_total` counts it).
 `ChainHeadSnapshot::capabilities` reports what is built.
 
+A store that has not built to the window's floor (an initial build, hours on
+Mainnet) holds no state at any root the window could sit on. The extensions
+seeded from it then wait: no port is asked, each slot's reason is
+`waiting for the store to reach height N`, nothing is counted as a failure,
+and the wait is logged once when it starts and once when the store arrives.
+Their capabilities are not built meanwhile, so a consumer falls back.
+
 ## Metrics
 
 `metric_names` lists what the writer task emits, with `COUNTERS`, `GAUGES` and

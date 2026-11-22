@@ -180,6 +180,7 @@ impl<S: ServiceSource> Indexer<S> {
             "Zaino is serving; the store builds in the background and the validator answers \
              what it does not hold yet (a status line follows every 10 seconds)"
         );
+        indexer.log_status();
         let task = tokio::task::spawn(async move {
             let mut tick = tokio::time::interval(Duration::from_millis(100));
             let mut last_log = Instant::now();

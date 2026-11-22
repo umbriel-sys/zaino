@@ -102,6 +102,13 @@ stage is the slowest index writer, which `zaino.store.queue_wait_seconds`
 shows per index. Those figures are working notes; the published ones come
 from the final validation against a live zebrad (Stage 8).
 
+What it logs, at info: at boot, `chain store opened` with each index and the
+height it holds. A build of more than 100 blocks (a catch-up, not the block
+or two each new tip brings) says `building the store` with its range, then
+`store build progress` every 30 seconds (height, target, percent, blocks per
+second, time remaining at that rate, the slowest index), then that it is
+built and how long it took, or a warning that it stopped short.
+
 ## What it answers
 
 `subscribe_watermark` (the lowest tip of the enabled indexes),

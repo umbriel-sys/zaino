@@ -18,7 +18,7 @@ use super::transactions::Transactions;
 use super::{below, failed, inputs, Enabled, Failure, Slot};
 use crate::snapshot::PersistentSnapshot;
 
-const NAME: &str = "address_history";
+pub(super) const NAME: &str = "address_history";
 
 /// Bytes per chunk of an events scan.
 const CHUNK_BYTES: NonZeroUsize = match NonZeroUsize::new(64 * 1024) {

@@ -23,6 +23,7 @@ mod ingest;
 mod linked;
 mod metadata;
 pub mod metric_names;
+mod progress;
 mod reader;
 mod record;
 mod set;

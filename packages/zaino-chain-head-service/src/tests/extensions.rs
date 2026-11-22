@@ -1101,6 +1101,67 @@ async fn the_blocks_are_ready_before_the_first_fold() {
 /// answering, and the next tick rebuilds the failed ones. The ports are asked
 /// at a rebase (the root moved far enough), so the three seeded extensions
 /// fail and the three seedless ones do not.
+/// A store still below the window's floor, or empty: the extensions seeded
+/// from it wait, each slot carrying that as its reason and no port asked,
+/// and they build at the first tick after the store holds the floor.
+#[tokio::test]
+async fn extensions_wait_for_a_store_below_the_floor_and_build_when_it_arrives() {
+    let chain = chain();
+    let tip = tip_height(&chain);
+    let floor = tip - 60;
+    let harness = Harness::anchored(chain.clone(), 60, floor - 10).await;
+    // a port asked while the store is behind would answer, so a wait is the
+    // head's own decision
+    let behind = reference(&chain.block_at(floor - 10).expect("held"));
+    for store_tip in [Some(behind), None] {
+        *harness.below.tip.lock().expect("tip lock") = store_tip;
+        harness.service.advance_once().await.expect("advances");
+        let waiting = harness.snapshot();
+        let (capabilities, reasons): (Vec<_>, Vec<_>) =
+            waiting.extension_failures().into_iter().unzip();
+        assert_eq!(
+            capabilities,
+            vec![
+                HeadCapability::TxOutSet,
+                HeadCapability::TransparentHistory,
+                HeadCapability::CompactBlocks,
+                HeadCapability::TreeState,
+                HeadCapability::HistoryTree
+            ],
+            "every extension seeded from the store"
+        );
+        let needed = format!("waiting for the store to reach height {}", floor - 1);
+        assert!(
+            reasons.iter().all(|reason| reason.starts_with(&needed)),
+            "{reasons:?}"
+        );
+        let newest = chain.tip().expect("a chain");
+        assert!(
+            waiting
+                .transaction_locations(&newest.block.transactions()[0].txid)
+                .expect("built")
+                .best_chain
+                .is_some(),
+            "transactions needs no store"
+        );
+    }
+
+    harness
+        .below
+        .set_tip(reference(&chain.block_at(floor).expect("held")));
+    harness.service.advance_once().await.expect("advances");
+    let built = harness.snapshot();
+    assert!(
+        built.extension_failures().is_empty(),
+        "{:?}",
+        built.extension_failures()
+    );
+    assert_eq!(
+        built.txout_set().expect("built"),
+        independent_accumulator(&chain, tip)
+    );
+}
+
 #[tokio::test]
 async fn a_failing_port_darkens_one_extension_and_the_next_tick_rebuilds_it() {
     let chain = chain();

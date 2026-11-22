@@ -258,6 +258,15 @@ pub(crate) struct Enabled {
     pub(crate) store_tip: Option<Arc<dyn StoreTip>>,
     /// Folds in flight at once, under the head's CPU share.
     pub(crate) folds: Arc<Semaphore>,
+    /// Whether the wait for the store has been announced.
+    #[cfg(any(
+        feature = "txout_set",
+        feature = "address_history",
+        feature = "compact_blocks",
+        feature = "tree_state",
+        feature = "history_tree"
+    ))]
+    pub(crate) store_wait: std::sync::atomic::AtomicBool,
     #[cfg(feature = "transactions")]
     pub(crate) transactions: bool,
     #[cfg(feature = "txout_set")]
@@ -321,6 +330,83 @@ fn root_of(graph: &PersistentSnapshot, watermark: Option<BlockRef>) -> Result<Bl
     }
 }
 
+/// The enabled extensions that are seeded from the store.
+#[cfg(any(
+    feature = "txout_set",
+    feature = "address_history",
+    feature = "compact_blocks",
+    feature = "tree_state",
+    feature = "history_tree"
+))]
+fn store_seeded(enabled: &Enabled) -> Vec<&'static str> {
+    let mut names = Vec::new();
+    #[cfg(feature = "txout_set")]
+    if enabled.txout_set.is_some() {
+        names.push(txout_set::NAME);
+    }
+    #[cfg(feature = "address_history")]
+    if enabled.address_history.is_some() {
+        names.push(address_history::NAME);
+    }
+    #[cfg(feature = "compact_blocks")]
+    if enabled.compact_blocks.is_some() {
+        names.push(compact_blocks::NAME);
+    }
+    #[cfg(feature = "tree_state")]
+    if enabled.tree_state.is_some() {
+        names.push(tree_state::NAME);
+    }
+    #[cfg(feature = "history_tree")]
+    if enabled.history_tree.is_some() {
+        names.push(history_tree::NAME);
+    }
+    names
+}
+
+/// Why nothing can be seeded yet: a store that has not built to the window's
+/// floor holds no state at any root the window could sit on. Expected while
+/// the store catches up, so it is announced once each way, not as a failure.
+#[cfg(any(
+    feature = "txout_set",
+    feature = "address_history",
+    feature = "compact_blocks",
+    feature = "tree_state",
+    feature = "history_tree"
+))]
+fn store_behind(
+    enabled: &Enabled,
+    graph: &PersistentSnapshot,
+    watermark: Option<BlockRef>,
+) -> Option<Failure> {
+    use std::sync::atomic::Ordering;
+
+    enabled.store_tip.as_ref()?;
+    let needed = u32::from(graph.lowest_retained_height()).saturating_sub(1);
+    let held = watermark.map(|tip| u32::from(tip.height));
+    if held.is_some_and(|held| held >= needed) {
+        if enabled.store_wait.swap(false, Ordering::Relaxed) {
+            tracing::info!(
+                extensions = ?store_seeded(enabled),
+                store_height = ?held,
+                "the store reached the chain head: building the chain head's extensions"
+            );
+        }
+        return None;
+    }
+    if !enabled.store_wait.swap(true, Ordering::Relaxed) {
+        tracing::info!(
+            extensions = ?store_seeded(enabled),
+            store_height = ?held,
+            store_must_reach = needed,
+            "the chain head's extensions wait for the store to catch up: the validator answers their reads until then"
+        );
+    }
+    Some(Failure(format!(
+        "waiting for the store to reach height {needed}: it holds {}",
+        held.map_or_else(|| "nothing".to_owned(), |held| held.to_string())
+    )))
+}
+
 /// Whether a slot rooted at `current` should move its root to `watermark`.
 fn due_for_rebase(current: BlockRef, watermark: BlockRef) -> bool {
     u32::from(watermark.height).saturating_sub(u32::from(current.height)) >= REBASE_EVERY
@@ -340,6 +426,14 @@ pub(crate) async fn advance(
         store_tip: watermark,
         ..Slots::default()
     };
+    #[cfg(any(
+        feature = "txout_set",
+        feature = "address_history",
+        feature = "compact_blocks",
+        feature = "tree_state",
+        feature = "history_tree"
+    ))]
+    let waiting = store_behind(enabled, graph, watermark);
 
     #[cfg(feature = "transactions")]
     if enabled.transactions {
@@ -349,64 +443,80 @@ pub(crate) async fn advance(
     }
     #[cfg(feature = "txout_set")]
     if let Some(ports) = &enabled.txout_set {
-        next.txout_set = Some(
-            txout_set::advance(
-                enabled,
-                ports,
-                previous.txout_set.as_ref(),
-                graph,
-                &root,
-                next.transactions.as_ref().and_then(Slot::built),
-            )
-            .await,
-        );
+        next.txout_set = Some(match &waiting {
+            Some(waiting) => Slot::Failed(waiting.clone()),
+            None => {
+                txout_set::advance(
+                    enabled,
+                    ports,
+                    previous.txout_set.as_ref(),
+                    graph,
+                    &root,
+                    next.transactions.as_ref().and_then(Slot::built),
+                )
+                .await
+            }
+        });
     }
     #[cfg(feature = "address_history")]
     if let Some(prevouts) = &enabled.address_history {
-        next.address_history = Some(
-            address_history::advance(
-                enabled,
-                prevouts.as_ref(),
-                previous.address_history.as_ref(),
-                graph,
-                &root,
-                next.transactions.as_ref().and_then(Slot::built),
-            )
-            .await,
-        );
+        next.address_history = Some(match &waiting {
+            Some(waiting) => Slot::Failed(waiting.clone()),
+            None => {
+                address_history::advance(
+                    enabled,
+                    prevouts.as_ref(),
+                    previous.address_history.as_ref(),
+                    graph,
+                    &root,
+                    next.transactions.as_ref().and_then(Slot::built),
+                )
+                .await
+            }
+        });
     }
     #[cfg(feature = "compact_blocks")]
     if let Some(prevouts) = &enabled.compact_blocks {
-        next.compact_blocks = Some(
-            compact_blocks::advance(
-                enabled,
-                prevouts.as_ref(),
-                previous.compact_blocks.as_ref(),
-                graph,
-                &root,
-                next.transactions.as_ref().and_then(Slot::built),
-            )
-            .await,
-        );
+        next.compact_blocks = Some(match &waiting {
+            Some(waiting) => Slot::Failed(waiting.clone()),
+            None => {
+                compact_blocks::advance(
+                    enabled,
+                    prevouts.as_ref(),
+                    previous.compact_blocks.as_ref(),
+                    graph,
+                    &root,
+                    next.transactions.as_ref().and_then(Slot::built),
+                )
+                .await
+            }
+        });
     }
     #[cfg(feature = "tree_state")]
     if let Some(ports) = &enabled.tree_state {
-        next.tree_state = Some(
-            tree_state::advance(enabled, ports, previous.tree_state.as_ref(), graph, &root).await,
-        );
+        next.tree_state = Some(match &waiting {
+            Some(waiting) => Slot::Failed(waiting.clone()),
+            None => {
+                tree_state::advance(enabled, ports, previous.tree_state.as_ref(), graph, &root)
+                    .await
+            }
+        });
     }
     #[cfg(feature = "history_tree")]
     if let Some(seed) = &enabled.history_tree {
-        next.history_tree = Some(
-            history_tree::advance(
-                enabled,
-                seed.as_ref(),
-                previous.history_tree.as_ref(),
-                graph,
-                &root,
-            )
-            .await,
-        );
+        next.history_tree = Some(match &waiting {
+            Some(waiting) => Slot::Failed(waiting.clone()),
+            None => {
+                history_tree::advance(
+                    enabled,
+                    seed.as_ref(),
+                    previous.history_tree.as_ref(),
+                    graph,
+                    &root,
+                )
+                .await
+            }
+        });
     }
     next
 }

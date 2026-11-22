@@ -109,8 +109,19 @@ says so every 10 seconds:
 4. `building the chain head`: the most recent blocks are read from the
    validator.
 5. `Zaino is serving`: the listen addresses. A `Zaino status check` line
-   follows every 10 seconds with each component's state, and `local = true`
-   once every answer comes from Zaino's own indexes.
+   follows at once and every 10 seconds, with each component's state, and
+   `local = true` once every answer comes from Zaino's own indexes.
+
+The store then builds in the background, which takes hours on Mainnet:
+
+- `chain store opened` lists each index and the height it holds.
+- `building the store` gives the range; `store build progress` follows every
+  30 seconds with the height, percent, blocks per second and time remaining.
+- `the chain head's extensions wait for the store to catch up` is expected
+  during that build: recent compact blocks and tree states are answered from
+  the validator until the store reaches the chain head.
+- `the store is built to the chain head's floor`, then `building the chain
+  head's extensions`, end it.
 
 ## Network exposure
 

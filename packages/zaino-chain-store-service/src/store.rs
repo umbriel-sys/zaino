@@ -24,6 +24,7 @@ use crate::metric_names::{
     INDEX_LABEL, STORE_BUILD_FAILURES_TOTAL, STORE_BUILD_TARGET_HEIGHT, STORE_INDEX_TIP_HEIGHT,
     STORE_WATERMARK_HEIGHT,
 };
+use crate::progress::Report;
 use crate::reader::StoreReader;
 use crate::record::{status_of, PrimaryRecord, PrimaryState};
 use crate::set::{IndexSet, SetError};
@@ -222,6 +223,18 @@ impl<St: Storage, Src: ChainStoreSource> Inner<St, Src> {
         let mut storage = storage;
         match Self::open_set(config, &mut storage, &source, &root, &mut recorder).await {
             Ok((set, indexes)) => {
+                tracing::info!(
+                    path = %root.display(),
+                    network,
+                    indexes = ?indexes
+                        .iter()
+                        .map(|index| match served_tip(index) {
+                            Some(tip) => format!("{}={}", index.id.name(), u32::from(tip.height)),
+                            None => format!("{}=empty", index.id.name()),
+                        })
+                        .collect::<Vec<_>>(),
+                    "chain store opened: each index and the height it holds"
+                );
                 recorder.durable(&storage, verified(&indexes));
                 recorder.set(&storage, PrimaryState::Ready);
                 let tips = || indexes.iter().map(|index| (index.id, served_tip(index)));
@@ -347,9 +360,15 @@ impl<St: Storage, Src: ChainStoreSource> Inner<St, Src> {
         built.target = Some(built.target.map_or(target, |old| old.max(target)));
         built.recorder.record.target = built.target;
         built.recorder.set(&self.storage, PrimaryState::Building);
-        let result = self.build(built, target).await;
+        let height = || self.watermark.borrow().tip.map(|tip| tip.height);
+        let mut report = Report::start(height(), target, self.set.iter());
+        let result = self.build(built, target, &mut report).await;
         if result.is_err() {
             metrics::counter!(STORE_BUILD_FAILURES_TOTAL).increment(1);
+        }
+        if let Some(report) = report {
+            let error = result.as_ref().err().map(|e| e as &dyn std::fmt::Display);
+            report.finish(height(), error);
         }
         let state = match &result {
             Ok(()) => PrimaryState::Ready,
@@ -372,6 +391,7 @@ impl<St: Storage, Src: ChainStoreSource> Inner<St, Src> {
         &self,
         built: &mut Built<St>,
         target: Height,
+        report: &mut Option<Report>,
     ) -> Result<(), ChainStoreSourceError>
     where
         St::Backend: 'static,
@@ -434,7 +454,17 @@ impl<St: Storage, Src: ChainStoreSource> Inner<St, Src> {
             let applied = running
                 .iter()
                 .map(|index| (index.id, *index.applied.borrow()));
-            self.publish_tips(applied.chain(still.iter().copied()), *wanted);
+            let tips = applied.chain(still.iter().copied());
+            if let Some(report) = report.as_mut() {
+                // the lowest index is the store's height; an empty one is lowest
+                let slowest = tips
+                    .clone()
+                    .min_by_key(|(_, tip)| tip.map(|tip| tip.height));
+                if let Some((id, tip)) = slowest {
+                    report.tick(tip.map(|tip| tip.height), Some(id));
+                }
+            }
+            self.publish_tips(tips, *wanted);
             let backends = running
                 .iter()
                 .map(|index| (index.id, &*index.backend))

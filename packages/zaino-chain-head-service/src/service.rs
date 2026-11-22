@@ -1045,6 +1045,14 @@ impl<S: ChainHeadBlockSource> ChainHeadBuilder<S> {
                 schedule,
                 store_tip,
                 folds: Arc::new(tokio::sync::Semaphore::new(folds)),
+                #[cfg(any(
+                    feature = "txout_set",
+                    feature = "address_history",
+                    feature = "compact_blocks",
+                    feature = "tree_state",
+                    feature = "history_tree"
+                ))]
+                store_wait: std::sync::atomic::AtomicBool::new(false),
                 #[cfg(feature = "transactions")]
                 transactions: false,
                 #[cfg(feature = "txout_set")]

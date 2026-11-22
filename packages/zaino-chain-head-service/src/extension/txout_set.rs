@@ -15,7 +15,7 @@ use super::transactions::Transactions;
 use super::{below, due_for_rebase, failed, inputs, Enabled, Failure, Slot};
 use crate::snapshot::PersistentSnapshot;
 
-const NAME: &str = "txout_set";
+pub(super) const NAME: &str = "txout_set";
 
 /// What this extension drives below the root.
 #[derive(Clone)]
