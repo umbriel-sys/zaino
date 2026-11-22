@@ -478,6 +478,40 @@ async fn a_failed_fetch_leaves_the_store_consistent_and_a_retry_finishes() {
     assert_eq!(store.subscribe_watermark().borrow().tip, Some(tip));
 }
 
+/// The status names the height the store is built to from the moment a
+/// build is asked for, while the store is short of it and once it is there.
+#[tokio::test]
+async fn the_status_names_the_target_while_the_store_is_short_of_it() {
+    use zaino_component::{Progress, StatusSource as _};
+
+    let chain = chain();
+    let store = boot(&config(&PLAIN), &InMemoryStorage::new(), &chain)
+        .await
+        .expect("boots");
+    let tip = tip_of(&chain).height;
+    let progress = |current: Height, target: Height| {
+        Some(Progress {
+            current: u64::from(u32::from(current)),
+            target: Some(u64::from(u32::from(target))),
+        })
+    };
+    assert_eq!(store.status().progress, None, "nothing built or asked for");
+
+    store.build_to(height(2)).await.expect("builds");
+    assert_eq!(store.status().progress, progress(height(2), height(2)));
+
+    chain.fail_ports(&["get_block"], Some(1), FailureMode::Connection);
+    assert!(store.build_to(tip).await.is_err());
+    assert_eq!(
+        store.status().progress,
+        progress(height(2), tip),
+        "short of the target: the target is still named"
+    );
+
+    store.build_to(tip).await.expect("retry");
+    assert_eq!(store.status().progress, progress(tip, tip));
+}
+
 /// Replaces the served chain from height 4 with a `seed` branch reaching the
 /// same tip height.
 fn reorg_from_4(chain: &MockChain, seed: u64) {

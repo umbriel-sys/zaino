@@ -192,6 +192,8 @@ pub(crate) struct Inner<St: Storage, Src> {
     built: Mutex<Built<St>>,
     watermark: watch::Sender<StoreWatermark>,
     serviceability: watch::Sender<BTreeMap<IndexId, Serviceability>>,
+    /// The height the store is built to; none until the first build.
+    target: watch::Sender<Option<Height>>,
     /// Each enabled index's backend, for readers (which never take `built`).
     backends: std::sync::RwLock<BTreeMap<IndexId, Arc<St::Backend>>>,
     state: watch::Receiver<PrimaryState>,
@@ -240,6 +242,7 @@ impl<St: Storage, Src: ChainStoreSource> Inner<St, Src> {
                 let tips = || indexes.iter().map(|index| (index.id, served_tip(index)));
                 let (watermark, _) = watch::channel(watermark_of(tips()));
                 let (serviceability, _) = watch::channel(serviceability_of(tips(), None));
+                let (target, _) = watch::channel(None);
                 let backends = std::sync::RwLock::new(backends_of(&indexes));
                 let built = Built {
                     indexes,
@@ -260,6 +263,7 @@ impl<St: Storage, Src: ChainStoreSource> Inner<St, Src> {
                     built: Mutex::new(built),
                     watermark,
                     serviceability,
+                    target,
                     backends,
                     state,
                 })
@@ -359,6 +363,7 @@ impl<St: Storage, Src: ChainStoreSource> Inner<St, Src> {
         }
         built.target = Some(built.target.map_or(target, |old| old.max(target)));
         built.recorder.record.target = built.target;
+        self.target.send_replace(built.target);
         built.recorder.set(&self.storage, PrimaryState::Building);
         let height = || self.watermark.borrow().tip.map(|tip| tip.height);
         let mut report = Report::start(height(), target, self.set.iter());
@@ -613,15 +618,7 @@ impl<St: Storage, Src: ChainStoreSource> Inner<St, Src> {
     /// The store's status, from its state and how far it has built.
     fn status(&self) -> ComponentStatus {
         let tip = self.watermark.borrow().tip.map(|tip| tip.height);
-        let target = self
-            .serviceability
-            .borrow()
-            .values()
-            .find_map(|state| match state {
-                Serviceability::ToHeight(height) => Some(*height),
-                Serviceability::Absent | Serviceability::Building(_) => None,
-            });
-        status_of(&self.state.borrow(), tip, target)
+        status_of(&self.state.borrow(), tip, *self.target.borrow())
     }
 
     /// Every buffered commit made durable and the record `Stopped`; later
