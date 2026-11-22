@@ -1,0 +1,11 @@
+# The chain head resolves spends of outputs its window has trimmed.
+
+[[changes]]
+crate       = "zaino-chain-head-service"
+kind        = "fix"
+description = "A block spending an output created in a block the window trimmed since the `transactions` view was last rebased no longer fails `compact_blocks`, `address_history` and `txout_set` with `which holds no such output` until the next rebase (up to 32 blocks). The view still lists such an output; it is now read from the store, as of the store's tip, not sought in the window. `txout_set` also fetches the unspent count of a transaction the view lists at or below its own root."
+
+[[changes]]
+crate       = "zaino-chain-head-service"
+kind        = "fix"
+description = "An extension that is built is no longer darkened when the store falls behind the window's floor: only one with nothing built waits for the store."

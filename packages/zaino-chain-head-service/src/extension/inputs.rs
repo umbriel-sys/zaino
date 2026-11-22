@@ -60,10 +60,26 @@ pub(crate) fn fold_block(
     .map_err(|error| Failure::of("fold block", error))
 }
 
+/// The block reads below the window are made as of: the store's tip where it
+/// is past `root`, else `root`. A view's root lags the window's floor until
+/// its next rebase, so an output the window has trimmed can lie above the
+/// root; the store's tip is at the floor and holds it.
+#[cfg(any(
+    feature = "txout_set",
+    feature = "address_history",
+    feature = "compact_blocks"
+))]
+pub(crate) fn below_as_of(enabled: &super::Enabled, root: BlockRef) -> BlockRef {
+    match enabled.store_tip() {
+        Some(tip) if tip.height > root.height => tip,
+        _ => root,
+    }
+}
+
 /// Each transaction's prevouts, in input order: an output created inside the
 /// window is read from the block that created it on `block`'s own ancestry
 /// (located through the `transactions` view of the parent); one created
-/// below the root is asked of `below`.
+/// below the window is asked of `below`, as of `as_of`.
 #[cfg(any(
     feature = "txout_set",
     feature = "address_history",
@@ -74,7 +90,7 @@ pub(crate) async fn prevouts(
     graph: &PersistentSnapshot,
     locate: impl Fn(&Outpoint) -> Result<Option<zaino_primitives::types::BlockTxPosition>, Failure>,
     below: &dyn below::Prevouts,
-    root: BlockRef,
+    as_of: BlockRef,
 ) -> Result<Vec<Vec<TransparentOutput>>, Failure> {
     let own = own_outputs(block);
     let mut resolved: Vec<Vec<Option<TransparentOutput>>> = Vec::new();
@@ -86,12 +102,17 @@ pub(crate) async fn prevouts(
                 txid: input.prev_txid,
                 index: input.prev_index,
             };
-            // created earlier in this block, else earlier on this ancestry
+            // created earlier in this block, else earlier on this ancestry.
+            // The `transactions` view still lists blocks trimmed since its
+            // last rebase: an output located below the floor is below the
+            // window, and the store's.
             let inside = match own.get(&outpoint) {
                 Some(output) => Some(output.clone()),
                 None => match locate(&outpoint)? {
-                    Some(position) => Some(created_at(graph, block, position, outpoint)?),
-                    None => None,
+                    Some(position) if position.height >= graph.lowest_retained_height() => {
+                        Some(created_at(graph, block, position, outpoint)?)
+                    }
+                    _ => None,
                 },
             };
             if inside.is_none() {
@@ -107,7 +128,7 @@ pub(crate) async fn prevouts(
             .map(|(_, _, outpoint)| *outpoint)
             .collect();
         let answers = below
-            .previous_outputs(root, &asked)
+            .previous_outputs(as_of, &asked)
             .await
             .map_err(|error| Failure::of("prevouts below the root", error))?;
         for ((tx_slot, input_slot, outpoint), answer) in unresolved.into_iter().zip(answers) {
@@ -173,12 +194,14 @@ fn created_at(
         })
 }
 
-/// The txids of `block`'s transparent inputs whose outputs were created below
-/// the root (not located inside the window), deduplicated.
+/// The txids of `block`'s transparent inputs whose outputs were created at
+/// or below `root`, deduplicated: those the `transactions` view does not
+/// list, and those it lists at or below `root` (its own root can be lower).
 #[cfg(feature = "txout_set")]
 pub(crate) fn below_root_txids(
     block: &ChainHeadBlock,
     locate: impl Fn(&Outpoint) -> Result<Option<zaino_primitives::types::BlockTxPosition>, Failure>,
+    root: BlockRef,
 ) -> Result<Vec<zaino_primitives::types::TransactionId>, Failure> {
     let own = own_outputs(block);
     let mut seen: HashMap<zaino_primitives::types::TransactionId, ()> = HashMap::new();
@@ -188,7 +211,8 @@ pub(crate) fn below_root_txids(
                 txid: input.prev_txid,
                 index: input.prev_index,
             };
-            if !own.contains_key(&outpoint) && locate(&outpoint)?.is_none() {
+            let below = locate(&outpoint)?.is_none_or(|position| position.height <= root.height);
+            if !own.contains_key(&outpoint) && below {
                 seen.entry(outpoint.txid).or_insert(());
             }
         }
@@ -283,7 +307,8 @@ where
         }
         let parent = block.parent_hash;
         let locate = |outpoint: &Outpoint| transactions.locate(&parent, outpoint.txid);
-        let resolved = prevouts(&block, graph, locate, below, root).await?;
+        let as_of = below_as_of(enabled, root);
+        let resolved = prevouts(&block, graph, locate, below, as_of).await?;
         let fold_block = fold_block(
             &block,
             &enabled.schedule,

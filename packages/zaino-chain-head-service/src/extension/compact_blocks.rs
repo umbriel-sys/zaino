@@ -12,7 +12,7 @@ use super::transactions::Transactions;
 use super::{below, failed, inputs, Enabled, Failure, Slot};
 use crate::snapshot::PersistentSnapshot;
 
-pub(super) const NAME: &str = "compact_blocks";
+const NAME: &str = "compact_blocks";
 
 #[derive(Debug, Clone)]
 pub(crate) struct CompactBlocks {

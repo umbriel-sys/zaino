@@ -11,7 +11,7 @@ use super::folded::Folded;
 use super::{below, due_for_rebase, failed, inputs, Enabled, Failure, Slot};
 use crate::snapshot::PersistentSnapshot;
 
-pub(super) const NAME: &str = "history_tree";
+const NAME: &str = "history_tree";
 
 #[derive(Debug, Clone)]
 pub(crate) struct HistoryTree {

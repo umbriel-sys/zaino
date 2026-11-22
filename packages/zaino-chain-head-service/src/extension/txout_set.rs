@@ -15,7 +15,7 @@ use super::transactions::Transactions;
 use super::{below, due_for_rebase, failed, inputs, Enabled, Failure, Slot};
 use crate::snapshot::PersistentSnapshot;
 
-pub(super) const NAME: &str = "txout_set";
+const NAME: &str = "txout_set";
 
 /// What this extension drives below the root.
 #[derive(Clone)]
@@ -83,14 +83,15 @@ impl TxOutSet {
             let locate = |outpoint: &zaino_primitives::types::Outpoint| {
                 transactions.locate(&parent, outpoint.txid)
             };
+            let as_of = inputs::below_as_of(enabled, root);
             let prevouts =
-                inputs::prevouts(&block, graph, locate, ports.prevouts.as_ref(), root).await?;
+                inputs::prevouts(&block, graph, locate, ports.prevouts.as_ref(), as_of).await?;
             let mut state = self
                 .folded
                 .view(&parent)
                 .map(|view| view.state.clone())
                 .ok_or_else(|| Failure(format!("no view of the parent {parent}")))?;
-            let unknown: Vec<TransactionId> = inputs::below_root_txids(&block, locate)?
+            let unknown: Vec<TransactionId> = inputs::below_root_txids(&block, locate, root)?
                 .into_iter()
                 .filter(|txid| !state.remaining.contains_key(txid))
                 .collect();

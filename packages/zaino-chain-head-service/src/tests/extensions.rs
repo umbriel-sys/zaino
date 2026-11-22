@@ -1162,6 +1162,154 @@ async fn extensions_wait_for_a_store_below_the_floor_and_build_when_it_arrives()
     );
 }
 
+/// A window shallow enough that a block's maturing coinbase (100 below it)
+/// is below its floor, with the views' root lower still.
+const TRIMMED_DEPTH: u32 = 80;
+
+/// A head whose views are seeded at its floor, then moved 24 blocks with the
+/// store following the floor: far enough for the window to trim, short of a
+/// rebase, so the views keep their root while the window drops what lies
+/// between it and the floor. The views' root.
+async fn moved_short_of_a_rebase(chain: &MockChain) -> (Harness, BlockRef) {
+    let harness = Harness::anchored(chain.clone(), TRIMMED_DEPTH, 0).await;
+    harness.service.advance_once().await.expect("advances");
+    harness.follow_the_floor().await;
+    let root = harness.root();
+    for _ in 0..24 {
+        harness.extend_at_the_floor(BlockSpec::default()).await;
+    }
+    (harness, root)
+}
+
+impl Harness {
+    /// The store built to the window's floor, as the sync loop builds it,
+    /// then one tick.
+    async fn follow_the_floor(&self) {
+        let floor = u32::from(self.snapshot().lowest_retained_height());
+        self.below
+            .set_tip(reference(&self.chain.block_at(floor).expect("held")));
+        self.service.advance_once().await.expect("advances");
+    }
+
+    /// One block appended and folded, then the store following the floor.
+    async fn extend_at_the_floor(&self, spec: BlockSpec) {
+        self.extend_and_advance(spec).await;
+        self.follow_the_floor().await;
+    }
+}
+
+/// A block spends an output created in a block the window trimmed after the
+/// `transactions` view was last rebased. The view still lists it, the window
+/// does not hold it: it is read from the store, and every view equals a fold
+/// from genesis.
+#[tokio::test]
+async fn a_spend_of_an_output_trimmed_since_the_last_rebase_is_read_from_the_store() {
+    let chain = chain();
+    let (harness, root) = moved_short_of_a_rebase(&chain).await;
+    harness.extend_at_the_floor(BlockSpec::spends(1)).await;
+
+    let spender = chain.tip().expect("a chain");
+    let created = u32::from(spender.height()) - zaino_source_mock::COINBASE_MATURITY;
+    let floor = u32::from(harness.snapshot().lowest_retained_height());
+    assert_eq!(spender.block.transactions().len(), 2, "one spend");
+    assert!(
+        u32::from(root.height) < created && created < floor,
+        "created above the views' root and below the floor"
+    );
+    assert_views_are_folds(
+        &harness.snapshot(),
+        root,
+        &[blocks_through(&chain, u32::from(spender.height()))],
+    );
+}
+
+/// The same spend with the store unable to answer fails the extensions that
+/// resolve prevouts, naming the read: nothing is folded without its prevout.
+#[tokio::test]
+async fn a_trimmed_output_the_store_cannot_answer_fails_loudly() {
+    let chain = chain();
+    let (harness, _) = moved_short_of_a_rebase(&chain).await;
+    harness.below.failing.store(true, Ordering::SeqCst);
+    harness.extend_at_the_floor(BlockSpec::spends(1)).await;
+
+    let failures = harness.snapshot().extension_failures();
+    for capability in [
+        HeadCapability::TransparentHistory,
+        HeadCapability::CompactBlocks,
+    ] {
+        let reason = failures
+            .iter()
+            .find(|(failed, _)| *failed == capability)
+            .map(|(_, reason)| reason.as_str());
+        assert!(
+            reason.is_some_and(|reason| reason.starts_with("prevouts below the root")),
+            "{capability:?}: {failures:?}"
+        );
+    }
+}
+
+/// Extensions that failed are seeded again at the store's tip, above the
+/// `transactions` view's older root, and fold a block spending an output that
+/// view still lists below their new root: its prevout and its transaction's
+/// unspent count both come from the store.
+#[tokio::test]
+async fn a_reseeded_extension_reads_below_its_own_root_what_the_view_still_lists() {
+    let chain = chain();
+    let (harness, views_root) = moved_short_of_a_rebase(&chain).await;
+    harness.below.failing.store(true, Ordering::SeqCst);
+    harness.extend_at_the_floor(BlockSpec::spends(1)).await;
+    let spender = chain.tip().expect("a chain");
+    let created = u32::from(spender.height()) - zaino_source_mock::COINBASE_MATURITY;
+    assert!(!harness.snapshot().extension_failures().is_empty());
+
+    harness.below.failing.store(false, Ordering::SeqCst);
+    harness.extend_at_the_floor(BlockSpec::default()).await;
+    let reseeded_at = u32::from(harness.root().height);
+    assert!(
+        u32::from(views_root.height) < created && created <= reseeded_at,
+        "created above the view's root, at or below the new one"
+    );
+    let rebuilt = harness.snapshot();
+    assert!(
+        rebuilt.extension_failures().is_empty(),
+        "{:?}",
+        rebuilt.extension_failures()
+    );
+    assert_eq!(
+        rebuilt.txout_set().expect("rebuilt"),
+        independent_accumulator(&chain, tip_height(&chain))
+    );
+    assert!(
+        rebuilt
+            .compact_transactions(&spender.hash(), PoolFilter::all())
+            .expect("rebuilt")
+            .is_some(),
+        "the spending block's compact transactions answer"
+    );
+}
+
+/// A store that stops below the floor after the extensions were built does
+/// not darken them: they go on from their own views.
+#[tokio::test]
+async fn built_extensions_go_on_when_the_store_falls_behind() {
+    let chain = chain();
+    let tip = tip_height(&chain);
+    let harness = Harness::new(chain.clone(), 60, tip - 60).await;
+    for _ in 0..3 {
+        harness.extend_and_advance(BlockSpec::default()).await;
+    }
+    let snapshot = harness.snapshot();
+    assert!(
+        snapshot.extension_failures().is_empty(),
+        "{:?}",
+        snapshot.extension_failures()
+    );
+    assert_eq!(
+        snapshot.txout_set().expect("built"),
+        independent_accumulator(&chain, tip + 3)
+    );
+}
+
 #[tokio::test]
 async fn a_failing_port_darkens_one_extension_and_the_next_tick_rebuilds_it() {
     let chain = chain();
