@@ -1,0 +1,13 @@
+# The store's build resolves prevouts for many blocks at once; zainod exposes
+# the build's settings.
+
+[[changes]]
+crate       = "zaino-chain-store-service"
+kind        = "breaking"
+description = "Prevout resolution no longer runs one block at a time. Blocks are claimed in height order in memory (the in-flight map), then their remaining prevouts are read from I-03 and I-04, and the block validated, for up to `resolve_concurrency` blocks at once; blocks still reach the writers in height order. `IngestConfig` gains `resolve_concurrency` (default 16)."
+migration   = "Code building an `IngestConfig` by its fields names `resolve_concurrency`. `zaino.store.resolve_seconds` now times one block's store reads and validation, not a serial step."
+
+[[changes]]
+crate       = "zainod"
+kind        = "feature"
+description = "An `[ingest]` table sets how hard the store's build works: `fetch_concurrency`, `resolve_concurrency`, `queue_bytes` and `writers`. Absent, the defaults apply as before. `zainodlib::config` re-exports `IngestConfig`."

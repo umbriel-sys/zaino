@@ -46,7 +46,7 @@ fn config(enable: &[IndexId]) -> ChainStoreServiceConfig {
 
 /// Notes in both pools; once coinbases mature, spends of coinbase and
 /// ordinary outputs, and spends of outputs earlier in the same block.
-fn chain() -> MockChain {
+pub(crate) fn chain() -> MockChain {
     ChainBuilder::new()
         .blocks(3)
         .block(BlockSpec::default().notes(ShieldedPool::Sapling, 5))
@@ -82,11 +82,11 @@ async fn the_tree_state_builds_over_a_completed_subtree() {
     );
 }
 
-fn height(n: u32) -> Height {
+pub(crate) fn height(n: u32) -> Height {
     Height::try_from(n).expect("small")
 }
 
-fn tip_of(chain: &MockChain) -> BlockRef {
+pub(crate) fn tip_of(chain: &MockChain) -> BlockRef {
     let tip = chain.tip().expect("a chain");
     BlockRef {
         hash: tip.hash(),
@@ -103,7 +103,7 @@ async fn boot(
 }
 
 /// The upgrades the test chains activate, as their validator reports them.
-fn schedule() -> Arc<[NetworkUpgradeInfo]> {
+pub(crate) fn schedule() -> Arc<[NetworkUpgradeInfo]> {
     Arc::from(Activations::default().upgrades())
 }
 

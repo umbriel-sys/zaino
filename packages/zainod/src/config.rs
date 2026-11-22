@@ -13,8 +13,8 @@ use std::{
 
 use serde::{Deserialize, Serialize};
 use tracing::{info, warn};
-use zaino_chain_store_service::{ChainStoreServiceConfig, IngestConfig, OnCorruption};
-pub use zaino_chain_store_service::{IndexesConfig, NamedSet};
+use zaino_chain_store_service::{ChainStoreServiceConfig, OnCorruption};
+pub use zaino_chain_store_service::{IndexesConfig, IngestConfig, NamedSet};
 use zaino_persistence_lsm_tree::{fs::RealFs, LsmConfig, LsmTreeStorage, DEFAULT_WRITE_BUFFER_MIB};
 use zaino_primitives::types::Network;
 use zaino_rpc::net::{try_resolve_address, AddressResolution};
@@ -96,6 +96,8 @@ pub struct ZainodConfig {
     pub indexes: IndexesConfig,
     /// Where the indexes are stored.
     pub persistence: PersistenceConfig,
+    /// How hard the store's build pipeline works.
+    pub ingest: IngestConfig,
     /// The mempool's bounds.
     pub mempool: MempoolSettings,
     /// What is served.
@@ -115,6 +117,7 @@ impl Default for ZainodConfig {
                 ..IndexesConfig::default()
             },
             persistence: PersistenceConfig::default(),
+            ingest: IngestConfig::default(),
             mempool: MempoolSettings::default(),
             serve: ServeConfig::default(),
             admin: None,
@@ -291,7 +294,7 @@ impl ZainodConfig {
                     network: self.network,
                     indexes: self.indexes.clone(),
                     on_corruption: OnCorruption::default(),
-                    ingest: IngestConfig::default(),
+                    ingest: self.ingest.clone(),
                 },
                 storage: LsmTreeStorage {
                     fs: RealFs::shared(),

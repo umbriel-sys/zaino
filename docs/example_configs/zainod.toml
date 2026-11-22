@@ -114,6 +114,23 @@ write_buffer_mib = 64
 
 
 # ---------------------------------------------------------------------------
+# How fast the store is built
+# ---------------------------------------------------------------------------
+# The build runs in stages, all at once; the slowest sets the pace. Raise a
+# stage's setting only if that stage is the one holding the build back.
+[ingest]
+# Blocks fetched from the validator at once.
+fetch_concurrency = 16
+# Blocks whose spent outputs are read from the store at once.
+resolve_concurrency = 16
+# Bytes of blocks queued ahead of each index's writer; a full queue holds the
+# fetch back, so this bounds the build's memory.
+queue_bytes = 67108864
+# Index writers working at once. Absent: the store's share of the cores.
+# writers = 4
+
+
+# ---------------------------------------------------------------------------
 # The mempool mirror
 # ---------------------------------------------------------------------------
 # Every key is optional; the values shown are the built-in defaults.

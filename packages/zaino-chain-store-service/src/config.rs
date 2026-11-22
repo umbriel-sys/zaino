@@ -38,6 +38,9 @@ pub struct IngestConfig {
     /// sized by cores).
     #[serde(default = "default_fetch_concurrency")]
     pub fetch_concurrency: NonZeroUsize,
+    /// Blocks whose prevouts are read from the store at once.
+    #[serde(default = "default_resolve_concurrency")]
+    pub resolve_concurrency: NonZeroUsize,
     /// Bytes of blocks queued ahead of each index's writer; a full queue
     /// holds the fetch back.
     #[serde(default = "default_queue_bytes")]
@@ -52,6 +55,7 @@ impl Default for IngestConfig {
     fn default() -> Self {
         Self {
             fetch_concurrency: default_fetch_concurrency(),
+            resolve_concurrency: default_resolve_concurrency(),
             queue_bytes: default_queue_bytes(),
             writers: default_writers(),
         }
@@ -59,6 +63,10 @@ impl Default for IngestConfig {
 }
 
 fn default_fetch_concurrency() -> NonZeroUsize {
+    NonZeroUsize::new(16).unwrap_or(NonZeroUsize::MIN)
+}
+
+fn default_resolve_concurrency() -> NonZeroUsize {
     NonZeroUsize::new(16).unwrap_or(NonZeroUsize::MIN)
 }
 

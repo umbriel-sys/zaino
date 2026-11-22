@@ -55,6 +55,12 @@ path = "/var/cache/zaino"
 write_buffer_mib = 64
 # threads = 4
 
+[ingest]                            # how hard the store's build works; every key optional
+fetch_concurrency = 16              # blocks fetched from the validator at once
+resolve_concurrency = 16            # blocks whose spent outputs are read at once
+queue_bytes = 67108864              # bytes queued ahead of each index's writer
+# writers = 4                       # absent: the store's share of the cores
+
 [mempool]                           # every key optional
 # max_cost_bytes, poll_interval_ms, metadata_min_interval_ms, max_exclude_count
 

@@ -36,10 +36,11 @@ fn with(ids: &[IndexId], ingest: IngestConfig) -> ChainStoreServiceConfig {
     }
 }
 
-fn ingest(fetch: usize, queue_bytes: usize, writers: usize) -> IngestConfig {
+fn ingest(fetch: usize, resolve: usize, queue_bytes: usize, writers: usize) -> IngestConfig {
     let n = |n: usize| NonZeroUsize::new(n).expect("non-zero");
     IngestConfig {
         fetch_concurrency: n(fetch),
+        resolve_concurrency: n(resolve),
         queue_bytes: n(queue_bytes),
         writers: n(writers),
     }
@@ -160,11 +161,17 @@ async fn every_index_matches_the_oracle_however_the_pipeline_is_sized() {
     let tip = tip_of(&chain).height;
     let ids = every_index();
     let expected = oracle(&chain, &ids, tip).await;
+    // a one-byte queue keeps blocks in flight while later ones are claimed;
+    // a wide one lets the writers apply (and the map evict) ahead of the
+    // lookups, each with the lookups one at a time and many at once
     for sizes in [
-        ingest(1, 1, 1),
-        ingest(1, 1 << 30, 1),
-        ingest(8, 1, 3),
-        ingest(8, 1 << 30, 16),
+        ingest(1, 1, 1, 1),
+        ingest(1, 1, 1 << 30, 1),
+        ingest(8, 1, 1, 3),
+        ingest(8, 16, 1, 3),
+        ingest(8, 1, 1 << 30, 16),
+        ingest(8, 16, 1 << 30, 16),
+        ingest(1, 16, 1 << 30, 1),
     ] {
         let storage = built(&with(&ids, sizes.clone()), &chain, &[tip]).await;
         assert_eq!(stored(&storage, &ids), expected, "{sizes:?}");
@@ -239,7 +246,7 @@ async fn a_failed_fetch_builds_everything_before_it() {
     let tip = tip_of(&chain).height;
     let ids = every_index();
     let storage = InMemoryStorage::new();
-    let store = boot(&with(&ids, ingest(4, 1 << 20, 2)), &storage, &chain)
+    let store = boot(&with(&ids, ingest(4, 4, 1 << 20, 2)), &storage, &chain)
         .await
         .expect("boots");
     chain.fail_ports(&["get_block"], Some(1), FailureMode::Connection);

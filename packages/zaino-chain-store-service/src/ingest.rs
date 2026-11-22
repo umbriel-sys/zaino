@@ -1,9 +1,13 @@
-//! The build pipeline (D-67, D-96): fetch → resolve → one writer per index,
-//! all at once, so the slowest stage alone sets the pace.
+//! The build pipeline (D-67, D-96): fetch → claim → resolve → one writer per
+//! index, all at once, so the slowest stage alone sets the pace.
 //!
 //! - fetch: up to `fetch_concurrency` heights at once, each in its own task,
 //!   taken back in height order;
-//! - resolve: in height order, prevouts only where an index needs them;
+//! - claim: in height order and in memory, each block's prevouts answered
+//!   from the blocks still in flight where an index needs them;
+//! - resolve: up to `resolve_concurrency` blocks at once, the remaining
+//!   prevouts read from the store and the block validated, taken back in
+//!   height order;
 //! - writers: one per index on a blocking thread, behind a byte-bounded
 //!   queue; a block goes on once every queue that wants it has room.
 //!
@@ -34,7 +38,7 @@ use crate::metric_names::{
     STORE_RESOLVE_SECONDS,
 };
 use crate::store::Open;
-use resolve::{Resolver, Source};
+use resolve::{Claimed, Resolver, Source};
 
 /// What the build fetches from, and how hard.
 pub(crate) struct Ingest<'a, Src> {
@@ -142,7 +146,8 @@ where
                 "an index needs prevouts, but txid_location or transparent is not building",
             ));
         }
-        let mut fetched = futures::stream::iter(u32::from(start)..=u32::from(target))
+        let lookup = resolver.as_ref().map(Resolver::lookup);
+        let mut resolved = futures::stream::iter(u32::from(start)..=u32::from(target))
             .map(|height| {
                 let (source, schedule) = (Arc::clone(ingest.source), Arc::clone(ingest.schedule));
                 let trees = ingest.trees;
@@ -154,27 +159,49 @@ where
                     parts
                 })
             })
-            .buffered(ingest.config.fetch_concurrency.get());
-        while let Some(parts) = fetched.next().await {
-            let parts = parts.map_err(|error| joined("a fetch task", error))??;
-            let height = parts.header.height;
-            let block = match resolver.take() {
-                Some(mut taken) => {
-                    let wants = needed.is_some_and(|from| height >= from);
-                    let (back, resolved) = tokio::task::spawn_blocking(move || {
-                        let started = Instant::now();
-                        let resolved = taken.resolve(parts, wants);
-                        metrics::histogram!(STORE_RESOLVE_SECONDS).record(started.elapsed());
-                        (taken, resolved)
+            .buffered(ingest.config.fetch_concurrency.get())
+            // in height order: the map holds each block's outputs before the
+            // next block is claimed
+            .map(move |parts| {
+                let parts = parts.map_err(|error| joined("a fetch task", error))??;
+                Ok::<_, ChainStoreSourceError>(match resolver.as_mut() {
+                    Some(resolver) => {
+                        let wants = needed.is_some_and(|from| parts.header.height >= from);
+                        Fetched::Claimed(resolver.claim(parts, wants))
+                    }
+                    None => Fetched::Plain(parts),
+                })
+            })
+            .map(|fetched| {
+                let lookup = lookup.clone();
+                async move {
+                    let fetched = fetched?;
+                    tokio::task::spawn_blocking(move || {
+                        let parts = match (fetched, lookup) {
+                            (Fetched::Claimed(claimed), Some(lookup)) => {
+                                let started = Instant::now();
+                                let completed = lookup.complete(claimed);
+                                metrics::histogram!(STORE_RESOLVE_SECONDS)
+                                    .record(started.elapsed());
+                                completed?
+                            }
+                            (Fetched::Claimed(_), None) => {
+                                return Err(ChainStoreSourceError::inconsistent_data(
+                                    "a block was claimed with no indexes to resolve through",
+                                ))
+                            }
+                            (Fetched::Plain(parts), _) => parts,
+                        };
+                        finish(parts)
                     })
                     .await
-                    .map_err(|error| joined("prevout resolution", error))?;
-                    resolver = Some(back);
-                    finish(resolved?)?
+                    .map_err(|error| joined("prevout resolution", error))?
                 }
-                None => finish(parts)?,
-            };
-            let block = Arc::new(block);
+            })
+            .buffered(ingest.config.resolve_concurrency.get());
+        while let Some(block) = resolved.next().await {
+            let block = Arc::new(block?);
+            let height = block.header().height;
             let bytes = weight(&block);
             for (id, tip, lane) in &lanes {
                 let wanted = tip.is_none_or(|tip| tip.height < height);
@@ -246,6 +273,14 @@ fn joined(what: &str, error: tokio::task::JoinError) -> ChainStoreSourceError {
             cause: Some(Box::new(error)),
         },
     }
+}
+
+/// A fetched block on its way to the lookup stage.
+enum Fetched {
+    /// Claimed by the resolver: its remaining prevouts are read next.
+    Claimed(Claimed),
+    /// No index builds from prevouts.
+    Plain(FoldBlockParts),
 }
 
 fn finish(parts: FoldBlockParts) -> Result<FoldBlock, ChainStoreSourceError> {

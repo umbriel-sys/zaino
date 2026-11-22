@@ -61,13 +61,19 @@ the pace:
    with its tree roots, and, when C2 is built and the block added notes, its
    treestates and completed subtree roots. Blocks are taken back in height
    order.
-2. **Resolve:** in height order, the prevout of every transparent input, for
-   the heights an index building from I-03 + I-04 (I-05, I-10, I-11) needs.
-   Each comes from earlier in the same block, or from the in-flight map
-   (outputs of blocks passed on that I-03 and I-04 have not both applied
-   yet), or else from I-03 positions in one sorted batch and then I-04
-   outputs. A prevout found nowhere is the validator's inconsistency.
-3. **Write:** one writer per index on a blocking thread, behind a queue of
+2. **Claim:** in height order and in memory, for the heights an index
+   building from I-03 + I-04 (I-05, I-10, I-11) needs prevouts. Each
+   transparent input is answered from earlier in the same block or from the
+   in-flight map (outputs of blocks claimed that I-03 and I-04 have not both
+   applied yet); the rest are listed for the next stage, and the block's own
+   outputs join the map.
+3. **Resolve:** up to `resolve_concurrency` blocks at once, each on a
+   blocking thread. The listed prevouts are read from I-03 positions in one
+   sorted batch and then I-04 outputs, and the block is validated. An output
+   leaves the map only once both writers applied its block, so what a claim
+   did not find is in the store by then. A prevout found nowhere is the
+   validator's inconsistency. Blocks are taken back in height order.
+4. **Write:** one writer per index on a blocking thread, behind a queue of
    `queue_bytes`. It folds and commits each block above its tip (the backend
    writes its buffer when full), and flushes at the end. At most `writers`
    fold or commit at once. A block goes on once every queue that wants it has
@@ -92,6 +98,7 @@ validator at the next build. One that can't be reopened yet stays enabled but cl
 ```toml
 [ingest]
 fetch_concurrency = 16  # heights fetched at once (latency-bound)
+resolve_concurrency = 16 # blocks whose prevouts are read from the store at once
 queue_bytes = 67108864  # bytes queued ahead of each index's writer
 writers = 4             # default: the store's CpuBudget share
 ```

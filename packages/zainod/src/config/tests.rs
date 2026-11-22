@@ -227,6 +227,10 @@ path = "{state}/zaino"
 write_buffer_mib = 32
 threads = 2
 
+[ingest]
+fetch_concurrency = 4
+resolve_concurrency = 2
+
 [mempool]
 max_cost_bytes = 50000000
 
@@ -262,6 +266,13 @@ listen_address = "127.0.0.1:9002"
     assert!(!config.indexes.delete_stale);
     assert_eq!(config.persistence.write_buffer_mib.get(), 32);
     assert_eq!(config.persistence.threads.map(NonZeroUsize::get), Some(2));
+    assert_eq!(config.ingest.fetch_concurrency.get(), 4);
+    assert_eq!(config.ingest.resolve_concurrency.get(), 2);
+    assert_eq!(
+        config.ingest.queue_bytes,
+        IngestConfig::default().queue_bytes,
+        "an unset key keeps its default"
+    );
     assert_eq!(config.mempool.max_cost_bytes, Some(50_000_000));
     assert_eq!(config.serve.stream_timeout_secs, 5);
     assert_eq!(config.serve.grpc.limits.max_concurrent_streams.get(), 8);
@@ -275,6 +286,7 @@ listen_address = "127.0.0.1:9002"
     };
     assert_eq!(disk.store.root, config.persistence.path);
     assert_eq!(disk.store.indexes, config.indexes);
+    assert_eq!(disk.store.ingest, config.ingest);
     assert_eq!(disk.storage.write_buffer.get(), 32 << 20);
 }
 
