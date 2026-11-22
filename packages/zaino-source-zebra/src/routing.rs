@@ -113,8 +113,9 @@ impl ZebraValidator {
 /// miss.
 ///
 /// Used only where the fast path is *semantically* narrower than the slow one —
-/// side-chain blocks and unmined transactions — not as a general availability
-/// fallback. See [`retry_on_slow_path`].
+/// side-chain blocks, unmined transactions, and blocks the read-only state
+/// has not finished replaying — not as a general availability fallback. See
+/// [`retry_on_slow_path`].
 ///
 /// A macro rather than a function because a function cannot express it: the
 /// call has to dispatch the same method name across two unrelated types and
@@ -153,9 +154,9 @@ impl zaino_source::ValidatorSource for ZebraValidator {
 
 impl OneShotGetBlock for ZebraValidator {
     async fn get_block(&self, height: Height) -> Result<Block, QueryError<GetBlockError>> {
-        // A height names a best-chain block, which the finalized state has, so
-        // there is nothing the slow path could add on a miss.
-        fast_or_slow!(self, get_block, height)
+        // The read-only state answers `None` for a block whose body it has
+        // not finished replaying; zebrad itself already serves it.
+        fast_then_slow!(self, get_block, height)
     }
 }
 
@@ -175,7 +176,8 @@ impl OneShotGetBlockByHash for ZebraValidator {
 
 impl OneShotGetRawBlock for ZebraValidator {
     async fn get_raw_block(&self, height: Height) -> Result<Vec<u8>, QueryError<GetBlockError>> {
-        fast_or_slow!(self, get_raw_block, height)
+        // Same replay gap as `GetBlock`.
+        fast_then_slow!(self, get_raw_block, height)
     }
 }
 

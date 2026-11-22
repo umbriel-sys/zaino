@@ -19,7 +19,7 @@ permissions:
 
 env:
   # The oldest zebrad the harness drives (`zaino_testutils::ZEBRAD_MIN_VERSION`).
-  ZEBRAD_VERSION: "7.0.0"
+  ZEBRAD_VERSION: "7.1.0"
 
 jobs:
   compile:

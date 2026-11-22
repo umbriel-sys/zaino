@@ -13,7 +13,6 @@ use zebra_state::{ReadRequest, ReadResponse};
 use crate::network::adopt_network;
 use crate::read_state::ZebraReadStateAdapter;
 use crate::routing::ZebraValidator;
-use crate::secondary::Opening;
 
 /// How long between looks at a validator that is not ready yet.
 const NOT_READY_RETRY: Duration = Duration::from_secs(3);
@@ -78,21 +77,11 @@ impl ZebraValidator {
             cache_dir: read_state.state_path,
             ..zebra_state::Config::default()
         };
-        // zebra leaves its secondary state's temp directory behind: tracked
-        // across the launch and removed with the adapter
-        let opening = tokio::task::spawn_blocking(Opening::begin)
-            .await
-            .map_err(|error| ConnectError::ReadState(error.to_string()))?
-            .map_err(|error| ConnectError::ReadState(error.to_string()))?;
-        let launched =
+        let (mut state, _latest_chain_tip, _chain_tip_change, syncer) =
             zebra_rpc::sync::init_read_state_with_syncer(config, &network, read_state.grpc_address)
-                .await;
-        let secondary = opening
-            .finish()
-            .map_err(|error| ConnectError::ReadState(error.to_string()))?;
-        let (mut state, _latest_chain_tip, _chain_tip_change, syncer) = launched
-            .map_err(|error| ConnectError::ReadState(error.to_string()))?
-            .map_err(|error| ConnectError::ReadState(error.to_string()))?;
+                .await
+                .map_err(|error| ConnectError::ReadState(error.to_string()))?
+                .map_err(|error| ConnectError::ReadState(error.to_string()))?;
 
         // hash as well as height: one height names different blocks in a reorg
         loop {
@@ -129,7 +118,7 @@ impl ZebraValidator {
 
         Ok(Self::with_read_state(
             rpc_adapter,
-            ZebraReadStateAdapter::from_service(state, &network, Some(Arc::new(syncer)), secondary),
+            ZebraReadStateAdapter::from_service(state, &network, Some(Arc::new(syncer))),
         ))
     }
 }

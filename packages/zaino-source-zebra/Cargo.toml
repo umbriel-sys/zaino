@@ -36,7 +36,6 @@ zaino-consensus.workspace = true
 librocksdb-sys = { version = "0.17.3", features = ["bindgen-runtime"] }
 
 [dev-dependencies]
-tempfile.workspace = true
 zcash_address.workspace = true
 zcash_protocol.workspace = true
 

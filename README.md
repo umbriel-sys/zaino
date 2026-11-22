@@ -73,7 +73,7 @@ it), `CONTRIBUTING.md`, `LICENSE`.
 - [Changesets and releases](./docs/release.md): recording a change, cutting a release.
 - [Updating Zebra crates](./docs/updating_zebra_crates.md): the bump procedure.
 - [Glossary](./docs/glossary.md): the project's terms.
-- Example configs: [`zainod.toml`](./docs/example_configs/zainod.toml), [`zebrad.toml`](./docs/example_configs/zebrad.toml).
+- Example configs: [`zainod.toml`](./docs/example_configs/zainod.toml) (the default: lightwallet gRPC), [`zainod-full.toml`](./docs/example_configs/zainod-full.toml) (every index, with JSON-RPC), [`zebrad.toml`](./docs/example_configs/zebrad.toml).
 
 ### Crate usage guides
 

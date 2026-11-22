@@ -1,0 +1,44 @@
+# Zaino Configuration: every index, with the JSON-RPC server.
+#
+# The heavier deployment: builds all indexes (compact blocks, transparent
+# address history, spent outpoints, the UTXO set, the ZIP 221 history tree)
+# and serves JSON-RPC beside gRPC. For the lightwallet-only default, see
+# `zainod.toml`.
+network = "PubTestnet"
+
+[validator]
+kind = "zcash_rpc"
+rpc_address = "127.0.0.1:18232"
+
+[indexes]
+set = "full"
+enable = []
+disable = []
+delete_stale = true
+
+[indexes.paths]
+
+[persistence]
+path = "/var/cache/zaino"
+write_buffer_mib = 64
+
+[mempool]
+
+[serve]
+stream_timeout_secs = 30
+stream_channel_size = 32
+
+[serve.grpc]
+listen_address = "127.0.0.1:8137"
+
+[serve.grpc.limits]
+concurrency_limit_per_connection = 32
+max_concurrent_streams = 64
+keepalive_interval_secs = 60
+keepalive_timeout_secs = 20
+shutdown_timeout_secs = 5
+
+# JSON-RPC has no transport encryption: loopback or private addresses only.
+[serve.jsonrpc]
+listen_address = "127.0.0.1:8237"
+# cookie_dir = "/run/zaino"         # enables cookie authentication

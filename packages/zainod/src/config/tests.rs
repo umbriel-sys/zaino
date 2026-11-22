@@ -75,6 +75,23 @@ fn the_documented_example_is_the_generated_default() {
     );
 }
 
+/// The full example is the default but for its index set, its store path and
+/// its JSON-RPC server.
+#[test]
+fn the_full_example_builds_every_index_and_serves_jsonrpc() {
+    let example = include_str!("../../../../docs/example_configs/zainod-full.toml");
+    let loaded = load(example, "ZAINOTEST_NONE").expect("loads");
+    loaded.check_config().expect("valid");
+    let mut expected = ZainodConfig::default();
+    expected.indexes.set = Some(NamedSet::Full);
+    expected.persistence.path = PathBuf::from("/var/cache/zaino");
+    expected.serve.jsonrpc = loaded.serve.jsonrpc.clone();
+    assert_eq!(loaded, expected);
+    let jsonrpc = loaded.serve.jsonrpc.expect("served");
+    assert_eq!(jsonrpc.listen_address.to_string(), "127.0.0.1:8237");
+    assert_eq!(jsonrpc.cookie_dir, None);
+}
+
 /// Every section is read; the JSON-RPC server and the admin endpoint are
 /// off unless their tables are present.
 #[test]

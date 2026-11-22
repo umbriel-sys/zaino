@@ -14,8 +14,8 @@ use crate::process::{self, Process};
 use crate::rpc::JsonRpcClient;
 use crate::validator::{activation_heights_from_info, Network, Pool, Validator, LOCKBOX_ADDRESS};
 
-/// Oldest zebrad the harness drives: the first release knowing the `NU7` key.
-pub const ZEBRAD_MIN_VERSION: (u16, u16, u16) = (7, 0, 0);
+/// Oldest zebrad the harness drives: the release whose crates zaino links.
+pub const ZEBRAD_MIN_VERSION: (u16, u16, u16) = (7, 1, 0);
 
 /// `zebrad --version` output of the binary in use.
 pub static ZEBRAD_VERSION: std::sync::OnceLock<String> = std::sync::OnceLock::new();

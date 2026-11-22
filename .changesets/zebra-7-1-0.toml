@@ -1,0 +1,42 @@
+# zebrad 7.1.0 (zebra-chain 16 / zebra-state 17 / zebra-rpc 20).
+
+[[changes]]
+crate       = "zainod"
+kind        = "breaking"
+description = "Built against the zebrad 7.1.0 crates (zebra-chain 16, zebra-state 17, zebra-rpc 20). The state format stays v29. The direct reader no longer reads a block whose body zebrad is still writing as a truncated block: it answers from zebrad's JSON-RPC until the body is complete."
+migration   = "Upgrade zebrad to 7.1.0 before this zainod when the direct reader is in use."
+
+[[changes]]
+crate       = "zaino-state"
+kind        = "breaking"
+description = "Built against zebra-chain 16, zebra-state 17 and zebra-rpc 20 (zebrad 7.1.0); public traits use their types."
+migration   = "Upgrade `zebra-chain` to 16, `zebra-state` to 17 and `zebra-rpc` to 20."
+
+[[changes]]
+crate       = "zaino-source-zebra"
+kind        = "breaking"
+description = "Built against zebra-chain 16, zebra-state 17 and zebra-rpc 20 (zebrad 7.1.0): still the v29 state format, so the primary zebrad must be 7.1.0."
+migration   = "Upgrade `zebra-chain` to 16 and `zebra-state` to 17. Run zebrad 7.1.0 as the primary."
+
+[[changes]]
+crate       = "zaino-source-zebra"
+kind        = "breaking"
+description = "`Opening` and `SecondaryStateDirs` are removed and `ZebraReadStateAdapter::from_service` no longer takes the secondary directories: zebra-state 17 removes its own `zebra-secondary_state-…` temp directory when the database drops."
+migration   = "Drop the `Opening` around the launch and the fourth argument to `from_service`."
+
+[[changes]]
+crate       = "zaino-source-zebra"
+kind        = "fix"
+description = "`GetBlock` and `GetRawBlock` by height fall back to JSON-RPC on a read-state miss. zebra-state 17's read-only state answers \"no block\" until it has replayed a new block's whole body, where zebra-state 16 returned the block with its transaction list truncated."
+
+[[changes]]
+crate       = "zaino-source-zcash-rpc"
+kind        = "breaking"
+description = "Built against zebra-chain 16 (zebrad 7.1.0)."
+migration   = "Upgrade `zebra-chain` to 16."
+
+[[changes]]
+crate       = "zaino-primitives"
+kind        = "breaking"
+description = "The `zebra` feature's conversions are built against zebra-chain 16 (zebrad 7.1.0)."
+migration   = "Upgrade `zebra-chain` to 16."

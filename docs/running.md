@@ -29,7 +29,9 @@ zainod generate-config --output ./zainod.toml
 ```
 
 The generated file holds every default
-([example](./example_configs/zainod.toml)). The settings to decide:
+([example](./example_configs/zainod.toml)): the `lightclient` index set and
+the gRPC server. [`zainod-full.toml`](./example_configs/zainod-full.toml)
+builds every index and serves JSON-RPC as well. The settings to decide:
 
 ```toml
 network = "Mainnet"                 # Mainnet | Testnet | Regtest
@@ -44,7 +46,7 @@ state_path = "/var/cache/zebra"
 grpc_address = "127.0.0.1:8230"
 
 [indexes]
-set = "full"                        # lightclient | zcash_rpc | full | empty
+set = "lightclient"                 # the default; lightclient | zcash_rpc | full | empty
 
 [persistence]
 path = "/var/cache/zaino"
@@ -56,7 +58,10 @@ path = "/var/cache/zaino"
 - **`kind = "zcash_rpc"`** uses JSON-RPC alone and works across hosts.
 - **`[indexes].set`** chooses what Zaino answers from its own state:
   `lightclient` for wallets, `zcash_rpc` for the JSON-RPC reads, `full` for
-  both, `empty` to store nothing and pass every read to the validator.
+  both, `empty` to store nothing and pass every read to the validator. A
+  read whose index is not built is the validator's. `enable` adds single
+  indexes to a set (`enable = ["history_tree"]`). With `delete_stale` (the
+  default) an index the set no longer names is deleted from disk at start.
 
 Every key can also come from the environment as `ZAINO_<SECTION>__<KEY>`
 (for example `ZAINO_VALIDATOR__RPC_ADDRESS`). Keys ending in `password`,

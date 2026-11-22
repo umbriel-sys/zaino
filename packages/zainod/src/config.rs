@@ -43,6 +43,18 @@ pub const GENERATED_CONFIG_HEADER: &str = r#"# Zaino Configuration
 #   2. TOML configuration file
 #   3. Built-in defaults
 #
+# The default index set is `lightclient`: what the lightwallet gRPC server
+# needs (compact blocks, headers, treestates, subtree roots). Transparent
+# address, spent-outpoint and UTXO-set reads are passed to the validator.
+#
+# To also serve `GetHistoryProof` (ZIP 221), add the history tree:
+#   [indexes]
+#   set = "lightclient"
+#   enable = ["history_tree"]
+#
+# To build every index and serve JSON-RPC, see `zainod-full.toml`:
+#   https://github.com/umbriel-sys/zaino/blob/dev/docs/example_configs/zainod-full.toml
+#
 # For detailed documentation, see:
 #   https://github.com/umbriel-sys/zaino
 "#;
@@ -96,7 +108,7 @@ impl Default for ZainodConfig {
             donation_address: None,
             validator: ValidatorConfig::default(),
             indexes: IndexesConfig {
-                set: Some(NamedSet::Full),
+                set: Some(NamedSet::Lightclient),
                 ..IndexesConfig::default()
             },
             persistence: PersistenceConfig::default(),

@@ -29,7 +29,7 @@ zaino-indexes = { path = "../../packages/zaino-indexes" }
 
 # Versions pinned to the root workspace's, so the two trees share one build
 # of every shared dependency.
-zebra-chain = "15.0"
+zebra-chain = "16.0"
 tokio = { version = "1.38", features = ["full"] }
 futures = "0.3"
 metrics = "0.24"

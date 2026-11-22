@@ -7,7 +7,7 @@ production workspace.
 | Binary | Rule | Run by |
 | --- | --- | --- |
 | `check-code-duplication` | no exact or near-duplicate Rust logic in `packages/` or `tools/`; exceptions are annotated in `.dupes-ignore.toml` | `makers lint-code-duplication` |
-| `check-crypto-provider` | rustls resolves with aws-lc-rs and post-quantum preference, and the only `ring` edges are the tolerated zebra path | `makers lint-crypto-provider` |
+| `check-crypto-provider` | rustls resolves with aws-lc-rs and post-quantum preference, and `ring` is not in the dependency graph | `makers lint-crypto-provider` |
 | `check-no-openssl-apt` | no Dockerfile installs an OpenSSL system package | `makers lint-no-openssl-apt` |
 | `check-zebra-boundary` | no crate outside the source layer depends on a zebra crate or a source adapter | `makers lint-zebra-boundary` |
 | `check-published-versions` | no publishable crate reuses an already-published version with different content | by hand, before publishing |

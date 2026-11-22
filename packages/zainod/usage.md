@@ -42,8 +42,8 @@ state_path = "/var/lib/zebra"
 grpc_address = "127.0.0.1:8230"
 
 [indexes]
-set = "full"                        # lightclient | zcash_rpc | full | empty
-# enable = [...], disable = [...], delete_stale = false
+set = "lightclient"                 # the default; lightclient | zcash_rpc | full | empty
+# enable = ["history_tree"]         # adds to the set; disable = [...], delete_stale = false
 
 [persistence]
 path = "/var/cache/zaino"

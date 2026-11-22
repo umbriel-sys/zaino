@@ -37,12 +37,8 @@ implement its port) and preference is a routing table (`routing.rs`).
 The read-state path is never the only path.
 
 Opening zebra's state read-only makes zebra create a
-`zebra-secondary_state-…` directory under the system temp directory and
-never remove it. The adapter removes it when it drops: `open` tracks it
-itself; a caller launching the service (`from_service`) brackets the launch
-with an `Opening` and passes the resulting `SecondaryStateDirs`. Opens are
-serialised across processes by a lock file in the temp directory, so each
-directory is attributed to the open that made it.
+`zebra-secondary_state-…` directory under the system temp directory; zebra
+removes it when the database drops.
 
 ## Connecting from plain settings
 
@@ -77,7 +73,9 @@ self.rpc.method(args)                // RPC only — the state service cannot an
   *incomplete* rather than wrong. `GetBlockByHash` is the canonical case: a
   side-chain block is not in the finalised state, and the RPC path can still
   find it. This preserves a behaviour the old connector had as an undocumented
-  per-variant difference.
+  per-variant difference. `GetBlock` and `GetRawBlock` by height use it too:
+  the read-only state answers "no block" until it has replayed a new block's
+  whole body, while zebrad already serves it.
 - **RPC only** for the mempool and the passthrough RPCs.
 
 ## Two places the usual preference inverts
@@ -183,8 +181,8 @@ this path disagreed on the same upgrade.
 ### Zebra database version
 
 The adapter opens the state database format its `zebra-state` crate was
-built for — format **29** (`state/v29/<network>`) with zebra-state 16, the
-zebrad 7.0.0 crates. It is a read-only secondary: it never creates or
+built for — format **29** (`state/v29/<network>`) with zebra-state 17, the
+zebrad 7.1.0 crates. It is a read-only secondary: it never creates or
 migrates a database, it only follows the primary zebrad owns. So zebrad must
 be at least the matching release **and must already have run once** to
 migrate its state (zebrad 7 moves a compatible v28 state into `state/v29`

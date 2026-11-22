@@ -36,7 +36,7 @@ cargo nextest run -E 'test(/seam/)'      # a filter
 
 | Need     | Found via                 | Requirement                                                                                                     |
 | -------- | ------------------------- | --------------------------------------------------------------------------------------------------------------- |
-| `zebrad` | `ZEBRAD_BIN`, else `PATH` | At least `zaino_testutils::ZEBRAD_MIN_VERSION` (7.0.0): the first release knowing the `NU7` key. A release build; a debug zebrad proves shielded coinbase ten times slower. |
+| `zebrad` | `ZEBRAD_BIN`, else `PATH` | At least `zaino_testutils::ZEBRAD_MIN_VERSION` (7.1.0): the release whose crates zaino links. A release build; a debug zebrad proves shielded coinbase ten times slower. |
 
 The harness launches `zebrad` on OS-assigned loopback ports, reads the ports
 from its log, and kills it when the test ends. Logs live in the per-test
