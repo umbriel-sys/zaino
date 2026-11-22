@@ -10,6 +10,11 @@ use tonic::transport::{Identity, ServerTlsConfig};
 
 use super::error::ServerError;
 
+/// How long one request may take before it is answered with an error (for a
+/// streaming request, the time to the stream's start; a stream's own limit
+/// is `stream_timeout_secs`).
+pub(crate) const REQUEST_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(300);
+
 /// Settings for a Zaino configured with gRPC TLS: paths to key and certificate.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Deserialize, serde::Serialize)]
 #[serde(deny_unknown_fields)]

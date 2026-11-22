@@ -18,6 +18,12 @@ pub fn runtime_path(subpath: &str) -> PathBuf {
     resolve("XDG_RUNTIME_DIR", None, subpath)
 }
 
+/// Whether [`cache_path`] has a real base: `XDG_CACHE_HOME` or `HOME` is
+/// set. Without either it falls under `/tmp`, which a reboot clears.
+pub(crate) fn cache_base_known() -> bool {
+    std::env::var_os("XDG_CACHE_HOME").is_some() || std::env::var_os("HOME").is_some()
+}
+
 /// The XDG variable's directory, else `$HOME/<home_subdir>`, else under
 /// `/tmp`.
 fn resolve(variable: &str, home_subdir: Option<&str>, subpath: &str) -> PathBuf {

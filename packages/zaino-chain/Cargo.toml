@@ -37,10 +37,7 @@ zaino-component = { workspace = true }
 
 # Streams — the ranged block reads return one.
 futures = { workspace = true }
-
-# Runtime. `sync` for the tip and watermark subscriptions; `rt` because
-# the sync loop is a spawned task.
-tokio = { workspace = true, features = ["rt", "sync"] }
+tokio = { workspace = true, features = ["rt", "sync", "time"] }
 
 # Cancellation, so the sync loop shuts down through the same token every other
 # spawned subsystem in the workspace takes.

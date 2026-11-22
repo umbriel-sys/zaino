@@ -12,7 +12,7 @@ use zaino_chain_head_service::{ChainHeadInitError, ChainHeadService, ChainHeadSu
 use zaino_chain_store::{ChainStoreError, ChainStoreIngest as _, Provenance};
 use zaino_chain_store_service::Serviceability;
 use zaino_chain_store_service::{BootError, ChainStore, LinkedChainStore, LinkedError, Polling};
-use zaino_component::{ComponentStatus, Lifecycle, StatusSource as _};
+use zaino_component::{ComponentName, ComponentStatus, Health, Lifecycle, StatusSource as _};
 use zaino_indexes::IndexId;
 use zaino_primitives::types::{ChainStateEpoch, Height, Network, NetworkUpgradeInfo};
 
@@ -60,14 +60,23 @@ pub struct Statuses {
     pub coherence: ComponentStatus,
     /// A primary store's background sync.
     pub sync: Option<ComponentStatus>,
+    /// The validator source and its own background work (zebra's state
+    /// syncer).
+    pub source: ComponentStatus,
 }
 
 impl Statuses {
     /// Every component's status.
     pub fn all(&self) -> impl Iterator<Item = &ComponentStatus> {
-        [&self.store, &self.head, &self.mempool, &self.coherence]
-            .into_iter()
-            .chain(self.sync.as_ref())
+        [
+            &self.store,
+            &self.head,
+            &self.mempool,
+            &self.coherence,
+            &self.source,
+        ]
+        .into_iter()
+        .chain(self.sync.as_ref())
     }
 }
 
@@ -224,7 +233,8 @@ impl<S: ServiceSource> Service<S> {
             .map(|status| status.lifecycle == Lifecycle::Ready);
         match caught_up {
             Ok(true) => Ok(()),
-            Ok(false) | Err(_) => Err(ServiceError::SyncStopped),
+            Ok(false) => Err(ServiceError::ComponentFailed(sync.status().to_string())),
+            Err(_) => Err(ServiceError::SyncStopped),
         }
     }
 
@@ -247,12 +257,9 @@ impl<S: ServiceSource> Service<S> {
         // the head folds its extensions over the built store on its next
         // tick, which no channel announces
         while !self.is_local() {
-            if self
-                .sync
-                .as_ref()
-                .is_some_and(|sync| !sync.status().is_live())
-            {
-                return Err(ServiceError::SyncStopped);
+            // nothing folds once a component has failed: no wait without end
+            if let Some(failed) = self.statuses().all().find(|status| !status.is_live()) {
+                return Err(ServiceError::ComponentFailed(failed.to_string()));
             }
             tokio::time::sleep(std::time::Duration::from_millis(50)).await;
         }
@@ -282,7 +289,22 @@ impl<S: ServiceSource> Service<S> {
             mempool: self.mempool.status(),
             coherence: self.coherence.status(),
             sync: self.sync.as_ref().map(|sync| sync.status()),
+            source: self.source_status(),
         }
+    }
+
+    /// The validator source: ready, or failed once its own background work
+    /// has stopped.
+    fn source_status(&self) -> ComponentStatus {
+        let mut status = ComponentStatus::new(
+            ComponentName("validator source"),
+            Lifecycle::Ready,
+            Health::Healthy,
+        );
+        if let Some(failure) = zaino_source::SourceLifecycle::failure(self.source.as_ref()) {
+            status.fail(failure, false);
+        }
+        status
     }
 
     /// Whether a primary store has caught up with the chain head's floor;

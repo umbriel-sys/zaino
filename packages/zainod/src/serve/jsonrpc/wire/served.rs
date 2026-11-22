@@ -35,8 +35,9 @@ pub struct GetInfoWire {
     #[serde(rename = "relayfee")]
     relay_fee: f64,
     errors: String,
-    #[serde(rename = "errorstimestamp")]
-    errors_timestamp: i64,
+    /// Left out where the validator sent none: never an invented time.
+    #[serde(rename = "errorstimestamp", skip_serializing_if = "Option::is_none")]
+    errors_timestamp: Option<i64>,
 }
 
 impl GetInfoWire {
@@ -55,7 +56,7 @@ impl GetInfoWire {
             pay_tx_fee: zats_to_zec(info.pay_tx_fee),
             relay_fee: zats_to_zec(info.relay_fee),
             errors: info.errors.unwrap_or_else(|| "no errors".to_string()),
-            errors_timestamp: info.errors_timestamp.unwrap_or_default(),
+            errors_timestamp: info.errors_timestamp,
         }
     }
 }
@@ -729,7 +730,6 @@ mod tests {
                 "protocolversion": 170_140, "blocks": 42, "connections": 3,
                 "proxy": "127.0.0.1:9050", "difficulty": 1.5, "testnet": true,
                 "paytxfee": 0.0, "relayfee": 1e-6, "errors": "warning",
-                "errorstimestamp": 0,
             })
         );
     }

@@ -187,7 +187,12 @@ impl<S: ChainHeadBlockSource> ChainHeadService<S> {
         let service = Self::anchored(builder).await?;
 
         let worker = Arc::clone(&service);
-        let handle = tokio::spawn(async move { worker.run().await });
+        let status = service.status.clone();
+        let handle = tokio::spawn(zaino_component::supervised(
+            service.cancel.clone(),
+            async move { worker.run().await },
+            move |reason| status.fail_unless_closing(reason),
+        ));
         *service.task.lock().unwrap_or_else(PoisonError::into_inner) = Some(handle);
 
         Ok(service)
@@ -369,7 +374,18 @@ impl<S: ChainHeadBlockSource> ChainHeadService<S> {
                             attempts = consecutive_failures,
                             "ChainHead giving up on the validator; last published snapshot is now stale",
                         );
-                        record(&self.status, TickOutcome::GaveUp);
+                        let reason = format!(
+                            "gave up on the validator after {consecutive_failures} attempts: {error}"
+                        );
+                        match error {
+                            ChainHeadAdvanceError::SourceUnavailable(_) => {
+                                self.status.exhausted_unless_closing(reason);
+                            }
+                            ChainHeadAdvanceError::InconsistentSource(_)
+                            | ChainHeadAdvanceError::ReorgFailure(_) => {
+                                self.status.fail_unless_closing(reason);
+                            }
+                        }
                         break;
                     }
                     warn!(%error, attempts = consecutive_failures, "ChainHead failed to advance; retrying");
@@ -950,8 +966,6 @@ enum TickOutcome {
     Advanced,
     /// The advance failed and the backoff ladder will retry it.
     Retrying,
-    /// The advance failed `max_consecutive_failures` times and the writer is exiting.
-    GaveUp,
 }
 
 /// The chain head's status transition rule, stated once: each outcome's
@@ -961,7 +975,6 @@ fn record(status: &StatusCell, outcome: TickOutcome) {
     let (lifecycle, health) = match outcome {
         TickOutcome::Advanced => (Lifecycle::Ready, Health::Healthy),
         TickOutcome::Retrying => (Lifecycle::Syncing, Health::Recoverable),
-        TickOutcome::GaveUp => (Lifecycle::Offline, Health::Critical),
     };
     status.set_unless_closing(lifecycle, health);
 }
@@ -1489,11 +1502,30 @@ mod next_status_rule {
     use super::{record, StatusCell, TickOutcome, COMPONENT};
     use zaino_component::{ComponentName, Health, Lifecycle, StatusSource as _};
 
-    const OUTCOMES: [TickOutcome; 3] = [
-        TickOutcome::Advanced,
-        TickOutcome::Retrying,
-        TickOutcome::GaveUp,
-    ];
+    const OUTCOMES: [TickOutcome; 2] = [TickOutcome::Advanced, TickOutcome::Retrying];
+
+    /// A failure is terminal, keeps its first cause, and never overwrites
+    /// `Closing`.
+    #[test]
+    fn a_failure_is_critical_with_its_cause() {
+        let cell = StatusCell::new(ComponentName(COMPONENT), Lifecycle::Ready, Health::Healthy);
+        cell.fail_unless_closing("first");
+        cell.fail_unless_closing("second");
+        let status = cell.status();
+        assert_eq!(
+            (status.lifecycle, status.health),
+            (Lifecycle::Offline, Health::Critical)
+        );
+        assert_eq!(status.reason.as_deref(), Some("first"));
+
+        let closing = StatusCell::new(
+            ComponentName(COMPONENT),
+            Lifecycle::Closing,
+            Health::Healthy,
+        );
+        closing.fail_unless_closing("late");
+        assert_eq!(closing.status().lifecycle, Lifecycle::Closing);
+    }
 
     /// No outcome may overwrite `Closing`, so a shutdown stays observable.
     #[test]
@@ -1524,7 +1556,6 @@ mod next_status_rule {
                     TickOutcome::Retrying,
                     (Lifecycle::Syncing, Health::Recoverable),
                 ),
-                (TickOutcome::GaveUp, (Lifecycle::Offline, Health::Critical)),
             ] {
                 let cell = StatusCell::new(ComponentName(COMPONENT), lifecycle, Health::Healthy);
                 record(&cell, outcome);

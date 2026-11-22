@@ -97,7 +97,7 @@ pub use get_block_verbose::{
     GetBlockVerboseError, OneShotGetBlockVerbose, OneShotGetBlockVerboseByHash,
 };
 pub use get_blockchain_info::{GetBlockchainInfoError, OneShotGetBlockchainInfo};
-pub use get_chain_tip::{GetChainTip, GetChainTipError, OneShotGetChainTip};
+pub use get_chain_tip::{first_chain_tip, GetChainTip, GetChainTipError, OneShotGetChainTip};
 pub use get_chain_tips::{GetChainTipsError, OneShotGetChainTips};
 pub use get_commitment_tree_roots::{GetCommitmentTreeRootsError, OneShotGetCommitmentTreeRoots};
 pub use get_commitment_tree_roots_by_height::{

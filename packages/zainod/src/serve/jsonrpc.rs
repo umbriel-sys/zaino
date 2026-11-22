@@ -4,6 +4,7 @@ use crate::serve::{config::JsonRpcServerConfig, error::ServerError};
 
 mod compat;
 mod cookie;
+mod deadline;
 pub mod methods;
 pub(crate) mod metrics;
 pub mod wire;
@@ -21,6 +22,9 @@ use jsonrpsee::server::{RpcServiceBuilder, ServerBuilder};
 use jsonrpsee::Methods;
 use std::path::PathBuf;
 use tracing::warn;
+
+/// How long open requests get at shutdown before the server is stopped.
+const SHUTDOWN_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
 
 /// JSON-RPC server capable of servicing clients over TCP.
 pub struct JsonRpcServer {
@@ -95,6 +99,10 @@ impl JsonRpcServer {
             crate::serve::jsonrpc::metrics::MetricsMiddleware::new(service, method_names.clone())
         });
         let rpc_middleware = rpc_middleware.layer_fn(ZcashdErrorCodes::new);
+        // innermost: the timed-out answer is counted and coded like any other
+        let rpc_middleware = rpc_middleware.layer_fn(|service| {
+            deadline::Deadline::new(service, crate::serve::config::REQUEST_TIMEOUT)
+        });
 
         // Build the JSON-RPC server with middleware integrated. A pre-bound
         // listener (test path) is served directly; otherwise we bind the
@@ -162,17 +170,30 @@ impl JsonRpcServer {
             }
         }
 
-        if let Some(handle) = self.server_handle.take() {
-            match handle.await {
-                Ok(Ok(())) => {}
-                Ok(Err(error)) => warn!(%error, "JSON-RPC server ended with an error"),
-                Err(error) => warn!(%error, "JSON-RPC server task did not finish"),
+        if let Some(mut handle) = self.server_handle.take() {
+            match tokio::time::timeout(SHUTDOWN_TIMEOUT, &mut handle).await {
+                Ok(Ok(Ok(()))) => {}
+                Ok(Ok(Err(error))) => warn!(%error, "JSON-RPC server ended with an error"),
+                Ok(Err(error)) => warn!(%error, "JSON-RPC server task did not finish"),
+                Err(_) => {
+                    handle.abort();
+                    warn!("JSON-RPC server stopped with requests still open");
+                    self.status.set(Lifecycle::Offline, Health::Offline);
+                }
             }
         }
     }
 
-    /// Returns the servers current status.
+    /// Returns the servers current status: `Offline` once its task has
+    /// ended, however it ended.
     pub fn status(&self) -> ComponentStatus {
+        if self.server_handle.as_ref().is_some_and(|h| h.is_finished()) {
+            return ComponentStatus::new(
+                ComponentName("JSON-RPC"),
+                Lifecycle::Offline,
+                Health::Offline,
+            );
+        }
         self.status.status()
     }
 }

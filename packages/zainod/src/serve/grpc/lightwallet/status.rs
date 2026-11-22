@@ -103,7 +103,8 @@ impl Refusal {
             }
             error @ (ServiceError::MempoolIncoherent
             | ServiceError::MempoolStreamLagged
-            | ServiceError::SyncStopped) => Self::new(Kind::Unavailable, error.to_string()),
+            | ServiceError::SyncStopped
+            | ServiceError::ComponentFailed(_)) => Self::new(Kind::Unavailable, error.to_string()),
             error @ (ServiceError::MissingBlock(_)
             | ServiceError::MissingPrevout { .. }
             | ServiceError::AmountOutOfRange { .. }

@@ -151,13 +151,13 @@ where
             .map(|height| {
                 let (source, schedule) = (Arc::clone(ingest.source), Arc::clone(ingest.schedule));
                 let trees = ingest.trees;
-                tokio::spawn(async move {
+                Fetching(tokio::spawn(async move {
                     let height = Height::try_from(height).map_err(inconsistent)?;
                     let started = Instant::now();
                     let parts = assemble(source.as_ref(), &schedule, height, trees).await;
                     metrics::histogram!(STORE_FETCH_SECONDS).record(started.elapsed());
                     parts
-                })
+                }))
             })
             .buffered(ingest.config.fetch_concurrency.get())
             // in height order: the map holds each block's outputs before the
@@ -257,6 +257,27 @@ where
         failure.get_or_insert(writer::panicked("publishing progress", &message));
     }
     (returned, failure.map_or(Ok(()), Err))
+}
+
+/// A fetch task, stopped when dropped: a build that ends early leaves none
+/// running.
+struct Fetching<T>(tokio::task::JoinHandle<T>);
+
+impl<T> std::future::Future for Fetching<T> {
+    type Output = Result<T, tokio::task::JoinError>;
+
+    fn poll(
+        mut self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Self::Output> {
+        std::pin::Pin::new(&mut self.0).poll(cx)
+    }
+}
+
+impl<T> Drop for Fetching<T> {
+    fn drop(&mut self) {
+        self.0.abort();
+    }
 }
 
 /// A task that did not finish: its panic, or its cancellation.

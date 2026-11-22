@@ -13,10 +13,12 @@ initialise them.
 zaino_logging::init();
 ```
 
-`init` installs the global subscriber and the panic hook and returns an error
-if a subscriber is already set. `try_init` is the idempotent variant for tests,
-where several test functions may each try to initialise: the first subscriber
-stays.
+`init` installs the global subscriber and the panic hook. It returns an error
+if a subscriber is already set, or if a variable below holds a value it does
+not take: a mistyped setting is never replaced by the default. `try_init` is
+the idempotent variant for tests, where several test functions may each try to
+initialise: the first subscriber stays, and a setting that does not parse is
+reported on standard error.
 
 ## Configuration
 

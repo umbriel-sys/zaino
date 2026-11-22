@@ -25,13 +25,14 @@
 //! nothing to do.
 
 use std::sync::{Arc, Mutex, PoisonError};
+use std::time::Duration;
 
 use tokio::sync::watch;
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
-use tracing::{info, warn};
+use tracing::warn;
 use zaino_chain_head::{ChainHeadBlockService, ChainHeadSnapshot as _};
-use zaino_chain_store::{ChainStoreIngest, ChainStoreService};
+use zaino_chain_store::{ChainStoreIngest, ChainStoreService, ChainStoreSourceError};
 use zaino_component::{
     ComponentName, ComponentStatus, Health, Lifecycle, StatusSource, StatusWatch,
 };
@@ -142,11 +143,11 @@ where
     pub fn spawn_sync(self: &Arc<Self>, cancel: CancellationToken) -> Arc<ChainViewSync> {
         let status = watch::Sender::new(report(Lifecycle::Syncing, Health::Healthy));
         let updates = self.head.subscribe_updates();
-        let task = tokio::spawn(run(
-            Arc::clone(self),
-            updates,
-            status.clone(),
+        let failed = status.clone();
+        let task = tokio::spawn(zaino_component::supervised(
             cancel.clone(),
+            run(Arc::clone(self), updates, status.clone(), cancel.clone()),
+            move |reason| fail(&failed, reason),
         ));
         Arc::new(ChainViewSync {
             status,
@@ -164,23 +165,47 @@ where
             .map(|block| block.height())
     }
 
-    /// Builds the store to `floor`, reporting the outcome; `true` on success.
-    async fn build_to_floor(&self, floor: Height, status: &watch::Sender<ComponentStatus>) -> bool {
-        match self.store.build_to(floor).await {
-            Ok(()) => {
-                status.send_replace(report(Lifecycle::Ready, Health::Healthy));
-                true
-            }
-            Err(error) => {
-                warn!(%error, %floor, "building the store to the chain head's floor failed");
-                status.send_replace(report(Lifecycle::Syncing, Health::Recoverable));
-                false
-            }
+    /// The store's tip height.
+    fn store_tip(&self) -> Option<Height> {
+        self.store
+            .subscribe_watermark()
+            .borrow()
+            .tip
+            .map(|tip| tip.height)
+    }
+}
+
+/// The wait before a failed build's first retry; doubled each failure.
+const RETRY_FIRST: Duration = Duration::from_secs(1);
+/// The longest wait between retries.
+const RETRY_MAX: Duration = Duration::from_secs(30);
+/// Failed builds in a row, the store not advancing, before the loop fails.
+const MAX_FAILURES: u32 = 20;
+
+/// The loop has failed for good, for a fault of Zaino's own.
+fn fail(status: &watch::Sender<ComponentStatus>, reason: String) {
+    status.send_if_modified(|current| current.fail(reason, false));
+}
+
+/// The loop has failed for good: the validator did not answer its retries.
+fn exhausted(status: &watch::Sender<ComponentStatus>, reason: String) {
+    status.send_if_modified(|current| current.fail(reason, true));
+}
+
+/// Whether a later attempt can succeed: the validator did not answer.
+fn transient(error: &ChainStoreSourceError) -> bool {
+    match error {
+        ChainStoreSourceError::Unavailable { .. } | ChainStoreSourceError::NotReady { .. } => true,
+        ChainStoreSourceError::InconsistentData { .. } | ChainStoreSourceError::Commit { .. } => {
+            false
         }
     }
 }
 
-/// The loop: build to the floor, then again whenever the chain head moves it.
+/// The loop: build to the floor, then again whenever the chain head moves
+/// it. A build the validator did not answer is retried, each wait longer, up
+/// to [`MAX_FAILURES`] times in a row without the store advancing; then, as
+/// at once for any other failure, the loop fails with the cause.
 async fn run<Store, Head, Source>(
     composer: Arc<ChainViewComposer<Store, Head, Source>>,
     mut updates: watch::Receiver<ChainStateEpoch>,
@@ -192,17 +217,52 @@ async fn run<Store, Head, Source>(
     Source: ChainViewSource,
 {
     let mut built_to: Option<Height> = None;
+    let mut failures = 0u32;
+    let mut backoff = RETRY_FIRST;
+    // set while a failed build waits for its retry
+    let mut retry: Option<Duration> = None;
     loop {
         if let Some(floor) = composer.floor() {
             // a floor already built to is not asked for again; a failed build is
             if built_to.is_none_or(|built| built < floor) {
-                tokio::select! {
+                let before = composer.store_tip();
+                let built = tokio::select! {
                     biased;
                     () = cancel.cancelled() => break,
-                    built = composer.build_to_floor(floor, &status) => {
-                        if built {
-                            built_to = Some(floor);
+                    built = composer.store.build_to(floor) => built,
+                };
+                match built {
+                    Ok(()) => {
+                        status.send_replace(report(Lifecycle::Ready, Health::Healthy));
+                        built_to = Some(floor);
+                        failures = 0;
+                        backoff = RETRY_FIRST;
+                        retry = None;
+                    }
+                    Err(error) => {
+                        // a build that moved the store is progress, not a repeat
+                        if composer.store_tip() > before {
+                            failures = 0;
+                            backoff = RETRY_FIRST;
                         }
+                        failures = failures.saturating_add(1);
+                        if !transient(&error) || failures >= MAX_FAILURES {
+                            warn!(%error, %floor, attempts = failures, "building the store failed; the sync has stopped");
+                            let reason = format!(
+                                "building the store to {floor} failed after {failures} attempts: {error}"
+                            );
+                            match transient(&error) {
+                                true => exhausted(&status, reason),
+                                false => fail(&status, reason),
+                            }
+                            return;
+                        }
+                        warn!(%error, %floor, attempt = failures, retry_in = ?backoff, "building the store to the chain head's floor failed; retrying");
+                        let mut retrying = report(Lifecycle::Syncing, Health::Recoverable);
+                        retrying.reason = Some(error.to_string());
+                        status.send_replace(retrying);
+                        retry = Some(backoff);
+                        backoff = backoff.saturating_mul(2).min(RETRY_MAX);
                     }
                 }
             }
@@ -212,11 +272,17 @@ async fn run<Store, Head, Source>(
             () = cancel.cancelled() => break,
             changed = updates.changed() => {
                 if changed.is_err() {
-                    // the chain head is gone: nothing will move the floor again
-                    info!("the chain head stopped publishing");
-                    break;
+                    // nothing will move the floor again
+                    fail(&status, "the chain head stopped publishing".to_owned());
+                    return;
                 }
             }
+            () = async {
+                match retry {
+                    Some(wait) => tokio::time::sleep(wait).await,
+                    None => std::future::pending().await,
+                }
+            } => {}
         }
     }
     status.send_replace(report(Lifecycle::Offline, Health::Offline));

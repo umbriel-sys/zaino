@@ -440,10 +440,7 @@ pub(crate) fn parse_chain_tips(value: &serde_json::Value) -> Result<Vec<ChainTip
             Ok(ChainTip {
                 height: as_height(field(tip, "height")?)?,
                 hash: parse_block_hash(field(tip, "hash")?)?,
-                branch_len: opt_field(tip, "branchlen")
-                    .map(as_u32)
-                    .transpose()?
-                    .unwrap_or(0),
+                branch_len: as_u32(field(tip, "branchlen")?)?,
                 status: parse_chain_tip_status(opt_field(tip, "status")),
             })
         })
@@ -480,10 +477,8 @@ pub(crate) fn parse_block_header_verbose(
         merkle_root: as_merkle_root(field(value, "merkleroot")?)?,
         time: as_u32(field(value, "time")?)?,
         nonce: as_nonce(field(value, "nonce")?)?,
-        solution: opt_field(value, "solution")
-            .map(|v| hex::decode(as_str(v)?).map_err(|e| ParseError::Hex(e.to_string())))
-            .transpose()?
-            .unwrap_or_default(),
+        solution: hex::decode(as_str(field(value, "solution")?)?)
+            .map_err(|e| ParseError::Hex(e.to_string()))?,
         bits: parse_compact_difficulty(field(value, "bits")?)?,
         difficulty: as_f64(field(value, "difficulty")?)?,
         block_commitments,
@@ -565,14 +560,8 @@ fn parse_health_sentinel(
 pub(crate) fn parse_mining_info(value: &serde_json::Value) -> Result<MiningInfo, ParseError> {
     Ok(MiningInfo {
         tip_height: as_height(field(value, "blocks")?)?,
-        chain: opt_field(value, "chain")
-            .map(|v| as_str(v).map(str::to_owned))
-            .transpose()?
-            .unwrap_or_default(),
-        testnet: opt_field(value, "testnet")
-            .map(as_bool)
-            .transpose()?
-            .unwrap_or(false),
+        chain: as_str(field(value, "chain")?)?.to_owned(),
+        testnet: as_bool(field(value, "testnet")?)?,
         current_block_size: opt_field(value, "currentblocksize")
             .map(as_u64)
             .transpose()?,
@@ -723,10 +712,7 @@ pub(crate) fn parse_tx_out(value: &serde_json::Value) -> Result<Option<TxOut>, P
         best_block: parse_block_hash(field(value, "bestblock")?)?,
         confirmations: as_tx_confirmations(field(value, "confirmations")?)?,
         value: zatoshis_field(value, "valueZat", "value")?,
-        coinbase: opt_field(value, "coinbase")
-            .map(as_bool)
-            .transpose()?
-            .unwrap_or(false),
+        coinbase: as_bool(field(value, "coinbase")?)?,
         script_pub_key: parse_script_pub_key(field(value, "scriptPubKey")?)?,
         version: as_u32(field(value, "version")?)?,
     }))
@@ -1065,18 +1051,9 @@ pub(crate) fn parse_blockchain_info(
         difficulty: as_f64(field(value, "difficulty")?)?,
         verification_progress: as_f64(field(value, "verificationprogress")?)?,
         chain_work: opt_chainwork(value)?,
-        pruned: opt_field(value, "pruned")
-            .map(as_bool)
-            .transpose()?
-            .unwrap_or(false),
-        size_on_disk: opt_field(value, "size_on_disk")
-            .map(as_u64)
-            .transpose()?
-            .unwrap_or(0),
-        commitments: opt_field(value, "commitments")
-            .map(as_u64)
-            .transpose()?
-            .unwrap_or(0),
+        pruned: as_bool(field(value, "pruned")?)?,
+        size_on_disk: as_u64(field(value, "size_on_disk")?)?,
+        commitments: as_u64(field(value, "commitments")?)?,
         chain_supply: parse_value_pool(field(value, "chainSupply")?)?,
         value_pools: parse_optional_list(value, "valuePools", parse_value_pool)?,
         upgrades: parse_upgrades(opt_field(value, "upgrades"))?,
@@ -1096,15 +1073,13 @@ fn parse_branch_id(value: &serde_json::Value) -> Result<ConsensusBranchId, Parse
 
 fn parse_value_pool(value: &serde_json::Value) -> Result<ValuePoolBalance, ParseError> {
     Ok(ValuePoolBalance {
+        // the validator omits the id of the pool that has none (`chainSupply`)
         id: opt_field(value, "id")
             .map(|v| as_str(v).map(str::to_owned))
             .transpose()?
             .unwrap_or_default(),
         chain_value: zatoshis_field(value, "chainValueZat", "chainValue")?,
-        monitored: opt_field(value, "monitored")
-            .map(as_bool)
-            .transpose()?
-            .unwrap_or(true),
+        monitored: as_bool(field(value, "monitored")?)?,
         value_delta: opt_field(value, "valueDeltaZat")
             .map(as_i64)
             .transpose()?
@@ -1133,10 +1108,7 @@ fn parse_upgrades(
         .map(|(branch_id, info)| {
             Ok(NetworkUpgradeInfo {
                 branch_id: parse_branch_id(&serde_json::Value::String(branch_id.clone()))?,
-                name: opt_field(info, "name")
-                    .map(|v| as_str(v).map(str::to_owned))
-                    .transpose()?
-                    .unwrap_or_default(),
+                name: as_str(field(info, "name")?)?.to_owned(),
                 activation_height: as_height(field(info, "activationheight")?)?,
                 status: match as_str(field(info, "status")?)? {
                     "active" => NetworkUpgradeStatus::Active,
@@ -1631,13 +1603,16 @@ mod tests {
             "difficulty": 1.0,
             "verificationprogress": 1.0,
             "chainwork": "00",
-            "chainSupply": { "chainValueZat": 1_000u64 },
+            "pruned": false,
+            "size_on_disk": 0u64,
+            "commitments": 0u64,
+            "chainSupply": { "chainValueZat": 1_000u64, "monitored": true },
             "valuePools": [
-                { "id": "transparent", "chainValueZat": 1u64 },
-                { "id": "sprout", "chainValueZat": 2u64 },
-                { "id": "sapling", "chainValueZat": 3u64 },
-                { "id": "orchard", "chainValueZat": 4u64 },
-                { "id": "ironwood", "chainValueZat": 5u64 },
+                { "id": "transparent", "chainValueZat": 1u64, "monitored": true },
+                { "id": "sprout", "chainValueZat": 2u64, "monitored": true },
+                { "id": "sapling", "chainValueZat": 3u64, "monitored": true },
+                { "id": "orchard", "chainValueZat": 4u64, "monitored": true },
+                { "id": "ironwood", "chainValueZat": 5u64, "monitored": true },
             ],
             "consensus": { "chaintip": "00000000", "nextblock": "00000000" },
         }))
@@ -1684,7 +1659,10 @@ mod tests {
             "difficulty": 1.0,
             "verificationprogress": 1.0,
             "chainwork": "00",
-            "chainSupply": { "chainValueZat": 0u64 },
+            "pruned": false,
+            "size_on_disk": 0u64,
+            "commitments": 0u64,
+            "chainSupply": { "chainValueZat": 0u64, "monitored": true },
             "valuePools": [],
             "upgrades": {
                 "37a5165b": { "name": "NU6.3", "activationheight": 4_134_000, "status": "active" },
@@ -1734,9 +1712,12 @@ mod tests {
             "difficulty": 1.0,
             "verificationprogress": 1.0,
             "chainwork": "00",
-            "chainSupply": { "chainValue": 16_882_668.9155448, "chainValueZat": 1_688_266_891_554_480u64 },
+            "pruned": false,
+            "size_on_disk": 0u64,
+            "commitments": 0u64,
+            "chainSupply": { "chainValue": 16_882_668.9155448, "chainValueZat": 1_688_266_891_554_480u64, "monitored": true },
             "valuePools": [
-                { "id": "sapling", "chainValue": SAPLING_ZEC, "chainValueZat": SAPLING_ZAT },
+                { "id": "sapling", "chainValue": SAPLING_ZEC, "chainValueZat": SAPLING_ZAT, "monitored": true },
             ],
             "consensus": { "chaintip": "00000000", "nextblock": "00000000" },
         }))
@@ -1767,7 +1748,10 @@ mod tests {
             "difficulty": 1.0,
             "verificationprogress": 1.0,
             "chainwork": "00",
-            "chainSupply": { "chainValueZat": 0u64 },
+            "pruned": false,
+            "size_on_disk": 0u64,
+            "commitments": 0u64,
+            "chainSupply": { "chainValueZat": 0u64, "monitored": true },
             "consensus": { "chaintip": "00000000", "nextblock": "00000000" },
         }))
         .expect("a getblockchaininfo without pools parses");

@@ -35,7 +35,13 @@ pub enum ReadStateError {
     /// The state service answered off-contract (wrong variant, or rows out of order).
     #[error("state service answered off-contract: {0}")]
     OffContract(String),
+    /// The state service did not answer within [`READ_TIMEOUT`].
+    #[error("state service did not answer within {}s", READ_TIMEOUT.as_secs())]
+    TimedOut,
 }
+
+/// How long one read of zebra's state may take: none waits without end.
+pub(crate) const READ_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(120);
 
 impl ReadStateError {
     fn unreachable(cause: impl Into<Box<dyn std::error::Error + Send + Sync + 'static>>) -> Self {
@@ -53,6 +59,7 @@ impl From<ReadStateError> for NonDomainError {
     fn from(e: ReadStateError) -> Self {
         let mode = match &e {
             ReadStateError::Unreachable(_) => FailureMode::Connection,
+            ReadStateError::TimedOut => FailureMode::Timeout,
             ReadStateError::InvalidData(_) | ReadStateError::OffContract(_) => {
                 FailureMode::InvalidSourceData
             }
@@ -87,10 +94,9 @@ async fn read(
     state: &ReadStateService,
     request: ReadRequest,
 ) -> Result<ReadResponse, ReadStateError> {
-    state
-        .clone()
-        .oneshot(request)
+    tokio::time::timeout(READ_TIMEOUT, state.clone().oneshot(request))
         .await
+        .map_err(|_| ReadStateError::TimedOut)?
         .map_err(ReadStateError::unreachable)
 }
 
@@ -225,12 +231,7 @@ impl ZebraReadStateAdapter {
         let zebra_height = zebra_chain::block::Height(u32::from(height));
         let request = ReadRequest::BlockHeader(zebra_height.into());
 
-        let response = self
-            .state
-            .clone()
-            .oneshot(request)
-            .await
-            .map_err(ReadStateError::unreachable)?;
+        let response = read(&self.state, request).await?;
 
         match response {
             ReadResponse::BlockHeader { header, .. } => Ok(*header),
@@ -248,12 +249,7 @@ impl zaino_source::OneShotGetBlock for ZebraReadStateAdapter {
         let zebra_height = zebra_chain::block::Height(u32::from(height));
         let request = ReadRequest::Block(zebra_height.into());
 
-        let response = self
-            .state
-            .clone()
-            .oneshot(request)
-            .await
-            .map_err(ReadStateError::unreachable)?;
+        let response = read(&self.state, request).await?;
 
         match response {
             ReadResponse::Block(Some(arc_block)) => {
@@ -274,12 +270,7 @@ impl zaino_source::OneShotGetChainTip for ZebraReadStateAdapter {
     async fn get_chain_tip(
         &self,
     ) -> Result<(BlockHash, Height), QueryError<GetChainTipError, ReadStateError>> {
-        let response = self
-            .state
-            .clone()
-            .oneshot(ReadRequest::Tip)
-            .await
-            .map_err(ReadStateError::unreachable)?;
+        let response = read(&self.state, ReadRequest::Tip).await?;
 
         match response {
             ReadResponse::Tip(Some((height, hash))) => {
@@ -793,7 +784,19 @@ impl zaino_source::SourceLifecycle for ZebraReadStateAdapter {
             syncer.abort();
         }
     }
+
+    /// The syncer has stopped: the state no longer follows the validator.
+    fn failure(&self) -> Option<String> {
+        self.syncer
+            .as_ref()
+            .filter(|syncer| syncer.is_finished())
+            .map(|_| SYNCER_STOPPED.to_owned())
+    }
 }
+
+/// What a stopped syncer means, for an operator.
+pub(crate) const SYNCER_STOPPED: &str = "zebra's state syncer has stopped, so the state Zaino \
+     reads no longer follows the validator (is zebra's indexer gRPC address reachable?)";
 
 /// Reading the state directly gives no push notification of new blocks — that
 /// signal belongs to the syncer, not the read handle.

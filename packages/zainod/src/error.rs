@@ -44,7 +44,14 @@ pub enum IndexerError {
     #[cfg(feature = "prometheus")]
     #[error("Metrics error: {0}")]
     MetricsError(String),
-    /// Zaino restart signal.
-    #[error("Restart Zaino")]
-    Restart,
+    /// Components failed because the validator stopped answering:
+    /// restarting may clear it.
+    #[error("Zaino lost its validator: {0}")]
+    Restart(String),
+    /// A component failed for a fault restarting cannot clear.
+    #[error("Zaino failed: {0}")]
+    Critical(String),
+    /// Zaino stopped, but its store did not flush.
+    #[error("the store did not flush cleanly: {0}")]
+    Flush(String),
 }

@@ -108,9 +108,12 @@ impl<S: MempoolSource> MempoolService<S> {
         });
 
         let task_service = Arc::clone(&service);
-        let handle = tokio::spawn(async move {
-            task_service.run().await;
-        });
+        let status = service.status.clone();
+        let handle = tokio::spawn(zaino_component::supervised(
+            service.cancel.clone(),
+            async move { task_service.run().await },
+            move |reason| status.fail_unless_closing(reason),
+        ));
 
         *service
             .task

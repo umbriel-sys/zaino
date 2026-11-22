@@ -55,7 +55,9 @@ async fn a_validator_backed_service_serves_from_the_validator() {
             ..
         })
     ));
-    assert_eq!(service.statuses().all().count(), 4, "no sync");
+    // store, head, mempool, coherence and the validator source
+    assert_eq!(service.statuses().all().count(), 5, "no sync");
+    assert!(service.statuses().source.is_ready(), "a source at work");
     assert!(service.is_caught_up(), "no store to catch up");
     service.shutdown().await.expect("stops");
 }

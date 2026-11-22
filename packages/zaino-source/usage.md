@@ -242,6 +242,18 @@ impl<T> ChainIndexSourcePorts for T where T: GetBlock + GetChainTip + /* ... */ 
 An alias states a requirement of its consumer, not a capability of this crate.
 `zaino-source` should not have to know who its consumers are.
 
+## Start-up and liveness
+
+`first_chain_tip(&source, |refusal| ..)` is the one wait for a fresh
+validator's first block. A validator that answers but refuses the question is
+waited on for five minutes at most; one that cannot be reached or
+authenticated to fails at once.
+
+`SourceLifecycle::failure()` says why a source can no longer be relied on once
+its own background work has stopped (zebra's state syncer), `None` while it
+runs. A source that owns no background work inherits `None`. The service
+reports it as the `validator source` component.
+
 ## Testing
 
 A fake validator for consumers' tests is `zaino-source-mock`'s `MockChain`

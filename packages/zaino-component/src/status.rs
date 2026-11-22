@@ -96,9 +96,28 @@ pub struct ComponentStatus {
     /// indexer's committed height toward the tip). `None` for components with no
     /// meaningful progress (e.g. a bound server).
     pub progress: Option<Progress>,
+    /// Whether restarting may clear a [`Health::Critical`] condition: its
+    /// cause was something outside Zaino not answering (the validator), not
+    /// a fault of Zaino's own. `false` whenever the component has not failed.
+    pub retryable: bool,
 }
 
 impl ComponentStatus {
+    /// Fails the component: [`Lifecycle::Offline`], [`Health::Critical`],
+    /// with `reason`. A closing component, and one already failed (the first
+    /// cause stays), is left alone; `true` if this changed it.
+    pub fn fail(&mut self, reason: impl Into<String>, retryable: bool) -> bool {
+        let failed = self.health == Health::Critical && self.reason.is_some();
+        if self.lifecycle == Lifecycle::Closing || failed {
+            return false;
+        }
+        self.lifecycle = Lifecycle::Offline;
+        self.health = Health::Critical;
+        self.reason = Some(reason.into());
+        self.retryable = retryable;
+        true
+    }
+
     /// A healthy status snapshot for `name` at `lifecycle` / `health`, with no
     /// failure cause and no progress. A failing supervisor sets
     /// [`reason`](Self::reason) directly at the boundary; a running component
@@ -110,6 +129,7 @@ impl ComponentStatus {
             health,
             reason: None,
             progress: None,
+            retryable: false,
         }
     }
 }
@@ -190,6 +210,7 @@ impl StatusCell {
             status.lifecycle = lifecycle;
             status.health = health;
             status.reason = None;
+            status.retryable = false;
         });
     }
 
@@ -203,6 +224,7 @@ impl StatusCell {
             status.lifecycle = lifecycle;
             status.health = health;
             status.reason = None;
+            status.retryable = false;
             true
         });
     }
@@ -220,6 +242,22 @@ impl StatusCell {
             status.reason = Some(reason);
             true
         });
+    }
+
+    /// Fails the component for a fault of its own ([`ComponentStatus::fail`],
+    /// not retryable).
+    pub fn fail_unless_closing(&self, reason: impl Into<String>) {
+        let reason = reason.into();
+        self.sender
+            .send_if_modified(|status| status.fail(reason, false));
+    }
+
+    /// Fails the component after its retries of something outside Zaino ran
+    /// out ([`ComponentStatus::fail`], retryable).
+    pub fn exhausted_unless_closing(&self, reason: impl Into<String>) {
+        let reason = reason.into();
+        self.sender
+            .send_if_modified(|status| status.fail(reason, true));
     }
 }
 

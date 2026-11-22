@@ -610,4 +610,10 @@ impl SourceLifecycle for ZebraValidator {
             readstate.shutdown();
         }
     }
+
+    fn failure(&self) -> Option<String> {
+        self.rpc
+            .failure()
+            .or_else(|| self.readstate.as_ref().and_then(SourceLifecycle::failure))
+    }
 }

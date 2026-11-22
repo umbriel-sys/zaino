@@ -142,39 +142,84 @@ pub(crate) fn spawn(
     listener: std::net::TcpListener,
     handle: PrometheusHandle,
 ) -> Result<(), IndexerError> {
+    // the thread's start-up outcome: a failure fails zainod's start-up
+    let (started, starting) = std::sync::mpsc::channel::<Result<(), String>>();
     std::thread::Builder::new()
         .name("zaino-admin".to_string())
         .spawn(move || {
+            // set however the thread ends, a panic included
+            let _stopped = Stopped;
             let runtime = match tokio::runtime::Builder::new_current_thread()
                 .enable_all()
                 .build()
             {
                 Ok(runtime) => runtime,
-                Err(e) => return error!(%e, "admin runtime failed to build; no /metrics or probes"),
+                Err(e) => return report(&started, Err(format!("admin runtime: {e}"))),
             };
-            runtime.block_on(serve(listener, handle));
+            runtime.block_on(async move {
+                let listener = match tokio::net::TcpListener::from_std(listener) {
+                    Ok(listener) => listener,
+                    Err(e) => return report(&started, Err(format!("admin listener: {e}"))),
+                };
+                report(&started, Ok(()));
+                serve(listener, handle).await;
+            });
         })
         .map_err(|e| IndexerError::MetricsError(format!("failed to spawn admin thread: {e}")))?;
-    Ok(())
+    match starting.recv() {
+        Ok(Ok(())) => Ok(()),
+        Ok(Err(failure)) => Err(IndexerError::MetricsError(failure)),
+        Err(_) => Err(IndexerError::MetricsError(
+            "the admin thread ended before it started serving".to_string(),
+        )),
+    }
 }
 
-async fn serve(listener: std::net::TcpListener, handle: PrometheusHandle) {
+/// The admin thread's start-up outcome to the thread that spawned it.
+fn report(started: &std::sync::mpsc::Sender<Result<(), String>>, outcome: Result<(), String>) {
+    if started.send(outcome).is_err() {
+        error!("the admin endpoint's start-up outcome had nobody waiting for it");
+    }
+}
+
+/// Whether the admin endpoint has stopped serving.
+static STOPPED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Marks the admin endpoint stopped when dropped.
+struct Stopped;
+
+impl Drop for Stopped {
+    fn drop(&mut self) {
+        STOPPED.store(true, std::sync::atomic::Ordering::Relaxed);
+    }
+}
+
+/// Whether the admin endpoint, once started, has stopped: zainod then runs
+/// with no `/metrics` or probes, which the indexer treats as a failure.
+pub(crate) fn stopped() -> bool {
+    STOPPED.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+async fn serve(listener: tokio::net::TcpListener, handle: PrometheusHandle) {
     // The listener was bound before the recorder was installed (`metrics::init`),
     // so every sample recorded from here on has this loop, or a scrape, to drain it
     let upkeep = handle.clone();
-    tokio::spawn(async move {
-        let mut tick = tokio::time::interval(UPKEEP_INTERVAL);
-        loop {
-            tick.tick().await;
-            upkeep.run_upkeep();
-        }
-    });
+    tokio::spawn(zaino_component::supervised(
+        zaino_component::CancellationToken::new(),
+        async move {
+            let mut tick = tokio::time::interval(UPKEEP_INTERVAL);
+            loop {
+                tick.tick().await;
+                upkeep.run_upkeep();
+            }
+        },
+        |reason| {
+            error!(%reason, "the metrics upkeep task ended");
+            STOPPED.store(true, std::sync::atomic::Ordering::Relaxed);
+        },
+    ));
 
     let endpoint = listener.local_addr();
-    let listener = match tokio::net::TcpListener::from_std(listener) {
-        Ok(listener) => listener,
-        Err(e) => return error!(%e, "admin listener failed to register with its runtime"),
-    };
     info!(endpoint = ?endpoint, "admin endpoint started: /metrics, /livez, /readyz");
 
     let connections = Arc::new(tokio::sync::Semaphore::new(MAX_CONNECTIONS));
@@ -281,7 +326,13 @@ fn body(status: StatusCode, content_type: &'static str, payload: String) -> Resp
         .status(status)
         .header(hyper::header::CONTENT_TYPE, content_type)
         .body(Full::new(Bytes::from(payload)))
-        .unwrap_or_else(|_| Response::new(Full::new(Bytes::new())))
+        .unwrap_or_else(|error| {
+            // never an empty 200: a response that cannot be built is a failure
+            error!(%error, "an admin response could not be built");
+            let mut failed = Response::new(Full::new(Bytes::new()));
+            *failed.status_mut() = StatusCode::INTERNAL_SERVER_ERROR;
+            failed
+        })
 }
 
 #[cfg(test)]
@@ -308,6 +359,7 @@ mod tests {
         let endpoint = listener
             .local_addr()
             .expect("a bound listener has an address");
+        let listener = tokio::net::TcpListener::from_std(listener).expect("the listener registers");
         tokio::spawn(serve(listener, handle));
 
         // The accept loop races the connect; retry rather than sleep a fixed guess

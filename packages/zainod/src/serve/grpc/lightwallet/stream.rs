@@ -10,6 +10,9 @@ use futures::Stream;
 use tokio::sync::{mpsc, watch};
 use tokio::task::JoinHandle;
 
+/// How long a stream cut by shutdown waits to tell its client.
+const SHUTDOWN_NOTICE: Duration = Duration::from_secs(1);
+
 /// A stream of items read from the task feeding it. Dropping the stream
 /// aborts the task; a task that panicked ends the stream with `INTERNAL`
 /// rather than as if it had finished.
@@ -93,7 +96,8 @@ pub(super) struct StreamBounds {
 }
 
 /// Runs `body` in a task feeding the returned stream, sending `on_timeout`
-/// if it outlives the bound and ending the stream at shutdown.
+/// if it outlives the bound and ending the stream, with an error, at
+/// shutdown.
 pub(super) fn spawn_timed_stream<T, F>(
     bounds: StreamBounds,
     on_timeout: tonic::Status,
@@ -113,8 +117,18 @@ where
                     // the client went away: nobody to tell
                 }
             }
-            // the stream ends here, so a graceful shutdown is not held open
-            () = bounds.shutdown.signalled() => {}
+            // The stream ends here, so a graceful shutdown is not held open;
+            // it ends with an error, so a cut stream is not read as complete.
+            () = bounds.shutdown.signalled() => {
+                let cut = tonic::Status::unavailable(
+                    "Error: the server is shutting down; the stream is incomplete.",
+                );
+                let told = tokio::time::timeout(SHUTDOWN_NOTICE, sender.send(Err(cut))).await;
+                if !matches!(told, Ok(Ok(()))) {
+                    // the client went away, or is not reading
+                    tracing::debug!("a stream cut by shutdown had no client to tell");
+                }
+            }
         }
     });
     ChannelStream {
@@ -157,7 +171,7 @@ mod tests {
         assert!(stream.next().await.is_none());
     }
 
-    /// A stream ends, without an error, when the server shuts down.
+    /// A stream cut by the server's shutdown ends with `UNAVAILABLE`.
     #[tokio::test]
     async fn shutdown_ends_the_stream() {
         let (shutdown, signal) = watch::channel(());
@@ -176,6 +190,8 @@ mod tests {
         );
         assert_eq!(stream.next().await.expect("an item").expect("sent"), 1);
         shutdown.send_replace(());
+        let cut = stream.next().await.expect("an item").expect_err("cut");
+        assert_eq!(cut.code(), tonic::Code::Unavailable);
         assert!(stream.next().await.is_none());
     }
 

@@ -14,10 +14,11 @@ use crate::network::adopt_network;
 use crate::read_state::ZebraReadStateAdapter;
 use crate::routing::ZebraValidator;
 
-/// How long between looks at a validator that is not ready yet.
-const NOT_READY_RETRY: Duration = Duration::from_secs(3);
 /// How long between looks at a read-state syncer catching up.
 const SYNCING_RETRY: Duration = Duration::from_secs(1);
+/// How long the state may sit behind the validator without advancing before
+/// the connection fails.
+const SYNCING_STALL: Duration = Duration::from_secs(300);
 /// How often a read-state syncer still catching up is reported.
 #[cfg(feature = "tracing")]
 const SYNCING_REPORT: Duration = Duration::from_secs(10);
@@ -66,11 +67,14 @@ impl ZebraValidator {
         let rpc_adapter = adapter()?;
         #[cfg(feature = "tracing")]
         tracing::info!(%validator, "asking the validator for its chain tip");
-        while let Err(_error) = rpc_adapter.get_chain_tip().await {
+        zaino_source::first_chain_tip(&rpc_adapter, |_error| {
             #[cfg(feature = "tracing")]
             tracing::info!(error = %_error, "waiting for the validator to serve its first block");
-            tokio::time::sleep(NOT_READY_RETRY).await;
-        }
+        })
+        .await
+        .map_err(|error| {
+            ConnectError::Rpc(format!("the validator serves no chain tip: {error}"))
+        })?;
 
         #[cfg(feature = "tracing")]
         tracing::info!("checking the validator's network and activation heights");
@@ -106,23 +110,48 @@ impl ZebraValidator {
         // hash as well as height: one height names different blocks in a reorg
         #[cfg(feature = "tracing")]
         let mut reported: Option<std::time::Instant> = None;
+        // the state's tip, and when it last moved
+        let mut progress: (Option<zebra_chain::block::Height>, std::time::Instant) =
+            (None, std::time::Instant::now());
         loop {
+            // nothing moves the state once the syncer has stopped
+            if syncer.is_finished() {
+                return Err(ConnectError::ReadState(
+                    crate::read_state::SYNCER_STOPPED.to_owned(),
+                ));
+            }
             let (validator_hash, validator_height) = rpc_adapter
                 .get_chain_tip()
                 .await
                 .map_err(|error| ConnectError::Rpc(error.to_string()))?;
-            let response = state
-                .ready()
-                .await
-                .map_err(|error| ConnectError::ReadState(error.to_string()))?
-                .call(ReadRequest::Tip)
-                .await
-                .map_err(|error| ConnectError::ReadState(error.to_string()))?;
+            let response = tokio::time::timeout(crate::read_state::READ_TIMEOUT, async {
+                state
+                    .ready()
+                    .await
+                    .map_err(|error| ConnectError::ReadState(error.to_string()))?
+                    .call(ReadRequest::Tip)
+                    .await
+                    .map_err(|error| ConnectError::ReadState(error.to_string()))
+            })
+            .await
+            .map_err(|_| ConnectError::ReadState("a tip request timed out".to_owned()))??;
             let ReadResponse::Tip(tip) = response else {
                 return Err(ConnectError::ReadState(
                     "unexpected response to a tip request".to_owned(),
                 ));
             };
+            let state_height = tip.map(|(height, _)| height);
+            if state_height != progress.0 {
+                progress = (state_height, std::time::Instant::now());
+            } else if progress.1.elapsed() >= SYNCING_STALL {
+                return Err(ConnectError::ReadState(format!(
+                    "the state has sat at {:?} for {}s while the validator is at {}: its syncer \
+                     is not advancing it (is zebra's indexer gRPC address reachable?)",
+                    state_height.map(|height| height.0),
+                    SYNCING_STALL.as_secs(),
+                    u32::from(validator_height),
+                )));
+            }
             let synced = tip.is_some_and(|(height, hash)| {
                 u32::from(validator_height) == height.0
                     && <[u8; 32]>::from(validator_hash) == hash.0

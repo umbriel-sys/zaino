@@ -78,6 +78,37 @@ let _ = task.join().await;
 # }
 ```
 
+## A component's task never dies silently
+
+Every long-lived task runs under `supervised`. A panic, or a return before
+its cancellation, is handed to the closure with the cause, which fails the
+component's status:
+
+```rust
+use zaino_component::{supervised, CancellationToken, ComponentName, Health, Lifecycle, StatusCell};
+
+# async fn example() {
+let status = StatusCell::new(ComponentName("pruner"), Lifecycle::Ready, Health::Healthy);
+let cancel = CancellationToken::new();
+let failed = status.clone();
+tokio::spawn(supervised(cancel.clone(), async { /* the run loop */ }, move |reason| {
+    failed.fail_unless_closing(reason)
+}));
+# }
+```
+
+A failed status is `Offline` and `Critical` with a `reason`, and keeps its
+first cause. Two ways to fail it:
+
+| Call | When | `retryable` |
+| --- | --- | --- |
+| `fail_unless_closing` | a fault of Zaino's own (a panic, bad data, a local write) | `false` |
+| `exhausted_unless_closing` | bounded retries of something outside Zaino (the validator) ran out | `true` |
+
+A supervisor restarts only when every failed component is `retryable`, and
+exits with the causes otherwise. A retry loop is always bounded: it ends in
+one of these two calls, never in waiting forever.
+
 ## Names are typed
 
 [`ComponentName`] and `zaino_async::TaskName` are distinct newtypes. A component

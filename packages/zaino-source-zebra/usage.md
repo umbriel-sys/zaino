@@ -51,6 +51,14 @@ parameters on mainnet and testnet, adopted wholesale on regtest, refused on
 a consensus branch this build does not know), launches the read-state
 syncer and waits until it holds zebra's tip, by hash.
 
+Neither wait is open-ended. `connect` fails with the cause when zebra serves
+no tip within five minutes, when the syncer stops, or when the state sits
+behind zebra's tip for five minutes without advancing (the usual cause is an
+unreachable indexer gRPC address). Once connected, a stopped syncer is
+reported through `SourceLifecycle::failure()`: the state would no longer
+follow zebra, so its tip must not be served as current. Every read of the
+state is bounded by a 120-second timeout and fails as `FailureMode::Timeout`.
+
 ## The quirk table
 
 `zaino-source-zcash-rpc` reads every reply as the spec defines it and names

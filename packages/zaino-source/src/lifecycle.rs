@@ -14,4 +14,11 @@
 pub trait SourceLifecycle: Send + Sync {
     /// Release owned resources. Idempotent: calling it twice is not an error.
     fn shutdown(&self) {}
+
+    /// Why the source can no longer be relied on, once its own background
+    /// work has stopped: its answers would no longer follow the validator.
+    /// `None` while it runs, and always for a source that owns none.
+    fn failure(&self) -> Option<String> {
+        None
+    }
 }

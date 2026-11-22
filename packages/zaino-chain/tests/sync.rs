@@ -108,6 +108,37 @@ async fn a_floor_the_store_cannot_reach_leaves_it_untouched() {
     );
 }
 
+/// A failed build is retried on the loop's own timer: the store reaches the
+/// floor once its validator serves it, though the chain head never moved.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_failed_build_is_retried_without_the_head_moving() {
+    let rig = rig(chain()).build().await;
+    rig.chain.serve_to(150);
+    let view = Arc::new(rig.view());
+    let sync = view.spawn_sync(CancellationToken::new());
+    assert!(
+        eventually(|| sync.status().health == Health::Recoverable).await,
+        "the first build should fail",
+    );
+    assert!(
+        sync.status().reason.is_some(),
+        "a failing build says why: {:?}",
+        sync.status(),
+    );
+
+    rig.chain.serve_to(TIP);
+    // the first retry comes a second after the failure
+    let built = eventually(|| rig.store_top() == Some(FLOOR)).await
+        || eventually(|| rig.store_top() == Some(FLOOR)).await;
+    assert!(
+        built,
+        "the retry should build the store to the floor, holding {:?}",
+        rig.store_top(),
+    );
+    assert!(eventually(|| sync.status().lifecycle == Lifecycle::Ready).await);
+    assert_eq!(sync.status().health, Health::Healthy);
+}
+
 /// Cancelling the token stops the loop, and the stop is observable.
 #[tokio::test(flavor = "multi_thread")]
 async fn cancelling_stops_the_loop() {

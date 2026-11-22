@@ -125,7 +125,8 @@ impl ChainHeadEpochAdapter {
     fn spawn(head: ChainHeadSubscriber, cancel: CancellationToken) -> Self {
         let (signal, epoch_wake) = watch::channel(());
         let mut updates = head.subscribe_updates();
-        tokio::spawn(async move {
+        let stop = cancel.clone();
+        let relay = async move {
             loop {
                 tokio::select! {
                     () = cancel.cancelled() => break,
@@ -138,7 +139,12 @@ impl ChainHeadEpochAdapter {
                     }
                 }
             }
-        });
+        };
+        // The mempool and coherence poll on their intervals without it, and
+        // a stopped head reports itself: the relay's end costs latency only.
+        tokio::spawn(zaino_component::supervised(stop, relay, |reason| {
+            tracing::error!(%reason, "the chain head's epoch relay ended: the mempool refreshes on its interval alone");
+        }));
         Self { head, epoch_wake }
     }
 }

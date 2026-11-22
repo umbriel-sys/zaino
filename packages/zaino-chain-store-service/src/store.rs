@@ -106,7 +106,13 @@ struct Recorder<St: Storage> {
     lock: St::Lock,
     record: PrimaryRecord,
     state: watch::Sender<PrimaryState>,
+    /// Writes of the record failed in a row.
+    unwritten: u32,
 }
+
+/// Failed writes of the record in a row before the store reports itself
+/// failed: linked readers would be following a record that no longer moves.
+const MAX_RECORD_FAILURES: u32 = 5;
 
 impl<St: Storage> Recorder<St> {
     fn new(lock: St::Lock, state: watch::Sender<PrimaryState>) -> Self {
@@ -118,6 +124,7 @@ impl<St: Storage> Recorder<St> {
                 durable: BTreeMap::new(),
             },
             state,
+            unwritten: 0,
         }
     }
 
@@ -151,10 +158,22 @@ impl<St: Storage> Recorder<St> {
         }
     }
 
-    /// Advisory: a failed write leaves linked readers on the last record.
+    /// A failed write leaves linked readers on the last record; it is
+    /// retried at the next change, and [`MAX_RECORD_FAILURES`] in a row fail
+    /// the store.
     fn write(&mut self, storage: &St) {
-        if let Err(error) = storage.write_record(&mut self.lock, &self.record.encode()) {
-            tracing::warn!(%error, "primary record not written: linked readers keep the last one");
+        match storage.write_record(&mut self.lock, &self.record.encode()) {
+            Ok(()) => self.unwritten = 0,
+            Err(error) => {
+                self.unwritten = self.unwritten.saturating_add(1);
+                tracing::error!(%error, attempt = self.unwritten, "primary record not written: linked readers keep the last one");
+                if self.unwritten >= MAX_RECORD_FAILURES {
+                    self.state.send_replace(PrimaryState::Failed(format!(
+                        "the primary record could not be written {} times in a row: {error}",
+                        self.unwritten
+                    )));
+                }
+            }
         }
     }
 }

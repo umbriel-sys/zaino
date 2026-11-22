@@ -39,6 +39,16 @@ pub mod metrics;
 pub mod serve;
 mod source;
 
+/// Restarts in a row, none of the runs lasting [`STABLE_RUN`], before Zaino
+/// exits.
+const MAX_RESTARTS: u32 = 5;
+/// The wait before the first restart; doubled each restart.
+const RESTART_FIRST: std::time::Duration = std::time::Duration::from_secs(5);
+/// The longest wait before a restart.
+const RESTART_MAX: std::time::Duration = std::time::Duration::from_secs(60);
+/// A run this long has recovered: the next failure starts a new count.
+const STABLE_RUN: std::time::Duration = std::time::Duration::from_secs(600);
+
 /// Run the Zaino indexer.
 ///
 /// Runs the main indexer loop with restart support.
@@ -66,18 +76,34 @@ pub async fn run(config_path: PathBuf) -> Result<(), IndexerError> {
         );
     }
 
+    let mut restarts = 0u32;
+    let mut backoff = RESTART_FIRST;
     loop {
         match start_indexer(config.clone()).await {
             Ok(joinhandle_result) => {
                 info!("Zaino Indexer started successfully.");
+                let started = std::time::Instant::now();
                 match joinhandle_result.await {
                     Ok(indexer_result) => match indexer_result {
                         Ok(()) => {
                             info!("Exiting Zaino successfully.");
                             return Ok(());
                         }
-                        Err(IndexerError::Restart) => {
-                            error!("Zaino encountered critical error, restarting.");
+                        Err(IndexerError::Restart(cause)) => {
+                            // a run that held is not part of a restart loop
+                            if started.elapsed() >= STABLE_RUN {
+                                restarts = 0;
+                                backoff = RESTART_FIRST;
+                            }
+                            restarts = restarts.saturating_add(1);
+                            if restarts > MAX_RESTARTS {
+                                let failure = IndexerError::Critical(format!(
+                                    "gave up after {MAX_RESTARTS} restarts: {cause}"
+                                ));
+                                error!(%failure, "exiting Zaino with error");
+                                return Err(failure);
+                            }
+                            error!(%cause, attempt = restarts, wait = ?backoff, "Zaino lost its validator; restarting");
                             // The recorder outlives this loop, so nothing else resets:
                             // a crash-looping indexer scrapes like a healthy one
                             #[cfg(feature = "prometheus")]
@@ -85,6 +111,8 @@ pub async fn run(config_path: PathBuf) -> Result<(), IndexerError> {
                                 crate::metrics::record_restart();
                                 crate::admin::clear_heartbeat();
                             }
+                            tokio::time::sleep(backoff).await;
+                            backoff = backoff.saturating_mul(2).min(RESTART_MAX);
                             continue;
                         }
                         Err(e) => {

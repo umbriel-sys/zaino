@@ -485,8 +485,10 @@ impl From<zaino_service::ServiceError> for ChainIndexError {
                     message: error.to_string(),
                 },
             ),
-            error
-            @ (Error::MempoolIncoherent | Error::MempoolStreamLagged | Error::SyncStopped) => {
+            error @ (Error::MempoolIncoherent
+            | Error::MempoolStreamLagged
+            | Error::SyncStopped
+            | Error::ComponentFailed(_)) => {
                 ChainIndexError::with_source(ChainIndexErrorKind::Unavailable, error)
             }
             error @ (Error::MissingBlock(_)

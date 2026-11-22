@@ -87,6 +87,9 @@ pub enum ServiceError {
     /// The store's sync stopped.
     #[error("the store's sync stopped")]
     SyncStopped,
+    /// A component of the service failed.
+    #[error("a component failed: {0}")]
+    ComponentFailed(String),
 }
 
 impl ServiceError {

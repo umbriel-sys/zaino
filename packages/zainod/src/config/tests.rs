@@ -385,6 +385,34 @@ fn the_server_settings_are_checked() {
     .contains("cert_path"));
 }
 
+/// With no cache directory to default under, a store or state path left to
+/// its default is refused; one that is set is not.
+#[test]
+fn a_defaulted_path_needs_a_cache_directory() {
+    let defaulted = ZainodConfig::default();
+    defaulted.check_paths(true).expect("a cache directory");
+    let refused = defaulted.check_paths(false).expect_err("refused");
+    assert!(
+        refused.to_string().contains("persistence.path"),
+        "{refused}"
+    );
+
+    let mut store_set = ZainodConfig::default();
+    store_set.persistence.path = "/var/lib/zaino".into();
+    let refused = store_set.check_paths(false).expect_err("refused");
+    assert!(
+        refused
+            .to_string()
+            .contains("validator.read_state.state_path"),
+        "{refused}"
+    );
+
+    if let Some(read_state) = store_set.validator.read_state.as_mut() {
+        read_state.state_path = "/var/lib/zebra".into();
+    }
+    store_set.check_paths(false).expect("both set");
+}
+
 /// A mempool that could hold nothing, or poll never, is refused; a donation
 /// address must parse.
 #[test]

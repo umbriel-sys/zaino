@@ -103,11 +103,9 @@ impl<S: ServiceSource> ServiceSnapshot<S> {
             ));
         }
         // a block's leaf sits where its epoch's tree ended before it
-        let leaf = match u32::from(block.height).checked_sub(1) {
-            Some(before) => match Height::try_from(before) {
-                Ok(before) => in_tree(before).await?.map_or(0, |epoch| epoch.length),
-                Err(_) => 0,
-            },
+        let leaf = match block.height.checked_sub(1) {
+            Some(before) => in_tree(before).await?.map_or(0, |epoch| epoch.length),
+            // genesis: nothing before it
             None => 0,
         };
         let inconsistent = || {

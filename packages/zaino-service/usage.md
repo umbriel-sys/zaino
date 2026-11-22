@@ -128,11 +128,16 @@ ChainView's refusals arrive in `Chain`: `NotServed`, `NotBuilt` and
 ## Lifecycle
 
 `statuses()` gives each component's `ComponentStatus` (`Statuses`: store,
-head, mempool, coherence, and the sync for a primary store). `caught_up()`
-resolves once a primary store has caught up with the head's floor
-(`is_caught_up()` asks now). `wait_until_local()` resolves once nothing is
-still building: the store built and the chain head's extensions folded over
-it (`is_local()` asks now). `spawn` never waits for either; they are for a
+head, mempool, coherence, the validator source, and the sync for a primary
+store). Every component's task is supervised: one that panics or stops is
+`Critical` with the cause, never left at its last status. The validator
+source is `Critical` once its own background work (zebra's state syncer) has
+stopped. `caught_up()` resolves once a primary store has caught up with the
+head's floor (`is_caught_up()` asks now). `wait_until_local()` resolves once
+nothing is still building: the store built and the chain head's extensions
+folded over it (`is_local()` asks now). Both fail with
+`ServiceError::ComponentFailed` if a component fails first; neither waits
+without end. `spawn` never waits for either; they are for a
 caller that wants only local answers, such as a test comparing two
 deployments. `index_states()` lists how far each index of the store serves
 (`Absent`, `Building(height)`, `ToHeight(height)`), for a readiness report.

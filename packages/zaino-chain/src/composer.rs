@@ -1210,7 +1210,8 @@ where
                     .best_chain_blocks(first, last)
                     .map_err(|error| ChainViewError::Fatal(error.to_string()))?
                     .map(|block| self.head_chain_block(block, rebase(offset, block)))
-                    .collect()
+                    .collect::<Result<Vec<_>>>()
+                    .and_then(|blocks| whole_run(&heights, blocks))
             }
             // The validator reports no work through this path, so there is
             // nothing to rebase and nothing to serve.
@@ -1311,10 +1312,27 @@ where
                         chain_metadata: stream::metadata_from_roots(&block.tree_roots),
                     })
                 })
-                .collect(),
+                .collect::<Result<Vec<_>>>()
+                .and_then(|blocks| whole_run(&heights, blocks)),
             Provider::Source => self.fetch.fill_compact(heights, pools).await,
         }
     }
+}
+
+/// `blocks` if the chain head answered every one of `heights`. Its range
+/// read skips a height it does not hold: a short run is a fault, never an
+/// answer with blocks missing.
+fn whole_run<T>(heights: &[Height], blocks: Vec<T>) -> Result<Vec<T>> {
+    if blocks.len() == heights.len() {
+        return Ok(blocks);
+    }
+    Err(ChainViewError::Fatal(format!(
+        "the chain head holds {} of the {} blocks from {:?} to {:?} that coverage routed to it",
+        blocks.len(),
+        heights.len(),
+        heights.first(),
+        heights.last(),
+    )))
 }
 
 // ***** Compact blocks *****

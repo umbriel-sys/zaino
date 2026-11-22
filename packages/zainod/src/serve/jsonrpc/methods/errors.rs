@@ -54,7 +54,8 @@ pub(super) fn service_error(error: ServiceError) -> ErrorObjectOwned {
         | ServiceError::MinedAndInMempool(_)
         | ServiceError::MempoolIncoherent
         | ServiceError::MempoolStreamLagged
-        | ServiceError::SyncStopped) => internal(error),
+        | ServiceError::SyncStopped
+        | ServiceError::ComponentFailed(_)) => internal(error),
     }
 }
 

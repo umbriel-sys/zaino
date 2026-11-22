@@ -28,6 +28,7 @@ mod managed;
 mod probe;
 mod run_loop;
 mod status;
+mod supervise;
 
 #[cfg(test)]
 mod tests;
@@ -40,6 +41,7 @@ pub use managed::Managed;
 pub use probe::ReachabilityProbe;
 pub use run_loop::{RunLoop, RunReport, RunReporter};
 pub use status::{ComponentName, ComponentStatus, Progress, StatusCell, StatusSource, StatusWatch};
+pub use supervise::supervised;
 
 // Tasks are the async layer below components: a supervised component *runs* on
 // `zaino_async::Task`, it does not define it. The [`CancellationToken`] a

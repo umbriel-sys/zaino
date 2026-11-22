@@ -976,7 +976,9 @@ async fn shutdown_ends_an_open_stream() {
     tokio::time::timeout(Duration::from_secs(1), server.close())
         .await
         .expect("the shutdown does not wait for the stream");
-    assert!(stream.message().await.expect("ends cleanly").is_none());
+    // cut, and told so: never read as a stream that ran to its end
+    let cut = stream.message().await.expect_err("cut by the shutdown");
+    assert_eq!(cut.code(), tonic::Code::Unavailable);
 }
 
 fn service_mempool_len(rpc: &Lightwallet<MockChain>) -> usize {

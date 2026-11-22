@@ -327,6 +327,7 @@ impl ZainodConfig {
         self.check_validator()?;
         self.check_servers()?;
         self.check_mempool()?;
+        self.check_paths(paths::cache_base_known())?;
         if let Some(address) = &self.donation_address {
             zcash_address::ZcashAddress::try_from_encoded(address).map_err(|error| {
                 config_error(format!(
@@ -335,6 +336,30 @@ impl ZainodConfig {
             })?;
         }
         Ok(())
+    }
+
+    /// A store or state path left to its default needs a cache directory
+    /// (`cache_base_known`): the `/tmp` fallback would lose the store at a
+    /// reboot.
+    fn check_paths(&self, cache_base_known: bool) -> Result<(), IndexerError> {
+        if cache_base_known {
+            return Ok(());
+        }
+        let unset = |key: &str| {
+            config_error(format!(
+                "{key} is not set, and neither XDG_CACHE_HOME nor HOME is set to give it a \
+                 default: set {key}"
+            ))
+        };
+        if self.persistence.path == paths::cache_path("zaino") {
+            return Err(unset("persistence.path"));
+        }
+        match &self.validator.read_state {
+            Some(read_state) if read_state.state_path == paths::cache_path("zebra") => {
+                Err(unset("validator.read_state.state_path"))
+            }
+            _ => Ok(()),
+        }
     }
 
     fn check_validator(&self) -> Result<(), IndexerError> {

@@ -127,8 +127,11 @@ client opening many streams slows itself, not the server.
 - A block range has no size cap, as lightwalletd: the bound is time. A
   stream ends with `DEADLINE_EXCEEDED` once its task has run for 4 ×
   `stream_timeout_secs` (6 × for the mempool stream).
-- A stream's task stops when its client disconnects, and every stream ends
-  when the server shuts down.
+- A stream's task stops when its client disconnects. A stream still open
+  when the server shuts down ends with `UNAVAILABLE`, so a cut stream is
+  never read as a complete one.
+- A request has 300 seconds to answer (for a stream, to start): gRPC answers
+  `CANCELLED` past it, JSON-RPC an internal error.
 - `GetBlockRange` and `GetBlockRangeNullifiers` are served from encoded
   frames: each block is encoded once and the bytes are shared by every
   client through `zaino-chain`'s frame cache.
@@ -240,6 +243,26 @@ With `cookie_dir` set the server writes `<cookie_dir>/.cookie`
 and returns its task and a `ServiceHandle` (`wait_until_local`, `store_tip`,
 `is_caught_up`). `Listeners` carries optional pre-bound sockets, so a caller
 can bind port 0 and hand the open socket over.
+
+## Failure: retry, restart or exit
+
+Zaino never waits without end and never serves through a failed component.
+
+| What fails | What Zaino does |
+| --- | --- |
+| The validator answers no chain tip at start-up | waits five minutes, then exits with the cause |
+| zebra's state does not reach, or stops advancing toward, the validator's tip | exits after five minutes without progress |
+| zebra's state syncer stops, at start-up or later | exits: `validator source` is `Critical` |
+| A component's task panics or stops | exits with that component's cause |
+| The store fails to build for a fault of its own, or cannot write its record | exits with the cause |
+| The validator stops answering (chain head, store build, mempool) | each retries with a bound; once one gives up, Zaino restarts |
+| The admin endpoint stops | exits |
+| The store does not flush at shutdown | exits with an error, not success |
+
+A restart waits 5 seconds, doubling to 60, and is tried five times in a row at
+most; a run that held for ten minutes starts a new count. Past that, or when
+any failed component's fault is Zaino's own, `zainod` exits non-zero and the
+last log line names every failed component and its cause.
 
 ## The admin listener
 

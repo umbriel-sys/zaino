@@ -6,7 +6,7 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use futures::{stream, StreamExt as _};
-use zaino_component::{Health, Lifecycle};
+use zaino_component::{Health, Lifecycle, StatusSource as _};
 
 use zaino_mempool::entry::MempoolEntry;
 use zaino_mempool::ports::MempoolSource;
@@ -32,6 +32,10 @@ const CAPACITY_LOW_WATER_PERCENT: u64 = 90;
 /// `pub(super)` only so [`PollState::consecutive_discards`](super::state::PollState)
 /// can name it in its doc link; the value is used only within this module.
 pub(super) const MAX_CONSECUTIVE_DISCARDS: u32 = 5;
+
+/// How long polls may fail in a row before the mempool stops and reports the
+/// validator's mempool unreadable.
+const OUTAGE_LIMIT: std::time::Duration = std::time::Duration::from_secs(300);
 
 /// - A guard, not a tail statement: `tick` returns early from six places, and a tail
 ///   sample would omit exactly the degraded polls worth measuring
@@ -88,6 +92,8 @@ impl<S: MempoolSource> super::MempoolService<S> {
         interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
         let mut block_wake = self.source.subscribe_to_blocks_received();
         let mut state = PollState::default();
+        // when the run of failed polls now under way began
+        let mut degraded_since: Option<tokio::time::Instant> = None;
 
         tracing::debug!(
             block_wake = block_wake.is_some(),
@@ -117,6 +123,24 @@ impl<S: MempoolSource> super::MempoolService<S> {
             }
 
             self.tick(&mut state).await;
+
+            // a poll that keeps failing is retried for OUTAGE_LIMIT, not forever
+            let status = self.status.status();
+            match status.health {
+                Health::Recoverable => {
+                    let since = *degraded_since.get_or_insert_with(tokio::time::Instant::now);
+                    if since.elapsed() >= OUTAGE_LIMIT {
+                        let cause = status.reason.unwrap_or_default();
+                        tracing::error!(%cause, "the mempool has been degraded too long; stopping");
+                        self.status.exhausted_unless_closing(format!(
+                            "the validator's mempool could not be read for {}s: {cause}",
+                            OUTAGE_LIMIT.as_secs()
+                        ));
+                        return;
+                    }
+                }
+                Health::Healthy | Health::Critical | Health::Offline => degraded_since = None,
+            }
         }
     }
 

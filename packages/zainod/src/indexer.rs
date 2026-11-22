@@ -194,22 +194,32 @@ impl<S: ServiceSource> Indexer<S> {
                     indexer.log_status();
                     last_log = Instant::now();
                 }
-                if indexer.check_for_critical_errors() {
-                    indexer.close().await;
-                    return Err(IndexerError::Restart);
+                if let Some(failure) = indexer.check_for_critical_errors() {
+                    tracing::error!(%failure, "a component failed; closing Zaino");
+                    if let Err(error) = indexer.close().await {
+                        tracing::error!(%error, "closing after the failure");
+                    }
+                    return Err(failure);
                 }
                 if indexer.check_for_shutdown() {
-                    indexer.close().await;
-                    return Ok(());
+                    return indexer.close().await;
                 }
                 tokio::select! {
                     _ = tick.tick() => {}
                     // pod teardown is SIGTERM: the same graceful close, so the
                     // store flushes
-                    _ = &mut shutdown => {
-                        info!("received shutdown signal; closing Zaino gracefully");
-                        indexer.close().await;
-                        return Ok(());
+                    signal = &mut shutdown => {
+                        let closed = indexer.close().await;
+                        return match signal {
+                            Ok(()) => {
+                                info!("received shutdown signal; closed Zaino gracefully");
+                                closed
+                            }
+                            // without its signals Zaino cannot be stopped cleanly
+                            Err(error) => Err(IndexerError::Critical(format!(
+                                "cannot listen for shutdown signals: {error}"
+                            ))),
+                        };
                     }
                 }
             }
@@ -217,17 +227,24 @@ impl<S: ServiceSource> Indexer<S> {
         Ok(Running { task, service })
     }
 
-    /// Whether the indexer must restart: the gRPC server is gone, or, while
-    /// nothing is closing, a component is not live.
-    fn check_for_critical_errors(&self) -> bool {
-        let critical = match self.statuses() {
-            None => true,
-            Some(statuses) => !closing(&statuses) && statuses.iter().any(|s| !s.is_live()),
-        };
-        if critical {
-            tracing::error!(statuses = ?self.statuses(), "check_for_critical_errors triggered");
+    /// Why the indexer must stop: the gRPC server or the admin endpoint is
+    /// gone, or, while nothing is closing, a component is not live.
+    /// [`IndexerError::Restart`] where every failed component failed only
+    /// because the validator stopped answering, else
+    /// [`IndexerError::Critical`].
+    fn check_for_critical_errors(&self) -> Option<IndexerError> {
+        #[cfg(feature = "prometheus")]
+        if crate::admin::stopped() {
+            return Some(IndexerError::Critical(
+                "the admin endpoint stopped: no /metrics or probes".to_string(),
+            ));
         }
-        critical
+        let Some(statuses) = self.statuses() else {
+            return Some(IndexerError::Critical(
+                "the gRPC server is gone".to_string(),
+            ));
+        };
+        failure_of(&statuses)
     }
 
     /// Whether a component is closing.
@@ -235,8 +252,9 @@ impl<S: ServiceSource> Indexer<S> {
         self.statuses().is_some_and(|statuses| closing(&statuses))
     }
 
-    /// Closes the servers, then stops the service; a primary store flushes.
-    async fn close(&mut self) {
+    /// Closes the servers, then stops the service; a primary store flushes,
+    /// and a flush that fails is the error.
+    async fn close(&mut self) -> Result<(), IndexerError> {
         if let Some(mut json_server) = self.json_server.take() {
             json_server.close().await;
             json_server.status.set(Lifecycle::Offline, Health::Offline);
@@ -245,9 +263,10 @@ impl<S: ServiceSource> Indexer<S> {
             server.close().await;
             server.status.set(Lifecycle::Offline, Health::Offline);
         }
-        if let Err(error) = self.service.shutdown().await {
-            tracing::error!(%error, "the store did not flush cleanly");
-        }
+        self.service
+            .shutdown()
+            .await
+            .map_err(|error| IndexerError::Flush(error.to_string()))
     }
 
     /// The status of every service component, the gRPC server and, when
@@ -271,6 +290,7 @@ impl<S: ServiceSource> Indexer<S> {
             service.head,
             service.mempool,
             service.coherence,
+            service.source,
             server(self.server.as_ref().map(TonicServer::status), "gRPC"),
         ];
         serving.extend(self.json_server.as_ref().map(JsonRpcServer::status));
@@ -291,8 +311,10 @@ impl<S: ServiceSource> Indexer<S> {
             head = %service.head,
             mempool = %service.mempool,
             coherence = %service.coherence,
+            source = %service.source,
+            sync = %service.sync.map_or_else(|| "no primary store".to_owned(), |sync| sync.to_string()),
             local = self.service.is_local(),
-            json_rpc = %self.json_server.as_ref().map_or_else(|| offline("JSON-RPC"), JsonRpcServer::status),
+            json_rpc = %self.json_server.as_ref().map_or_else(|| "not configured".to_owned(), |server| server.status().to_string()),
             grpc = %self.server.as_ref().map_or_else(|| offline("gRPC"), TonicServer::status),
             "Zaino status check"
         );
@@ -305,7 +327,15 @@ impl<S: ServiceSource> Indexer<S> {
 async fn wait_for_head<S: ServiceSource>(service: &Service<S>) -> Result<(), IndexerError> {
     let mut reported = Instant::now();
     loop {
-        let head = service.statuses().head;
+        let statuses = service.statuses();
+        // the head's own retries are bounded, and so is every other
+        // component's: one that fails ends the wait
+        if let Some(failed) = statuses.all().find(|status| !status.is_live()) {
+            return Err(IndexerError::Critical(format!(
+                "a component failed before the chain head was built: {failed}"
+            )));
+        }
+        let head = statuses.head;
         if reported.elapsed() >= HEAD_REPORT {
             info!(%head, "waiting for the chain head");
             reported = Instant::now();
@@ -322,6 +352,29 @@ async fn wait_for_head<S: ServiceSource>(service: &Service<S>) -> Result<(), Ind
     }
 }
 
+/// Why the indexer must stop, from its components' statuses: nothing while
+/// one is closing or all are live. Each failed component is named with its
+/// cause; a restart is asked for only where every one of them failed
+/// because the validator stopped answering.
+fn failure_of(statuses: &[ComponentStatus]) -> Option<IndexerError> {
+    if closing(statuses) {
+        return None;
+    }
+    let failed: Vec<&ComponentStatus> = statuses.iter().filter(|s| !s.is_live()).collect();
+    if failed.is_empty() {
+        return None;
+    }
+    let causes = failed
+        .iter()
+        .map(|status| status.to_string())
+        .collect::<Vec<_>>()
+        .join("; ");
+    Some(match failed.iter().all(|status| status.retryable) {
+        true => IndexerError::Restart(causes),
+        false => IndexerError::Critical(causes),
+    })
+}
+
 /// Whether any component is closing.
 fn closing(statuses: &[ComponentStatus]) -> bool {
     statuses
@@ -335,30 +388,21 @@ fn offline(name: &'static str) -> ComponentStatus {
 }
 
 /// Resolves on SIGTERM (pod teardown) or ctrl-c; ctrl-c only off unix
-async fn shutdown_signal() {
+async fn shutdown_signal() -> std::io::Result<()> {
     #[cfg(unix)]
     {
         use tokio::signal::unix::{signal, SignalKind};
-        match signal(SignalKind::terminate()) {
-            Ok(mut term) => {
-                tokio::select! {
-                    _ = tokio::signal::ctrl_c() => {}
-                    _ = term.recv() => {}
-                }
-            }
-            Err(e) => {
-                tracing::warn!(%e, "could not install SIGTERM handler; falling back to ctrl-c only");
-                if let Err(error) = tokio::signal::ctrl_c().await {
-                    tracing::error!(%error, "could not listen for ctrl-c; shutting down");
-                }
-            }
+        let mut term = signal(SignalKind::terminate())?;
+        tokio::select! {
+            interrupted = tokio::signal::ctrl_c() => interrupted,
+            terminated = term.recv() => terminated.ok_or_else(|| {
+                std::io::Error::other("the SIGTERM stream ended")
+            }),
         }
     }
     #[cfg(not(unix))]
     {
-        if let Err(error) = tokio::signal::ctrl_c().await {
-            tracing::error!(%error, "could not listen for ctrl-c; shutting down");
-        }
+        tokio::signal::ctrl_c().await
     }
 }
 
@@ -452,5 +496,50 @@ mod tests {
             .into_inner();
         assert_eq!(tip.height, 20);
         running.task.abort();
+    }
+
+    fn status(name: &'static str, lifecycle: Lifecycle, health: Health) -> ComponentStatus {
+        ComponentStatus::new(ComponentName(name), lifecycle, health)
+    }
+
+    fn failed(name: &'static str, reason: &str, retryable: bool) -> ComponentStatus {
+        let mut status = status(name, Lifecycle::Ready, Health::Healthy);
+        assert!(status.fail(reason, retryable));
+        status
+    }
+
+    /// Live components, degraded ones included, stop nothing; nor does a
+    /// failure while the indexer is closing.
+    #[test]
+    fn live_or_closing_components_stop_nothing() {
+        let ready = status("head", Lifecycle::Ready, Health::Healthy);
+        let degraded = status("mempool", Lifecycle::Syncing, Health::Recoverable);
+        assert!(failure_of(&[ready.clone(), degraded]).is_none());
+        let closing = status("store", Lifecycle::Closing, Health::Offline);
+        assert!(failure_of(&[ready, closing, failed("head", "gone", false)]).is_none());
+    }
+
+    /// A component that failed for a fault of Zaino's own ends the indexer
+    /// with its cause; a restart is asked for only where every failure was
+    /// the validator not answering.
+    #[test]
+    fn a_failed_component_is_an_exit_unless_every_failure_is_the_validators() {
+        let ready = status("mempool", Lifecycle::Ready, Health::Healthy);
+        let lost = failed("head", "gave up on the validator", true);
+        let broken = failed("validator source", "the syncer stopped", false);
+
+        match failure_of(&[ready.clone(), lost.clone()]) {
+            Some(IndexerError::Restart(causes)) => {
+                assert!(causes.contains("gave up on the validator"), "{causes}");
+            }
+            other => panic!("a restart was expected, not {other:?}"),
+        }
+        match failure_of(&[ready, lost, broken]) {
+            Some(IndexerError::Critical(causes)) => {
+                assert!(causes.contains("the syncer stopped"), "{causes}");
+                assert!(causes.contains("gave up on the validator"), "{causes}");
+            }
+            other => panic!("an exit was expected, not {other:?}"),
+        }
     }
 }

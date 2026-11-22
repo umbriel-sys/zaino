@@ -11,7 +11,7 @@ use std::time::Duration;
 use tokio::sync::watch;
 use tokio::task::JoinHandle;
 use zaino_chain_store::{ChainStoreService, StoreCapabilities, StoreWatermark};
-use zaino_component::{ComponentStatus, Health, StatusSource};
+use zaino_component::{ComponentStatus, Health, Lifecycle, StatusSource};
 use zaino_indexes::IndexId;
 use zaino_persistence::{OpenError, ReadOnlyBackend, RefreshError, Storage};
 use zaino_primitives::types::{BlockRef, Height, Network};
@@ -79,7 +79,12 @@ struct Linked<St: Storage> {
     primary: watch::Sender<PrimaryStatus>,
     /// Why the last refresh failed; `None` once one succeeds.
     refresh_failure: watch::Sender<Option<String>>,
+    /// Why polling stopped for good; `None` while it runs.
+    halted: watch::Sender<Option<String>>,
 }
+
+/// Failed refreshes in a row before polling stops and the store is critical.
+const MAX_REFRESH_FAILURES: u32 = 20;
 
 /// A store built by another process's primary, read-only.
 pub struct LinkedChainStore<St: Storage> {
@@ -125,6 +130,7 @@ impl<St: Storage> LinkedChainStore<St> {
                 serviceability: watch::channel(absent).0,
                 primary: watch::channel(PrimaryStatus::default()).0,
                 refresh_failure: watch::channel(None).0,
+                halted: watch::channel(None).0,
             }),
         })
     }
@@ -141,30 +147,59 @@ impl<St: Storage> LinkedChainStore<St> {
 
     /// Refreshes every `interval` on the runtime's blocking pool until the
     /// returned handle stops or drops; a failed refresh is logged, shown in
-    /// the status, and retried.
+    /// the status, and retried, [`MAX_REFRESH_FAILURES`] times in a row at
+    /// most: then, as when the task dies, the store is critical.
     pub fn poll(&self, interval: Duration) -> Polling
     where
         St::ReadOnly: 'static,
     {
         let inner = Arc::clone(&self.inner);
-        let task = tokio::spawn(async move {
+        let halted = Arc::clone(&self.inner);
+        let run = async move {
             let mut ticker = tokio::time::interval(interval);
             ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+            let mut failures = 0u32;
             loop {
                 ticker.tick().await;
                 let linked = Arc::clone(&inner);
-                match tokio::task::spawn_blocking(move || linked.refresh_recorded()).await {
-                    Ok(Ok(())) => {}
-                    Ok(Err(error)) => tracing::warn!(%error, "linked store refresh failed"),
-                    Err(error) => {
-                        tracing::warn!(%error, "linked store refresh panicked");
-                        inner
-                            .refresh_failure
-                            .send_replace(Some(format!("refresh panicked: {error}")));
-                    }
+                let failure =
+                    match tokio::task::spawn_blocking(move || linked.refresh_recorded()).await {
+                        Ok(Ok(())) => None,
+                        Ok(Err(error)) => Some(error.to_string()),
+                        Err(error) => {
+                            let failure = format!("refresh panicked: {error}");
+                            inner.refresh_failure.send_replace(Some(failure.clone()));
+                            Some(failure)
+                        }
+                    };
+                let Some(failure) = failure else {
+                    failures = 0;
+                    continue;
+                };
+                failures = failures.saturating_add(1);
+                tracing::warn!(error = %failure, attempt = failures, "linked store refresh failed");
+                if failures >= MAX_REFRESH_FAILURES {
+                    inner.halted.send_replace(Some(format!(
+                        "refresh failed {failures} times in a row: {failure}"
+                    )));
+                    return;
                 }
             }
-        });
+        };
+        // stopped by abort alone, so any return is a failure
+        let task = tokio::spawn(zaino_component::supervised(
+            zaino_component::CancellationToken::new(),
+            run,
+            move |reason| {
+                halted.halted.send_if_modified(|halted| match halted {
+                    Some(_) => false,
+                    None => {
+                        *halted = Some(format!("polling stopped: {reason}"));
+                        true
+                    }
+                });
+            },
+        ));
         Polling { task }
     }
 
@@ -229,7 +264,13 @@ impl<St: Storage> LinkedChainStore<St> {
             .indexes
             .iter()
             .filter(|(id, _)| served.contains_key(id))
-            .filter_map(|(id, backend)| backend.reader().ok().map(|reader| (*id, reader)))
+            .filter_map(|(id, backend)| match backend.reader() {
+                Ok(reader) => Some((*id, reader)),
+                Err(error) => {
+                    tracing::warn!(index = id.name(), %error, "no reader: its reads are unavailable");
+                    None
+                }
+            })
             .collect();
         let status = self.status();
         StoreReader::new(
@@ -269,6 +310,11 @@ impl<St: Storage> StatusSource for LinkedChainStore<St> {
                 status.health = Health::Recoverable;
             }
             status.reason = Some(format!("refresh failed: {failure}"));
+        }
+        if let Some(halted) = self.inner.halted.borrow().clone() {
+            status.lifecycle = Lifecycle::Offline;
+            status.health = Health::Critical;
+            status.reason = Some(halted);
         }
         status
     }

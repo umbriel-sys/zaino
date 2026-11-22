@@ -408,7 +408,14 @@ canonical block, below the consensus seam, so everything up to it is settled.
 On launch, and again on every chain-head update, the loop asks the store to
 `build_to(floor)`; the store fetches those blocks from its own validator, which
 is the store's only write path. A floor the store already holds is not asked
-for again; a failed build is retried on the next update.
+for again.
+
+**A failed build is retried, and the retries are bounded.** A build the
+validator did not answer (`Unavailable`, `NotReady`) is retried on the loop's
+own timer, 1 second doubling to 30, whether or not the chain head moves. After
+20 failures in a row with the store not advancing, the loop stops `Offline`
+and `Critical` with the cause, marked `retryable`. Any other failure
+(inconsistent data, a failed commit) stops it at once, not `retryable`.
 
 **It is asked for, never assumed.** A deployment that drives its own store —
 building it from a validator on its own schedule — must not also get this, or two
@@ -423,8 +430,9 @@ both counts — features are additive across a workspace, so one crate enabling 
 turns it on for every other consumer.
 
 `ChainViewSync::status()` reports `Syncing` until the store holds the floor,
-`Ready` once it does, `Recoverable` while a build fails, and `Offline` once the
-loop has stopped. This is separate from the store's own status, which says
+`Ready` once it does, `Recoverable` (with the error as its `reason`) while a
+failed build waits for its retry, `Offline` and `Critical` once the loop has
+failed, and `Offline` once it has been stopped. This is separate from the store's own status, which says
 whether the *database* is healthy; this says whether anything is still feeding
 it. Cancelling the token stops the loop, and so does dropping the handle —
 `shutdown()` additionally publishes `Closing`, so the stop is observable rather

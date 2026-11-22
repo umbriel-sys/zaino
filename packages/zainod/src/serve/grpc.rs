@@ -110,6 +110,7 @@ impl TonicServer {
 
         let limits = server_config.limits;
         let mut server_builder = Server::builder()
+            .timeout(crate::serve::config::REQUEST_TIMEOUT)
             .concurrency_limit_per_connection(limits.concurrency_limit_per_connection.get())
             .max_concurrent_streams(Some(limits.max_concurrent_streams.get()))
             .http2_keepalive_interval(Some(Duration::from_secs(
