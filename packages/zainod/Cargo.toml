@@ -94,7 +94,7 @@ zaino-mempool-service.workspace = true
 zaino-indexes = { workspace = true }
 zaino-chain-store-service.workspace = true
 zaino-chain-head.workspace = true
-zaino-source-zebra.workspace = true
+zaino-source-zebra = { workspace = true, features = ["tracing"] }
 zaino-source-zcash-rpc.workspace = true
 bytes.workspace = true
 zcash_address.workspace = true

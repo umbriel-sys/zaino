@@ -18,6 +18,9 @@ use crate::routing::ZebraValidator;
 const NOT_READY_RETRY: Duration = Duration::from_secs(3);
 /// How long between looks at a read-state syncer catching up.
 const SYNCING_RETRY: Duration = Duration::from_secs(1);
+/// How often a read-state syncer still catching up is reported.
+#[cfg(feature = "tracing")]
+const SYNCING_REPORT: Duration = Duration::from_secs(10);
 
 /// Where zebra's state is read directly.
 #[derive(Debug, Clone)]
@@ -61,18 +64,30 @@ impl ZebraValidator {
         };
         let validator = rpc().url;
         let rpc_adapter = adapter()?;
+        #[cfg(feature = "tracing")]
+        tracing::info!(%validator, "asking the validator for its chain tip");
         while let Err(_error) = rpc_adapter.get_chain_tip().await {
             #[cfg(feature = "tracing")]
             tracing::info!(error = %_error, "waiting for the validator to serve its first block");
             tokio::time::sleep(NOT_READY_RETRY).await;
         }
 
+        #[cfg(feature = "tracing")]
+        tracing::info!("checking the validator's network and activation heights");
         let network = adopt_network(
             network,
             &validator,
             &ValidatorClient::new(adapter()?, RetryPolicy::default()),
         )
         .await?;
+        #[cfg(feature = "tracing")]
+        tracing::info!(
+            state_path = %read_state.state_path.display(),
+            grpc_address = %read_state.grpc_address,
+            "opening zebra's state read-only: replaying zebra's write-ahead log can take a minute or more"
+        );
+        #[cfg(feature = "tracing")]
+        let opening = std::time::Instant::now();
         let config = zebra_state::Config {
             cache_dir: read_state.state_path,
             ..zebra_state::Config::default()
@@ -82,8 +97,15 @@ impl ZebraValidator {
                 .await
                 .map_err(|error| ConnectError::ReadState(error.to_string()))?
                 .map_err(|error| ConnectError::ReadState(error.to_string()))?;
+        #[cfg(feature = "tracing")]
+        tracing::info!(
+            elapsed_secs = opening.elapsed().as_secs(),
+            "zebra's state is open; waiting for it to reach the validator's tip"
+        );
 
         // hash as well as height: one height names different blocks in a reorg
+        #[cfg(feature = "tracing")]
+        let mut reported: Option<std::time::Instant> = None;
         loop {
             let (validator_hash, validator_height) = rpc_adapter
                 .get_chain_tip()
@@ -106,13 +128,22 @@ impl ZebraValidator {
                     && <[u8; 32]>::from(validator_hash) == hash.0
             });
             if synced {
+                #[cfg(feature = "tracing")]
+                tracing::info!(
+                    height = u32::from(validator_height),
+                    "zebra's state is at the validator's tip"
+                );
                 break;
             }
             #[cfg(feature = "tracing")]
-            tracing::info!(
-                validator_height = u32::from(validator_height),
-                "zebra's state is syncing"
-            );
+            if reported.is_none_or(|at| at.elapsed() >= SYNCING_REPORT) {
+                tracing::info!(
+                    validator_height = u32::from(validator_height),
+                    state_height = ?tip.map(|(height, _)| height.0),
+                    "zebra's state is behind the validator's tip; waiting"
+                );
+                reported = Some(std::time::Instant::now());
+            }
             tokio::time::sleep(SYNCING_RETRY).await;
         }
 

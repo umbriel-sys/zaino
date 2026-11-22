@@ -1,15 +1,15 @@
 # The zebrad settings zainod depends on, for zebrad 7. Everything else is
 # zebrad's own default; see zebrad's documentation for the full file.
-# Paired with zainod.toml in this directory (the Public Testnet).
+# Paired with zainod.toml in this directory (Mainnet).
 
 [network]
-network = "Testnet"
+network = "Mainnet"
 
 [rpc]
 # zainod's `validator.rpc_address`
-listen_addr = "127.0.0.1:18232"
+listen_addr = "127.0.0.1:8232"
 # zainod's `validator.read_state.grpc_address` (validator kind "zebra" only)
-indexer_listen_addr = "127.0.0.1:18230"
+indexer_listen_addr = "127.0.0.1:8230"
 # zebrad's default. It writes `<cookie_dir>/.cookie`; name that file as
 # zainod's `validator.cookie_path`.
 enable_cookie_auth = true

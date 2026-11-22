@@ -34,30 +34,33 @@ pub(crate) const NONFINALISED_DEPTH: u32 = zaino_consensus::MAX_NONFINALISED_DEP
 pub(crate) const NONFINALISED_DEPTH: u32 = zaino_consensus::FAST_TEST_MAX_NONFINALISED_DEPTH;
 
 /// The header `generate-config` writes above the defaults.
-pub const GENERATED_CONFIG_HEADER: &str = r#"# Zaino Configuration
+pub const GENERATED_CONFIG_HEADER: &str = r#"# Zaino configuration
 #
-# Generated with `zainod generate-config`
+# Generated with `zainod generate-config`. Every setting is listed here:
+# active lines show the default, commented lines are optional.
 #
-# Configuration sources are layered (highest priority first):
-#   1. Environment variables (prefix: ZAINO_)
-#   2. TOML configuration file
-#   3. Built-in defaults
+# Sources, highest priority first:
+#   1. Environment: ZAINO_<SECTION>__<KEY>, e.g. ZAINO_VALIDATOR__RPC_ADDRESS.
+#      Keys ending in password, secret, token, cookie or private_key are
+#      refused from the environment: put them in this file.
+#   2. This file.
+#   3. Built-in defaults.
 #
-# The default index set is `lightclient`: what the lightwallet gRPC server
-# needs (compact blocks, headers, treestates, subtree roots). Transparent
-# address, spent-outpoint and UTXO-set reads are passed to the validator.
+# Decide these first:
+#   - network                      which chain to serve
+#   - [validator]                  where your validator is, and how to read it
+#   - [indexes] set                what Zaino stores (decides what it serves fast)
+#   - [persistence] path           where the indexes live on disk
 #
-# To also serve `GetHistoryProof` (ZIP 221), add the history tree:
-#   [indexes]
-#   set = "lightclient"
-#   enable = ["history_tree"]
-#
-# To build every index and serve JSON-RPC, see `zainod-full.toml`:
+# Every index and the JSON-RPC server: see `zainod-full.toml`,
 #   https://github.com/umbriel-sys/zaino/blob/dev/docs/example_configs/zainod-full.toml
 #
-# For detailed documentation, see:
-#   https://github.com/umbriel-sys/zaino
+# Documentation: https://github.com/umbriel-sys/zaino
 "#;
+
+/// Every setting with its default, commented; the two machine paths are
+/// filled in by [`generate_default_config`].
+const DEFAULT_CONFIG_TEMPLATE: &str = include_str!("config/default.toml");
 
 /// Top-level keys of the configuration before the service rewrite, and what
 /// each became.
@@ -104,7 +107,7 @@ pub struct ZainodConfig {
 impl Default for ZainodConfig {
     fn default() -> Self {
         Self {
-            network: Network::PubTestnet,
+            network: Network::Mainnet,
             donation_address: None,
             validator: ValidatorConfig::default(),
             indexes: IndexesConfig {
@@ -125,9 +128,9 @@ impl Default for ZainodConfig {
 pub enum ValidatorKind {
     /// A zebra on this host: its JSON-RPC and its state directory
     /// (`[validator.read_state]` is required).
+    #[default]
     Zebra,
     /// Any validator serving the zcash JSON-RPC interface.
-    #[default]
     ZcashRpc,
 }
 
@@ -145,7 +148,9 @@ pub struct ValidatorConfig {
     pub user: Option<String>,
     /// Its RPC password.
     pub password: Option<String>,
-    /// Where zebra's state is read directly: `kind = "zebra"` only.
+    /// Where zebra's state is read directly: `kind = "zebra"` only. A
+    /// `[validator]` table without it has none, whatever the default.
+    #[serde(default)]
     pub read_state: Option<ReadStateConfig>,
 }
 
@@ -153,11 +158,14 @@ impl Default for ValidatorConfig {
     fn default() -> Self {
         Self {
             kind: ValidatorKind::default(),
-            rpc_address: "127.0.0.1:18232".to_string(),
+            rpc_address: "127.0.0.1:8232".to_string(),
             cookie_path: None,
             user: None,
             password: None,
-            read_state: None,
+            read_state: Some(ReadStateConfig {
+                state_path: paths::cache_path("zebra"),
+                grpc_address: "127.0.0.1:8230".to_string(),
+            }),
         }
     }
 }
@@ -472,11 +480,27 @@ pub fn default_ephemeral_cookie_path() -> PathBuf {
     paths::runtime_path("zaino/.cookie")
 }
 
-/// The default configuration as TOML, under [`GENERATED_CONFIG_HEADER`].
+/// The default configuration as commented TOML, under
+/// [`GENERATED_CONFIG_HEADER`].
 pub fn generate_default_config() -> Result<String, IndexerError> {
-    let content = toml::to_string_pretty(&ZainodConfig::default())
-        .map_err(|error| config_error(format!("cannot serialize the config: {error}")))?;
+    let default = ZainodConfig::default();
+    let state_path = default
+        .validator
+        .read_state
+        .map(|read_state| read_state.state_path)
+        .ok_or_else(|| config_error("the default validator has no read state"))?;
+    let content = DEFAULT_CONFIG_TEMPLATE
+        .replace("{state_path}", &toml_path(&state_path)?)
+        .replace("{persistence_path}", &toml_path(&default.persistence.path)?);
     Ok(format!("{GENERATED_CONFIG_HEADER}{content}"))
+}
+
+/// `path` as a quoted TOML string.
+fn toml_path(path: &Path) -> Result<String, IndexerError> {
+    let path = path
+        .to_str()
+        .ok_or_else(|| config_error(format!("the default path {path:?} is not UTF-8")))?;
+    Ok(toml::Value::String(path.to_owned()).to_string())
 }
 
 /// Loads the configuration at `file_path`, layered under `ZAINO_`

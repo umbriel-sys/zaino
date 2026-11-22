@@ -17,6 +17,34 @@ use crate::indexer::{Indexer, Listeners, Running};
 /// How long between looks at a validator that serves no block yet.
 const NOT_READY_RETRY: std::time::Duration = std::time::Duration::from_secs(3);
 
+/// How often a start-up step still running says so.
+const HEARTBEAT: std::time::Duration = std::time::Duration::from_secs(10);
+
+/// Logs that `step` is still running, every [`HEARTBEAT`] until dropped.
+pub(crate) struct Heartbeat(tokio::task::JoinHandle<()>);
+
+impl Heartbeat {
+    pub(crate) fn start(step: &'static str) -> Self {
+        let started = std::time::Instant::now();
+        Self(tokio::spawn(async move {
+            loop {
+                tokio::time::sleep(HEARTBEAT).await;
+                info!(
+                    step,
+                    elapsed_secs = started.elapsed().as_secs(),
+                    "still working"
+                );
+            }
+        }))
+    }
+}
+
+impl Drop for Heartbeat {
+    fn drop(&mut self) {
+        self.0.abort();
+    }
+}
+
 /// Verifies the validator's activation schedule against the configured
 /// network, exactly as the zebra source does when it connects: on Mainnet
 /// and the public testnet every reported upgrade must activate where the
@@ -44,6 +72,7 @@ pub(crate) async fn launch(
 ) -> Result<Running, IndexerError> {
     let validator = &config.validator;
     info!(address = %validator.rpc_address, kind = ?validator.kind, "connecting to the validator");
+    let heartbeat = Heartbeat::start("connecting to the validator");
     let url = probe_node(
         &validator.rpc_address,
         validator.cookie_path.as_deref(),
@@ -51,6 +80,7 @@ pub(crate) async fn launch(
         validator.password.clone(),
     )
     .await?;
+    info!(%url, "the validator answers JSON-RPC");
     let auth = auth_from_parts(
         validator.cookie_path.as_deref(),
         validator.user.clone(),
@@ -74,6 +104,7 @@ pub(crate) async fn launch(
             let source = ZebraValidator::connect(rpc, config.network, settings)
                 .await
                 .map_err(|error| IndexerError::Validator(error.to_string()))?;
+            drop(heartbeat);
             Indexer::launch(Arc::new(source), config, listeners).await
         }
         (ValidatorKind::ZcashRpc, None) => {
@@ -87,12 +118,14 @@ pub(crate) async fn launch(
             }
             let adopting = RpcClient::new(rpc())
                 .map_err(|error| IndexerError::Validator(error.to_string()))?;
+            info!("checking the validator's network and activation heights");
             verify_network(
                 config.network,
                 &validator.rpc_address,
                 ZcashRpcAdapter::new(adopting),
             )
             .await?;
+            drop(heartbeat);
             Indexer::launch(Arc::new(source), config, listeners).await
         }
         (ValidatorKind::Zebra, None) | (ValidatorKind::ZcashRpc, Some(_)) => {

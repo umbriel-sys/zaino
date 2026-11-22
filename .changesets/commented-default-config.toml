@@ -1,0 +1,23 @@
+# `generate-config` writes a commented template; the defaults are Mainnet and
+# the zebra validator.
+
+[[changes]]
+crate       = "zainod"
+kind        = "breaking"
+description = "The defaults are Mainnet and the `zebra` validator: `network = \"Mainnet\"`, `validator.kind = \"zebra\"`, `validator.rpc_address = \"127.0.0.1:8232\"`, and a `[validator.read_state]` of zebrad's default cache directory and `127.0.0.1:8230` (they were `PubTestnet`, `zcash_rpc`, `127.0.0.1:18232` and none). A `[validator]` table that names no `[validator.read_state]` has none, so it must set `kind = \"zcash_rpc\"` or carry the table."
+migration   = "A config that relied on the defaults sets `network = \"PubTestnet\"`, `kind = \"zcash_rpc\"` and `rpc_address = \"127.0.0.1:18232\"` itself. A `[validator]` table without `kind` adds `kind = \"zcash_rpc\"`."
+
+[[changes]]
+crate       = "zainod"
+kind        = "fix"
+description = "Start-up says what it is doing: each step (probing the validator, checking its network, opening zebra's state, waiting for it to reach the tip, building the chain head, serving) is logged as it begins and ends, and a step still running logs every 10 seconds. A start against a large zebrad no longer sits silent after `connecting to the validator`."
+
+[[changes]]
+crate       = "zaino-source-zebra"
+kind        = "fix"
+description = "With the `tracing` feature, `ZebraValidator::connect` logs each step it takes, how long opening zebra's state took, and both heights while the state is behind the validator's tip (every 10 seconds, not every second)."
+
+[[changes]]
+crate       = "zainod"
+kind        = "feature"
+description = "`generate-config` writes a commented template instead of the serialised defaults: every setting with its meaning and values, optional ones commented out, and what to decide first. `docs/example_configs/zainod.toml` is that file and `zainod-full.toml` is it with the full set and JSON-RPC on; `zebrad.toml` is the Mainnet pair."

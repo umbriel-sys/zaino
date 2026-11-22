@@ -28,9 +28,10 @@ zainod generate-config                   # writes $XDG_CONFIG_HOME/zaino/zainod.
 zainod generate-config --output ./zainod.toml
 ```
 
-The generated file holds every default
-([example](./example_configs/zainod.toml)): the `lightclient` index set and
-the gRPC server. [`zainod-full.toml`](./example_configs/zainod-full.toml)
+The generated file lists every setting with a comment
+([example](./example_configs/zainod.toml)): active lines are the defaults
+(Mainnet, a zebrad on this host, the `lightclient` index set, the gRPC
+server), optional ones are commented out. [`zainod-full.toml`](./example_configs/zainod-full.toml)
 builds every index and serves JSON-RPC as well. The settings to decide:
 
 ```toml
@@ -94,6 +95,22 @@ zainod start --config ./zainod.toml
 zainod checks the validator is on the configured network, then serves at
 once. A store that is still building does not delay serving: the validator
 answers whatever the indexes do not hold yet.
+
+Each start-up step is logged as it begins and ends, and a step still running
+says so every 10 seconds:
+
+1. `connecting to the validator`: its JSON-RPC is probed, then its network
+   and activation heights are checked.
+2. `opening zebra's state read-only` (`kind = "zebra"`): zebrad's database is
+   opened and its write-ahead log replayed. On a large or recently synced
+   node this takes a minute or more.
+3. `waiting for it to reach the validator's tip`: the state and the
+   JSON-RPC must name the same tip block.
+4. `building the chain head`: the most recent blocks are read from the
+   validator.
+5. `Zaino is serving`: the listen addresses. A `Zaino status check` line
+   follows every 10 seconds with each component's state, and `local = true`
+   once every answer comes from Zaino's own indexes.
 
 ## Network exposure
 

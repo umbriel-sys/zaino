@@ -13,7 +13,7 @@ blocks below the tip. The test-only cargo feature `fast-test-seam` makes it
 ## The CLI
 
 ```text
-zainod generate-config [--output FILE]   # write a config file holding every default
+zainod generate-config [--output FILE]   # write the commented default config: every setting
 zainod start [--config FILE]             # start the daemon
 ```
 
@@ -28,12 +28,17 @@ One TOML file; every key can be set from the environment as
 `ZAINO_<SECTION>__<KEY>` (credentials excepted). A key from the pre-v2 layout
 is refused at startup with an error naming its replacement.
 
+`generate-config` writes this file with every setting commented: active lines
+are the defaults (Mainnet, the `zebra` validator on `127.0.0.1:8232` /
+`8230`, the `lightclient` set, gRPC on `127.0.0.1:8137`), optional ones are
+commented out. In brief:
+
 ```toml
-network = "Mainnet"                 # Mainnet | Testnet | Regtest
+network = "Mainnet"                 # the default; Mainnet | PubTestnet | Regtest
 donation_address = "u1…"            # optional; GetLightdInfo serves it
 
 [validator]
-kind = "zcash_rpc"                  # "zcash_rpc" | "zebra"
+kind = "zebra"                      # the default; "zebra" | "zcash_rpc"
 rpc_address = "127.0.0.1:8232"
 cookie_path = "/path/.cookie"       # or user + password; none sent when none set
 
@@ -47,7 +52,7 @@ set = "lightclient"                 # the default; lightclient | zcash_rpc | ful
 
 [persistence]
 path = "/var/cache/zaino"
-write_buffer_mib = 256
+write_buffer_mib = 64
 # threads = 4
 
 [mempool]                           # every key optional
@@ -73,8 +78,12 @@ The two validator kinds:
 
 | `kind` | Source | Needs |
 | --- | --- | --- |
-| `zcash_rpc` | any zcash JSON-RPC validator | `rpc_address` |
 | `zebra` | zebrad's JSON-RPC plus its read-state | `[validator.read_state]` on this host |
+| `zcash_rpc` | any zcash JSON-RPC validator | `rpc_address`; no `[validator.read_state]` |
+
+A `[validator]` table carries its own `[validator.read_state]` or has none:
+the default's is not inherited. So `kind = "zcash_rpc"` is that line with the
+table removed, and a `[validator]` table that sets neither is refused.
 
 A zebrad reached as `zcash_rpc` is served as a generic validator: zebrad's
 own refusals (its result-cap message, its wrong-network address check) are

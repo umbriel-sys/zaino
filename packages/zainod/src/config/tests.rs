@@ -57,18 +57,16 @@ fn the_seam_depth_follows_the_fast_test_seam_feature() {
     assert_eq!(zaino_consensus::FAST_TEST_MAX_NONFINALISED_DEPTH, 100);
 }
 
-/// The example config in `docs/` is the generated default but for its store
-/// path, which the default takes from this machine.
+/// The example config in `docs/` is the generated default but for its two
+/// paths, which the default takes from this machine.
 #[test]
 fn the_documented_example_is_the_generated_default() {
     let example = include_str!("../../../../docs/example_configs/zainod.toml");
     let loaded = load(example, "ZAINOTEST_NONE").expect("loads");
-    assert_eq!(loaded.persistence.path, PathBuf::from("/var/cache/zaino"));
-    let mut expected = ZainodConfig::default();
-    expected.persistence.path = loaded.persistence.path.clone();
-    assert_eq!(loaded, expected);
+    assert_eq!(loaded, example_paths(ZainodConfig::default()));
     let generated = generate_default_config().expect("generates");
-    let path_line = |line: &&str| !line.starts_with("path = ");
+    let path_line =
+        |line: &&str| !line.starts_with("path = ") && !line.starts_with("state_path = ");
     assert_eq!(
         example.lines().filter(path_line).collect::<Vec<_>>(),
         generated.lines().filter(path_line).collect::<Vec<_>>()
@@ -82,14 +80,121 @@ fn the_full_example_builds_every_index_and_serves_jsonrpc() {
     let example = include_str!("../../../../docs/example_configs/zainod-full.toml");
     let loaded = load(example, "ZAINOTEST_NONE").expect("loads");
     loaded.check_config().expect("valid");
-    let mut expected = ZainodConfig::default();
+    let mut expected = example_paths(ZainodConfig::default());
     expected.indexes.set = Some(NamedSet::Full);
-    expected.persistence.path = PathBuf::from("/var/cache/zaino");
     expected.serve.jsonrpc = loaded.serve.jsonrpc.clone();
     assert_eq!(loaded, expected);
     let jsonrpc = loaded.serve.jsonrpc.expect("served");
     assert_eq!(jsonrpc.listen_address.to_string(), "127.0.0.1:8237");
     assert_eq!(jsonrpc.cookie_dir, None);
+
+    let template = generate_default_config().expect("generates");
+    assert_eq!(
+        settings(example),
+        settings(&template),
+        "the full example documents every setting the default does"
+    );
+}
+
+/// `config` with the documented examples' two paths.
+fn example_paths(mut config: ZainodConfig) -> ZainodConfig {
+    config.persistence.path = PathBuf::from("/var/cache/zaino");
+    if let Some(read_state) = config.validator.read_state.as_mut() {
+        read_state.state_path = PathBuf::from("/var/cache/zebra");
+    }
+    config
+}
+
+/// Every `table.key` and `table` a config file names, commented out or not.
+fn settings(file: &str) -> std::collections::BTreeSet<String> {
+    let mut table = String::new();
+    let mut found = std::collections::BTreeSet::new();
+    for line in file.lines() {
+        let line = line.strip_prefix("# ").unwrap_or(line);
+        if let Some(name) = line.strip_prefix('[').and_then(|l| l.strip_suffix(']')) {
+            table = name.to_owned();
+            found.insert(table.clone());
+        } else if let Some((key, _)) = line.split_once(" = ") {
+            if !key.is_empty() && key.chars().all(|c| c.is_ascii_lowercase() || c == '_') {
+                found.insert(match table.is_empty() {
+                    true => key.to_owned(),
+                    false => format!("{table}.{key}"),
+                });
+            }
+        }
+    }
+    found
+}
+
+/// Every table and key of a config.
+fn keys(value: &toml::Value, path: &str, found: &mut std::collections::BTreeSet<String>) {
+    let toml::Value::Table(table) = value else {
+        return;
+    };
+    for (key, value) in table {
+        let path = match path.is_empty() {
+            true => key.clone(),
+            false => format!("{path}.{key}"),
+        };
+        found.insert(path.clone());
+        keys(value, &path, found);
+    }
+}
+
+/// The generated default names every setting there is, optional ones
+/// commented out: a config with each option set has no key it lacks.
+#[test]
+fn the_generated_default_documents_every_setting() {
+    let default = ZainodConfig::default();
+    let every_option = ZainodConfig {
+        donation_address: Some("u1".to_owned()),
+        validator: ValidatorConfig {
+            cookie_path: Some(PathBuf::from("/cookie")),
+            user: Some("u".to_owned()),
+            password: Some("p".to_owned()),
+            ..default.validator.clone()
+        },
+        persistence: PersistenceConfig {
+            threads: NonZeroUsize::new(4),
+            ..default.persistence.clone()
+        },
+        mempool: MempoolSettings {
+            max_cost_bytes: Some(1),
+            poll_interval_ms: Some(1),
+            metadata_min_interval_ms: Some(1),
+            max_exclude_count: Some(1),
+        },
+        serve: ServeConfig {
+            grpc: GrpcServerConfig {
+                tls: Some(crate::serve::config::GrpcTls {
+                    cert_path: PathBuf::from("/cert"),
+                    key_path: PathBuf::from("/key"),
+                }),
+                ..default.serve.grpc.clone()
+            },
+            jsonrpc: Some(JsonRpcServerConfig {
+                cookie_dir: Some(PathBuf::from("/run")),
+                ..JsonRpcServerConfig::default()
+            }),
+            ..default.serve.clone()
+        },
+        admin: Some(AdminConfig {
+            listen_address: SocketAddr::from(([127, 0, 0, 1], 9998)),
+        }),
+        ..default
+    };
+    let value = toml::Value::try_from(&every_option).expect("serialises");
+    let mut expected = std::collections::BTreeSet::new();
+    keys(&value, "", &mut expected);
+
+    let generated = generate_default_config().expect("generates");
+    // `[indexes.paths]` is a map: its example entry is no fixed setting
+    let mut documented = settings(&generated);
+    documented.retain(|setting| !setting.starts_with("indexes.paths."));
+    let missing: Vec<_> = expected.difference(&documented).collect();
+    assert!(missing.is_empty(), "not in the template: {missing:?}");
+    let unknown: Vec<_> = documented.difference(&expected).collect();
+    assert!(unknown.is_empty(), "not a setting: {unknown:?}");
 }
 
 /// Every section is read; the JSON-RPC server and the admin endpoint are
@@ -184,7 +289,7 @@ fn an_empty_set_is_validator_backed() {
         assert!(matches!(
             config.service_config().store,
             Store::ValidatorBacked {
-                network: Network::PubTestnet
+                network: Network::Mainnet
             }
         ));
     }
@@ -238,13 +343,19 @@ fn an_unknown_key_is_refused() {
 #[test]
 fn the_validator_settings_must_agree() {
     assert!(refused("[validator]\nkind = \"zebra\"").contains("read_state"));
+    // a `[validator]` table without the read state has none: the default's
+    // is not carried in
+    assert!(refused("[validator]\nrpc_address = \"127.0.0.1:8232\"").contains("read_state"));
     assert!(refused(
-        "[validator.read_state]\nstate_path = \"/zebra\"\ngrpc_address = \"127.0.0.1:8230\""
+        "[validator]\nkind = \"zcash_rpc\"\n[validator.read_state]\nstate_path = \"/zebra\"\n\
+         grpc_address = \"127.0.0.1:8230\""
     )
     .contains("kind = \"zebra\""));
-    assert!(refused("[validator]\nuser = \"u\"").contains("together"));
-    assert!(refused("[validator]\nrpc_address = \"8.8.8.8:8232\"").contains("private"));
-    assert!(refused("[validator]\ncookie_path = \"/no/such/cookie\"").contains("does not exist"));
+    let generic = |key: &str| refused(&format!("[validator]\nkind = \"zcash_rpc\"\n{key}"));
+    assert!(generic("user = \"u\"").contains("together"));
+    assert!(generic("rpc_address = \"8.8.8.8:8232\"").contains("private"));
+    assert!(generic("cookie_path = \"/no/such/cookie\"").contains("does not exist"));
+    load("[validator]\nkind = \"zcash_rpc\"", "ZAINOTEST_NONE").expect("needs no read state");
 }
 
 /// The servers' addresses are checked before anything binds.

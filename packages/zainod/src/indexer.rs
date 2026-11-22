@@ -21,6 +21,9 @@ use crate::{config::ZainodConfig, error::IndexerError};
 /// How often the chain head is looked at while it reaches the validator's tip.
 const HEAD_POLL: Duration = Duration::from_millis(100);
 
+/// How often a chain head still building is reported.
+const HEAD_REPORT: Duration = Duration::from_secs(10);
+
 /// Listeners bound ahead of the launch (tests bind `127.0.0.1:0` and hand
 /// the open sockets over); `None` binds the configured address.
 #[derive(Debug, Default)]
@@ -113,8 +116,23 @@ impl<S: ServiceSource> Indexer<S> {
             .await
             .map_err(|error| IndexerError::Validator(error.to_string()))?;
         info!(build = %node.build, subversion = %node.subversion, "connected to the validator");
+        info!(
+            store = %config.persistence.path.display(),
+            set = ?config.indexes.set,
+            enable = ?config.indexes.enable,
+            "starting the store, the chain head and the mempool"
+        );
+        let starting = crate::source::Heartbeat::start("starting the services");
         let service = Arc::new(Service::spawn(source, config.service_config()).await?);
+        drop(starting);
+        info!(
+            blocks = crate::config::NONFINALISED_DEPTH,
+            "building the chain head: the most recent blocks, read from the validator"
+        );
         wait_for_head(&service).await?;
+        info!("the chain head is at the validator's tip");
+        let grpc_address = config.serve.grpc.listen_address;
+        let jsonrpc_address = config.serve.jsonrpc.as_ref().map(|j| j.listen_address);
         let backend = Backend {
             service: Arc::clone(&service),
             info: Arc::new(ServeInfo {
@@ -155,6 +173,13 @@ impl<S: ServiceSource> Indexer<S> {
             server: Some(grpc_server),
             service: Arc::clone(&service),
         };
+        info!(
+            grpc = %grpc_address,
+            json_rpc = ?jsonrpc_address,
+            local = indexer.service.is_local(),
+            "Zaino is serving; the store builds in the background and the validator answers \
+             what it does not hold yet (a status line follows every 10 seconds)"
+        );
         let task = tokio::task::spawn(async move {
             let mut tick = tokio::time::interval(Duration::from_millis(100));
             let mut last_log = Instant::now();
@@ -277,8 +302,13 @@ impl<S: ServiceSource> Indexer<S> {
 /// not waited on: it builds in the background and the validator answers
 /// meanwhile.
 async fn wait_for_head<S: ServiceSource>(service: &Service<S>) -> Result<(), IndexerError> {
+    let mut reported = Instant::now();
     loop {
         let head = service.statuses().head;
+        if reported.elapsed() >= HEAD_REPORT {
+            info!(%head, "waiting for the chain head");
+            reported = Instant::now();
+        }
         match (head.lifecycle, head.health) {
             (Lifecycle::Ready | Lifecycle::Closing, _) => return Ok(()),
             (Lifecycle::Offline, _) | (_, Health::Critical | Health::Offline) => {
