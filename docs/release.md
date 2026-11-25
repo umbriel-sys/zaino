@@ -86,10 +86,10 @@ relman changeset consume --cycle <name> --yes
   `[workspace.dependencies]`, nothing else. So a crate depends on another
   workspace crate only as `zaino-x = { workspace = true }`: a version
   requirement written directly in a member manifest would be left behind and
-  break resolution at the next minor bump. `live-tests/` and the tools name
-  workspace crates by path alone, with no version.
-- After `bump`, refresh the other lockfiles: `cargo update --workspace` in
-  `live-tests/` and `tools/zaino-bench/`.
+  break resolution at the next minor bump. `live-tests/` names workspace
+  crates by path alone, with no version.
+- After `bump`, refresh the other lockfile: `cargo update --workspace` in
+  `live-tests/`.
 - `versions`, `bump --dry-run` and `changelog --dry-run` change nothing.
 - relman derives each crate's version from its own changesets: before 1.0, a
   `breaking` entry is a minor bump and everything else a patch. A crate whose

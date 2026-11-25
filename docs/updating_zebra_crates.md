@@ -34,7 +34,7 @@ features: some tests are compiled only when a feature is off.
 
 ## Bump every zebra pin
 
-The repo has **three Cargo workspaces** that pin zebra, each with its own `Cargo.lock`:
+The repo has **two Cargo workspaces** that pin zebra, each with its own `Cargo.lock`:
 
 1. The root workspace (`packages/*`). Its zebra requirements live in the root
    `Cargo.toml` `[workspace.dependencies]` and every member inherits them via
@@ -43,9 +43,6 @@ The repo has **three Cargo workspaces** that pin zebra, each with its own `Cargo
 2. The live-tests workspace (`live-tests/`). It pins `zebra-chain` again in
    `live-tests/Cargo.toml`; bump it to the same version and run
    `cargo update -p zebra-chain` inside `live-tests/`.
-3. The bench tool (`tools/zaino-bench/`). It pins `zebra-chain` in
-   `tools/zaino-bench/Cargo.toml`; bump it to the same version and run
-   `cargo update -p zebra-chain` inside `tools/zaino-bench/`.
 
 Cargo honours `[patch.crates-io]` only from a workspace root, so member
 manifests must **not** carry their own patch sections (they would be silently

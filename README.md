@@ -45,7 +45,7 @@ live-tests/      the live suite: a standalone workspace over a real zebrad
 tools/           development tools, each its own workspace
   workbench/       repository guards run by `makers lint`
   relman/          the changeset and release tool
-  zaino-bench/     chain-store benchmarks
+  zaino-bench/     times a zainod sync and reports where the time went
 docs/            repository documentation
 docker/          the container image: Dockerfile and entrypoint
 nix/             the Nix package (flake.nix is at the root)

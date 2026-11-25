@@ -1,0 +1,1347 @@
+# TYPE state_memory_best_committed_block_count counter
+state_memory_best_committed_block_count 1000
+
+# HELP zaino_sync_reorg_total Reorganizations: tip changes where the previous tip stopped being canonical
+# TYPE zaino_sync_reorg_total counter
+zaino_sync_reorg_total 0
+
+# HELP zaino_store_build_failures_total Builds that ended in a failure (the store keeps what it committed)
+# TYPE zaino_store_build_failures_total counter
+zaino_store_build_failures_total 0
+
+# HELP process_cpu_seconds_total Total user and system CPU time spent in seconds.
+# TYPE process_cpu_seconds_total counter
+process_cpu_seconds_total 1
+
+# HELP zaino_store_blocks_built_total Blocks folded and committed, per index
+# TYPE zaino_store_blocks_built_total counter
+zaino_store_blocks_built_total{index="headers"} 713
+zaino_store_blocks_built_total{index="txids"} 869
+zaino_store_blocks_built_total{index="tree_state"} 848
+zaino_store_blocks_built_total{index="spent"} 952
+zaino_store_blocks_built_total{index="tx_out_set"} 577
+zaino_store_blocks_built_total{index="address_history"} 836
+zaino_store_blocks_built_total 0
+zaino_store_blocks_built_total{index="transparent"} 786
+zaino_store_blocks_built_total{index="chain_metadata"} 860
+zaino_store_blocks_built_total{index="txid_location"} 907
+zaino_store_blocks_built_total{index="history_tree"} 600
+zaino_store_blocks_built_total{index="compact_block"} 899
+
+# HELP zainod_restarts_total Times the supervisor has restarted the indexer
+# TYPE zainod_restarts_total counter
+zainod_restarts_total 0
+
+# TYPE state_requests counter
+state_requests{service="read_state",type="any_chain_sapling_tree"} 1861
+state_requests{service="read_state",type="any_chain_orchard_tree"} 1861
+state_requests{service="read_state",type="block"} 1837
+state_requests{service="read_state",type="block_header"} 1044
+state_requests{service="read_state",type="any_chain_ironwood_tree"} 1861
+state_requests{service="read_state",type="tip"} 4
+state_requests{service="read_state",type="depth"} 1043
+state_requests{service="read_state",type="best_chain_block_hash"} 845
+state_requests{service="read_state",type="usage_info"} 1
+state_requests{service="read_state",type="tip_pool_values"} 1
+state_requests{service="read_state",type="chain_info"} 1
+
+# HELP zaino_store_panics_total Panics caught in the build pipeline, per stage; an index whose writer panicked is reopened
+# TYPE zaino_store_panics_total counter
+zaino_store_panics_total 0
+
+# HELP zaino_chain_head_extension_failures_total Extension folds or seeds that failed, per extension; the slot answers nothing until rebuilt
+# TYPE zaino_chain_head_extension_failures_total counter
+zaino_chain_head_extension_failures_total 0
+
+# TYPE state_memory_committed_block_count counter
+state_memory_committed_block_count 1000
+
+# HELP zaino_chain_head_tip_disagreements_total Advances where a retained branch outweighed the validator's tip and the head followed the heavier
+# TYPE zaino_chain_head_tip_disagreements_total counter
+zaino_chain_head_tip_disagreements_total 0
+
+# TYPE zcash_pool_value_zatoshis gauge
+zcash_pool_value_zatoshis{name="sapling"} 625750000
+zcash_pool_value_zatoshis{name="sprout"} 0
+zcash_pool_value_zatoshis{name="orchard"} 0
+zcash_pool_value_zatoshis{name="ironwood"} 4124040000
+zcash_pool_value_zatoshis{name="transparent"} 286068834001
+
+# TYPE zaino_lsm_stall_at gauge
+zaino_lsm_stall_at{index="tx_out_set",set="remaining"} 48
+zaino_lsm_stall_at{index="address_history",set="address_history"} 48
+zaino_lsm_stall_at{index="tree_state",set="sapling_nodes"} 48
+zaino_lsm_stall_at{index="spent",set="spent"} 48
+zaino_lsm_stall_at{index="headers",set="heights"} 48
+zaino_lsm_stall_at{index="tree_state",set="orchard_nodes"} 48
+zaino_lsm_stall_at{index="tree_state",set="ironwood_nodes"} 48
+zaino_lsm_stall_at{index="txid_location",set="txid_location"} 48
+
+# HELP zaino_chain_tip_height Latest chain tip height reported by the source
+# TYPE zaino_chain_tip_height gauge
+zaino_chain_tip_height 2200
+
+# HELP process_start_time_seconds Start time of the process since unix epoch in seconds.
+# TYPE process_start_time_seconds gauge
+process_start_time_seconds 1795644442
+
+# HELP zaino_store_watermark_height The store watermark: the lowest built height among the enabled indexes
+# TYPE zaino_store_watermark_height gauge
+zaino_store_watermark_height 576
+
+# HELP process_max_fds Maximum number of open file descriptors.
+# TYPE process_max_fds gauge
+process_max_fds 1048576
+
+# TYPE state_memory_best_chain_length gauge
+state_memory_best_chain_length 1000
+
+# HELP process_open_fds Number of open file descriptors.
+# TYPE process_open_fds gauge
+process_open_fds 136
+
+# TYPE state_memory_best_chain_index_entries gauge
+state_memory_best_chain_index_entries 3017
+
+# TYPE state_memory_best_committed_block_height gauge
+state_memory_best_committed_block_height 2200
+
+# HELP zaino_store_index_tip_height Each index's built height
+# TYPE zaino_store_index_tip_height gauge
+zaino_store_index_tip_height{index="tree_state"} 847
+zaino_store_index_tip_height{index="chain_metadata"} 860
+zaino_store_index_tip_height{index="tx_out_set"} 577
+zaino_store_index_tip_height{index="txid_location"} 906
+zaino_store_index_tip_height{index="history_tree"} 599
+zaino_store_index_tip_height{index="compact_block"} 899
+zaino_store_index_tip_height{index="spent"} 951
+zaino_store_index_tip_height{index="txids"} 871
+zaino_store_index_tip_height{index="address_history"} 835
+zaino_store_index_tip_height{index="transparent"} 786
+zaino_store_index_tip_height{index="headers"} 713
+
+# TYPE state_memory_index_entries gauge
+state_memory_index_entries 3017
+
+# TYPE zaino_lsm_live_rows gauge
+zaino_lsm_live_rows{index="spent",set="spent"} 0
+zaino_lsm_live_rows{index="tx_out_set",set="remaining"} 0
+zaino_lsm_live_rows{index="tree_state",set="ironwood_nodes"} 0
+zaino_lsm_live_rows{index="address_history",set="address_history"} 0
+zaino_lsm_live_rows{index="headers",set="heights"} 0
+zaino_lsm_live_rows{index="tree_state",set="orchard_nodes"} 0
+zaino_lsm_live_rows{index="txid_location",set="txid_location"} 0
+zaino_lsm_live_rows{index="tree_state",set="sapling_nodes"} 0
+
+# HELP zaino_mempool_coherence_frozen_seconds Seconds tip-coherent mempool reads have been frozen; 0 when live
+# TYPE zaino_mempool_coherence_frozen_seconds gauge
+zaino_mempool_coherence_frozen_seconds 0.001524888
+
+# HELP process_virtual_memory_max_bytes Maximum amount of virtual memory available in bytes.
+# TYPE process_virtual_memory_max_bytes gauge
+process_virtual_memory_max_bytes 0
+
+# TYPE zaino_lsm_snapshot_heap_bytes gauge
+zaino_lsm_snapshot_heap_bytes{index="headers"} 1266756
+zaino_lsm_snapshot_heap_bytes{index="transparent"} 157600
+zaino_lsm_snapshot_heap_bytes{index="compact_block"} 111168
+zaino_lsm_snapshot_heap_bytes{index="history_tree"} 434910
+zaino_lsm_snapshot_heap_bytes{index="chain_metadata"} 164451
+zaino_lsm_snapshot_heap_bytes{index="tree_state"} 87375
+zaino_lsm_snapshot_heap_bytes{index="spent"} 45848
+zaino_lsm_snapshot_heap_bytes{index="txids"} 101196
+zaino_lsm_snapshot_heap_bytes{index="txid_location"} 176688
+zaino_lsm_snapshot_heap_bytes{index="address_history"} 161044
+zaino_lsm_snapshot_heap_bytes{index="tx_out_set"} 163889
+
+# TYPE state_memory_chain_count gauge
+state_memory_chain_count 1
+
+# HELP process_resident_memory_bytes Resident memory size in bytes.
+# TYPE process_resident_memory_bytes gauge
+process_resident_memory_bytes 88743936
+
+# HELP zaino_mempool_unadmitted Transactions known to the validator but refused by Zaino's capacity bound
+# TYPE zaino_mempool_unadmitted gauge
+zaino_mempool_unadmitted 0
+
+# HELP zaino_mempool_transactions Transactions in the published mempool set
+# TYPE zaino_mempool_transactions gauge
+zaino_mempool_transactions 0
+
+# TYPE state_memory_committed_block_height gauge
+state_memory_committed_block_height 2200
+
+# TYPE zcash_pool_notes_created gauge
+zcash_pool_notes_created{name="sprout"} 0
+zcash_pool_notes_created{name="sapling"} 7
+zcash_pool_notes_created{name="orchard"} 0
+zcash_pool_notes_created{name="ironwood"} 50
+
+# TYPE zaino_lsm_manifest_read_cached gauge
+zaino_lsm_manifest_read_cached{index="transparent"} 0
+zaino_lsm_manifest_read_cached{index="address_history"} 0
+zaino_lsm_manifest_read_cached{index="history_tree"} 0
+zaino_lsm_manifest_read_cached{index="txids"} 0
+zaino_lsm_manifest_read_cached{index="chain_metadata"} 0
+zaino_lsm_manifest_read_cached{index="tx_out_set"} 0
+zaino_lsm_manifest_read_cached{index="txid_location"} 0
+zaino_lsm_manifest_read_cached{index="headers"} 0
+zaino_lsm_manifest_read_cached{index="compact_block"} 0
+zaino_lsm_manifest_read_cached{index="tree_state"} 0
+zaino_lsm_manifest_read_cached{index="spent"} 0
+
+# HELP process_threads Number of OS threads in the process.
+# TYPE process_threads gauge
+process_threads 132
+
+# HELP zaino_store_build_target_height The height the last build was asked for
+# TYPE zaino_store_build_target_height gauge
+zaino_store_build_target_height 1199
+
+# TYPE zaino_lsm_unlinked_mapped_bytes gauge
+zaino_lsm_unlinked_mapped_bytes{index="txid_location",set="txid_location"} 0
+zaino_lsm_unlinked_mapped_bytes{index="spent",set="spent"} 0
+zaino_lsm_unlinked_mapped_bytes{index="tree_state",set="ironwood_nodes"} 0
+zaino_lsm_unlinked_mapped_bytes{index="tree_state",set="sapling_nodes"} 0
+zaino_lsm_unlinked_mapped_bytes{index="address_history",set="address_history"} 0
+zaino_lsm_unlinked_mapped_bytes{index="tx_out_set",set="remaining"} 0
+zaino_lsm_unlinked_mapped_bytes{index="headers",set="heights"} 0
+zaino_lsm_unlinked_mapped_bytes{index="tree_state",set="orchard_nodes"} 0
+
+# TYPE zaino_lsm_snapshots_live gauge
+zaino_lsm_snapshots_live{index="transparent"} 1
+zaino_lsm_snapshots_live{index="compact_block"} 1
+zaino_lsm_snapshots_live{index="tx_out_set"} 1
+zaino_lsm_snapshots_live{index="headers"} 1
+zaino_lsm_snapshots_live{index="history_tree"} 1
+zaino_lsm_snapshots_live{index="txid_location"} 1
+zaino_lsm_snapshots_live{index="chain_metadata"} 1
+zaino_lsm_snapshots_live{index="tree_state"} 1
+zaino_lsm_snapshots_live{index="address_history"} 1
+zaino_lsm_snapshots_live{index="spent"} 1
+zaino_lsm_snapshots_live{index="txids"} 1
+
+# HELP zaino_mempool_bytes Published mempool size: `raw` serialized bytes, `cost` ZIP-401 accounting
+# TYPE zaino_mempool_bytes gauge
+zaino_mempool_bytes{kind="cost"} 0
+zaino_mempool_bytes{kind="raw"} 0
+
+# HELP process_virtual_memory_bytes Virtual memory size in bytes.
+# TYPE process_virtual_memory_bytes gauge
+process_virtual_memory_bytes 8859111424
+
+# HELP zainod_build_info Static build metadata; always 1, version in a label
+# TYPE zainod_build_info gauge
+zainod_build_info{version="0.11.0"} 1
+
+# HELP zaino_store_fold_seconds One block folded into an index, per index
+# TYPE zaino_store_fold_seconds histogram
+zaino_store_fold_seconds_bucket{index="address_history",le="0.0005"} 850
+zaino_store_fold_seconds_bucket{index="address_history",le="0.001"} 850
+zaino_store_fold_seconds_bucket{index="address_history",le="0.0025"} 850
+zaino_store_fold_seconds_bucket{index="address_history",le="0.005"} 850
+zaino_store_fold_seconds_bucket{index="address_history",le="0.01"} 850
+zaino_store_fold_seconds_bucket{index="address_history",le="0.025"} 850
+zaino_store_fold_seconds_bucket{index="address_history",le="0.05"} 850
+zaino_store_fold_seconds_bucket{index="address_history",le="0.1"} 850
+zaino_store_fold_seconds_bucket{index="address_history",le="0.25"} 850
+zaino_store_fold_seconds_bucket{index="address_history",le="0.5"} 850
+zaino_store_fold_seconds_bucket{index="address_history",le="1"} 850
+zaino_store_fold_seconds_bucket{index="address_history",le="2.5"} 850
+zaino_store_fold_seconds_bucket{index="address_history",le="5"} 850
+zaino_store_fold_seconds_bucket{index="address_history",le="10"} 850
+zaino_store_fold_seconds_bucket{index="address_history",le="+Inf"} 850
+zaino_store_fold_seconds_sum{index="address_history"} 0.0008886390000000001
+zaino_store_fold_seconds_count{index="address_history"} 850
+zaino_store_fold_seconds_bucket{index="spent",le="0.0005"} 982
+zaino_store_fold_seconds_bucket{index="spent",le="0.001"} 982
+zaino_store_fold_seconds_bucket{index="spent",le="0.0025"} 982
+zaino_store_fold_seconds_bucket{index="spent",le="0.005"} 982
+zaino_store_fold_seconds_bucket{index="spent",le="0.01"} 982
+zaino_store_fold_seconds_bucket{index="spent",le="0.025"} 982
+zaino_store_fold_seconds_bucket{index="spent",le="0.05"} 982
+zaino_store_fold_seconds_bucket{index="spent",le="0.1"} 982
+zaino_store_fold_seconds_bucket{index="spent",le="0.25"} 982
+zaino_store_fold_seconds_bucket{index="spent",le="0.5"} 982
+zaino_store_fold_seconds_bucket{index="spent",le="1"} 982
+zaino_store_fold_seconds_bucket{index="spent",le="2.5"} 982
+zaino_store_fold_seconds_bucket{index="spent",le="5"} 982
+zaino_store_fold_seconds_bucket{index="spent",le="10"} 982
+zaino_store_fold_seconds_bucket{index="spent",le="+Inf"} 982
+zaino_store_fold_seconds_sum{index="spent"} 0.0007773339999999999
+zaino_store_fold_seconds_count{index="spent"} 982
+zaino_store_fold_seconds_bucket{index="headers",le="0.0005"} 741
+zaino_store_fold_seconds_bucket{index="headers",le="0.001"} 741
+zaino_store_fold_seconds_bucket{index="headers",le="0.0025"} 741
+zaino_store_fold_seconds_bucket{index="headers",le="0.005"} 741
+zaino_store_fold_seconds_bucket{index="headers",le="0.01"} 741
+zaino_store_fold_seconds_bucket{index="headers",le="0.025"} 741
+zaino_store_fold_seconds_bucket{index="headers",le="0.05"} 741
+zaino_store_fold_seconds_bucket{index="headers",le="0.1"} 741
+zaino_store_fold_seconds_bucket{index="headers",le="0.25"} 741
+zaino_store_fold_seconds_bucket{index="headers",le="0.5"} 741
+zaino_store_fold_seconds_bucket{index="headers",le="1"} 741
+zaino_store_fold_seconds_bucket{index="headers",le="2.5"} 741
+zaino_store_fold_seconds_bucket{index="headers",le="5"} 741
+zaino_store_fold_seconds_bucket{index="headers",le="10"} 741
+zaino_store_fold_seconds_bucket{index="headers",le="+Inf"} 741
+zaino_store_fold_seconds_sum{index="headers"} 0.0011227879999999998
+zaino_store_fold_seconds_count{index="headers"} 741
+zaino_store_fold_seconds_bucket{index="txid_location",le="0.0005"} 962
+zaino_store_fold_seconds_bucket{index="txid_location",le="0.001"} 962
+zaino_store_fold_seconds_bucket{index="txid_location",le="0.0025"} 962
+zaino_store_fold_seconds_bucket{index="txid_location",le="0.005"} 962
+zaino_store_fold_seconds_bucket{index="txid_location",le="0.01"} 962
+zaino_store_fold_seconds_bucket{index="txid_location",le="0.025"} 962
+zaino_store_fold_seconds_bucket{index="txid_location",le="0.05"} 962
+zaino_store_fold_seconds_bucket{index="txid_location",le="0.1"} 962
+zaino_store_fold_seconds_bucket{index="txid_location",le="0.25"} 962
+zaino_store_fold_seconds_bucket{index="txid_location",le="0.5"} 962
+zaino_store_fold_seconds_bucket{index="txid_location",le="1"} 962
+zaino_store_fold_seconds_bucket{index="txid_location",le="2.5"} 962
+zaino_store_fold_seconds_bucket{index="txid_location",le="5"} 962
+zaino_store_fold_seconds_bucket{index="txid_location",le="10"} 962
+zaino_store_fold_seconds_bucket{index="txid_location",le="+Inf"} 962
+zaino_store_fold_seconds_sum{index="txid_location"} 0.000896179
+zaino_store_fold_seconds_count{index="txid_location"} 962
+zaino_store_fold_seconds_bucket{index="tx_out_set",le="0.0005"} 622
+zaino_store_fold_seconds_bucket{index="tx_out_set",le="0.001"} 622
+zaino_store_fold_seconds_bucket{index="tx_out_set",le="0.0025"} 622
+zaino_store_fold_seconds_bucket{index="tx_out_set",le="0.005"} 622
+zaino_store_fold_seconds_bucket{index="tx_out_set",le="0.01"} 622
+zaino_store_fold_seconds_bucket{index="tx_out_set",le="0.025"} 622
+zaino_store_fold_seconds_bucket{index="tx_out_set",le="0.05"} 622
+zaino_store_fold_seconds_bucket{index="tx_out_set",le="0.1"} 622
+zaino_store_fold_seconds_bucket{index="tx_out_set",le="0.25"} 622
+zaino_store_fold_seconds_bucket{index="tx_out_set",le="0.5"} 622
+zaino_store_fold_seconds_bucket{index="tx_out_set",le="1"} 622
+zaino_store_fold_seconds_bucket{index="tx_out_set",le="2.5"} 622
+zaino_store_fold_seconds_bucket{index="tx_out_set",le="5"} 622
+zaino_store_fold_seconds_bucket{index="tx_out_set",le="10"} 622
+zaino_store_fold_seconds_bucket{index="tx_out_set",le="+Inf"} 622
+zaino_store_fold_seconds_sum{index="tx_out_set"} 0.002596127
+zaino_store_fold_seconds_count{index="tx_out_set"} 622
+zaino_store_fold_seconds_bucket{index="history_tree",le="0.0005"} 651
+zaino_store_fold_seconds_bucket{index="history_tree",le="0.001"} 652
+zaino_store_fold_seconds_bucket{index="history_tree",le="0.0025"} 652
+zaino_store_fold_seconds_bucket{index="history_tree",le="0.005"} 652
+zaino_store_fold_seconds_bucket{index="history_tree",le="0.01"} 652
+zaino_store_fold_seconds_bucket{index="history_tree",le="0.025"} 652
+zaino_store_fold_seconds_bucket{index="history_tree",le="0.05"} 652
+zaino_store_fold_seconds_bucket{index="history_tree",le="0.1"} 652
+zaino_store_fold_seconds_bucket{index="history_tree",le="0.25"} 652
+zaino_store_fold_seconds_bucket{index="history_tree",le="0.5"} 652
+zaino_store_fold_seconds_bucket{index="history_tree",le="1"} 652
+zaino_store_fold_seconds_bucket{index="history_tree",le="2.5"} 652
+zaino_store_fold_seconds_bucket{index="history_tree",le="5"} 652
+zaino_store_fold_seconds_bucket{index="history_tree",le="10"} 652
+zaino_store_fold_seconds_bucket{index="history_tree",le="+Inf"} 652
+zaino_store_fold_seconds_sum{index="history_tree"} 0.014440999000000001
+zaino_store_fold_seconds_count{index="history_tree"} 652
+zaino_store_fold_seconds_bucket{index="txids",le="0.0005"} 946
+zaino_store_fold_seconds_bucket{index="txids",le="0.001"} 946
+zaino_store_fold_seconds_bucket{index="txids",le="0.0025"} 946
+zaino_store_fold_seconds_bucket{index="txids",le="0.005"} 946
+zaino_store_fold_seconds_bucket{index="txids",le="0.01"} 946
+zaino_store_fold_seconds_bucket{index="txids",le="0.025"} 946
+zaino_store_fold_seconds_bucket{index="txids",le="0.05"} 946
+zaino_store_fold_seconds_bucket{index="txids",le="0.1"} 946
+zaino_store_fold_seconds_bucket{index="txids",le="0.25"} 946
+zaino_store_fold_seconds_bucket{index="txids",le="0.5"} 946
+zaino_store_fold_seconds_bucket{index="txids",le="1"} 946
+zaino_store_fold_seconds_bucket{index="txids",le="2.5"} 946
+zaino_store_fold_seconds_bucket{index="txids",le="5"} 946
+zaino_store_fold_seconds_bucket{index="txids",le="10"} 946
+zaino_store_fold_seconds_bucket{index="txids",le="+Inf"} 946
+zaino_store_fold_seconds_sum{index="txids"} 0.0011550160000000005
+zaino_store_fold_seconds_count{index="txids"} 946
+zaino_store_fold_seconds_bucket{index="compact_block",le="0.0005"} 980
+zaino_store_fold_seconds_bucket{index="compact_block",le="0.001"} 980
+zaino_store_fold_seconds_bucket{index="compact_block",le="0.0025"} 980
+zaino_store_fold_seconds_bucket{index="compact_block",le="0.005"} 980
+zaino_store_fold_seconds_bucket{index="compact_block",le="0.01"} 980
+zaino_store_fold_seconds_bucket{index="compact_block",le="0.025"} 980
+zaino_store_fold_seconds_bucket{index="compact_block",le="0.05"} 980
+zaino_store_fold_seconds_bucket{index="compact_block",le="0.1"} 980
+zaino_store_fold_seconds_bucket{index="compact_block",le="0.25"} 980
+zaino_store_fold_seconds_bucket{index="compact_block",le="0.5"} 980
+zaino_store_fold_seconds_bucket{index="compact_block",le="1"} 980
+zaino_store_fold_seconds_bucket{index="compact_block",le="2.5"} 980
+zaino_store_fold_seconds_bucket{index="compact_block",le="5"} 980
+zaino_store_fold_seconds_bucket{index="compact_block",le="10"} 980
+zaino_store_fold_seconds_bucket{index="compact_block",le="+Inf"} 980
+zaino_store_fold_seconds_sum{index="compact_block"} 0.0015161859999999997
+zaino_store_fold_seconds_count{index="compact_block"} 980
+zaino_store_fold_seconds_bucket{index="transparent",le="0.0005"} 884
+zaino_store_fold_seconds_bucket{index="transparent",le="0.001"} 884
+zaino_store_fold_seconds_bucket{index="transparent",le="0.0025"} 884
+zaino_store_fold_seconds_bucket{index="transparent",le="0.005"} 884
+zaino_store_fold_seconds_bucket{index="transparent",le="0.01"} 884
+zaino_store_fold_seconds_bucket{index="transparent",le="0.025"} 884
+zaino_store_fold_seconds_bucket{index="transparent",le="0.05"} 884
+zaino_store_fold_seconds_bucket{index="transparent",le="0.1"} 884
+zaino_store_fold_seconds_bucket{index="transparent",le="0.25"} 884
+zaino_store_fold_seconds_bucket{index="transparent",le="0.5"} 884
+zaino_store_fold_seconds_bucket{index="transparent",le="1"} 884
+zaino_store_fold_seconds_bucket{index="transparent",le="2.5"} 884
+zaino_store_fold_seconds_bucket{index="transparent",le="5"} 884
+zaino_store_fold_seconds_bucket{index="transparent",le="10"} 884
+zaino_store_fold_seconds_bucket{index="transparent",le="+Inf"} 884
+zaino_store_fold_seconds_sum{index="transparent"} 0.0016813110000000004
+zaino_store_fold_seconds_count{index="transparent"} 884
+zaino_store_fold_seconds_bucket{index="tree_state",le="0.0005"} 943
+zaino_store_fold_seconds_bucket{index="tree_state",le="0.001"} 943
+zaino_store_fold_seconds_bucket{index="tree_state",le="0.0025"} 943
+zaino_store_fold_seconds_bucket{index="tree_state",le="0.005"} 943
+zaino_store_fold_seconds_bucket{index="tree_state",le="0.01"} 943
+zaino_store_fold_seconds_bucket{index="tree_state",le="0.025"} 943
+zaino_store_fold_seconds_bucket{index="tree_state",le="0.05"} 943
+zaino_store_fold_seconds_bucket{index="tree_state",le="0.1"} 943
+zaino_store_fold_seconds_bucket{index="tree_state",le="0.25"} 943
+zaino_store_fold_seconds_bucket{index="tree_state",le="0.5"} 943
+zaino_store_fold_seconds_bucket{index="tree_state",le="1"} 943
+zaino_store_fold_seconds_bucket{index="tree_state",le="2.5"} 943
+zaino_store_fold_seconds_bucket{index="tree_state",le="5"} 943
+zaino_store_fold_seconds_bucket{index="tree_state",le="10"} 943
+zaino_store_fold_seconds_bucket{index="tree_state",le="+Inf"} 943
+zaino_store_fold_seconds_sum{index="tree_state"} 0.0017749110000000001
+zaino_store_fold_seconds_count{index="tree_state"} 943
+zaino_store_fold_seconds_bucket{index="chain_metadata",le="0.0005"} 989
+zaino_store_fold_seconds_bucket{index="chain_metadata",le="0.001"} 989
+zaino_store_fold_seconds_bucket{index="chain_metadata",le="0.0025"} 989
+zaino_store_fold_seconds_bucket{index="chain_metadata",le="0.005"} 989
+zaino_store_fold_seconds_bucket{index="chain_metadata",le="0.01"} 989
+zaino_store_fold_seconds_bucket{index="chain_metadata",le="0.025"} 989
+zaino_store_fold_seconds_bucket{index="chain_metadata",le="0.05"} 989
+zaino_store_fold_seconds_bucket{index="chain_metadata",le="0.1"} 989
+zaino_store_fold_seconds_bucket{index="chain_metadata",le="0.25"} 989
+zaino_store_fold_seconds_bucket{index="chain_metadata",le="0.5"} 989
+zaino_store_fold_seconds_bucket{index="chain_metadata",le="1"} 989
+zaino_store_fold_seconds_bucket{index="chain_metadata",le="2.5"} 989
+zaino_store_fold_seconds_bucket{index="chain_metadata",le="5"} 989
+zaino_store_fold_seconds_bucket{index="chain_metadata",le="10"} 989
+zaino_store_fold_seconds_bucket{index="chain_metadata",le="+Inf"} 989
+zaino_store_fold_seconds_sum{index="chain_metadata"} 0.0018442960000000003
+zaino_store_fold_seconds_count{index="chain_metadata"} 989
+
+# HELP zaino_mempool_poll_seconds Seconds for one mempool poll
+# TYPE zaino_mempool_poll_seconds histogram
+zaino_mempool_poll_seconds_bucket{le="0.001"} 0
+zaino_mempool_poll_seconds_bucket{le="0.005"} 1
+zaino_mempool_poll_seconds_bucket{le="0.01"} 1
+zaino_mempool_poll_seconds_bucket{le="0.05"} 1
+zaino_mempool_poll_seconds_bucket{le="0.1"} 1
+zaino_mempool_poll_seconds_bucket{le="0.25"} 1
+zaino_mempool_poll_seconds_bucket{le="0.5"} 1
+zaino_mempool_poll_seconds_bucket{le="1"} 1
+zaino_mempool_poll_seconds_bucket{le="2.5"} 1
+zaino_mempool_poll_seconds_bucket{le="5"} 1
+zaino_mempool_poll_seconds_bucket{le="10"} 1
+zaino_mempool_poll_seconds_bucket{le="30"} 1
+zaino_mempool_poll_seconds_bucket{le="60"} 1
+zaino_mempool_poll_seconds_bucket{le="300"} 1
+zaino_mempool_poll_seconds_bucket{le="+Inf"} 1
+zaino_mempool_poll_seconds_sum 0.00197698
+zaino_mempool_poll_seconds_count 1
+
+# TYPE zaino_lsm_commit_check_seconds summary
+zaino_lsm_commit_check_seconds{index="headers",quantile="0"} 0.00000567
+zaino_lsm_commit_check_seconds{index="headers",quantile="0.5"} 0.000009457523046791286
+zaino_lsm_commit_check_seconds{index="headers",quantile="0.9"} 0.000029224591168620394
+zaino_lsm_commit_check_seconds{index="headers",quantile="0.95"} 0.000040415384593292345
+zaino_lsm_commit_check_seconds{index="headers",quantile="0.99"} 0.000040415384593292345
+zaino_lsm_commit_check_seconds{index="headers",quantile="0.999"} 0.000040415384593292345
+zaino_lsm_commit_check_seconds{index="headers",quantile="1"} 0.000565702
+zaino_lsm_commit_check_seconds_sum{index="headers"} 0.024534479999999994
+zaino_lsm_commit_check_seconds_count{index="headers"} 724
+zaino_lsm_commit_check_seconds{index="txid_location",quantile="0"} 0.000001844
+zaino_lsm_commit_check_seconds{index="txid_location",quantile="0.5"} 0.000008145051084377882
+zaino_lsm_commit_check_seconds{index="txid_location",quantile="0.9"} 0.00002228269832038834
+zaino_lsm_commit_check_seconds{index="txid_location",quantile="0.95"} 0.00003378478383215981
+zaino_lsm_commit_check_seconds{index="txid_location",quantile="0.99"} 0.00014285219916055912
+zaino_lsm_commit_check_seconds{index="txid_location",quantile="0.999"} 0.00014285219916055912
+zaino_lsm_commit_check_seconds{index="txid_location",quantile="1"} 0.000478682
+zaino_lsm_commit_check_seconds_sum{index="txid_location"} 0.021257881000000017
+zaino_lsm_commit_check_seconds_count{index="txid_location"} 945
+zaino_lsm_commit_check_seconds{index="tree_state",quantile="0"} 0.000000952
+zaino_lsm_commit_check_seconds{index="tree_state",quantile="0.5"} 0.00000921663970810085
+zaino_lsm_commit_check_seconds{index="tree_state",quantile="0.9"} 0.00008912238360868618
+zaino_lsm_commit_check_seconds{index="tree_state",quantile="0.95"} 0.00009604439400499797
+zaino_lsm_commit_check_seconds{index="tree_state",quantile="0.99"} 0.0006589255332836107
+zaino_lsm_commit_check_seconds{index="tree_state",quantile="0.999"} 0.0006589255332836107
+zaino_lsm_commit_check_seconds{index="tree_state",quantile="1"} 0.000873127
+zaino_lsm_commit_check_seconds_sum{index="tree_state"} 0.024608499999999974
+zaino_lsm_commit_check_seconds_count{index="tree_state"} 880
+zaino_lsm_commit_check_seconds{index="chain_metadata",quantile="0"} 0.00000564
+zaino_lsm_commit_check_seconds{index="chain_metadata",quantile="0.5"} 0.000007343462881248231
+zaino_lsm_commit_check_seconds{index="chain_metadata",quantile="0.9"} 0.000009948387866446897
+zaino_lsm_commit_check_seconds{index="chain_metadata",quantile="0.95"} 0.000009948387866446897
+zaino_lsm_commit_check_seconds{index="chain_metadata",quantile="0.99"} 0.000009948387866446897
+zaino_lsm_commit_check_seconds{index="chain_metadata",quantile="0.999"} 0.000009948387866446897
+zaino_lsm_commit_check_seconds{index="chain_metadata",quantile="1"} 0.000031709
+zaino_lsm_commit_check_seconds_sum{index="chain_metadata"} 0.021308914999999973
+zaino_lsm_commit_check_seconds_count{index="chain_metadata"} 901
+zaino_lsm_commit_check_seconds{index="spent",quantile="0"} 0.000000851
+zaino_lsm_commit_check_seconds{index="spent",quantile="0.5"} 0.000006110511671371802
+zaino_lsm_commit_check_seconds{index="spent",quantile="0.9"} 0.000013463879614750715
+zaino_lsm_commit_check_seconds{index="spent",quantile="0.95"} 0.00001706126204832354
+zaino_lsm_commit_check_seconds{index="spent",quantile="0.99"} 0.00003481368368196996
+zaino_lsm_commit_check_seconds{index="spent",quantile="0.999"} 0.00003481368368196996
+zaino_lsm_commit_check_seconds{index="spent",quantile="1"} 0.000242297
+zaino_lsm_commit_check_seconds_sum{index="spent"} 0.017007145999999994
+zaino_lsm_commit_check_seconds_count{index="spent"} 985
+zaino_lsm_commit_check_seconds{index="address_history",quantile="0"} 0.000001582
+zaino_lsm_commit_check_seconds{index="address_history",quantile="0.5"} 0.000008425059293489818
+zaino_lsm_commit_check_seconds{index="address_history",quantile="0.9"} 0.000035396414114249285
+zaino_lsm_commit_check_seconds{index="address_history",quantile="0.95"} 0.00006333325335910502
+zaino_lsm_commit_check_seconds{index="address_history",quantile="0.99"} 0.000453960653191258
+zaino_lsm_commit_check_seconds{index="address_history",quantile="0.999"} 0.000453960653191258
+zaino_lsm_commit_check_seconds{index="address_history",quantile="1"} 0.000596548
+zaino_lsm_commit_check_seconds_sum{index="address_history"} 0.024150378000000014
+zaino_lsm_commit_check_seconds_count{index="address_history"} 883
+zaino_lsm_commit_check_seconds{index="tx_out_set",quantile="0"} 0.000006422
+zaino_lsm_commit_check_seconds{index="tx_out_set",quantile="0.5"} 0.000012192372060459156
+zaino_lsm_commit_check_seconds{index="tx_out_set",quantile="0.9"} 0.000036730611893583825
+zaino_lsm_commit_check_seconds{index="tx_out_set",quantile="0.95"} 0.000056059325859977876
+zaino_lsm_commit_check_seconds{index="tx_out_set",quantile="0.99"} 0.00009125068706903626
+zaino_lsm_commit_check_seconds{index="tx_out_set",quantile="0.999"} 0.00009125068706903626
+zaino_lsm_commit_check_seconds{index="tx_out_set",quantile="1"} 0.000234281
+zaino_lsm_commit_check_seconds_sum{index="tx_out_set"} 0.032182678
+zaino_lsm_commit_check_seconds_count{index="tx_out_set"} 634
+zaino_lsm_commit_check_seconds{index="compact_block",quantile="0"} 0.000000832
+zaino_lsm_commit_check_seconds{index="compact_block",quantile="0.5"} 0.00000868685109602642
+zaino_lsm_commit_check_seconds{index="compact_block",quantile="0.9"} 0.00010725514433621181
+zaino_lsm_commit_check_seconds{index="compact_block",quantile="0.95"} 0.00020578059423607354
+zaino_lsm_commit_check_seconds{index="compact_block",quantile="0.99"} 0.0005635243406527959
+zaino_lsm_commit_check_seconds{index="compact_block",quantile="0.999"} 0.0005635243406527959
+zaino_lsm_commit_check_seconds{index="compact_block",quantile="1"} 0.000813267
+zaino_lsm_commit_check_seconds_sum{index="compact_block"} 0.023216093000000014
+zaino_lsm_commit_check_seconds_count{index="compact_block"} 954
+zaino_lsm_commit_check_seconds{index="transparent",quantile="0"} 0.000000962
+zaino_lsm_commit_check_seconds{index="transparent",quantile="0.5"} 0.000008015767294954692
+zaino_lsm_commit_check_seconds{index="transparent",quantile="0.9"} 0.000035283326625190525
+zaino_lsm_commit_check_seconds{index="transparent",quantile="0.95"} 0.0000683205446159361
+zaino_lsm_commit_check_seconds{index="transparent",quantile="0.99"} 0.00007998271281563929
+zaino_lsm_commit_check_seconds{index="transparent",quantile="0.999"} 0.00007998271281563929
+zaino_lsm_commit_check_seconds{index="transparent",quantile="1"} 0.000098241
+zaino_lsm_commit_check_seconds_sum{index="transparent"} 0.026060266000000006
+zaino_lsm_commit_check_seconds_count{index="transparent"} 871
+zaino_lsm_commit_check_seconds{index="txids",quantile="0"} 0.000004879
+zaino_lsm_commit_check_seconds{index="txids",quantile="0.5"} 0.000011450237991170149
+zaino_lsm_commit_check_seconds{index="txids",quantile="0.9"} 0.00009982418835696956
+zaino_lsm_commit_check_seconds{index="txids",quantile="0.95"} 0.0001135689932954188
+zaino_lsm_commit_check_seconds{index="txids",quantile="0.99"} 0.00013142160618618344
+zaino_lsm_commit_check_seconds{index="txids",quantile="0.999"} 0.00013142160618618344
+zaino_lsm_commit_check_seconds{index="txids",quantile="1"} 0.000225675
+zaino_lsm_commit_check_seconds_sum{index="txids"} 0.025153200000000004
+zaino_lsm_commit_check_seconds_count{index="txids"} 946
+zaino_lsm_commit_check_seconds{index="history_tree",quantile="0"} 0.000001222
+zaino_lsm_commit_check_seconds{index="history_tree",quantile="0.5"} 0.000009726075887544097
+zaino_lsm_commit_check_seconds{index="history_tree",quantile="0.9"} 0.000024095148604611264
+zaino_lsm_commit_check_seconds{index="history_tree",quantile="0.95"} 0.00003684096918279827
+zaino_lsm_commit_check_seconds{index="history_tree",quantile="0.99"} 0.000057375106260352045
+zaino_lsm_commit_check_seconds{index="history_tree",quantile="0.999"} 0.000057375106260352045
+zaino_lsm_commit_check_seconds{index="history_tree",quantile="1"} 0.000114671
+zaino_lsm_commit_check_seconds_sum{index="history_tree"} 0.025589675000000013
+zaino_lsm_commit_check_seconds_count{index="history_tree"} 689
+
+# HELP zaino_store_commit_seconds One block's writes committed to an index, per index
+# TYPE zaino_store_commit_seconds histogram
+zaino_store_commit_seconds_bucket{index="chain_metadata",le="0.0005"} 857
+zaino_store_commit_seconds_bucket{index="chain_metadata",le="0.001"} 863
+zaino_store_commit_seconds_bucket{index="chain_metadata",le="0.0025"} 863
+zaino_store_commit_seconds_bucket{index="chain_metadata",le="0.005"} 863
+zaino_store_commit_seconds_bucket{index="chain_metadata",le="0.01"} 863
+zaino_store_commit_seconds_bucket{index="chain_metadata",le="0.025"} 863
+zaino_store_commit_seconds_bucket{index="chain_metadata",le="0.05"} 863
+zaino_store_commit_seconds_bucket{index="chain_metadata",le="0.1"} 863
+zaino_store_commit_seconds_bucket{index="chain_metadata",le="0.25"} 863
+zaino_store_commit_seconds_bucket{index="chain_metadata",le="0.5"} 863
+zaino_store_commit_seconds_bucket{index="chain_metadata",le="1"} 863
+zaino_store_commit_seconds_bucket{index="chain_metadata",le="2.5"} 863
+zaino_store_commit_seconds_bucket{index="chain_metadata",le="5"} 863
+zaino_store_commit_seconds_bucket{index="chain_metadata",le="10"} 863
+zaino_store_commit_seconds_bucket{index="chain_metadata",le="+Inf"} 863
+zaino_store_commit_seconds_sum{index="chain_metadata"} 0.026800823000000005
+zaino_store_commit_seconds_count{index="chain_metadata"} 863
+zaino_store_commit_seconds_bucket{index="spent",le="0.0005"} 957
+zaino_store_commit_seconds_bucket{index="spent",le="0.001"} 959
+zaino_store_commit_seconds_bucket{index="spent",le="0.0025"} 959
+zaino_store_commit_seconds_bucket{index="spent",le="0.005"} 959
+zaino_store_commit_seconds_bucket{index="spent",le="0.01"} 959
+zaino_store_commit_seconds_bucket{index="spent",le="0.025"} 959
+zaino_store_commit_seconds_bucket{index="spent",le="0.05"} 959
+zaino_store_commit_seconds_bucket{index="spent",le="0.1"} 959
+zaino_store_commit_seconds_bucket{index="spent",le="0.25"} 959
+zaino_store_commit_seconds_bucket{index="spent",le="0.5"} 959
+zaino_store_commit_seconds_bucket{index="spent",le="1"} 959
+zaino_store_commit_seconds_bucket{index="spent",le="2.5"} 959
+zaino_store_commit_seconds_bucket{index="spent",le="5"} 959
+zaino_store_commit_seconds_bucket{index="spent",le="10"} 959
+zaino_store_commit_seconds_bucket{index="spent",le="+Inf"} 959
+zaino_store_commit_seconds_sum{index="spent"} 0.020172673000000002
+zaino_store_commit_seconds_count{index="spent"} 959
+zaino_store_commit_seconds_bucket{index="txids",le="0.0005"} 886
+zaino_store_commit_seconds_bucket{index="txids",le="0.001"} 891
+zaino_store_commit_seconds_bucket{index="txids",le="0.0025"} 891
+zaino_store_commit_seconds_bucket{index="txids",le="0.005"} 891
+zaino_store_commit_seconds_bucket{index="txids",le="0.01"} 891
+zaino_store_commit_seconds_bucket{index="txids",le="0.025"} 891
+zaino_store_commit_seconds_bucket{index="txids",le="0.05"} 891
+zaino_store_commit_seconds_bucket{index="txids",le="0.1"} 891
+zaino_store_commit_seconds_bucket{index="txids",le="0.25"} 891
+zaino_store_commit_seconds_bucket{index="txids",le="0.5"} 891
+zaino_store_commit_seconds_bucket{index="txids",le="1"} 891
+zaino_store_commit_seconds_bucket{index="txids",le="2.5"} 891
+zaino_store_commit_seconds_bucket{index="txids",le="5"} 891
+zaino_store_commit_seconds_bucket{index="txids",le="10"} 891
+zaino_store_commit_seconds_bucket{index="txids",le="+Inf"} 891
+zaino_store_commit_seconds_sum{index="txids"} 0.029664649
+zaino_store_commit_seconds_count{index="txids"} 891
+zaino_store_commit_seconds_bucket{index="compact_block",le="0.0005"} 926
+zaino_store_commit_seconds_bucket{index="compact_block",le="0.001"} 931
+zaino_store_commit_seconds_bucket{index="compact_block",le="0.0025"} 931
+zaino_store_commit_seconds_bucket{index="compact_block",le="0.005"} 931
+zaino_store_commit_seconds_bucket{index="compact_block",le="0.01"} 931
+zaino_store_commit_seconds_bucket{index="compact_block",le="0.025"} 931
+zaino_store_commit_seconds_bucket{index="compact_block",le="0.05"} 931
+zaino_store_commit_seconds_bucket{index="compact_block",le="0.1"} 931
+zaino_store_commit_seconds_bucket{index="compact_block",le="0.25"} 931
+zaino_store_commit_seconds_bucket{index="compact_block",le="0.5"} 931
+zaino_store_commit_seconds_bucket{index="compact_block",le="1"} 931
+zaino_store_commit_seconds_bucket{index="compact_block",le="2.5"} 931
+zaino_store_commit_seconds_bucket{index="compact_block",le="5"} 931
+zaino_store_commit_seconds_bucket{index="compact_block",le="10"} 931
+zaino_store_commit_seconds_bucket{index="compact_block",le="+Inf"} 931
+zaino_store_commit_seconds_sum{index="compact_block"} 0.028253139999999996
+zaino_store_commit_seconds_count{index="compact_block"} 931
+zaino_store_commit_seconds_bucket{index="txid_location",le="0.0005"} 941
+zaino_store_commit_seconds_bucket{index="txid_location",le="0.001"} 945
+zaino_store_commit_seconds_bucket{index="txid_location",le="0.0025"} 945
+zaino_store_commit_seconds_bucket{index="txid_location",le="0.005"} 945
+zaino_store_commit_seconds_bucket{index="txid_location",le="0.01"} 945
+zaino_store_commit_seconds_bucket{index="txid_location",le="0.025"} 945
+zaino_store_commit_seconds_bucket{index="txid_location",le="0.05"} 945
+zaino_store_commit_seconds_bucket{index="txid_location",le="0.1"} 945
+zaino_store_commit_seconds_bucket{index="txid_location",le="0.25"} 945
+zaino_store_commit_seconds_bucket{index="txid_location",le="0.5"} 945
+zaino_store_commit_seconds_bucket{index="txid_location",le="1"} 945
+zaino_store_commit_seconds_bucket{index="txid_location",le="2.5"} 945
+zaino_store_commit_seconds_bucket{index="txid_location",le="5"} 945
+zaino_store_commit_seconds_bucket{index="txid_location",le="10"} 945
+zaino_store_commit_seconds_bucket{index="txid_location",le="+Inf"} 945
+zaino_store_commit_seconds_sum{index="txid_location"} 0.028165156000000004
+zaino_store_commit_seconds_count{index="txid_location"} 945
+zaino_store_commit_seconds_bucket{index="history_tree",le="0.0005"} 616
+zaino_store_commit_seconds_bucket{index="history_tree",le="0.001"} 623
+zaino_store_commit_seconds_bucket{index="history_tree",le="0.0025"} 625
+zaino_store_commit_seconds_bucket{index="history_tree",le="0.005"} 625
+zaino_store_commit_seconds_bucket{index="history_tree",le="0.01"} 625
+zaino_store_commit_seconds_bucket{index="history_tree",le="0.025"} 625
+zaino_store_commit_seconds_bucket{index="history_tree",le="0.05"} 625
+zaino_store_commit_seconds_bucket{index="history_tree",le="0.1"} 625
+zaino_store_commit_seconds_bucket{index="history_tree",le="0.25"} 625
+zaino_store_commit_seconds_bucket{index="history_tree",le="0.5"} 625
+zaino_store_commit_seconds_bucket{index="history_tree",le="1"} 625
+zaino_store_commit_seconds_bucket{index="history_tree",le="2.5"} 625
+zaino_store_commit_seconds_bucket{index="history_tree",le="5"} 625
+zaino_store_commit_seconds_bucket{index="history_tree",le="10"} 625
+zaino_store_commit_seconds_bucket{index="history_tree",le="+Inf"} 625
+zaino_store_commit_seconds_sum{index="history_tree"} 0.029104817999999998
+zaino_store_commit_seconds_count{index="history_tree"} 625
+zaino_store_commit_seconds_bucket{index="address_history",le="0.0005"} 899
+zaino_store_commit_seconds_bucket{index="address_history",le="0.001"} 904
+zaino_store_commit_seconds_bucket{index="address_history",le="0.0025"} 906
+zaino_store_commit_seconds_bucket{index="address_history",le="0.005"} 906
+zaino_store_commit_seconds_bucket{index="address_history",le="0.01"} 906
+zaino_store_commit_seconds_bucket{index="address_history",le="0.025"} 906
+zaino_store_commit_seconds_bucket{index="address_history",le="0.05"} 906
+zaino_store_commit_seconds_bucket{index="address_history",le="0.1"} 906
+zaino_store_commit_seconds_bucket{index="address_history",le="0.25"} 906
+zaino_store_commit_seconds_bucket{index="address_history",le="0.5"} 906
+zaino_store_commit_seconds_bucket{index="address_history",le="1"} 906
+zaino_store_commit_seconds_bucket{index="address_history",le="2.5"} 906
+zaino_store_commit_seconds_bucket{index="address_history",le="5"} 906
+zaino_store_commit_seconds_bucket{index="address_history",le="10"} 906
+zaino_store_commit_seconds_bucket{index="address_history",le="+Inf"} 906
+zaino_store_commit_seconds_sum{index="address_history"} 0.030947768000000004
+zaino_store_commit_seconds_count{index="address_history"} 906
+zaino_store_commit_seconds_bucket{index="headers",le="0.0005"} 765
+zaino_store_commit_seconds_bucket{index="headers",le="0.001"} 773
+zaino_store_commit_seconds_bucket{index="headers",le="0.0025"} 774
+zaino_store_commit_seconds_bucket{index="headers",le="0.005"} 774
+zaino_store_commit_seconds_bucket{index="headers",le="0.01"} 774
+zaino_store_commit_seconds_bucket{index="headers",le="0.025"} 774
+zaino_store_commit_seconds_bucket{index="headers",le="0.05"} 774
+zaino_store_commit_seconds_bucket{index="headers",le="0.1"} 774
+zaino_store_commit_seconds_bucket{index="headers",le="0.25"} 774
+zaino_store_commit_seconds_bucket{index="headers",le="0.5"} 774
+zaino_store_commit_seconds_bucket{index="headers",le="1"} 774
+zaino_store_commit_seconds_bucket{index="headers",le="2.5"} 774
+zaino_store_commit_seconds_bucket{index="headers",le="5"} 774
+zaino_store_commit_seconds_bucket{index="headers",le="10"} 774
+zaino_store_commit_seconds_bucket{index="headers",le="+Inf"} 774
+zaino_store_commit_seconds_sum{index="headers"} 0.041351208
+zaino_store_commit_seconds_count{index="headers"} 774
+zaino_store_commit_seconds_bucket{index="tree_state",le="0.0005"} 943
+zaino_store_commit_seconds_bucket{index="tree_state",le="0.001"} 949
+zaino_store_commit_seconds_bucket{index="tree_state",le="0.0025"} 950
+zaino_store_commit_seconds_bucket{index="tree_state",le="0.005"} 950
+zaino_store_commit_seconds_bucket{index="tree_state",le="0.01"} 950
+zaino_store_commit_seconds_bucket{index="tree_state",le="0.025"} 950
+zaino_store_commit_seconds_bucket{index="tree_state",le="0.05"} 950
+zaino_store_commit_seconds_bucket{index="tree_state",le="0.1"} 950
+zaino_store_commit_seconds_bucket{index="tree_state",le="0.25"} 950
+zaino_store_commit_seconds_bucket{index="tree_state",le="0.5"} 950
+zaino_store_commit_seconds_bucket{index="tree_state",le="1"} 950
+zaino_store_commit_seconds_bucket{index="tree_state",le="2.5"} 950
+zaino_store_commit_seconds_bucket{index="tree_state",le="5"} 950
+zaino_store_commit_seconds_bucket{index="tree_state",le="10"} 950
+zaino_store_commit_seconds_bucket{index="tree_state",le="+Inf"} 950
+zaino_store_commit_seconds_sum{index="tree_state"} 0.032643665999999995
+zaino_store_commit_seconds_count{index="tree_state"} 950
+zaino_store_commit_seconds_bucket{index="tx_out_set",le="0.0005"} 652
+zaino_store_commit_seconds_bucket{index="tx_out_set",le="0.001"} 665
+zaino_store_commit_seconds_bucket{index="tx_out_set",le="0.0025"} 666
+zaino_store_commit_seconds_bucket{index="tx_out_set",le="0.005"} 666
+zaino_store_commit_seconds_bucket{index="tx_out_set",le="0.01"} 666
+zaino_store_commit_seconds_bucket{index="tx_out_set",le="0.025"} 666
+zaino_store_commit_seconds_bucket{index="tx_out_set",le="0.05"} 666
+zaino_store_commit_seconds_bucket{index="tx_out_set",le="0.1"} 666
+zaino_store_commit_seconds_bucket{index="tx_out_set",le="0.25"} 666
+zaino_store_commit_seconds_bucket{index="tx_out_set",le="0.5"} 666
+zaino_store_commit_seconds_bucket{index="tx_out_set",le="1"} 666
+zaino_store_commit_seconds_bucket{index="tx_out_set",le="2.5"} 666
+zaino_store_commit_seconds_bucket{index="tx_out_set",le="5"} 666
+zaino_store_commit_seconds_bucket{index="tx_out_set",le="10"} 666
+zaino_store_commit_seconds_bucket{index="tx_out_set",le="+Inf"} 666
+zaino_store_commit_seconds_sum{index="tx_out_set"} 0.04156994099999999
+zaino_store_commit_seconds_count{index="tx_out_set"} 666
+zaino_store_commit_seconds_bucket{index="transparent",le="0.0005"} 890
+zaino_store_commit_seconds_bucket{index="transparent",le="0.001"} 898
+zaino_store_commit_seconds_bucket{index="transparent",le="0.0025"} 898
+zaino_store_commit_seconds_bucket{index="transparent",le="0.005"} 898
+zaino_store_commit_seconds_bucket{index="transparent",le="0.01"} 898
+zaino_store_commit_seconds_bucket{index="transparent",le="0.025"} 898
+zaino_store_commit_seconds_bucket{index="transparent",le="0.05"} 898
+zaino_store_commit_seconds_bucket{index="transparent",le="0.1"} 898
+zaino_store_commit_seconds_bucket{index="transparent",le="0.25"} 898
+zaino_store_commit_seconds_bucket{index="transparent",le="0.5"} 898
+zaino_store_commit_seconds_bucket{index="transparent",le="1"} 898
+zaino_store_commit_seconds_bucket{index="transparent",le="2.5"} 898
+zaino_store_commit_seconds_bucket{index="transparent",le="5"} 898
+zaino_store_commit_seconds_bucket{index="transparent",le="10"} 898
+zaino_store_commit_seconds_bucket{index="transparent",le="+Inf"} 898
+zaino_store_commit_seconds_sum{index="transparent"} 0.034245549
+zaino_store_commit_seconds_count{index="transparent"} 898
+
+# HELP zaino_store_writer_wait_seconds An index writer waiting for its turn under the writers budget, per index
+# TYPE zaino_store_writer_wait_seconds histogram
+zaino_store_writer_wait_seconds_bucket{index="transparent",le="0.001"} 789
+zaino_store_writer_wait_seconds_bucket{index="transparent",le="0.005"} 789
+zaino_store_writer_wait_seconds_bucket{index="transparent",le="0.01"} 789
+zaino_store_writer_wait_seconds_bucket{index="transparent",le="0.05"} 789
+zaino_store_writer_wait_seconds_bucket{index="transparent",le="0.1"} 789
+zaino_store_writer_wait_seconds_bucket{index="transparent",le="0.25"} 789
+zaino_store_writer_wait_seconds_bucket{index="transparent",le="0.5"} 789
+zaino_store_writer_wait_seconds_bucket{index="transparent",le="1"} 789
+zaino_store_writer_wait_seconds_bucket{index="transparent",le="2.5"} 789
+zaino_store_writer_wait_seconds_bucket{index="transparent",le="5"} 789
+zaino_store_writer_wait_seconds_bucket{index="transparent",le="10"} 789
+zaino_store_writer_wait_seconds_bucket{index="transparent",le="30"} 789
+zaino_store_writer_wait_seconds_bucket{index="transparent",le="60"} 789
+zaino_store_writer_wait_seconds_bucket{index="transparent",le="300"} 789
+zaino_store_writer_wait_seconds_bucket{index="transparent",le="+Inf"} 789
+zaino_store_writer_wait_seconds_sum{index="transparent"} 0.022201025
+zaino_store_writer_wait_seconds_count{index="transparent"} 789
+zaino_store_writer_wait_seconds_bucket{index="txid_location",le="0.001"} 922
+zaino_store_writer_wait_seconds_bucket{index="txid_location",le="0.005"} 922
+zaino_store_writer_wait_seconds_bucket{index="txid_location",le="0.01"} 922
+zaino_store_writer_wait_seconds_bucket{index="txid_location",le="0.05"} 922
+zaino_store_writer_wait_seconds_bucket{index="txid_location",le="0.1"} 922
+zaino_store_writer_wait_seconds_bucket{index="txid_location",le="0.25"} 922
+zaino_store_writer_wait_seconds_bucket{index="txid_location",le="0.5"} 922
+zaino_store_writer_wait_seconds_bucket{index="txid_location",le="1"} 922
+zaino_store_writer_wait_seconds_bucket{index="txid_location",le="2.5"} 922
+zaino_store_writer_wait_seconds_bucket{index="txid_location",le="5"} 922
+zaino_store_writer_wait_seconds_bucket{index="txid_location",le="10"} 922
+zaino_store_writer_wait_seconds_bucket{index="txid_location",le="30"} 922
+zaino_store_writer_wait_seconds_bucket{index="txid_location",le="60"} 922
+zaino_store_writer_wait_seconds_bucket{index="txid_location",le="300"} 922
+zaino_store_writer_wait_seconds_bucket{index="txid_location",le="+Inf"} 922
+zaino_store_writer_wait_seconds_sum{index="txid_location"} 0.025402572999999998
+zaino_store_writer_wait_seconds_count{index="txid_location"} 922
+zaino_store_writer_wait_seconds_bucket{index="txids",le="0.001"} 891
+zaino_store_writer_wait_seconds_bucket{index="txids",le="0.005"} 891
+zaino_store_writer_wait_seconds_bucket{index="txids",le="0.01"} 891
+zaino_store_writer_wait_seconds_bucket{index="txids",le="0.05"} 891
+zaino_store_writer_wait_seconds_bucket{index="txids",le="0.1"} 891
+zaino_store_writer_wait_seconds_bucket{index="txids",le="0.25"} 891
+zaino_store_writer_wait_seconds_bucket{index="txids",le="0.5"} 891
+zaino_store_writer_wait_seconds_bucket{index="txids",le="1"} 891
+zaino_store_writer_wait_seconds_bucket{index="txids",le="2.5"} 891
+zaino_store_writer_wait_seconds_bucket{index="txids",le="5"} 891
+zaino_store_writer_wait_seconds_bucket{index="txids",le="10"} 891
+zaino_store_writer_wait_seconds_bucket{index="txids",le="30"} 891
+zaino_store_writer_wait_seconds_bucket{index="txids",le="60"} 891
+zaino_store_writer_wait_seconds_bucket{index="txids",le="300"} 891
+zaino_store_writer_wait_seconds_bucket{index="txids",le="+Inf"} 891
+zaino_store_writer_wait_seconds_sum{index="txids"} 0.022827852000000003
+zaino_store_writer_wait_seconds_count{index="txids"} 891
+zaino_store_writer_wait_seconds_bucket{index="address_history",le="0.001"} 859
+zaino_store_writer_wait_seconds_bucket{index="address_history",le="0.005"} 859
+zaino_store_writer_wait_seconds_bucket{index="address_history",le="0.01"} 859
+zaino_store_writer_wait_seconds_bucket{index="address_history",le="0.05"} 859
+zaino_store_writer_wait_seconds_bucket{index="address_history",le="0.1"} 859
+zaino_store_writer_wait_seconds_bucket{index="address_history",le="0.25"} 859
+zaino_store_writer_wait_seconds_bucket{index="address_history",le="0.5"} 859
+zaino_store_writer_wait_seconds_bucket{index="address_history",le="1"} 859
+zaino_store_writer_wait_seconds_bucket{index="address_history",le="2.5"} 859
+zaino_store_writer_wait_seconds_bucket{index="address_history",le="5"} 859
+zaino_store_writer_wait_seconds_bucket{index="address_history",le="10"} 859
+zaino_store_writer_wait_seconds_bucket{index="address_history",le="30"} 859
+zaino_store_writer_wait_seconds_bucket{index="address_history",le="60"} 859
+zaino_store_writer_wait_seconds_bucket{index="address_history",le="300"} 859
+zaino_store_writer_wait_seconds_bucket{index="address_history",le="+Inf"} 859
+zaino_store_writer_wait_seconds_sum{index="address_history"} 0.022279788999999998
+zaino_store_writer_wait_seconds_count{index="address_history"} 859
+zaino_store_writer_wait_seconds_bucket{index="chain_metadata",le="0.001"} 894
+zaino_store_writer_wait_seconds_bucket{index="chain_metadata",le="0.005"} 896
+zaino_store_writer_wait_seconds_bucket{index="chain_metadata",le="0.01"} 896
+zaino_store_writer_wait_seconds_bucket{index="chain_metadata",le="0.05"} 896
+zaino_store_writer_wait_seconds_bucket{index="chain_metadata",le="0.1"} 896
+zaino_store_writer_wait_seconds_bucket{index="chain_metadata",le="0.25"} 896
+zaino_store_writer_wait_seconds_bucket{index="chain_metadata",le="0.5"} 896
+zaino_store_writer_wait_seconds_bucket{index="chain_metadata",le="1"} 896
+zaino_store_writer_wait_seconds_bucket{index="chain_metadata",le="2.5"} 896
+zaino_store_writer_wait_seconds_bucket{index="chain_metadata",le="5"} 896
+zaino_store_writer_wait_seconds_bucket{index="chain_metadata",le="10"} 896
+zaino_store_writer_wait_seconds_bucket{index="chain_metadata",le="30"} 896
+zaino_store_writer_wait_seconds_bucket{index="chain_metadata",le="60"} 896
+zaino_store_writer_wait_seconds_bucket{index="chain_metadata",le="300"} 896
+zaino_store_writer_wait_seconds_bucket{index="chain_metadata",le="+Inf"} 896
+zaino_store_writer_wait_seconds_sum{index="chain_metadata"} 0.027996388
+zaino_store_writer_wait_seconds_count{index="chain_metadata"} 896
+zaino_store_writer_wait_seconds_bucket{index="spent",le="0.001"} 1016
+zaino_store_writer_wait_seconds_bucket{index="spent",le="0.005"} 1017
+zaino_store_writer_wait_seconds_bucket{index="spent",le="0.01"} 1017
+zaino_store_writer_wait_seconds_bucket{index="spent",le="0.05"} 1017
+zaino_store_writer_wait_seconds_bucket{index="spent",le="0.1"} 1017
+zaino_store_writer_wait_seconds_bucket{index="spent",le="0.25"} 1017
+zaino_store_writer_wait_seconds_bucket{index="spent",le="0.5"} 1017
+zaino_store_writer_wait_seconds_bucket{index="spent",le="1"} 1017
+zaino_store_writer_wait_seconds_bucket{index="spent",le="2.5"} 1017
+zaino_store_writer_wait_seconds_bucket{index="spent",le="5"} 1017
+zaino_store_writer_wait_seconds_bucket{index="spent",le="10"} 1017
+zaino_store_writer_wait_seconds_bucket{index="spent",le="30"} 1017
+zaino_store_writer_wait_seconds_bucket{index="spent",le="60"} 1017
+zaino_store_writer_wait_seconds_bucket{index="spent",le="300"} 1017
+zaino_store_writer_wait_seconds_bucket{index="spent",le="+Inf"} 1017
+zaino_store_writer_wait_seconds_sum{index="spent"} 0.029039027000000005
+zaino_store_writer_wait_seconds_count{index="spent"} 1017
+zaino_store_writer_wait_seconds_bucket{index="tx_out_set",le="0.001"} 640
+zaino_store_writer_wait_seconds_bucket{index="tx_out_set",le="0.005"} 641
+zaino_store_writer_wait_seconds_bucket{index="tx_out_set",le="0.01"} 641
+zaino_store_writer_wait_seconds_bucket{index="tx_out_set",le="0.05"} 641
+zaino_store_writer_wait_seconds_bucket{index="tx_out_set",le="0.1"} 641
+zaino_store_writer_wait_seconds_bucket{index="tx_out_set",le="0.25"} 641
+zaino_store_writer_wait_seconds_bucket{index="tx_out_set",le="0.5"} 641
+zaino_store_writer_wait_seconds_bucket{index="tx_out_set",le="1"} 641
+zaino_store_writer_wait_seconds_bucket{index="tx_out_set",le="2.5"} 641
+zaino_store_writer_wait_seconds_bucket{index="tx_out_set",le="5"} 641
+zaino_store_writer_wait_seconds_bucket{index="tx_out_set",le="10"} 641
+zaino_store_writer_wait_seconds_bucket{index="tx_out_set",le="30"} 641
+zaino_store_writer_wait_seconds_bucket{index="tx_out_set",le="60"} 641
+zaino_store_writer_wait_seconds_bucket{index="tx_out_set",le="300"} 641
+zaino_store_writer_wait_seconds_bucket{index="tx_out_set",le="+Inf"} 641
+zaino_store_writer_wait_seconds_sum{index="tx_out_set"} 0.019199199
+zaino_store_writer_wait_seconds_count{index="tx_out_set"} 641
+zaino_store_writer_wait_seconds_bucket{index="headers",le="0.001"} 775
+zaino_store_writer_wait_seconds_bucket{index="headers",le="0.005"} 775
+zaino_store_writer_wait_seconds_bucket{index="headers",le="0.01"} 775
+zaino_store_writer_wait_seconds_bucket{index="headers",le="0.05"} 775
+zaino_store_writer_wait_seconds_bucket{index="headers",le="0.1"} 775
+zaino_store_writer_wait_seconds_bucket{index="headers",le="0.25"} 775
+zaino_store_writer_wait_seconds_bucket{index="headers",le="0.5"} 775
+zaino_store_writer_wait_seconds_bucket{index="headers",le="1"} 775
+zaino_store_writer_wait_seconds_bucket{index="headers",le="2.5"} 775
+zaino_store_writer_wait_seconds_bucket{index="headers",le="5"} 775
+zaino_store_writer_wait_seconds_bucket{index="headers",le="10"} 775
+zaino_store_writer_wait_seconds_bucket{index="headers",le="30"} 775
+zaino_store_writer_wait_seconds_bucket{index="headers",le="60"} 775
+zaino_store_writer_wait_seconds_bucket{index="headers",le="300"} 775
+zaino_store_writer_wait_seconds_bucket{index="headers",le="+Inf"} 775
+zaino_store_writer_wait_seconds_sum{index="headers"} 0.021737949000000003
+zaino_store_writer_wait_seconds_count{index="headers"} 775
+zaino_store_writer_wait_seconds_bucket{index="history_tree",le="0.001"} 675
+zaino_store_writer_wait_seconds_bucket{index="history_tree",le="0.005"} 677
+zaino_store_writer_wait_seconds_bucket{index="history_tree",le="0.01"} 677
+zaino_store_writer_wait_seconds_bucket{index="history_tree",le="0.05"} 677
+zaino_store_writer_wait_seconds_bucket{index="history_tree",le="0.1"} 677
+zaino_store_writer_wait_seconds_bucket{index="history_tree",le="0.25"} 677
+zaino_store_writer_wait_seconds_bucket{index="history_tree",le="0.5"} 677
+zaino_store_writer_wait_seconds_bucket{index="history_tree",le="1"} 677
+zaino_store_writer_wait_seconds_bucket{index="history_tree",le="2.5"} 677
+zaino_store_writer_wait_seconds_bucket{index="history_tree",le="5"} 677
+zaino_store_writer_wait_seconds_bucket{index="history_tree",le="10"} 677
+zaino_store_writer_wait_seconds_bucket{index="history_tree",le="30"} 677
+zaino_store_writer_wait_seconds_bucket{index="history_tree",le="60"} 677
+zaino_store_writer_wait_seconds_bucket{index="history_tree",le="300"} 677
+zaino_store_writer_wait_seconds_bucket{index="history_tree",le="+Inf"} 677
+zaino_store_writer_wait_seconds_sum{index="history_tree"} 0.021025999000000004
+zaino_store_writer_wait_seconds_count{index="history_tree"} 677
+zaino_store_writer_wait_seconds_bucket{index="tree_state",le="0.001"} 944
+zaino_store_writer_wait_seconds_bucket{index="tree_state",le="0.005"} 944
+zaino_store_writer_wait_seconds_bucket{index="tree_state",le="0.01"} 944
+zaino_store_writer_wait_seconds_bucket{index="tree_state",le="0.05"} 944
+zaino_store_writer_wait_seconds_bucket{index="tree_state",le="0.1"} 944
+zaino_store_writer_wait_seconds_bucket{index="tree_state",le="0.25"} 944
+zaino_store_writer_wait_seconds_bucket{index="tree_state",le="0.5"} 944
+zaino_store_writer_wait_seconds_bucket{index="tree_state",le="1"} 944
+zaino_store_writer_wait_seconds_bucket{index="tree_state",le="2.5"} 944
+zaino_store_writer_wait_seconds_bucket{index="tree_state",le="5"} 944
+zaino_store_writer_wait_seconds_bucket{index="tree_state",le="10"} 944
+zaino_store_writer_wait_seconds_bucket{index="tree_state",le="30"} 944
+zaino_store_writer_wait_seconds_bucket{index="tree_state",le="60"} 944
+zaino_store_writer_wait_seconds_bucket{index="tree_state",le="300"} 944
+zaino_store_writer_wait_seconds_bucket{index="tree_state",le="+Inf"} 944
+zaino_store_writer_wait_seconds_sum{index="tree_state"} 0.025041457000000003
+zaino_store_writer_wait_seconds_count{index="tree_state"} 944
+zaino_store_writer_wait_seconds_bucket{index="compact_block",le="0.001"} 1003
+zaino_store_writer_wait_seconds_bucket{index="compact_block",le="0.005"} 1004
+zaino_store_writer_wait_seconds_bucket{index="compact_block",le="0.01"} 1004
+zaino_store_writer_wait_seconds_bucket{index="compact_block",le="0.05"} 1004
+zaino_store_writer_wait_seconds_bucket{index="compact_block",le="0.1"} 1004
+zaino_store_writer_wait_seconds_bucket{index="compact_block",le="0.25"} 1004
+zaino_store_writer_wait_seconds_bucket{index="compact_block",le="0.5"} 1004
+zaino_store_writer_wait_seconds_bucket{index="compact_block",le="1"} 1004
+zaino_store_writer_wait_seconds_bucket{index="compact_block",le="2.5"} 1004
+zaino_store_writer_wait_seconds_bucket{index="compact_block",le="5"} 1004
+zaino_store_writer_wait_seconds_bucket{index="compact_block",le="10"} 1004
+zaino_store_writer_wait_seconds_bucket{index="compact_block",le="30"} 1004
+zaino_store_writer_wait_seconds_bucket{index="compact_block",le="60"} 1004
+zaino_store_writer_wait_seconds_bucket{index="compact_block",le="300"} 1004
+zaino_store_writer_wait_seconds_bucket{index="compact_block",le="+Inf"} 1004
+zaino_store_writer_wait_seconds_sum{index="compact_block"} 0.026835104999999998
+zaino_store_writer_wait_seconds_count{index="compact_block"} 1004
+
+# TYPE zaino_lsm_commit_buffer_seconds summary
+zaino_lsm_commit_buffer_seconds{index="txid_location",quantile="0"} 0.000001322
+zaino_lsm_commit_buffer_seconds{index="txid_location",quantile="0.5"} 0.0000020230585688738816
+zaino_lsm_commit_buffer_seconds{index="txid_location",quantile="0.9"} 0.0000025548934239329626
+zaino_lsm_commit_buffer_seconds{index="txid_location",quantile="0.95"} 0.000002924754397494688
+zaino_lsm_commit_buffer_seconds{index="txid_location",quantile="0.99"} 0.000002924754397494688
+zaino_lsm_commit_buffer_seconds{index="txid_location",quantile="0.999"} 0.000002924754397494688
+zaino_lsm_commit_buffer_seconds{index="txid_location",quantile="1"} 0.000100805
+zaino_lsm_commit_buffer_seconds_sum{index="txid_location"} 0.002877206000000002
+zaino_lsm_commit_buffer_seconds_count{index="txid_location"} 909
+zaino_lsm_commit_buffer_seconds{index="address_history",quantile="0"} 0.000001342
+zaino_lsm_commit_buffer_seconds{index="address_history",quantile="0.5"} 0.0000019941352729094573
+zaino_lsm_commit_buffer_seconds{index="address_history",quantile="0.9"} 0.000035623677632871996
+zaino_lsm_commit_buffer_seconds{index="address_history",quantile="0.95"} 0.000035623677632871996
+zaino_lsm_commit_buffer_seconds{index="address_history",quantile="0.99"} 0.000035623677632871996
+zaino_lsm_commit_buffer_seconds{index="address_history",quantile="0.999"} 0.000035623677632871996
+zaino_lsm_commit_buffer_seconds{index="address_history",quantile="1"} 0.000118408
+zaino_lsm_commit_buffer_seconds_sum{index="address_history"} 0.0023137059999999987
+zaino_lsm_commit_buffer_seconds_count{index="address_history"} 840
+zaino_lsm_commit_buffer_seconds{index="headers",quantile="0"} 0.000001724
+zaino_lsm_commit_buffer_seconds{index="headers",quantile="0.5"} 0.000009988261111371128
+zaino_lsm_commit_buffer_seconds{index="headers",quantile="0.9"} 0.00002737993697363901
+zaino_lsm_commit_buffer_seconds{index="headers",quantile="0.95"} 0.0000670078998687161
+zaino_lsm_commit_buffer_seconds{index="headers",quantile="0.99"} 0.0000670078998687161
+zaino_lsm_commit_buffer_seconds{index="headers",quantile="0.999"} 0.0000670078998687161
+zaino_lsm_commit_buffer_seconds{index="headers",quantile="1"} 0.000068517
+zaino_lsm_commit_buffer_seconds_sum{index="headers"} 0.010334748000000015
+zaino_lsm_commit_buffer_seconds_count{index="headers"} 724
+zaino_lsm_commit_buffer_seconds{index="spent",quantile="0"} 0.00000021
+zaino_lsm_commit_buffer_seconds{index="spent",quantile="0.5"} 0.00000021001223285108567
+zaino_lsm_commit_buffer_seconds{index="spent",quantile="0.9"} 0.00000021001223285108567
+zaino_lsm_commit_buffer_seconds{index="spent",quantile="0.95"} 0.00000021001223285108567
+zaino_lsm_commit_buffer_seconds{index="spent",quantile="0.99"} 0.00000021001223285108567
+zaino_lsm_commit_buffer_seconds{index="spent",quantile="0.999"} 0.00000021001223285108567
+zaino_lsm_commit_buffer_seconds{index="spent",quantile="1"} 0.000000231
+zaino_lsm_commit_buffer_seconds_sum{index="spent"} 0.000217509
+zaino_lsm_commit_buffer_seconds_count{index="spent"} 962
+zaino_lsm_commit_buffer_seconds{index="history_tree",quantile="0"} 0.000001292
+zaino_lsm_commit_buffer_seconds{index="history_tree",quantile="0.5"} 0.000002164112852300201
+zaino_lsm_commit_buffer_seconds{index="history_tree",quantile="0.9"} 0.000010559337238145467
+zaino_lsm_commit_buffer_seconds{index="history_tree",quantile="0.95"} 0.000012384064377812187
+zaino_lsm_commit_buffer_seconds{index="history_tree",quantile="0.99"} 0.000019464854708828807
+zaino_lsm_commit_buffer_seconds{index="history_tree",quantile="0.999"} 0.000019464854708828807
+zaino_lsm_commit_buffer_seconds{index="history_tree",quantile="1"} 0.000036979
+zaino_lsm_commit_buffer_seconds_sum{index="history_tree"} 0.0016670989999999994
+zaino_lsm_commit_buffer_seconds_count{index="history_tree"} 620
+zaino_lsm_commit_buffer_seconds{index="transparent",quantile="0"} 0.000001132
+zaino_lsm_commit_buffer_seconds{index="transparent",quantile="0.5"} 0.000002154180794393221
+zaino_lsm_commit_buffer_seconds{index="transparent",quantile="0.9"} 0.0000030447247732511637
+zaino_lsm_commit_buffer_seconds{index="transparent",quantile="0.95"} 0.0000037173480017336495
+zaino_lsm_commit_buffer_seconds{index="transparent",quantile="0.99"} 0.000004448693741666417
+zaino_lsm_commit_buffer_seconds{index="transparent",quantile="0.999"} 0.000004448693741666417
+zaino_lsm_commit_buffer_seconds{index="transparent",quantile="1"} 0.00005427
+zaino_lsm_commit_buffer_seconds_sum{index="transparent"} 0.003133922999999997
+zaino_lsm_commit_buffer_seconds_count{index="transparent"} 827
+zaino_lsm_commit_buffer_seconds{index="txids",quantile="0"} 0.000000581
+zaino_lsm_commit_buffer_seconds{index="txids",quantile="0.5"} 0.0000008309468097430116
+zaino_lsm_commit_buffer_seconds{index="txids",quantile="0.9"} 0.0000013628941742872364
+zaino_lsm_commit_buffer_seconds{index="txids",quantile="0.95"} 0.0000015431264308498922
+zaino_lsm_commit_buffer_seconds{index="txids",quantile="0.99"} 0.0000016830548556522533
+zaino_lsm_commit_buffer_seconds{index="txids",quantile="0.999"} 0.0000016830548556522533
+zaino_lsm_commit_buffer_seconds{index="txids",quantile="1"} 0.000116285
+zaino_lsm_commit_buffer_seconds_sum{index="txids"} 0.0023991080000000005
+zaino_lsm_commit_buffer_seconds_count{index="txids"} 920
+zaino_lsm_commit_buffer_seconds{index="tree_state",quantile="0"} 0.000000721
+zaino_lsm_commit_buffer_seconds{index="tree_state",quantile="0.5"} 0.0000010020125293434476
+zaino_lsm_commit_buffer_seconds{index="tree_state",quantile="0.9"} 0.0000014719830542783755
+zaino_lsm_commit_buffer_seconds{index="tree_state",quantile="0.95"} 0.0000016128624320690183
+zaino_lsm_commit_buffer_seconds{index="tree_state",quantile="0.99"} 0.0000016128624320690183
+zaino_lsm_commit_buffer_seconds{index="tree_state",quantile="0.999"} 0.0000016128624320690183
+zaino_lsm_commit_buffer_seconds{index="tree_state",quantile="1"} 0.000024706
+zaino_lsm_commit_buffer_seconds_sum{index="tree_state"} 0.002063260000000001
+zaino_lsm_commit_buffer_seconds_count{index="tree_state"} 935
+zaino_lsm_commit_buffer_seconds{index="compact_block",quantile="0"} 0.000000551
+zaino_lsm_commit_buffer_seconds{index="compact_block",quantile="0.5"} 0.0000009220189584211301
+zaino_lsm_commit_buffer_seconds{index="compact_block",quantile="0.9"} 0.0000012119256096093219
+zaino_lsm_commit_buffer_seconds{index="compact_block",quantile="0.95"} 0.0000012219042561786942
+zaino_lsm_commit_buffer_seconds{index="compact_block",quantile="0.99"} 0.0000015119655729582407
+zaino_lsm_commit_buffer_seconds{index="compact_block",quantile="0.999"} 0.0000015119655729582407
+zaino_lsm_commit_buffer_seconds{index="compact_block",quantile="1"} 0.000019696
+zaino_lsm_commit_buffer_seconds_sum{index="compact_block"} 0.0025068140000000013
+zaino_lsm_commit_buffer_seconds_count{index="compact_block"} 986
+zaino_lsm_commit_buffer_seconds{index="tx_out_set",quantile="0"} 0.000001693
+zaino_lsm_commit_buffer_seconds{index="tx_out_set",quantile="0.5"} 0.000002514843336563397
+zaino_lsm_commit_buffer_seconds{index="tx_out_set",quantile="0.9"} 0.000003146247619126192
+zaino_lsm_commit_buffer_seconds{index="tx_out_set",quantile="0.95"} 0.000003175961784627897
+zaino_lsm_commit_buffer_seconds{index="tx_out_set",quantile="0.99"} 0.000014388230065487848
+zaino_lsm_commit_buffer_seconds{index="tx_out_set",quantile="0.999"} 0.000014388230065487848
+zaino_lsm_commit_buffer_seconds{index="tx_out_set",quantile="1"} 0.000022201
+zaino_lsm_commit_buffer_seconds_sum{index="tx_out_set"} 0.005182615000000001
+zaino_lsm_commit_buffer_seconds_count{index="tx_out_set"} 667
+zaino_lsm_commit_buffer_seconds{index="chain_metadata",quantile="0"} 0.000000541
+zaino_lsm_commit_buffer_seconds{index="chain_metadata",quantile="0.5"} 0.0000008319445444391178
+zaino_lsm_commit_buffer_seconds{index="chain_metadata",quantile="0.9"} 0.0000010020125293434476
+zaino_lsm_commit_buffer_seconds{index="chain_metadata",quantile="0.95"} 0.0000010220500947659356
+zaino_lsm_commit_buffer_seconds{index="chain_metadata",quantile="0.99"} 0.0000010220500947659356
+zaino_lsm_commit_buffer_seconds{index="chain_metadata",quantile="0.999"} 0.0000010220500947659356
+zaino_lsm_commit_buffer_seconds{index="chain_metadata",quantile="1"} 0.000004268
+zaino_lsm_commit_buffer_seconds_sum{index="chain_metadata"} 0.002698094
+zaino_lsm_commit_buffer_seconds_count{index="chain_metadata"} 974
+
+# HELP zaino_store_fetch_seconds One block fetched from the validator and assembled for the indexes
+# TYPE zaino_store_fetch_seconds histogram
+zaino_store_fetch_seconds_bucket{le="0.0005"} 861
+zaino_store_fetch_seconds_bucket{le="0.001"} 960
+zaino_store_fetch_seconds_bucket{le="0.0025"} 997
+zaino_store_fetch_seconds_bucket{le="0.005"} 1034
+zaino_store_fetch_seconds_bucket{le="0.01"} 1034
+zaino_store_fetch_seconds_bucket{le="0.025"} 1034
+zaino_store_fetch_seconds_bucket{le="0.05"} 1034
+zaino_store_fetch_seconds_bucket{le="0.1"} 1034
+zaino_store_fetch_seconds_bucket{le="0.25"} 1034
+zaino_store_fetch_seconds_bucket{le="0.5"} 1034
+zaino_store_fetch_seconds_bucket{le="1"} 1034
+zaino_store_fetch_seconds_bucket{le="2.5"} 1034
+zaino_store_fetch_seconds_bucket{le="5"} 1034
+zaino_store_fetch_seconds_bucket{le="10"} 1034
+zaino_store_fetch_seconds_bucket{le="+Inf"} 1034
+zaino_store_fetch_seconds_sum 0.44061078700000006
+zaino_store_fetch_seconds_count 1034
+
+# HELP zaino_store_resolve_seconds One block's transparent prevouts resolved
+# TYPE zaino_store_resolve_seconds histogram
+zaino_store_resolve_seconds_bucket{le="0.0005"} 1078
+zaino_store_resolve_seconds_bucket{le="0.001"} 1078
+zaino_store_resolve_seconds_bucket{le="0.0025"} 1078
+zaino_store_resolve_seconds_bucket{le="0.005"} 1078
+zaino_store_resolve_seconds_bucket{le="0.01"} 1078
+zaino_store_resolve_seconds_bucket{le="0.025"} 1078
+zaino_store_resolve_seconds_bucket{le="0.05"} 1078
+zaino_store_resolve_seconds_bucket{le="0.1"} 1078
+zaino_store_resolve_seconds_bucket{le="0.25"} 1078
+zaino_store_resolve_seconds_bucket{le="0.5"} 1078
+zaino_store_resolve_seconds_bucket{le="1"} 1078
+zaino_store_resolve_seconds_bucket{le="2.5"} 1078
+zaino_store_resolve_seconds_bucket{le="5"} 1078
+zaino_store_resolve_seconds_bucket{le="10"} 1078
+zaino_store_resolve_seconds_bucket{le="+Inf"} 1078
+zaino_store_resolve_seconds_sum 0.0018121180000000001
+zaino_store_resolve_seconds_count 1078
+
+# HELP zaino_store_queue_wait_seconds The fetch waiting for room in an index's queue, per index (backpressure)
+# TYPE zaino_store_queue_wait_seconds histogram
+zaino_store_queue_wait_seconds_bucket{index="chain_metadata",le="0.001"} 995
+zaino_store_queue_wait_seconds_bucket{index="chain_metadata",le="0.005"} 995
+zaino_store_queue_wait_seconds_bucket{index="chain_metadata",le="0.01"} 995
+zaino_store_queue_wait_seconds_bucket{index="chain_metadata",le="0.05"} 995
+zaino_store_queue_wait_seconds_bucket{index="chain_metadata",le="0.1"} 995
+zaino_store_queue_wait_seconds_bucket{index="chain_metadata",le="0.25"} 995
+zaino_store_queue_wait_seconds_bucket{index="chain_metadata",le="0.5"} 995
+zaino_store_queue_wait_seconds_bucket{index="chain_metadata",le="1"} 995
+zaino_store_queue_wait_seconds_bucket{index="chain_metadata",le="2.5"} 995
+zaino_store_queue_wait_seconds_bucket{index="chain_metadata",le="5"} 995
+zaino_store_queue_wait_seconds_bucket{index="chain_metadata",le="10"} 995
+zaino_store_queue_wait_seconds_bucket{index="chain_metadata",le="30"} 995
+zaino_store_queue_wait_seconds_bucket{index="chain_metadata",le="60"} 995
+zaino_store_queue_wait_seconds_bucket{index="chain_metadata",le="300"} 995
+zaino_store_queue_wait_seconds_bucket{index="chain_metadata",le="+Inf"} 995
+zaino_store_queue_wait_seconds_sum{index="chain_metadata"} 0.000950341
+zaino_store_queue_wait_seconds_count{index="chain_metadata"} 995
+zaino_store_queue_wait_seconds_bucket{index="transparent",le="0.001"} 1016
+zaino_store_queue_wait_seconds_bucket{index="transparent",le="0.005"} 1016
+zaino_store_queue_wait_seconds_bucket{index="transparent",le="0.01"} 1016
+zaino_store_queue_wait_seconds_bucket{index="transparent",le="0.05"} 1016
+zaino_store_queue_wait_seconds_bucket{index="transparent",le="0.1"} 1016
+zaino_store_queue_wait_seconds_bucket{index="transparent",le="0.25"} 1016
+zaino_store_queue_wait_seconds_bucket{index="transparent",le="0.5"} 1016
+zaino_store_queue_wait_seconds_bucket{index="transparent",le="1"} 1016
+zaino_store_queue_wait_seconds_bucket{index="transparent",le="2.5"} 1016
+zaino_store_queue_wait_seconds_bucket{index="transparent",le="5"} 1016
+zaino_store_queue_wait_seconds_bucket{index="transparent",le="10"} 1016
+zaino_store_queue_wait_seconds_bucket{index="transparent",le="30"} 1016
+zaino_store_queue_wait_seconds_bucket{index="transparent",le="60"} 1016
+zaino_store_queue_wait_seconds_bucket{index="transparent",le="300"} 1016
+zaino_store_queue_wait_seconds_bucket{index="transparent",le="+Inf"} 1016
+zaino_store_queue_wait_seconds_sum{index="transparent"} 0.00087789
+zaino_store_queue_wait_seconds_count{index="transparent"} 1016
+zaino_store_queue_wait_seconds_bucket{index="tree_state",le="0.001"} 1018
+zaino_store_queue_wait_seconds_bucket{index="tree_state",le="0.005"} 1018
+zaino_store_queue_wait_seconds_bucket{index="tree_state",le="0.01"} 1018
+zaino_store_queue_wait_seconds_bucket{index="tree_state",le="0.05"} 1018
+zaino_store_queue_wait_seconds_bucket{index="tree_state",le="0.1"} 1018
+zaino_store_queue_wait_seconds_bucket{index="tree_state",le="0.25"} 1018
+zaino_store_queue_wait_seconds_bucket{index="tree_state",le="0.5"} 1018
+zaino_store_queue_wait_seconds_bucket{index="tree_state",le="1"} 1018
+zaino_store_queue_wait_seconds_bucket{index="tree_state",le="2.5"} 1018
+zaino_store_queue_wait_seconds_bucket{index="tree_state",le="5"} 1018
+zaino_store_queue_wait_seconds_bucket{index="tree_state",le="10"} 1018
+zaino_store_queue_wait_seconds_bucket{index="tree_state",le="30"} 1018
+zaino_store_queue_wait_seconds_bucket{index="tree_state",le="60"} 1018
+zaino_store_queue_wait_seconds_bucket{index="tree_state",le="300"} 1018
+zaino_store_queue_wait_seconds_bucket{index="tree_state",le="+Inf"} 1018
+zaino_store_queue_wait_seconds_sum{index="tree_state"} 0.000636098
+zaino_store_queue_wait_seconds_count{index="tree_state"} 1018
+zaino_store_queue_wait_seconds_bucket{index="compact_block",le="0.001"} 1019
+zaino_store_queue_wait_seconds_bucket{index="compact_block",le="0.005"} 1019
+zaino_store_queue_wait_seconds_bucket{index="compact_block",le="0.01"} 1019
+zaino_store_queue_wait_seconds_bucket{index="compact_block",le="0.05"} 1019
+zaino_store_queue_wait_seconds_bucket{index="compact_block",le="0.1"} 1019
+zaino_store_queue_wait_seconds_bucket{index="compact_block",le="0.25"} 1019
+zaino_store_queue_wait_seconds_bucket{index="compact_block",le="0.5"} 1019
+zaino_store_queue_wait_seconds_bucket{index="compact_block",le="1"} 1019
+zaino_store_queue_wait_seconds_bucket{index="compact_block",le="2.5"} 1019
+zaino_store_queue_wait_seconds_bucket{index="compact_block",le="5"} 1019
+zaino_store_queue_wait_seconds_bucket{index="compact_block",le="10"} 1019
+zaino_store_queue_wait_seconds_bucket{index="compact_block",le="30"} 1019
+zaino_store_queue_wait_seconds_bucket{index="compact_block",le="60"} 1019
+zaino_store_queue_wait_seconds_bucket{index="compact_block",le="300"} 1019
+zaino_store_queue_wait_seconds_bucket{index="compact_block",le="+Inf"} 1019
+zaino_store_queue_wait_seconds_sum{index="compact_block"} 0.0005759489999999999
+zaino_store_queue_wait_seconds_count{index="compact_block"} 1019
+zaino_store_queue_wait_seconds_bucket{index="txid_location",le="0.001"} 1041
+zaino_store_queue_wait_seconds_bucket{index="txid_location",le="0.005"} 1041
+zaino_store_queue_wait_seconds_bucket{index="txid_location",le="0.01"} 1041
+zaino_store_queue_wait_seconds_bucket{index="txid_location",le="0.05"} 1041
+zaino_store_queue_wait_seconds_bucket{index="txid_location",le="0.1"} 1041
+zaino_store_queue_wait_seconds_bucket{index="txid_location",le="0.25"} 1041
+zaino_store_queue_wait_seconds_bucket{index="txid_location",le="0.5"} 1041
+zaino_store_queue_wait_seconds_bucket{index="txid_location",le="1"} 1041
+zaino_store_queue_wait_seconds_bucket{index="txid_location",le="2.5"} 1041
+zaino_store_queue_wait_seconds_bucket{index="txid_location",le="5"} 1041
+zaino_store_queue_wait_seconds_bucket{index="txid_location",le="10"} 1041
+zaino_store_queue_wait_seconds_bucket{index="txid_location",le="30"} 1041
+zaino_store_queue_wait_seconds_bucket{index="txid_location",le="60"} 1041
+zaino_store_queue_wait_seconds_bucket{index="txid_location",le="300"} 1041
+zaino_store_queue_wait_seconds_bucket{index="txid_location",le="+Inf"} 1041
+zaino_store_queue_wait_seconds_sum{index="txid_location"} 0.000659153
+zaino_store_queue_wait_seconds_count{index="txid_location"} 1041
+zaino_store_queue_wait_seconds_bucket{index="spent",le="0.001"} 1078
+zaino_store_queue_wait_seconds_bucket{index="spent",le="0.005"} 1078
+zaino_store_queue_wait_seconds_bucket{index="spent",le="0.01"} 1078
+zaino_store_queue_wait_seconds_bucket{index="spent",le="0.05"} 1078
+zaino_store_queue_wait_seconds_bucket{index="spent",le="0.1"} 1078
+zaino_store_queue_wait_seconds_bucket{index="spent",le="0.25"} 1078
+zaino_store_queue_wait_seconds_bucket{index="spent",le="0.5"} 1078
+zaino_store_queue_wait_seconds_bucket{index="spent",le="1"} 1078
+zaino_store_queue_wait_seconds_bucket{index="spent",le="2.5"} 1078
+zaino_store_queue_wait_seconds_bucket{index="spent",le="5"} 1078
+zaino_store_queue_wait_seconds_bucket{index="spent",le="10"} 1078
+zaino_store_queue_wait_seconds_bucket{index="spent",le="30"} 1078
+zaino_store_queue_wait_seconds_bucket{index="spent",le="60"} 1078
+zaino_store_queue_wait_seconds_bucket{index="spent",le="300"} 1078
+zaino_store_queue_wait_seconds_bucket{index="spent",le="+Inf"} 1078
+zaino_store_queue_wait_seconds_sum{index="spent"} 0.0009212880000000002
+zaino_store_queue_wait_seconds_count{index="spent"} 1078
+zaino_store_queue_wait_seconds_bucket{index="history_tree",le="0.001"} 1078
+zaino_store_queue_wait_seconds_bucket{index="history_tree",le="0.005"} 1078
+zaino_store_queue_wait_seconds_bucket{index="history_tree",le="0.01"} 1078
+zaino_store_queue_wait_seconds_bucket{index="history_tree",le="0.05"} 1078
+zaino_store_queue_wait_seconds_bucket{index="history_tree",le="0.1"} 1078
+zaino_store_queue_wait_seconds_bucket{index="history_tree",le="0.25"} 1078
+zaino_store_queue_wait_seconds_bucket{index="history_tree",le="0.5"} 1078
+zaino_store_queue_wait_seconds_bucket{index="history_tree",le="1"} 1078
+zaino_store_queue_wait_seconds_bucket{index="history_tree",le="2.5"} 1078
+zaino_store_queue_wait_seconds_bucket{index="history_tree",le="5"} 1078
+zaino_store_queue_wait_seconds_bucket{index="history_tree",le="10"} 1078
+zaino_store_queue_wait_seconds_bucket{index="history_tree",le="30"} 1078
+zaino_store_queue_wait_seconds_bucket{index="history_tree",le="60"} 1078
+zaino_store_queue_wait_seconds_bucket{index="history_tree",le="300"} 1078
+zaino_store_queue_wait_seconds_bucket{index="history_tree",le="+Inf"} 1078
+zaino_store_queue_wait_seconds_sum{index="history_tree"} 0.000680357
+zaino_store_queue_wait_seconds_count{index="history_tree"} 1078
+zaino_store_queue_wait_seconds_bucket{index="address_history",le="0.001"} 1078
+zaino_store_queue_wait_seconds_bucket{index="address_history",le="0.005"} 1078
+zaino_store_queue_wait_seconds_bucket{index="address_history",le="0.01"} 1078
+zaino_store_queue_wait_seconds_bucket{index="address_history",le="0.05"} 1078
+zaino_store_queue_wait_seconds_bucket{index="address_history",le="0.1"} 1078
+zaino_store_queue_wait_seconds_bucket{index="address_history",le="0.25"} 1078
+zaino_store_queue_wait_seconds_bucket{index="address_history",le="0.5"} 1078
+zaino_store_queue_wait_seconds_bucket{index="address_history",le="1"} 1078
+zaino_store_queue_wait_seconds_bucket{index="address_history",le="2.5"} 1078
+zaino_store_queue_wait_seconds_bucket{index="address_history",le="5"} 1078
+zaino_store_queue_wait_seconds_bucket{index="address_history",le="10"} 1078
+zaino_store_queue_wait_seconds_bucket{index="address_history",le="30"} 1078
+zaino_store_queue_wait_seconds_bucket{index="address_history",le="60"} 1078
+zaino_store_queue_wait_seconds_bucket{index="address_history",le="300"} 1078
+zaino_store_queue_wait_seconds_bucket{index="address_history",le="+Inf"} 1078
+zaino_store_queue_wait_seconds_sum{index="address_history"} 0.001262383
+zaino_store_queue_wait_seconds_count{index="address_history"} 1078
+zaino_store_queue_wait_seconds_bucket{index="txids",le="0.001"} 1078
+zaino_store_queue_wait_seconds_bucket{index="txids",le="0.005"} 1078
+zaino_store_queue_wait_seconds_bucket{index="txids",le="0.01"} 1078
+zaino_store_queue_wait_seconds_bucket{index="txids",le="0.05"} 1078
+zaino_store_queue_wait_seconds_bucket{index="txids",le="0.1"} 1078
+zaino_store_queue_wait_seconds_bucket{index="txids",le="0.25"} 1078
+zaino_store_queue_wait_seconds_bucket{index="txids",le="0.5"} 1078
+zaino_store_queue_wait_seconds_bucket{index="txids",le="1"} 1078
+zaino_store_queue_wait_seconds_bucket{index="txids",le="2.5"} 1078
+zaino_store_queue_wait_seconds_bucket{index="txids",le="5"} 1078
+zaino_store_queue_wait_seconds_bucket{index="txids",le="10"} 1078
+zaino_store_queue_wait_seconds_bucket{index="txids",le="30"} 1078
+zaino_store_queue_wait_seconds_bucket{index="txids",le="60"} 1078
+zaino_store_queue_wait_seconds_bucket{index="txids",le="300"} 1078
+zaino_store_queue_wait_seconds_bucket{index="txids",le="+Inf"} 1078
+zaino_store_queue_wait_seconds_sum{index="txids"} 0.0009390709999999999
+zaino_store_queue_wait_seconds_count{index="txids"} 1078
+zaino_store_queue_wait_seconds_bucket{index="tx_out_set",le="0.001"} 1078
+zaino_store_queue_wait_seconds_bucket{index="tx_out_set",le="0.005"} 1078
+zaino_store_queue_wait_seconds_bucket{index="tx_out_set",le="0.01"} 1078
+zaino_store_queue_wait_seconds_bucket{index="tx_out_set",le="0.05"} 1078
+zaino_store_queue_wait_seconds_bucket{index="tx_out_set",le="0.1"} 1078
+zaino_store_queue_wait_seconds_bucket{index="tx_out_set",le="0.25"} 1078
+zaino_store_queue_wait_seconds_bucket{index="tx_out_set",le="0.5"} 1078
+zaino_store_queue_wait_seconds_bucket{index="tx_out_set",le="1"} 1078
+zaino_store_queue_wait_seconds_bucket{index="tx_out_set",le="2.5"} 1078
+zaino_store_queue_wait_seconds_bucket{index="tx_out_set",le="5"} 1078
+zaino_store_queue_wait_seconds_bucket{index="tx_out_set",le="10"} 1078
+zaino_store_queue_wait_seconds_bucket{index="tx_out_set",le="30"} 1078
+zaino_store_queue_wait_seconds_bucket{index="tx_out_set",le="60"} 1078
+zaino_store_queue_wait_seconds_bucket{index="tx_out_set",le="300"} 1078
+zaino_store_queue_wait_seconds_bucket{index="tx_out_set",le="+Inf"} 1078
+zaino_store_queue_wait_seconds_sum{index="tx_out_set"} 0.000458346
+zaino_store_queue_wait_seconds_count{index="tx_out_set"} 1078
+zaino_store_queue_wait_seconds_bucket{index="headers",le="0.001"} 1078
+zaino_store_queue_wait_seconds_bucket{index="headers",le="0.005"} 1078
+zaino_store_queue_wait_seconds_bucket{index="headers",le="0.01"} 1078
+zaino_store_queue_wait_seconds_bucket{index="headers",le="0.05"} 1078
+zaino_store_queue_wait_seconds_bucket{index="headers",le="0.1"} 1078
+zaino_store_queue_wait_seconds_bucket{index="headers",le="0.25"} 1078
+zaino_store_queue_wait_seconds_bucket{index="headers",le="0.5"} 1078
+zaino_store_queue_wait_seconds_bucket{index="headers",le="1"} 1078
+zaino_store_queue_wait_seconds_bucket{index="headers",le="2.5"} 1078
+zaino_store_queue_wait_seconds_bucket{index="headers",le="5"} 1078
+zaino_store_queue_wait_seconds_bucket{index="headers",le="10"} 1078
+zaino_store_queue_wait_seconds_bucket{index="headers",le="30"} 1078
+zaino_store_queue_wait_seconds_bucket{index="headers",le="60"} 1078
+zaino_store_queue_wait_seconds_bucket{index="headers",le="300"} 1078
+zaino_store_queue_wait_seconds_bucket{index="headers",le="+Inf"} 1078
+zaino_store_queue_wait_seconds_sum{index="headers"} 0.0007545390000000001
+zaino_store_queue_wait_seconds_count{index="headers"} 1078
+
+# HELP zaino_rpc_outbound_duration_seconds Seconds for one outbound JSON-RPC attempt that received a response, by method
+# TYPE zaino_rpc_outbound_duration_seconds histogram
+zaino_rpc_outbound_duration_seconds_bucket{method="getinfo",le="0.001"} 1
+zaino_rpc_outbound_duration_seconds_bucket{method="getinfo",le="0.005"} 2
+zaino_rpc_outbound_duration_seconds_bucket{method="getinfo",le="0.01"} 2
+zaino_rpc_outbound_duration_seconds_bucket{method="getinfo",le="0.05"} 2
+zaino_rpc_outbound_duration_seconds_bucket{method="getinfo",le="0.1"} 2
+zaino_rpc_outbound_duration_seconds_bucket{method="getinfo",le="0.25"} 2
+zaino_rpc_outbound_duration_seconds_bucket{method="getinfo",le="0.5"} 2
+zaino_rpc_outbound_duration_seconds_bucket{method="getinfo",le="1"} 2
+zaino_rpc_outbound_duration_seconds_bucket{method="getinfo",le="2.5"} 2
+zaino_rpc_outbound_duration_seconds_bucket{method="getinfo",le="5"} 2
+zaino_rpc_outbound_duration_seconds_bucket{method="getinfo",le="10"} 2
+zaino_rpc_outbound_duration_seconds_bucket{method="getinfo",le="30"} 2
+zaino_rpc_outbound_duration_seconds_bucket{method="getinfo",le="60"} 2
+zaino_rpc_outbound_duration_seconds_bucket{method="getinfo",le="300"} 2
+zaino_rpc_outbound_duration_seconds_bucket{method="getinfo",le="+Inf"} 2
+zaino_rpc_outbound_duration_seconds_sum{method="getinfo"} 0.002093075
+zaino_rpc_outbound_duration_seconds_count{method="getinfo"} 2
+zaino_rpc_outbound_duration_seconds_bucket{method="getbestblockhash",le="0.001"} 3
+zaino_rpc_outbound_duration_seconds_bucket{method="getbestblockhash",le="0.005"} 3
+zaino_rpc_outbound_duration_seconds_bucket{method="getbestblockhash",le="0.01"} 3
+zaino_rpc_outbound_duration_seconds_bucket{method="getbestblockhash",le="0.05"} 3
+zaino_rpc_outbound_duration_seconds_bucket{method="getbestblockhash",le="0.1"} 3
+zaino_rpc_outbound_duration_seconds_bucket{method="getbestblockhash",le="0.25"} 3
+zaino_rpc_outbound_duration_seconds_bucket{method="getbestblockhash",le="0.5"} 3
+zaino_rpc_outbound_duration_seconds_bucket{method="getbestblockhash",le="1"} 3
+zaino_rpc_outbound_duration_seconds_bucket{method="getbestblockhash",le="2.5"} 3
+zaino_rpc_outbound_duration_seconds_bucket{method="getbestblockhash",le="5"} 3
+zaino_rpc_outbound_duration_seconds_bucket{method="getbestblockhash",le="10"} 3
+zaino_rpc_outbound_duration_seconds_bucket{method="getbestblockhash",le="30"} 3
+zaino_rpc_outbound_duration_seconds_bucket{method="getbestblockhash",le="60"} 3
+zaino_rpc_outbound_duration_seconds_bucket{method="getbestblockhash",le="300"} 3
+zaino_rpc_outbound_duration_seconds_bucket{method="getbestblockhash",le="+Inf"} 3
+zaino_rpc_outbound_duration_seconds_sum{method="getbestblockhash"} 0.001496545
+zaino_rpc_outbound_duration_seconds_count{method="getbestblockhash"} 3
+zaino_rpc_outbound_duration_seconds_bucket{method="getblockchaininfo",le="0.001"} 2
+zaino_rpc_outbound_duration_seconds_bucket{method="getblockchaininfo",le="0.005"} 3
+zaino_rpc_outbound_duration_seconds_bucket{method="getblockchaininfo",le="0.01"} 3
+zaino_rpc_outbound_duration_seconds_bucket{method="getblockchaininfo",le="0.05"} 3
+zaino_rpc_outbound_duration_seconds_bucket{method="getblockchaininfo",le="0.1"} 3
+zaino_rpc_outbound_duration_seconds_bucket{method="getblockchaininfo",le="0.25"} 3
+zaino_rpc_outbound_duration_seconds_bucket{method="getblockchaininfo",le="0.5"} 3
+zaino_rpc_outbound_duration_seconds_bucket{method="getblockchaininfo",le="1"} 3
+zaino_rpc_outbound_duration_seconds_bucket{method="getblockchaininfo",le="2.5"} 3
+zaino_rpc_outbound_duration_seconds_bucket{method="getblockchaininfo",le="5"} 3
+zaino_rpc_outbound_duration_seconds_bucket{method="getblockchaininfo",le="10"} 3
+zaino_rpc_outbound_duration_seconds_bucket{method="getblockchaininfo",le="30"} 3
+zaino_rpc_outbound_duration_seconds_bucket{method="getblockchaininfo",le="60"} 3
+zaino_rpc_outbound_duration_seconds_bucket{method="getblockchaininfo",le="300"} 3
+zaino_rpc_outbound_duration_seconds_bucket{method="getblockchaininfo",le="+Inf"} 3
+zaino_rpc_outbound_duration_seconds_sum{method="getblockchaininfo"} 0.00228662
+zaino_rpc_outbound_duration_seconds_count{method="getblockchaininfo"} 3
+zaino_rpc_outbound_duration_seconds_bucket{method="getblockcount",le="0.001"} 3
+zaino_rpc_outbound_duration_seconds_bucket{method="getblockcount",le="0.005"} 3
+zaino_rpc_outbound_duration_seconds_bucket{method="getblockcount",le="0.01"} 3
+zaino_rpc_outbound_duration_seconds_bucket{method="getblockcount",le="0.05"} 3
+zaino_rpc_outbound_duration_seconds_bucket{method="getblockcount",le="0.1"} 3
+zaino_rpc_outbound_duration_seconds_bucket{method="getblockcount",le="0.25"} 3
+zaino_rpc_outbound_duration_seconds_bucket{method="getblockcount",le="0.5"} 3
+zaino_rpc_outbound_duration_seconds_bucket{method="getblockcount",le="1"} 3
+zaino_rpc_outbound_duration_seconds_bucket{method="getblockcount",le="2.5"} 3
+zaino_rpc_outbound_duration_seconds_bucket{method="getblockcount",le="5"} 3
+zaino_rpc_outbound_duration_seconds_bucket{method="getblockcount",le="10"} 3
+zaino_rpc_outbound_duration_seconds_bucket{method="getblockcount",le="30"} 3
+zaino_rpc_outbound_duration_seconds_bucket{method="getblockcount",le="60"} 3
+zaino_rpc_outbound_duration_seconds_bucket{method="getblockcount",le="300"} 3
+zaino_rpc_outbound_duration_seconds_bucket{method="getblockcount",le="+Inf"} 3
+zaino_rpc_outbound_duration_seconds_sum{method="getblockcount"} 0.000511652
+zaino_rpc_outbound_duration_seconds_count{method="getblockcount"} 3
+zaino_rpc_outbound_duration_seconds_bucket{method="getrawmempool",le="0.001"} 1
+zaino_rpc_outbound_duration_seconds_bucket{method="getrawmempool",le="0.005"} 1
+zaino_rpc_outbound_duration_seconds_bucket{method="getrawmempool",le="0.01"} 1
+zaino_rpc_outbound_duration_seconds_bucket{method="getrawmempool",le="0.05"} 1
+zaino_rpc_outbound_duration_seconds_bucket{method="getrawmempool",le="0.1"} 1
+zaino_rpc_outbound_duration_seconds_bucket{method="getrawmempool",le="0.25"} 1
+zaino_rpc_outbound_duration_seconds_bucket{method="getrawmempool",le="0.5"} 1
+zaino_rpc_outbound_duration_seconds_bucket{method="getrawmempool",le="1"} 1
+zaino_rpc_outbound_duration_seconds_bucket{method="getrawmempool",le="2.5"} 1
+zaino_rpc_outbound_duration_seconds_bucket{method="getrawmempool",le="5"} 1
+zaino_rpc_outbound_duration_seconds_bucket{method="getrawmempool",le="10"} 1
+zaino_rpc_outbound_duration_seconds_bucket{method="getrawmempool",le="30"} 1
+zaino_rpc_outbound_duration_seconds_bucket{method="getrawmempool",le="60"} 1
+zaino_rpc_outbound_duration_seconds_bucket{method="getrawmempool",le="300"} 1
+zaino_rpc_outbound_duration_seconds_bucket{method="getrawmempool",le="+Inf"} 1
+zaino_rpc_outbound_duration_seconds_sum{method="getrawmempool"} 0.000557727
+zaino_rpc_outbound_duration_seconds_count{method="getrawmempool"} 1
+

@@ -1,164 +1,153 @@
-//! Benchmarks and checks of the chain store, through the `zaino-chain-store`
-//! ports alone: any `ChainStoreSource` feeds a store implementing
-//! `ChainStoreService + ChainStoreIngest`, and every read goes through the
-//! read ports. Wired: zebra's finalized state as the source, the new store
-//! on the LSM engine.
-//!
-//! The figures this prints are working notes (master plan, 5a step 6); the
-//! numbers that get published come from the final validation against a live
-//! zebrad (Stage 8).
+//! zaino-bench: runs the zainod binary on a config, times its sync to the
+//! tip, and reports where the time went.
 
-mod build;
-mod read;
-mod record;
-mod recorder;
-mod stores;
-mod verify;
+// the tool never panics: no indexing or panicking calls
+#![cfg_attr(
+    not(test),
+    deny(
+        clippy::unwrap_used,
+        clippy::expect_used,
+        clippy::panic,
+        clippy::unreachable,
+        clippy::todo,
+        clippy::unimplemented,
+        clippy::indexing_slicing,
+        clippy::string_slice,
+        clippy::get_unwrap,
+        clippy::let_underscore_must_use
+    )
+)]
 
 use std::path::PathBuf;
-use std::sync::Arc;
+use std::process::ExitCode;
+use std::time::Duration;
 
 use clap::{Parser, Subcommand};
 
-/// Chain-store benchmarks and checks over the store ports.
+mod metrics;
+mod record;
+mod report;
+mod run;
+
+use record::Results;
+
 #[derive(Parser)]
-#[command(name = "zaino-bench")]
+#[command(about = "Times a zainod sync and reports where the time went")]
 struct Cli {
-    /// Zebra's cache root (the directory holding `state/`), opened read-only.
-    #[arg(long)]
-    cache: PathBuf,
-    /// Where the tool builds the store: `<store-dir>/lsm/`.
-    #[arg(long, default_value = "/mnt/framework_ssd/.cache/zaino-bench")]
-    store_dir: PathBuf,
-    /// Where one JSON record per run is appended.
-    #[arg(long, default_value = "bench-results")]
-    results: PathBuf,
-    /// Rayon threads per LSM index (default: the store shares the machine's out, at least 2).
-    #[arg(long)]
-    lsm_threads: Option<std::num::NonZeroUsize>,
-    /// Each LSM index's write buffer, MiB (the heap at which a commit writes to disk).
-    #[arg(long, default_value_t = zaino_persistence_lsm_tree::DEFAULT_WRITE_BUFFER_MIB)]
-    lsm_write_buffer_mib: usize,
     #[command(subcommand)]
-    command: Command,
+    command: Cmd,
 }
 
 #[derive(Subcommand)]
-enum Command {
-    /// Build the store through a height, sampling the watermark for the rate,
-    /// and print the store's metrics at the end.
-    Build {
-        /// The index set (`full`, `lightclient`, `zcash_rpc`).
-        #[arg(long, default_value = "full")]
-        set: String,
-        /// The height to build through.
+enum Cmd {
+    /// Sync zainod on a config, from an empty data directory to the tip.
+    Run {
+        /// The zainod config, used exactly as written. Its `[persistence]
+        /// path` must be empty and its `[admin]` endpoint set.
         #[arg(long)]
-        to: u32,
-        /// Seconds between watermark samples.
-        #[arg(long, default_value_t = 10)]
-        sample: u64,
-        /// Start from an empty store directory.
+        config: PathBuf,
+        /// A prebuilt zainod (with the `prometheus` feature). Default: build
+        /// this checkout's.
         #[arg(long)]
-        fresh: bool,
+        zainod: Option<PathBuf>,
+        /// The longest the sync may take: `90m`, `48h`.
+        #[arg(long, default_value = "48h", value_parser = parse_duration)]
+        timeout: Duration,
     },
-    /// Check the built store's read ports against the source at sampled heights.
-    Verify {
-        #[arg(long, default_value = "full")]
-        set: String,
-        /// Check one height in every `every` (plus the first and last 50).
-        #[arg(long, default_value_t = 1000)]
-        every: u32,
-        /// Blocks read above each sampled height for its outputs' spenders
-        /// (every block in the range, so it bounds the run); 0 skips spenders.
-        #[arg(long, default_value_t = 20_000)]
-        spend_scan: u32,
+    /// Show every recorded run, and write the HTML report.
+    Report {
+        /// Where the HTML report is written. Default: `report.html` in the
+        /// results directory.
+        #[arg(short, long)]
+        output: Option<PathBuf>,
     },
-    /// Read throughput and latency through the built store's reader.
-    Read {
-        #[arg(long, default_value = "full")]
-        set: String,
-        #[arg(long, default_value_t = 0)]
-        from: u32,
-        #[arg(long)]
-        to: u32,
-    },
+}
+
+/// A whole number of seconds, minutes, hours or days: `30s`, `90m`, `48h`, `2d`.
+fn parse_duration(text: &str) -> Result<Duration, String> {
+    let invalid = || format!("`{text}` is not a duration such as 30s, 90m, 48h or 2d");
+    let unit = text.chars().last().ok_or_else(invalid)?;
+    let per_unit: u64 = match unit {
+        's' => 1,
+        'm' => 60,
+        'h' => 3_600,
+        'd' => 86_400,
+        _ => return Err(invalid()),
+    };
+    text.strip_suffix(unit)
+        .and_then(|number| number.parse::<u64>().ok())
+        .and_then(|number| number.checked_mul(per_unit))
+        .filter(|secs| *secs > 0)
+        .map(Duration::from_secs)
+        .ok_or_else(invalid)
+}
+
+fn report(results: &Results, output: Option<PathBuf>) -> Result<(), String> {
+    let records = results.records().map_err(|error| error.to_string())?;
+    print!("{}", report::runs_table(&records));
+    if records.is_empty() {
+        return Ok(());
+    }
+    let mut runs = Vec::new();
+    for record in records {
+        let series = results
+            .series(&record.run_id)
+            .map_err(|error| error.to_string())?;
+        runs.push((record, series));
+    }
+    let output = output.unwrap_or_else(|| results.root().join("report.html"));
+    std::fs::write(&output, report::html(&runs))
+        .map_err(|error| format!("{}: {error}", output.display()))?;
+    println!("\nHTML report: {}", output.display());
+    Ok(())
 }
 
 #[tokio::main]
-async fn main() {
-    if let Err(error) = run().await {
-        eprintln!("zaino-bench: {error}");
-        std::process::exit(1);
+async fn main() -> ExitCode {
+    let cli = Cli::parse();
+    let results = Results::default_dir();
+    let outcome = match cli.command {
+        Cmd::Run {
+            config,
+            zainod,
+            timeout,
+        } => run::run(&config, zainod, timeout, &results)
+            .await
+            .map_err(|error| error.to_string()),
+        Cmd::Report { output } => report(&results, output).map(|()| true),
+    };
+    match outcome {
+        Ok(true) => ExitCode::SUCCESS,
+        // the run failed and is recorded as failed
+        Ok(false) => ExitCode::FAILURE,
+        Err(error) => {
+            eprintln!("zaino-bench: {error}");
+            ExitCode::FAILURE
+        }
     }
 }
 
-async fn run() -> Result<(), String> {
-    let cli = Cli::parse();
-    let snapshotter = recorder::install()?;
-    let source = Arc::new(stores::open_source(&cli.cache)?);
-    let schedule = stores::schedule(source.as_ref()).await?;
-    let results = record::Results::new(&cli.results)?;
-    let open = |set: &str, fresh: bool| {
-        let dir = stores::store_path(&cli.store_dir, fresh);
-        let set = set.to_owned();
-        let (source, schedule) = (Arc::clone(&source), Arc::clone(&schedule));
-        async move {
-            stores::open(
-                &dir?,
-                &set,
-                &source,
-                &schedule,
-                cli.lsm_threads,
-                cli.lsm_write_buffer_mib,
-            )
-            .await
-        }
-    };
+#[cfg(test)]
+mod tests {
+    use super::*;
 
-    match cli.command {
-        Command::Build {
-            set,
-            to,
-            sample,
-            fresh,
-        } => {
-            let store = open(&set, fresh).await?;
-            let outcome = build::run(&store, to, sample).await?;
-            let metrics = snapshotter.snapshot();
-            print!("{metrics}");
-            let mut record = record::Record::build(&set, to, &outcome, &metrics);
-            record.lsm_threads = cli.lsm_threads.map(std::num::NonZeroUsize::get);
-            record.lsm_write_buffer_mib = Some(cli.lsm_write_buffer_mib);
-            results.append(&record)?;
-        }
-        Command::Verify {
-            set,
-            every,
-            spend_scan,
-        } => {
-            let store = open(&set, false).await?;
-            let reader = zaino_chain_store::ChainStoreService::reader(&store);
-            let mut report = verify::run(&reader, source.as_ref(), every, spend_scan).await?;
-            verify::run_tree_state(&reader, source.as_ref(), every, &mut report).await?;
-            println!("{report}");
-            results.append(&record::Record::verify(&set, &report))?;
-            if !report.is_clean() {
-                return Err(format!("{} mismatches", report.mismatches.len()));
-            }
-        }
-        Command::Read { set, from, to } => {
-            let store = open(&set, false).await?;
-            let outcome = read::run(
-                &zaino_chain_store::ChainStoreService::reader(&store),
-                from,
-                to,
-            )
-            .await?;
-            println!("{outcome}");
-            let metrics = snapshotter.snapshot();
-            print!("{metrics}");
-            results.append(&record::Record::read(&set, from, to, &outcome, &metrics))?;
+    #[test]
+    fn durations_are_whole_numbers_with_a_unit() {
+        assert_eq!(parse_duration("30s"), Ok(Duration::from_secs(30)));
+        assert_eq!(parse_duration("90m"), Ok(Duration::from_secs(5_400)));
+        assert_eq!(parse_duration("48h"), Ok(Duration::from_secs(172_800)));
+        assert_eq!(parse_duration("2d"), Ok(Duration::from_secs(172_800)));
+        for invalid in [
+            "",
+            "h",
+            "48",
+            "1.5h",
+            "-2h",
+            "0h",
+            "10 m",
+            "99999999999999999999d",
+        ] {
+            assert!(parse_duration(invalid).is_err(), "{invalid}");
         }
     }
-    Ok(())
 }
