@@ -1,11 +1,12 @@
 //! One run: start zainod on the config, watch it until every answer is
 //! local, stop it, measure what it used, record it.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 use std::fs;
 use std::io::IsTerminal as _;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
+use std::os::unix::process::ExitStatusExt as _;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
@@ -15,23 +16,42 @@ use tokio::process::{Child, Command};
 use tokio::signal::unix::{signal, Signal, SignalKind};
 
 use crate::metrics;
-use crate::record::{Build, Host, Outcome, Record, Results, Sample, Synced, Zainod};
+use crate::record::{
+    Build, Disk, DiskUse, Host, Outcome, Record, Results, Sample, Shutdown, Synced, Zainod,
+};
 use crate::report;
 
 /// How often `/readyz` is polled.
 const POLL: Duration = Duration::from_secs(1);
-/// `/metrics` is read once in this many polls.
+/// Once the build has started, `/metrics` is read once in this many polls
+/// (before that, at every poll, to find the build's start to the second).
 const POLLS_PER_SAMPLE: u64 = 5;
-/// The longest one request to the admin endpoint may take.
+/// The longest one request to the admin endpoint may take. Not a bound on
+/// the run: a request that fails is asked again at the next poll.
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(10);
-/// How long the admin endpoint may go without answering before the run fails.
-const ADMIN_SILENCE: Duration = Duration::from_secs(60);
+/// How long `/readyz`, or `/metrics`, may go unread before the run fails.
+const ADMIN_SILENCE: Duration = Duration::from_secs(300);
+/// How long zainod has to build its first block.
+const FIRST_BLOCK: Duration = Duration::from_secs(1_800);
 /// How long no index may advance, once the build has started.
 const STALL: Duration = Duration::from_secs(600);
 /// How long zainod has to exit after SIGINT.
-const SHUTDOWN: Duration = Duration::from_secs(120);
+const SHUTDOWN: Duration = Duration::from_secs(300);
+/// How long building zainod may take.
+const BUILD: Duration = Duration::from_secs(7_200);
+/// How long a helper program (`git`, `sha256sum`, `kill`, `cargo metadata`)
+/// may take.
+const HELPER: Duration = Duration::from_secs(300);
+/// How many times a run id already taken is waited out, a second each.
+const RUN_ID_ATTEMPTS: u32 = 5;
 /// Lines of zainod's log quoted when it exits early.
 const LOG_TAIL_LINES: usize = 15;
+/// The util-linux program zainod is started through, for its `--pdeathsig`.
+const PARENT_DEATH_LAUNCHER: &str = "setpriv";
+/// The environment zainod keeps: what its default paths come from, and
+/// `PATH`. Everything else is cleared, so no `ZAINO_*` variable overrides
+/// the config.
+const KEPT_ENVIRONMENT: [&str; 4] = ["HOME", "XDG_CACHE_HOME", "XDG_RUNTIME_DIR", "PATH"];
 
 /// The step of a run that could not be carried out.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -40,9 +60,8 @@ enum Step {
     Build,
     Host,
     Launch,
-    Observe,
-    Measure,
     Record,
+    Summary,
 }
 
 /// The tool could not carry out a step of the run.
@@ -68,9 +87,8 @@ impl fmt::Display for RunError {
             Step::Build => "building zainod",
             Step::Host => "describing this machine",
             Step::Launch => "starting zainod",
-            Step::Observe => "watching zainod",
-            Step::Measure => "measuring the run",
             Step::Record => "recording the run",
+            Step::Summary => "printing the run's summary (the run is recorded)",
         };
         write!(f, "{step}: {}", self.cause)
     }
@@ -95,7 +113,7 @@ struct BenchConfig {
 
 impl BenchConfig {
     fn parse(text: &str) -> Result<Self, String> {
-        let table: toml::Table = toml::from_str(text).map_err(|error| error.to_string())?;
+        let table: toml::Table = toml::from_str(text).map_err(|error| toml_fault(text, &error))?;
         let data_dir = table
             .get("persistence")
             .and_then(|persistence| persistence.get("path"))
@@ -152,22 +170,67 @@ impl BenchConfig {
     }
 }
 
+/// A TOML fault as its line and message, without the excerpt of the file the
+/// parser prints with it: the excerpt can be a line holding a credential.
+fn toml_fault(text: &str, error: &toml::de::Error) -> String {
+    let line = error
+        .span()
+        .and_then(|span| text.get(..span.start))
+        .map(|before| before.matches('\n').count().saturating_add(1));
+    match line {
+        Some(line) => format!("line {line}: {}", error.message()),
+        None => error.message().to_owned(),
+    }
+}
+
 /// What a recorded config shows in place of a credential.
 const REDACTED: &str = "<redacted>";
 /// The validator credentials a config may hold.
 const CREDENTIALS: [&str; 2] = ["user", "password"];
 
-/// The validator credentials `config` holds that are not redacted.
-fn exposed_credentials(config: &toml::Table) -> Vec<&'static str> {
-    CREDENTIALS
-        .into_iter()
-        .filter(|key| {
-            config
-                .get("validator")
-                .and_then(|validator| validator.get(key))
-                .is_some_and(|value| value.as_str() != Some(REDACTED))
+/// The validator credentials `config` holds that are not redacted, as
+/// written. Names are compared whatever their case: zainod refuses a
+/// miscased one, and this must not record it.
+fn exposed_credentials(config: &toml::Table) -> Vec<String> {
+    config
+        .iter()
+        .filter(|(table, _)| table.eq_ignore_ascii_case("validator"))
+        .filter_map(|(_, validator)| validator.as_table())
+        .flat_map(|validator| validator.iter())
+        .filter(|(key, value)| {
+            CREDENTIALS
+                .iter()
+                .any(|credential| key.eq_ignore_ascii_case(credential))
+                && value.as_str() != Some(REDACTED)
         })
+        .map(|(key, _)| key.clone())
         .collect()
+}
+
+/// What follows a value on its line, when that is nothing but a comment
+/// (with the space before it); else nothing. `after_equals` is the line from
+/// just after its `=`, without the line ending.
+fn trailing_comment(after_equals: &str) -> &str {
+    let value = after_equals.trim_start();
+    let mut chars = value.char_indices();
+    let rest_at = match chars.next() {
+        Some((_, quote @ ('"' | '\''))) => {
+            let mut escaped = false;
+            chars
+                .find(|(_, c)| {
+                    let closes = *c == quote && !escaped;
+                    escaped = quote == '"' && *c == '\\' && !escaped;
+                    closes
+                })
+                .map(|(at, c)| at.saturating_add(c.len_utf8()))
+        }
+        _ => value.find('#'),
+    };
+    let rest = rest_at.and_then(|at| value.get(at..)).unwrap_or_default();
+    match rest.trim_start().starts_with('#') {
+        true => rest,
+        false => "",
+    }
 }
 
 /// `text` with the values of `[validator]`'s `user` and `password` replaced:
@@ -186,28 +249,34 @@ fn redact_credentials(text: &str) -> Result<String, String> {
                 .trim()
                 .to_owned();
         }
-        let key = content.split_once('=').map(|(key, _)| key.trim());
-        let credential = key.filter(|key| {
+        let assignment = content
+            .split_once('=')
+            .map(|(key, value)| (key.trim(), value));
+        let credential = assignment.filter(|(key, _)| {
             let path = match table.is_empty() {
                 true => (*key).to_owned(),
                 false => format!("{table}.{key}"),
             };
             CREDENTIALS
                 .iter()
-                .any(|credential| path == format!("validator.{credential}"))
+                .any(|credential| path.eq_ignore_ascii_case(&format!("validator.{credential}")))
         });
         match credential {
-            Some(key) => {
+            Some((key, value)) => {
                 let indent = line.len().saturating_sub(content.len());
                 let ending = if line.ends_with('\n') { "\n" } else { "" };
+                let comment = trailing_comment(value.trim_end_matches(['\n', '\r']));
                 out.push_str(line.get(..indent).unwrap_or_default());
-                out.push_str(&format!("{key} = \"{REDACTED}\"{ending}"));
+                out.push_str(&format!("{key} = \"{REDACTED}\"{comment}{ending}"));
             }
             None => out.push_str(line),
         }
     }
     let redacted: toml::Table = toml::from_str(&out).map_err(|error| {
-        format!("the config does not parse with its credentials redacted: {error}")
+        format!(
+            "the config does not parse with its credentials redacted: {}",
+            toml_fault(&out, &error)
+        )
     })?;
     let exposed = exposed_credentials(&redacted);
     if !exposed.is_empty() {
@@ -215,11 +284,17 @@ fn redact_credentials(text: &str) -> Result<String, String> {
             "[validator] {} would be recorded in the clear: write it on a line of its own \
              under [validator], as `{} = \"...\"`",
             exposed.join(" and "),
-            exposed.first().copied().unwrap_or("password"),
+            exposed.first().map_or("password", String::as_str),
         ));
     }
     Ok(out)
 }
+
+/// What zainod builds when the config has no `[indexes]` table, and the
+/// base set when the table names none (`packages/zainod/src/config.rs` and
+/// `IndexesConfig`'s defaults).
+const SET_WITHOUT_TABLE: &str = "lightclient";
+const SET_UNNAMED: &str = "empty";
 
 /// The `[indexes]` table as a short label: `full`, `lightclient +spent`.
 fn indexes_label(indexes: Option<&toml::Value>) -> String {
@@ -236,11 +311,14 @@ fn indexes_label(indexes: Option<&toml::Value>) -> String {
             })
             .unwrap_or_default()
     };
-    let mut label = indexes
-        .and_then(|indexes| indexes.get("set"))
-        .and_then(toml::Value::as_str)
-        .unwrap_or("default")
-        .to_owned();
+    let mut label = match indexes {
+        None => SET_WITHOUT_TABLE,
+        Some(indexes) => indexes
+            .get("set")
+            .and_then(toml::Value::as_str)
+            .unwrap_or(SET_UNNAMED),
+    }
+    .to_owned();
     for (sign, key) in [('+', "enable"), ('-', "disable")] {
         let names = names(key);
         if !names.is_empty() {
@@ -257,6 +335,34 @@ fn is_empty(dir: &Path) -> Result<bool, String> {
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(true),
         Err(error) => Err(format!("{}: {error}", dir.display())),
     }
+}
+
+/// Refuses an admin address something already listens on: its answers would
+/// be read as this run's zainod's.
+fn admin_is_free(admin: SocketAddr) -> Result<(), String> {
+    std::net::TcpListener::bind(admin)
+        .map(drop)
+        .map_err(|error| {
+            format!(
+                "[admin] listen_address {admin} cannot be bound ({error}): if another zainod is \
+                 using it, stop that one or give this run another address"
+            )
+        })
+}
+
+/// What must hold for a run to start: every store directory empty, and the
+/// admin address free.
+fn preflight(config: &BenchConfig) -> Result<(), String> {
+    for dir in config.store_dirs() {
+        if !is_empty(dir)? {
+            return Err(format!(
+                "{} is not empty: a run syncs from nothing, so point the config at an empty \
+                 directory",
+                dir.display()
+            ));
+        }
+    }
+    admin_is_free(config.admin)
 }
 
 /// What `/readyz` answers.
@@ -324,16 +430,23 @@ impl Readyz {
     }
 }
 
-/// Runs `program` to its end and returns its standard output.
+/// Runs `program` to its end and returns its standard output. One that has
+/// not ended within [`HELPER`] is killed.
 async fn output_of(program: &str, args: &[&str], dir: Option<&Path>) -> Result<String, String> {
     let mut command = Command::new(program);
-    command.args(args).stdin(Stdio::null());
+    command.args(args).stdin(Stdio::null()).kill_on_drop(true);
     if let Some(dir) = dir {
         command.current_dir(dir);
     }
-    let output = command
-        .output()
+    let output = tokio::time::timeout(HELPER, command.output())
         .await
+        .map_err(|_| {
+            format!(
+                "`{program} {}` did not end within {} minutes",
+                args.join(" "),
+                HELPER.as_secs() / 60
+            )
+        })?
         .map_err(|error| format!("`{program}` did not run: {error}"))?;
     if !output.status.success() {
         return Err(format!(
@@ -363,7 +476,8 @@ async fn zainod(prebuilt: Option<PathBuf>) -> Result<Zainod, RunError> {
         Some(binary) => (binary, None),
         None => {
             let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
-            let status = Command::new("cargo")
+            let mut cargo = Command::new("cargo");
+            cargo
                 .args([
                     "build",
                     "--release",
@@ -374,8 +488,15 @@ async fn zainod(prebuilt: Option<PathBuf>) -> Result<Zainod, RunError> {
                 ])
                 .current_dir(&root)
                 .stdin(Stdio::null())
-                .status()
+                .kill_on_drop(true);
+            let status = tokio::time::timeout(BUILD, cargo.status())
                 .await
+                .map_err(|_| {
+                    failed(format!(
+                        "cargo build did not end within {} hours",
+                        BUILD.as_secs() / 3_600
+                    ))
+                })?
                 .map_err(|error| failed(format!("cargo did not run: {error}")))?;
             if !status.success() {
                 return Err(failed(format!("cargo build failed ({status})")));
@@ -470,9 +591,11 @@ fn host(data_dir: &Path) -> Result<Host, RunError> {
     let kernel = read("/proc/sys/kernel/osrelease")?;
     let data_dir = nearest_existing(data_dir).map_err(failed)?;
     Ok(Host {
-        cpu: proc_field(&cpuinfo, "model name")
-            .ok_or_else(|| failed("/proc/cpuinfo names no CPU model".to_owned()))?
-            .to_owned(),
+        // x86 names the model `model name`; other architectures use other keys
+        cpu: ["model name", "Hardware", "cpu model", "cpu"]
+            .into_iter()
+            .find_map(|key| proc_field(&cpuinfo, key))
+            .map(str::to_owned),
         cores: std::thread::available_parallelism()
             .map_err(|error| failed(format!("core count: {error}")))?
             .get(),
@@ -526,20 +649,50 @@ fn subdirs(dir: &Path) -> Result<Vec<PathBuf>, String> {
     Ok(dirs)
 }
 
+/// Whether a directory is named as zainod names an index's: `<index>_<format>`.
+fn is_index_dir(name: &str) -> bool {
+    name.rsplit_once('_').is_some_and(|(index, format)| {
+        !index.is_empty() && !format.is_empty() && format.chars().all(|c| c.is_ascii_digit())
+    })
+}
+
+/// `dir` resolved; `None` when it does not exist.
+fn resolved(dir: &Path) -> Result<Option<PathBuf>, String> {
+    match fs::canonicalize(dir) {
+        Ok(resolved) => Ok(Some(resolved)),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(error) => Err(format!("{}: {error}", dir.display())),
+    }
+}
+
 /// Disk used: in total, and by each index directory. Indexes are at
 /// `<data dir>/<network>/indexes/<index>`, and directly under each
-/// `[indexes.paths]` directory.
-fn disk(config: &BenchConfig) -> Result<(u64, BTreeMap<String, u64>), String> {
-    let mut total = 0u64;
+/// `[indexes.paths]` directory. No directory is counted twice, whether two
+/// indexes share one or one lies inside another.
+fn disk(config: &BenchConfig) -> Result<Disk, String> {
+    let mut roots = BTreeSet::new();
     for dir in config.store_dirs() {
-        total = total.saturating_add(disk_bytes(dir)?);
+        roots.extend(resolved(dir)?);
     }
-    let mut index_dirs = Vec::new();
+    let mut total_bytes = 0u64;
+    for root in &roots {
+        let inside_another = roots
+            .iter()
+            .any(|other| other != root && root.starts_with(other));
+        if !inside_another {
+            total_bytes = total_bytes.saturating_add(disk_bytes(root)?);
+        }
+    }
+    let mut parents = Vec::new();
     for network in subdirs(&config.data_dir)? {
-        index_dirs.extend(subdirs(&network.join("indexes"))?);
+        parents.push(network.join("indexes"));
     }
-    for dir in &config.index_dirs {
-        index_dirs.extend(subdirs(dir)?);
+    parents.extend(config.index_dirs.iter().cloned());
+    let mut index_dirs = BTreeSet::new();
+    for parent in parents {
+        for dir in subdirs(&parent)? {
+            index_dirs.extend(resolved(&dir)?);
+        }
     }
     let mut by_index = BTreeMap::new();
     for dir in index_dirs {
@@ -547,10 +700,16 @@ fn disk(config: &BenchConfig) -> Result<(u64, BTreeMap<String, u64>), String> {
             .file_name()
             .map(|name| name.to_string_lossy().into_owned())
             .ok_or_else(|| format!("{} has no name", dir.display()))?;
+        if !is_index_dir(&name) {
+            continue;
+        }
         let bytes: &mut u64 = by_index.entry(name).or_default();
         *bytes = bytes.saturating_add(disk_bytes(&dir)?);
     }
-    Ok((total, by_index))
+    Ok(Disk {
+        total_bytes,
+        by_index,
+    })
 }
 
 /// The last lines of zainod's log.
@@ -576,14 +735,49 @@ struct Local {
 /// What watching zainod came to.
 struct Observed {
     ready_secs: Option<f64>,
+    /// Whether zainod's admin endpoint ever answered as this run's zainod:
+    /// it starts only once zainod has accepted the config.
+    accepted: bool,
     /// The sync's measurements, or why the run failed.
     result: Result<Local, String>,
+}
+
+/// How zainod stopped on the tool's SIGINT.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Stopped {
+    /// It shut down and exited 0.
+    Clean,
+    /// The signal ended it: it was not serving yet, so not yet listening for
+    /// one.
+    BySignal,
+}
+
+/// How far before the run's start a process's reported start may fall and
+/// still be this run's zainod: the start is reported in whole seconds, from
+/// the boot time in whole seconds.
+const START_SLACK_SECS: u64 = 2;
+
+/// Refuses a `/metrics` answer from a process started before this run: it is
+/// not the zainod this run started, but another on the same address.
+fn is_from_this_run(process_start_unix: Option<u64>, run_started_unix: u64) -> Result<(), String> {
+    let process_start = process_start_unix
+        .ok_or("/metrics does not say when its process started, so it cannot be told from another zainod's")?;
+    match process_start.saturating_add(START_SLACK_SECS) >= run_started_unix {
+        true => Ok(()),
+        false => Err(format!(
+            "the process answering on the admin address started {}s before this run: it is not \
+             this run's zainod",
+            run_started_unix.saturating_sub(process_start)
+        )),
+    }
 }
 
 /// One running zainod and where its run is recorded.
 struct Running<'a> {
     child: Child,
     started: Instant,
+    /// The second the run started in, taken before zainod was.
+    started_unix: u64,
     config: &'a BenchConfig,
     results: &'a Results,
     run_id: &'a str,
@@ -616,11 +810,18 @@ impl Running<'_> {
         }
     }
 
-    /// Reads `/metrics` and appends the sample to the run's series.
-    async fn sample(&self) -> Result<Sample, String> {
+    /// Reads `/metrics`, refusing an answer that is not this run's zainod's.
+    async fn scrape(&self) -> Result<Sample, String> {
         let body = self.get("/metrics").await?;
         let sample = metrics::parse(&body, self.started.elapsed().as_secs_f64())
             .map_err(|error| error.to_string())?;
+        is_from_this_run(sample.process_start_unix, self.started_unix)?;
+        Ok(sample)
+    }
+
+    /// Reads `/metrics` and appends the sample to the run's series.
+    async fn sample(&self) -> Result<Sample, String> {
+        let sample = self.scrape().await?;
         self.results
             .append_sample(self.run_id, &sample)
             .map_err(|error| error.to_string())?;
@@ -635,53 +836,69 @@ impl Running<'_> {
         proc_kib(&status, "VmHWM").ok_or_else(|| format!("{path} has no VmHWM"))
     }
 
-    /// Watches zainod until every answer is local, or the run fails.
-    async fn observe(&mut self, timeout: Duration) -> Result<Observed, RunError> {
+    /// Watches zainod until every answer is local, or the run fails. Every
+    /// wait in it is bounded: zainod's exit, `--timeout`, an admin endpoint
+    /// gone quiet, no first block, no progress.
+    async fn observe(&mut self, timeout: Duration) -> Observed {
         let mut ticker = tokio::time::interval(POLL);
         ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
         let mut ready_secs = None;
-        let mut last_answer = Instant::now();
-        // the indexes' heights and when one last moved, once the build has started
-        let mut progress: Option<(Vec<Option<u32>>, Instant)> = None;
+        let mut accepted = false;
+        let mut last_readyz = Instant::now();
+        let mut last_sample = Instant::now();
+        // the indexes' heights (none before the first block) and when one
+        // last moved
+        let mut progress: (Vec<Option<u32>>, Instant) = (Vec::new(), Instant::now());
         let mut samples: (Option<Sample>, Option<Sample>) = (None, None);
+        // whether a sample has shown the build: until one does, every poll samples
+        let mut building = false;
+        // when every answer was first local, and the height then
+        let mut local: Option<(f64, Option<u32>)> = None;
         let mut polls = 0u64;
-        let failed = |ready_secs, cause: String| {
-            Ok(Observed {
-                ready_secs,
-                result: Err(cause),
-            })
-        };
-        loop {
+        let minutes = |bound: Duration| bound.as_secs() / 60;
+        let cause = loop {
             let signal = tokio::select! {
                 _ = ticker.tick() => None,
                 _ = self.interrupt.recv() => Some("SIGINT"),
                 _ = self.terminate.recv() => Some("SIGTERM"),
             };
             if let Some(signal) = signal {
-                return failed(
-                    ready_secs,
-                    format!("zaino-bench was interrupted ({signal}) before the sync finished"),
-                );
+                break format!("zaino-bench was interrupted ({signal}) before the sync finished");
             }
             polls = polls.saturating_add(1);
-            let exited = self
-                .child
-                .try_wait()
-                .map_err(|error| RunError::new(Step::Observe, error))?;
-            if let Some(status) = exited {
-                return failed(
-                    ready_secs,
-                    format!(
+            match self.child.try_wait() {
+                Ok(None) => {}
+                Ok(Some(status)) => {
+                    break format!(
                         "zainod exited ({status}) before the sync finished; its log ends:\n{}",
                         log_tail(&self.log)
-                    ),
-                );
+                    )
+                }
+                Err(error) => break format!("zainod's process could not be watched: {error}"),
             }
             if self.started.elapsed() >= timeout {
-                return failed(
-                    ready_secs,
-                    format!("the sync did not finish within --timeout ({timeout:?})"),
-                );
+                break format!("the sync did not finish within --timeout ({timeout:?})");
+            }
+            // no answer is trusted until `/metrics` shows it is this run's
+            // zainod answering, not another on the same address
+            if !accepted {
+                match self.scrape().await {
+                    Ok(_) => accepted = true,
+                    Err(error) if last_readyz.elapsed() >= ADMIN_SILENCE => {
+                        break format!(
+                            "zainod's admin endpoint has not answered as this run's zainod for \
+                             {} minutes: {error}",
+                            minutes(ADMIN_SILENCE)
+                        );
+                    }
+                    Err(_) => {
+                        status_line(&format!(
+                            "waiting for zainod's admin endpoint  {}",
+                            report::duration(self.started.elapsed().as_secs_f64())
+                        ));
+                        continue;
+                    }
+                }
             }
             let readyz = match self
                 .get("/readyz")
@@ -689,16 +906,13 @@ impl Running<'_> {
                 .and_then(|body| Readyz::parse(&body))
             {
                 Ok(readyz) => {
-                    last_answer = Instant::now();
+                    last_readyz = Instant::now();
                     readyz
                 }
-                Err(error) if last_answer.elapsed() >= ADMIN_SILENCE => {
-                    return failed(
-                        ready_secs,
-                        format!(
-                            "zainod's admin endpoint has not answered for {}s: {error}",
-                            ADMIN_SILENCE.as_secs()
-                        ),
+                Err(error) if last_readyz.elapsed() >= ADMIN_SILENCE => {
+                    break format!(
+                        "zainod's /readyz has not answered for {} minutes: {error}",
+                        minutes(ADMIN_SILENCE)
                     );
                 }
                 Err(_) => {
@@ -710,30 +924,48 @@ impl Running<'_> {
                 }
             };
             if let Some(critical) = readyz.critical() {
-                return failed(ready_secs, critical);
+                break critical;
             }
             let elapsed = self.started.elapsed().as_secs_f64();
             if readyz.ready && ready_secs.is_none() {
                 ready_secs = Some(elapsed);
             }
-            if readyz.local {
-                let last = match self.sample().await {
-                    Ok(sample) => sample,
-                    Err(cause) => return failed(ready_secs, cause),
-                };
-                let peak_memory_bytes = match self.peak_memory() {
-                    Ok(bytes) => bytes,
-                    Err(cause) => return failed(ready_secs, cause),
-                };
-                return Ok(Observed {
-                    ready_secs,
-                    result: Ok(Local {
-                        sync_secs: elapsed,
-                        height: readyz.watermark(),
-                        last,
-                        peak_memory_bytes,
-                    }),
-                });
+            if readyz.local && local.is_none() {
+                local = Some((elapsed, readyz.watermark()));
+            }
+            // a read that fails is asked again at the next poll, within the bound
+            if local.is_some() || !building || polls.is_multiple_of(POLLS_PER_SAMPLE) {
+                match self.sample().await {
+                    Ok(sample) => {
+                        last_sample = Instant::now();
+                        building = building || !sample.is_before_build();
+                        if let Some((sync_secs, height)) = local {
+                            let result = self.peak_memory().map(|peak_memory_bytes| Local {
+                                sync_secs,
+                                height,
+                                last: sample,
+                                peak_memory_bytes,
+                            });
+                            return Observed {
+                                ready_secs,
+                                accepted,
+                                result,
+                            };
+                        }
+                        samples = (samples.1.take(), Some(sample));
+                    }
+                    Err(error) if last_sample.elapsed() >= ADMIN_SILENCE => {
+                        break format!(
+                            "zainod's /metrics could not be read for {} minutes: {error}",
+                            minutes(ADMIN_SILENCE)
+                        );
+                    }
+                    Err(_) => {}
+                }
+            }
+            if local.is_some() {
+                // the sync is timed: only its last sample is still owed
+                continue;
             }
             // `/readyz` lists the indexes only once zainod serves; until then
             // the last `/metrics` sample has their heights
@@ -743,59 +975,85 @@ impl Running<'_> {
                     heights = sample.heights.values().copied().map(Some).collect();
                 }
             }
-            if !heights.is_empty() {
-                match &mut progress {
-                    Some((seen, moved)) if *seen == heights => {
-                        if moved.elapsed() >= STALL {
-                            return failed(
-                                ready_secs,
-                                format!(
-                                    "no index has advanced for {} minutes",
-                                    STALL.as_secs() / 60
-                                ),
-                            );
-                        }
-                    }
-                    _ => progress = Some((heights, Instant::now())),
-                }
-            }
-            if polls.is_multiple_of(POLLS_PER_SAMPLE) {
-                match self.sample().await {
-                    Ok(sample) => samples = (samples.1.take(), Some(sample)),
-                    Err(cause) => return failed(ready_secs, cause),
-                }
+            if progress.0 != heights {
+                progress = (heights, Instant::now());
+            } else if progress.0.is_empty() && progress.1.elapsed() >= FIRST_BLOCK {
+                break format!(
+                    "zainod built no block in its first {} minutes",
+                    minutes(FIRST_BLOCK)
+                );
+            } else if !progress.0.is_empty() && progress.1.elapsed() >= STALL {
+                break format!("no index has advanced for {} minutes", minutes(STALL));
             }
             status_line(&progress_line(&readyz, &samples, elapsed));
+        };
+        // a sync that was timed but could not be measured says both
+        let cause = match local {
+            Some((sync_secs, _)) => format!(
+                "every answer was local after {}, but the run's last measurements could not be \
+                 taken: {cause}",
+                report::polled(sync_secs)
+            ),
+            None => cause,
+        };
+        Observed {
+            ready_secs,
+            accepted,
+            result: Err(cause),
         }
     }
 
-    /// Stops zainod with SIGINT: it must exit 0 within [`SHUTDOWN`]; one that
-    /// does not is killed.
-    async fn stop(&mut self) -> Result<(), String> {
+    /// Kills zainod outright; what came of it, for the cause.
+    async fn kill(&mut self) -> String {
+        match self.child.kill().await {
+            Ok(()) => "it was killed".to_owned(),
+            Err(error) => format!("and it could not be killed: {error}"),
+        }
+    }
+
+    /// Stops zainod with SIGINT: it must exit within [`SHUTDOWN`]; one that
+    /// does not is killed, as is one still shutting down when this tool is
+    /// interrupted again.
+    async fn stop(&mut self) -> Result<Stopped, String> {
         let Some(pid) = self.child.id() else {
             return match self.child.wait().await {
                 Ok(status) => Err(format!("zainod had already exited ({status})")),
                 Err(error) => Err(format!("zainod had already exited: {error}")),
             };
         };
-        output_of("kill", &["-INT", &pid.to_string()], None).await?;
-        match tokio::time::timeout(SHUTDOWN, self.child.wait()).await {
-            Ok(Ok(status)) if status.success() => Ok(()),
-            Ok(Ok(status)) => Err(format!(
+        // a zainod that cannot be signalled is still never left running
+        if let Err(error) = output_of("kill", &["-INT", &pid.to_string()], None).await {
+            return Err(format!(
+                "zainod could not be sent SIGINT ({error}); {}",
+                self.kill().await
+            ));
+        }
+        let waited = tokio::select! {
+            waited = tokio::time::timeout(SHUTDOWN, self.child.wait()) => Ok(waited),
+            _ = self.interrupt.recv() => Err("SIGINT"),
+            _ = self.terminate.recv() => Err("SIGTERM"),
+        };
+        match waited {
+            Ok(Ok(Ok(status))) if status.success() => Ok(Stopped::Clean),
+            Ok(Ok(Ok(status)))
+                if status.signal() == Some(SignalKind::interrupt().as_raw_value()) =>
+            {
+                Ok(Stopped::BySignal)
+            }
+            Ok(Ok(Ok(status))) => Err(format!(
                 "zainod did not shut down cleanly ({status}); its log ends:\n{}",
                 log_tail(&self.log)
             )),
-            Ok(Err(error)) => Err(format!("waiting for zainod to exit: {error}")),
-            Err(_) => {
-                let killed = match self.child.kill().await {
-                    Ok(()) => "killed".to_owned(),
-                    Err(error) => format!("and could not be killed: {error}"),
-                };
-                Err(format!(
-                    "zainod did not exit within {}s of SIGINT; {killed}",
-                    SHUTDOWN.as_secs()
-                ))
-            }
+            Ok(Ok(Err(error))) => Err(format!("waiting for zainod to exit: {error}")),
+            Ok(Err(_)) => Err(format!(
+                "zainod did not exit within {} minutes of SIGINT; {}",
+                SHUTDOWN.as_secs() / 60,
+                self.kill().await
+            )),
+            Err(signal) => Err(format!(
+                "zaino-bench was interrupted ({signal}) while zainod was shutting down; {}",
+                self.kill().await
+            )),
         }
     }
 }
@@ -803,7 +1061,7 @@ impl Running<'_> {
 /// Rewrites the terminal's status line; nothing when not on a terminal.
 fn status_line(line: &str) {
     if std::io::stderr().is_terminal() {
-        eprint!("\r\x1b[2K{line}");
+        crate::print_err(&format!("\r\x1b[2K{line}"));
     }
 }
 
@@ -863,8 +1121,8 @@ fn progress_line(
 }
 
 /// Runs zainod on the config at `config_path` and records the run. `Ok(true)`
-/// when the sync completed, `Ok(false)` when the run failed and was recorded
-/// as failed.
+/// when the sync completed with nothing to warn of; `Ok(false)` when the run
+/// failed, or completed with warnings, and was recorded and printed as such.
 pub(crate) async fn run(
     config_path: &Path,
     prebuilt: Option<PathBuf>,
@@ -876,28 +1134,42 @@ pub(crate) async fn run(
         .map_err(|error| config_error(format!("{}: {error}", config_path.display())))?;
     let config = BenchConfig::parse(&text)
         .map_err(|cause| config_error(format!("{}: {cause}", config_path.display())))?;
-    for dir in config.store_dirs() {
-        if !is_empty(dir).map_err(config_error)? {
-            return Err(config_error(format!(
-                "{} is not empty: a run syncs from nothing, so point the config at an empty \
-                 directory",
-                dir.display()
-            )));
-        }
-    }
+    // checked before the build, to refuse at once, and again after it, as
+    // building zainod can take long enough for either to change
+    preflight(&config).map_err(config_error)?;
     let zainod = zainod(prebuilt).await?;
     let host = host(&config.data_dir)?;
+    preflight(&config).map_err(config_error)?;
 
-    let started_unix = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map_err(|error| RunError::new(Step::Launch, format!("the clock: {error}")))?
-        .as_secs();
-    let run_id = format!("run-{started_unix}");
-    let run_dir = results
-        .create_run_dir(&run_id)
-        .map_err(|error| RunError::new(Step::Record, error))?;
-    let log = run_dir.join("zainod.log");
+    // a run is named by the second it starts in; one already taken (another
+    // run started this second) is waited out
     let launch_error = |cause: String| RunError::new(Step::Launch, cause);
+    let mut attempts = 0u32;
+    let (started_unix, run_id, run_dir) = loop {
+        let started_unix = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map_err(|error| launch_error(format!("the clock: {error}")))?
+            .as_secs();
+        let run_id = format!("run-{started_unix}");
+        let created = results
+            .create_run_dir(&run_id)
+            .map_err(|error| RunError::new(Step::Record, error))?;
+        if let Some(run_dir) = created {
+            break (started_unix, run_id, run_dir);
+        }
+        attempts = attempts.saturating_add(1);
+        if attempts >= RUN_ID_ATTEMPTS {
+            return Err(RunError::new(
+                Step::Record,
+                format!(
+                    "{run_id} is taken, like the id of each second tried before it \
+                     ({attempts} tries): other runs keep starting"
+                ),
+            ));
+        }
+        tokio::time::sleep(Duration::from_secs(1)).await;
+    };
+    let log = run_dir.join("zainod.log");
     let log_file = fs::File::create(&log)
         .map_err(|error| launch_error(format!("{}: {error}", log.display())))?;
     let log_errors = log_file
@@ -909,10 +1181,16 @@ pub(crate) async fn run(
         .map_err(|error| launch_error(format!("the HTTP client: {error}")))?;
 
     // A cleared environment: `ZAINO_*` variables override the config file.
-    // `HOME` and `XDG_CACHE_HOME` stay, as zainod's default paths come from them;
-    // the log goes to a file, so without colour codes.
-    let mut command = Command::new(&zainod.binary);
+    // `HOME` and the XDG directories stay, as zainod's default paths come
+    // from them; the log goes to a file, so without colour codes.
+    //
+    // Started through `setpriv --pdeathsig`: the kernel then sends zainod
+    // SIGTERM if this tool dies without stopping it (killed outright), so
+    // zainod is never left running on its own.
+    let mut command = Command::new(PARENT_DEATH_LAUNCHER);
     command
+        .args(["--pdeathsig", "TERM", "--"])
+        .arg(&zainod.binary)
         .arg("start")
         .arg("--config")
         .arg(config_path)
@@ -922,30 +1200,35 @@ pub(crate) async fn run(
         .stdout(log_file)
         .stderr(log_errors)
         .kill_on_drop(true);
-    for kept in ["HOME", "XDG_CACHE_HOME", "PATH"] {
+    for kept in KEPT_ENVIRONMENT {
         if let Some(value) = std::env::var_os(kept) {
             command.env(kept, value);
         }
     }
-    eprintln!(
-        "zaino-bench {run_id}: {} on indexes `{}`; log {}",
+    crate::print_err(&format!(
+        "zaino-bench {run_id}: {} on indexes `{}`; log {}\n",
         zainod.binary.display(),
         config.indexes,
         log.display()
-    );
+    ));
     // from here a signal to this tool stops zainod and records the run
     let on = |kind: SignalKind| {
         signal(kind).map_err(|error| launch_error(format!("listening for signals: {error}")))
     };
     let (interrupt, terminate) = (on(SignalKind::interrupt())?, on(SignalKind::terminate())?);
-    let child = command
-        .spawn()
-        .map_err(|error| launch_error(format!("{}: {error}", zainod.binary.display())))?;
+    let child = command.spawn().map_err(|error| {
+        launch_error(format!(
+            "`{PARENT_DEATH_LAUNCHER}` (util-linux), which starts {} so that it stops if this \
+             tool is killed: {error}",
+            zainod.binary.display()
+        ))
+    })?;
     let mut running = Running {
         interrupt,
         terminate,
         child,
         started: Instant::now(),
+        started_unix,
         config: &config,
         results,
         run_id: &run_id,
@@ -953,44 +1236,69 @@ pub(crate) async fn run(
         http,
     };
 
-    let observed = running.observe(timeout).await?;
+    let observed = running.observe(timeout).await;
     if std::io::stderr().is_terminal() {
-        eprintln!();
+        crate::print_err("\n");
     }
     let had_exited = running.child.id().is_none();
     let stopped = running.stop().await;
-    let outcome = match (observed.result, stopped) {
-        (Ok(local), Ok(())) => {
-            let (disk_total_bytes, disk_bytes) =
-                disk(&config).map_err(|cause| RunError::new(Step::Measure, cause))?;
-            match local.last.cpu_secs {
-                Some(cpu_secs) => Outcome::Synced(Synced {
+    let outcome = match observed.result {
+        // a sync that completed stays a completed sync: trouble stopping
+        // zainod or measuring the disk is recorded with it, never instead of it
+        Ok(local) => {
+            let shutdown = match stopped {
+                Ok(Stopped::Clean) => Shutdown::Clean,
+                Ok(Stopped::BySignal) => Shutdown::Failed {
+                    cause: "the SIGINT ended zainod instead of shutting it down".to_owned(),
+                },
+                Err(cause) => Shutdown::Failed { cause },
+            };
+            let disk = match disk(&config) {
+                Ok(disk) => DiskUse::Measured(disk),
+                Err(cause) => DiskUse::Unmeasured { cause },
+            };
+            let last = local.last;
+            match (last.cpu_secs, last.restarts, last.build_failures) {
+                (Some(cpu_secs), Some(restarts), Some(build_failures)) => Outcome::Synced(Synced {
                     sync_secs: local.sync_secs,
                     height: local.height,
                     peak_memory_bytes: local.peak_memory_bytes,
                     cpu_secs,
-                    disk_total_bytes,
-                    disk_bytes,
-                    stages: local.last.stages,
+                    disk,
+                    stages: last.stages,
+                    restarts,
+                    build_failures,
+                    shutdown,
                 }),
-                None => Outcome::Failed {
-                    cause: "zainod's /metrics reports no CPU time".to_owned(),
+                _ => Outcome::Failed {
+                    cause: format!(
+                        "every answer was local after {}, but zainod's /metrics does not report \
+                         its CPU time, restarts and failed builds (CPU {:?}, restarts {:?}, \
+                         failed builds {:?})",
+                        report::polled(local.sync_secs),
+                        last.cpu_secs,
+                        last.restarts,
+                        last.build_failures
+                    ),
                 },
             }
         }
-        (Ok(_), Err(cause)) => Outcome::Failed { cause },
-        (Err(cause), Ok(())) => Outcome::Failed { cause },
-        // the exit is the failure already reported
-        (Err(cause), Err(_)) if had_exited => Outcome::Failed { cause },
-        (Err(cause), Err(stop)) => Outcome::Failed {
-            cause: format!("{cause}\n{stop}"),
+        Err(cause) => match stopped {
+            // zainod not yet serving has no handler for the signal, which then
+            // ends it: stopped either way
+            Ok(Stopped::Clean | Stopped::BySignal) => Outcome::Failed { cause },
+            // the exit is the failure already reported
+            Err(_) if had_exited => Outcome::Failed { cause },
+            Err(stop) => Outcome::Failed {
+                cause: format!("{cause}\n{stop}"),
+            },
         },
     };
     let record = Record {
         run_id,
         started_unix,
         indexes: config.indexes.clone(),
-        config: config.recorded.clone(),
+        config: observed.accepted.then(|| config.recorded.clone()),
         zainod,
         host,
         ready_secs: observed.ready_secs,
@@ -999,11 +1307,25 @@ pub(crate) async fn run(
     results
         .append_record(&record)
         .map_err(|error| RunError::new(Step::Record, error))?;
-    let series = results
-        .series(&record.run_id)
-        .map_err(|error| RunError::new(Step::Record, error))?;
-    print!("{}", report::run_summary(&record, &series));
-    Ok(matches!(record.outcome, Outcome::Synced(_)))
+    // the run is recorded: a series that cannot be read back costs the
+    // summary its band analysis, and says so
+    let mut problems = Vec::new();
+    let series = match results.series(&record.run_id) {
+        Ok(mut series) => {
+            problems.append(&mut series.damaged);
+            series.values
+        }
+        Err(error) => {
+            problems.push(format!("the run's series could not be read back: {error}"));
+            Vec::new()
+        }
+    };
+    crate::print_out(&report::run_summary(&record, &series, &problems))
+        .map_err(|cause| RunError::new(Step::Summary, cause))?;
+    Ok(match &record.outcome {
+        Outcome::Synced(synced) => synced.warnings().is_empty() && problems.is_empty(),
+        Outcome::Failed { .. } => false,
+    })
 }
 
 #[cfg(test)]
@@ -1069,7 +1391,7 @@ user = \"kept\"";
 network = \"Regtest\"
 [validator]
 rpc_address = \"127.0.0.1:8232\"
-  user = \"<redacted>\"
+  user = \"<redacted>\"   # the rpc user
 password = \"<redacted>\"
 cookie_path = \"/run/zebra/.cookie\"
 [validator.read_state]
@@ -1084,6 +1406,77 @@ user = \"kept\""
             redact_credentials("validator.password = \"hunter2\"\n").expect("redacts"),
             "validator.password = \"<redacted>\"\n"
         );
+    }
+
+    /// zainod refuses a miscased key; the copy recorded must not hold it.
+    #[test]
+    fn a_miscased_credential_is_redacted_too() {
+        for config in [
+            "[validator]\nPassword = \"hunter2\"\nUSER = \"alice\"\n",
+            "[Validator]\npassword = \"hunter2\"\nuser = \"alice\"\n",
+            "Validator.Password = \"hunter2\"\n",
+        ] {
+            let recorded = redact_credentials(config).expect("redacts");
+            assert!(!recorded.contains("hunter2"), "{recorded}");
+            assert!(!recorded.contains("alice"), "{recorded}");
+        }
+    }
+
+    /// A config that does not parse is refused by line and message: the
+    /// parser's excerpt of the file, which can be a credential's line, is
+    /// never shown.
+    #[test]
+    fn a_config_that_does_not_parse_is_refused_without_quoting_it() {
+        for config in [
+            "[validator]\npassword = \"hunter2\nuser = \"alice\"\n",
+            "[validator]\npassword = \"hunter2\" trailing\n",
+            "[validator]\npassword = hunter2\n",
+        ] {
+            let refused = BenchConfig::parse(config).expect_err("does not parse");
+            assert!(!refused.contains("hunter2"), "{refused}");
+            assert!(refused.contains("line "), "{refused}");
+        }
+    }
+
+    #[test]
+    fn only_a_comment_is_kept_after_a_redacted_value() {
+        assert_eq!(trailing_comment(" \"a\"  # why"), "  # why");
+        assert_eq!(trailing_comment(" \"a # not a comment\""), "");
+        assert_eq!(
+            trailing_comment(" \"a\\\" # still inside\" # out"),
+            " # out"
+        );
+        assert_eq!(trailing_comment(" 'a\\' # out"), " # out");
+        assert_eq!(trailing_comment(" \"a\""), "");
+        assert_eq!(trailing_comment(" \"\"\"hunter2\"\"\""), "");
+        assert_eq!(trailing_comment(" 7 # seven"), "# seven");
+        assert_eq!(trailing_comment(""), "");
+        // what is not a comment is never copied into the record
+        let recorded =
+            redact_credentials("[validator]\npassword = \"\"\"hunter2\"\"\"\n").expect("redacts");
+        assert!(!recorded.contains("hunter2"), "{recorded}");
+    }
+
+    #[test]
+    fn an_answer_from_a_process_older_than_the_run_is_refused() {
+        let run_started = 1_795_000_100;
+        is_from_this_run(Some(run_started), run_started).expect("started with the run");
+        is_from_this_run(Some(run_started + 3), run_started).expect("started after it");
+        // the start is reported in whole seconds, from a truncated boot time
+        is_from_this_run(Some(run_started - START_SLACK_SECS), run_started).expect("in slack");
+        let older = is_from_this_run(Some(run_started - 60), run_started).expect_err("older");
+        assert!(older.contains("60s before this run"), "{older}");
+        assert!(is_from_this_run(None, run_started).is_err());
+    }
+
+    #[test]
+    fn an_admin_address_in_use_is_refused() {
+        let taken = std::net::TcpListener::bind("127.0.0.1:0").expect("bound");
+        let address = taken.local_addr().expect("an address");
+        let refused = admin_is_free(address).expect_err("in use");
+        assert!(refused.contains(&address.to_string()), "{refused}");
+        drop(taken);
+        admin_is_free(address).expect("free again");
     }
 
     #[test]
@@ -1111,10 +1504,27 @@ user = \"kept\""
             .contains("[persistence]"));
         assert!(BenchConfig::parse(bad_admin).is_err());
         assert!(BenchConfig::parse("not toml =").is_err());
-        let plain = format!("{no_path}[persistence]\npath = \"/data\"\n");
+    }
+
+    #[test]
+    fn the_indexes_label_names_what_zainod_builds() {
+        let label = |indexes: &str| {
+            let config = format!(
+                "[persistence]\npath = \"/data\"\n[admin]\nlisten_address = \
+                 \"127.0.0.1:9998\"\n{indexes}"
+            );
+            BenchConfig::parse(&config).expect("parses").indexes
+        };
+        assert_eq!(label(""), "lightclient", "zainod's set without [indexes]");
+        assert_eq!(label("[indexes]\nset = \"full\"\n"), "full");
         assert_eq!(
-            BenchConfig::parse(&plain).expect("parses").indexes,
-            "default"
+            label("[indexes]\nenable = [\"spent\"]\n"),
+            "empty +spent",
+            "an [indexes] table that names no set starts from none"
+        );
+        assert_eq!(
+            label("[indexes]\nset = \"zcash_rpc\"\ndisable = [\"spent\"]\n"),
+            "zcash_rpc -spent"
         );
     }
 
@@ -1211,30 +1621,47 @@ user = \"kept\""
             (indexes.join("headers_2/tables"), "b", 5),
             (indexes.join("txids_1"), "a", 7),
             (moved.join("compact_block_1"), "a", 100),
+            (moved.join("not an index"), "a", 40),
+            (root.join("store/inside/spent_1"), "a", 9),
             (root.join("store/regtest"), "PRIMARY", 3),
         ] {
             fs::create_dir_all(&dir).expect("created");
             fs::write(dir.join(file), vec![0u8; bytes]).expect("written");
         }
-        let config = BenchConfig {
+        let mut config = BenchConfig {
             recorded: String::new(),
             data_dir: root.join("store"),
-            index_dirs: vec![moved, root.join("never-created")],
+            index_dirs: vec![moved.clone(), root.join("never-created")],
             admin: SocketAddr::from(([127, 0, 0, 1], 1)),
             indexes: String::new(),
         };
         assert!(!is_empty(&config.data_dir).expect("read"));
         assert!(is_empty(&root.join("never-created")).expect("absent is empty"));
-        let (total, by_index) = disk(&config).expect("measured");
-        assert_eq!(total, 125);
-        assert_eq!(
-            by_index,
-            BTreeMap::from([
-                ("compact_block_1".to_owned(), 100),
-                ("headers_2".to_owned(), 15),
-                ("txids_1".to_owned(), 7),
-            ])
-        );
+        let measured = disk(&config).expect("measured");
+        assert_eq!(measured.total_bytes, 174, "every file, once");
+        let by_index = BTreeMap::from([
+            ("compact_block_1".to_owned(), 100),
+            ("headers_2".to_owned(), 15),
+            ("txids_1".to_owned(), 7),
+        ]);
+        assert_eq!(measured.by_index, by_index, "index directories only");
+
+        // one directory named for two indexes, and one inside the data
+        // directory: nothing is counted twice
+        config.index_dirs = vec![moved.clone(), moved, root.join("store/inside")];
+        let measured = disk(&config).expect("measured");
+        assert_eq!(measured.total_bytes, 174);
+        let mut with_inside = by_index;
+        with_inside.insert("spent_1".to_owned(), 9);
+        assert_eq!(measured.by_index, with_inside);
         fs::remove_dir_all(&root).expect("the scratch directory is removed");
+    }
+
+    #[test]
+    fn index_directories_are_named_index_then_format() {
+        assert!(is_index_dir("headers_2") && is_index_dir("txid_location_10"));
+        for other in ["regtest", "indexes", "headers_", "_2", "headers_v2", ""] {
+            assert!(!is_index_dir(other), "{other}");
+        }
     }
 }

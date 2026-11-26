@@ -178,7 +178,7 @@ The store emits through the `metrics` crate, names and `# HELP` text in
 A build's profile is these histograms: a fetch-bound build shows
 `fetch_seconds` high and `queue_wait_seconds` near zero; a writer-bound one
 shows the queue wait rising for the slowest index. `tools/zaino-bench` reads
-them through an in-process recorder.
+them from a running zainod's `/metrics`.
 
 ## The primary's record
 

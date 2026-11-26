@@ -18,6 +18,7 @@
     )
 )]
 
+use std::io::Write as _;
 use std::path::PathBuf;
 use std::process::ExitCode;
 use std::time::Duration;
@@ -82,24 +83,58 @@ fn parse_duration(text: &str) -> Result<Duration, String> {
         .ok_or_else(invalid)
 }
 
-fn report(results: &Results, output: Option<PathBuf>) -> Result<(), String> {
+/// Writes `text` to standard output. A reader that has gone (`| head`) is an
+/// error to report, never a panic.
+pub(crate) fn print_out(text: &str) -> Result<(), String> {
+    let mut out = std::io::stdout().lock();
+    out.write_all(text.as_bytes())
+        .and_then(|()| out.flush())
+        .map_err(|error| format!("writing to standard output: {error}"))
+}
+
+/// Writes `text` to standard error. When that fails there is nowhere left to
+/// say so; the tool's exit code still carries the outcome.
+pub(crate) fn print_err(text: &str) {
+    std::io::stderr()
+        .lock()
+        .write_all(text.as_bytes())
+        .unwrap_or(());
+}
+
+/// Shows every run and writes the HTML report. `Ok(false)` when a record or
+/// series could not be read in full: the rest is still shown, with what is
+/// missing named.
+fn report(results: &Results, output: Option<PathBuf>) -> Result<bool, String> {
     let records = results.records().map_err(|error| error.to_string())?;
-    print!("{}", report::runs_table(&records));
-    if records.is_empty() {
-        return Ok(());
-    }
+    let mut problems = records.damaged;
     let mut runs = Vec::new();
-    for record in records {
-        let series = results
-            .series(&record.run_id)
-            .map_err(|error| error.to_string())?;
+    for record in records.values {
+        let series = match results.series(&record.run_id) {
+            Ok(mut series) => {
+                problems.append(&mut series.damaged);
+                series.values
+            }
+            Err(error) => {
+                problems.push(format!(
+                    "{}'s series could not be read, so its band analysis is not shown: {error}",
+                    record.run_id
+                ));
+                Vec::new()
+            }
+        };
         runs.push((record, series));
     }
-    let output = output.unwrap_or_else(|| results.root().join("report.html"));
-    std::fs::write(&output, report::html(&runs))
-        .map_err(|error| format!("{}: {error}", output.display()))?;
-    println!("\nHTML report: {}", output.display());
-    Ok(())
+    let records: Vec<_> = runs.iter().map(|(record, _)| record.clone()).collect();
+    let mut text = report::runs_table(&records, &problems);
+    // the file first: a reader that stops reading the table does not cost it
+    if !runs.is_empty() {
+        let output = output.unwrap_or_else(|| results.root().join("report.html"));
+        std::fs::write(&output, report::html(&runs, &problems))
+            .map_err(|error| format!("{}: {error}", output.display()))?;
+        text.push_str(&format!("\nHTML report: {}\n", output.display()));
+    }
+    print_out(&text)?;
+    Ok(problems.is_empty())
 }
 
 #[tokio::main]
@@ -114,14 +149,15 @@ async fn main() -> ExitCode {
         } => run::run(&config, zainod, timeout, &results)
             .await
             .map_err(|error| error.to_string()),
-        Cmd::Report { output } => report(&results, output).map(|()| true),
+        Cmd::Report { output } => report(&results, output),
     };
     match outcome {
         Ok(true) => ExitCode::SUCCESS,
-        // the run failed and is recorded as failed
+        // a failed run, a run with warnings, or a report with unreadable
+        // lines: each already recorded or printed with its cause
         Ok(false) => ExitCode::FAILURE,
         Err(error) => {
-            eprintln!("zaino-bench: {error}");
+            print_err(&format!("zaino-bench: {error}\n"));
             ExitCode::FAILURE
         }
     }

@@ -1,8 +1,8 @@
 //! What the runs are shown as: the summary printed after a run, the table of
 //! all runs, and the HTML report with its charts (inline SVG, no scripts).
 
-use crate::metrics::{bands, Band, Stage, StageSecs};
-use crate::record::{Outcome, Record, Sample, Stages, Synced, Timer};
+use crate::metrics::{bands, startup_secs, Band, Stage, StageSecs};
+use crate::record::{DiskUse, Outcome, Record, Sample, Stages, Synced, Timer};
 
 /// Appends formatted text to a `String` (a macro: the format string must be
 /// a literal at the call site).
@@ -39,6 +39,15 @@ pub(crate) fn duration(secs: f64) -> String {
         (0, 0) => format!("{seconds}s"),
         (0, _) => format!("{minutes}m{seconds:02}s"),
         _ => format!("{hours}h{minutes:02}m"),
+    }
+}
+
+/// A time read by polling once a second (sync time, time to ready, CPU
+/// time), shown no more finely than it was measured: whole seconds.
+pub(crate) fn polled(secs: f64) -> String {
+    match secs < 10.0 {
+        true => format!("{secs:.0}s"),
+        false => duration(secs),
     }
 }
 
@@ -248,7 +257,7 @@ fn band_rows(bands: &[&Band]) -> Vec<Vec<String>> {
         rows.push(vec![
             count(band.first_height),
             count(band.blocks.round() as u64),
-            duration(band.wall_secs),
+            polled(band.wall_secs),
             band.blocks_per_sec()
                 .map_or_else(|| "-".to_owned(), |rate| count(rate.round() as u64)),
             top_stage(band).map_or("-", Stage::name).to_owned(),
@@ -258,42 +267,73 @@ fn band_rows(bands: &[&Band]) -> Vec<Vec<String>> {
     rows
 }
 
-/// What is printed when a run ends.
-pub(crate) fn run_summary(record: &Record, series: &[Sample]) -> String {
+/// The disk a sync used in total, or that it was not measured.
+fn disk_total(synced: &Synced) -> String {
+    match &synced.disk {
+        DiskUse::Measured(disk) => bytes(disk.total_bytes),
+        DiskUse::Unmeasured { .. } => "not measured".to_owned(),
+    }
+}
+
+/// Whether zainod timed any block: a config that builds no index times none.
+fn built_something(stages: &Stages) -> bool {
+    stages.fetch.blocks > 0 || !stages.indexes.is_empty()
+}
+
+const NOTHING_BUILT: &str = "The config builds no index: there are no stages or bands to show.";
+const NO_BANDS: &str = "No band of the chain has samples to show.";
+
+/// What is printed when a run ends. `problems` are faults in reading the
+/// run's series back.
+pub(crate) fn run_summary(record: &Record, series: &[Sample], problems: &[String]) -> String {
     let mut out = format!("\n{} ({})\n", record.run_id, label(record));
-    let ready = record
-        .ready_secs
-        .map_or_else(|| "never".to_owned(), duration);
+    let ready = record.ready_secs.map_or_else(|| "never".to_owned(), polled);
     match &record.outcome {
         Outcome::Failed { cause } => {
             put!(out, "FAILED: {cause}\ntime to ready: {ready}\n");
         }
         Outcome::Synced(synced) => {
+            for warning in synced.warnings() {
+                put!(out, "WARNING: {warning}\n");
+            }
             let height = synced.height.map_or_else(
                 || "none (no index built)".to_owned(),
                 |h| count(u64::from(h)),
             );
             put!(
                 out,
-                "sync time: {}   time to ready: {ready}   height reached: {height}\n\
+                "sync time: {}   time to ready: {ready}   before the build: {}   height \
+                 reached: {height}\n\
                  disk: {}   peak memory: {}   CPU time: {}\n\n",
-                duration(synced.sync_secs),
-                bytes(synced.disk_total_bytes),
+                polled(synced.sync_secs),
+                polled(startup_secs(series)),
+                disk_total(synced),
                 bytes(synced.peak_memory_bytes),
-                duration(synced.cpu_secs),
+                polled(synced.cpu_secs),
             );
-            put!(
-                out,
-                "{STAGE_NOTE}\n{}\n",
-                text_table(&stage_rows(&synced.stages))
-            );
-            let bands = bands(series);
-            put!(
-                out,
-                "Slowest bands of the chain (by time per block):\n{}\n",
-                text_table(&band_rows(&slowest_bands(&bands)))
-            );
+            if built_something(&synced.stages) {
+                put!(
+                    out,
+                    "{STAGE_NOTE}\n{}\n",
+                    text_table(&stage_rows(&synced.stages))
+                );
+                let bands = bands(series);
+                let slowest = slowest_bands(&bands);
+                match slowest.is_empty() {
+                    true => put!(out, "{NO_BANDS}\n"),
+                    false => put!(
+                        out,
+                        "Slowest bands of the chain (by time per block):\n{}\n",
+                        text_table(&band_rows(&slowest))
+                    ),
+                }
+            } else {
+                put!(out, "{NOTHING_BUILT}\n");
+            }
         }
+    }
+    for problem in problems {
+        put!(out, "PROBLEM: {problem}\n");
     }
     out
 }
@@ -310,11 +350,12 @@ fn run_rows(records: &[Record]) -> Vec<Vec<String>> {
         "height",
         "disk",
         "peak mem",
+        "warnings",
     ]
     .map(str::to_owned)
     .to_vec()];
     for record in records {
-        let ready = record.ready_secs.map_or_else(|| "-".to_owned(), duration);
+        let ready = record.ready_secs.map_or_else(|| "-".to_owned(), polled);
         let mut row = vec![
             record.run_id.clone(),
             record.indexes.clone(),
@@ -323,17 +364,21 @@ fn run_rows(records: &[Record]) -> Vec<Vec<String>> {
         ];
         match synced(record) {
             Some(synced) => row.extend([
-                duration(synced.sync_secs),
+                polled(synced.sync_secs),
                 ready,
                 synced
                     .height
                     .map_or_else(|| "-".to_owned(), |h| count(u64::from(h))),
-                bytes(synced.disk_total_bytes),
+                disk_total(synced),
                 bytes(synced.peak_memory_bytes),
+                match synced.warnings().len() {
+                    0 => "-".to_owned(),
+                    warnings => warnings.to_string(),
+                },
             ]),
             None => {
                 let none = || "-".to_owned();
-                row.extend(["FAILED".to_owned(), ready, none(), none(), none()]);
+                row.extend(["FAILED".to_owned(), ready, none(), none(), none(), none()]);
             }
         }
         rows.push(row);
@@ -341,16 +386,36 @@ fn run_rows(records: &[Record]) -> Vec<Vec<String>> {
     rows
 }
 
-/// The table of all runs, with each failed run's cause under it.
-pub(crate) fn runs_table(records: &[Record]) -> String {
-    if records.is_empty() {
-        return "No runs are recorded yet.\n".to_owned();
-    }
-    let mut out = text_table(&run_rows(records));
+/// What is said under the table of runs: each failed run's cause, each
+/// warning of a run that synced, and each fault in reading the records.
+fn run_notes(records: &[Record], problems: &[String]) -> Vec<(&'static str, String)> {
+    let mut notes = Vec::new();
     for record in records {
-        if let Outcome::Failed { cause } = &record.outcome {
-            put!(out, "\n{} failed: {cause}\n", record.run_id);
+        match &record.outcome {
+            Outcome::Failed { cause } => {
+                notes.push(("failed", format!("{} failed: {cause}", record.run_id)));
+            }
+            Outcome::Synced(synced) => {
+                for warning in synced.warnings() {
+                    notes.push(("warning", format!("{} warning: {warning}", record.run_id)));
+                }
+            }
         }
+    }
+    for problem in problems {
+        notes.push(("problem", format!("PROBLEM: {problem}")));
+    }
+    notes
+}
+
+/// The table of all runs, with every failure, warning and problem under it.
+pub(crate) fn runs_table(records: &[Record], problems: &[String]) -> String {
+    let mut out = match records.is_empty() {
+        true => "No runs are recorded yet.\n".to_owned(),
+        false => text_table(&run_rows(records)),
+    };
+    for (_, note) in run_notes(records, problems) {
+        put!(out, "\n{note}\n");
     }
     out
 }
@@ -532,6 +597,17 @@ fn line_chart(title: &str, x_title: &str, x_unit: f64, y_title: &str, lines: &[L
             line.slot,
             escape(&line.name)
         );
+        // a line of one point has no length to draw: mark the point
+        if let [(x, y)] = line.points.as_slice() {
+            put!(
+                body,
+                "<circle class=\"s{}\" cx=\"{:.1}\" cy=\"{:.1}\" r=\"4\"><title>{}</title></circle>",
+                line.slot,
+                LEFT + plot_width * (x / x_unit) / x_top,
+                TOP + PLOT_HEIGHT * (1.0 - y / y_top),
+                escape(&line.name)
+            );
+        }
     }
     let entries: Vec<(usize, String)> = lines
         .iter()
@@ -556,25 +632,45 @@ struct BarRow {
 fn bar_chart(title: &str, rows: &[BarRow]) -> String {
     const ROW: f64 = 24.0;
     const BAR: f64 = 14.0;
-    const LABELS: f64 = 250.0;
     const VALUES: f64 = 110.0;
+    // the label column is as wide as the longest label needs, up to half the
+    // chart; a label longer than that is cut, with the whole of it on hover
+    const CHAR: f64 = 6.9;
+    const LABELS_MIN: f64 = 120.0;
+    const LABELS_MAX: f64 = WIDTH / 2.0;
+    let longest_label = rows
+        .iter()
+        .map(|row| row.label.chars().count())
+        .max()
+        .unwrap_or(0);
+    let labels = (longest_label as f64 * CHAR + 20.0).clamp(LABELS_MIN, LABELS_MAX);
+    let fits = ((labels - 20.0) / CHAR).floor() as usize;
     let row_secs = |row: &BarRow| row.segments.iter().map(|segment| segment.1).sum::<f64>();
     let longest = rows.iter().map(row_secs).fold(0.0, f64::max);
     let scale = match longest > 0.0 {
-        true => (WIDTH - LABELS - VALUES) / longest,
+        true => (WIDTH - labels - VALUES) / longest,
         false => 0.0,
     };
     let mut body = String::new();
     for (number, row) in rows.iter().enumerate() {
         let top = TOP + ROW * number as f64;
+        let shown = match row.label.chars().count() > fits {
+            true => {
+                let kept: String = row.label.chars().take(fits.saturating_sub(1)).collect();
+                format!("{kept}…")
+            }
+            false => row.label.clone(),
+        };
         put!(
             body,
-            "<text class=\"label\" x=\"{}\" y=\"{:.1}\" text-anchor=\"end\">{}</text>",
-            LABELS - 10.0,
+            "<text class=\"label\" x=\"{}\" y=\"{:.1}\" text-anchor=\"end\">{}<title>{}</title>\
+             </text>",
+            labels - 10.0,
             top + BAR - 2.0,
+            escape(&shown),
             escape(&row.label)
         );
-        let mut x = LABELS;
+        let mut x = labels;
         for (slot, secs, what) in &row.segments {
             let width = secs * scale;
             // a 2px gap of surface between neighbouring segments
@@ -636,9 +732,12 @@ fn band_chart(bands: &[Band]) -> String {
         y_step,
         &format!("stage time ({unit_name})"),
     );
-    let band_width = plot_width * crate::metrics::BAND_BLOCKS as f64 / x_top;
-    let gap = if band_width >= 6.0 { 2.0 } else { 0.0 };
     for band in bands {
+        // as wide as the blocks of the band the run built: the chain's last
+        // band is rarely a whole one
+        let blocks = band.blocks.clamp(1.0, crate::metrics::BAND_BLOCKS as f64);
+        let band_width = plot_width * blocks / x_top;
+        let gap = if band_width >= 6.0 { 2.0 } else { 0.0 };
         let x = LEFT + plot_width * band.first_height as f64 / x_top;
         let mut y = TOP + PLOT_HEIGHT;
         for stage in Stage::ALL {
@@ -736,8 +835,9 @@ th:first-child,td:first-child{text-align:left}th{color:var(--ink2);font-weight:6
 /// A run and its samples.
 pub(crate) type Run = (Record, Vec<Sample>);
 
-/// The HTML report of `runs`, oldest first.
-pub(crate) fn html(runs: &[Run]) -> String {
+/// The HTML report of `runs`, oldest first. `problems` are faults in
+/// reading the records and series.
+pub(crate) fn html(runs: &[Run], problems: &[String]) -> String {
     let records: Vec<Record> = runs.iter().map(|(record, _)| record.clone()).collect();
     let mut out = format!(
         "<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\">\
@@ -750,15 +850,12 @@ pub(crate) fn html(runs: &[Run]) -> String {
         "<section><h2>Runs</h2><div class=\"scroll\">{}</div>",
         html_table(&run_rows(&records))
     );
-    for record in &records {
-        if let Outcome::Failed { cause } = &record.outcome {
-            put!(
-                out,
-                "<p><span class=\"failed\">{} failed</span></p><pre>{}</pre>",
-                escape(&record.run_id),
-                escape(cause)
-            );
-        }
+    for (kind, note) in run_notes(&records, problems) {
+        put!(
+            out,
+            "<p><span class=\"failed\">{kind}</span></p><pre>{}</pre>",
+            escape(&note)
+        );
     }
     out.push_str("</section>");
 
@@ -784,7 +881,7 @@ pub(crate) fn html(runs: &[Run]) -> String {
             .map(|(record, synced, _)| BarRow {
                 label: label(record),
                 segments: vec![(1, synced.sync_secs, "sync time".to_owned())],
-                value: duration(synced.sync_secs),
+                value: polled(synced.sync_secs),
             })
             .collect();
         put!(
@@ -859,38 +956,79 @@ pub(crate) fn html(runs: &[Run]) -> String {
         put!(
             out,
             "<section><h2>{}</h2><p class=\"note\">{} · zainod {} · {} · {} cores · {} RAM · \
-             {} · {}</p>\
-             <h3>Stage time per band of the chain</h3>{}\
-             <h3>Stage time per index</h3><p class=\"note\">{STAGE_NOTE}</p>{}\
-             <div class=\"scroll\">{}</div>\
-             <h3>Slowest bands (by time per block)</h3><div class=\"scroll\">{}</div>\
-             <h3>Disk per index</h3><div class=\"scroll\">{}</div></section>",
+             {} · {} · before the build: {}</p>",
             escape(&label(record)),
             escape(&record.run_id),
             escape(&zainod(record)),
-            escape(&record.host.cpu),
+            escape(
+                record
+                    .host
+                    .cpu
+                    .as_deref()
+                    .unwrap_or("CPU model not reported")
+            ),
             record.host.cores,
             bytes(record.host.ram_bytes),
             escape(&record.host.kernel),
             escape(&record.host.filesystem),
-            band_chart(&run_bands),
-            index_chart(&synced.stages),
-            html_table(&stage_rows(&synced.stages)),
-            html_table(&band_rows(&slowest)),
-            html_table(&disk_rows(synced)),
+            polled(startup_secs(series)),
+        );
+        for warning in synced.warnings() {
+            put!(
+                out,
+                "<p><span class=\"failed\">warning</span> {}</p>",
+                escape(&warning)
+            );
+        }
+        if built_something(&synced.stages) {
+            put!(
+                out,
+                "<h3>Stage time per band of the chain</h3>{}\
+                 <h3>Stage time per index</h3><p class=\"note\">{STAGE_NOTE}</p>{}\
+                 <div class=\"scroll\">{}</div>\
+                 <h3>Slowest bands (by time per block)</h3>{}",
+                match run_bands.is_empty() {
+                    true => format!("<p class=\"note\">{NO_BANDS}</p>"),
+                    false => band_chart(&run_bands),
+                },
+                index_chart(&synced.stages),
+                html_table(&stage_rows(&synced.stages)),
+                match slowest.is_empty() {
+                    true => format!("<p class=\"note\">{NO_BANDS}</p>"),
+                    false => format!(
+                        "<div class=\"scroll\">{}</div>",
+                        html_table(&band_rows(&slowest))
+                    ),
+                },
+            );
+        } else {
+            put!(out, "<p class=\"note\">{NOTHING_BUILT}</p>");
+        }
+        put!(
+            out,
+            "<h3>Disk per index</h3>{}</section>",
+            disk_html(synced)
         );
     }
     out.push_str("</body></html>\n");
     out
 }
 
-fn disk_rows(synced: &Synced) -> Vec<Vec<String>> {
-    let mut rows = vec![["index", "disk"].map(str::to_owned).to_vec()];
-    for (index, size) in &synced.disk_bytes {
-        rows.push(vec![index.clone(), bytes(*size)]);
+/// The disk a sync used, per index and in total; or why it is not known.
+fn disk_html(synced: &Synced) -> String {
+    match &synced.disk {
+        DiskUse::Measured(disk) => {
+            let mut rows = vec![["index", "disk"].map(str::to_owned).to_vec()];
+            for (index, size) in &disk.by_index {
+                rows.push(vec![index.clone(), bytes(*size)]);
+            }
+            rows.push(vec!["total".to_owned(), bytes(disk.total_bytes)]);
+            format!("<div class=\"scroll\">{}</div>", html_table(&rows))
+        }
+        DiskUse::Unmeasured { cause } => {
+            format!("<p class=\"note\">Not measured: {}</p>", escape(cause))
+        }
     }
-    rows.push(vec!["total".to_owned(), bytes(synced.disk_total_bytes)]);
-    rows
 }
 
 #[cfg(test)]
@@ -898,8 +1036,8 @@ mod tests {
     use std::collections::BTreeMap;
 
     use super::*;
-    use crate::record::tests::synced as record;
-    use crate::record::IndexStages;
+    use crate::record::tests::{synced as record, synced_of};
+    use crate::record::{IndexStages, Shutdown};
 
     fn series() -> Vec<Sample> {
         [(10.0, 4_999u32, 4.0), (50.0, 24_999, 24.0)]
@@ -994,21 +1132,160 @@ mod tests {
 
     #[test]
     fn a_run_summary_reports_the_sync_its_stages_and_its_slowest_bands() {
-        let summary = run_summary(&record("run-1", "full", 50.0, 24_999), &series());
+        let summary = run_summary(&record("run-1", "full", 50.0, 24_999), &series(), &[]);
         for expected in [
             "sync time: 50s",
-            "time to ready: 1.5s",
+            "time to ready: 2s",
+            "before the build: 0s",
             "height reached: 24,999",
+            "disk: 2.9 KiB",
             "peak memory: 2.0 GiB",
+            "CPU time: 1m40s",
             "Stages run in parallel",
             "Slowest bands",
             "headers",
         ] {
             assert!(summary.contains(expected), "no `{expected}` in:\n{summary}");
         }
-        let failed = run_summary(&failed(), &[]);
+        assert!(!summary.contains("WARNING") && !summary.contains("PROBLEM"));
+        let failed = run_summary(&failed(), &[], &[]);
         assert!(failed.contains("FAILED: zainod exited"), "{failed}");
         assert!(failed.contains("time to ready: never"), "{failed}");
+    }
+
+    #[test]
+    fn a_sync_with_trouble_shows_every_warning_and_problem() {
+        let mut warned = record("run-1", "full", 50.0, 24_999);
+        let synced = synced_of(&mut warned);
+        synced.restarts = 2;
+        synced.shutdown = Shutdown::Failed {
+            cause: "it was <killed>".to_owned(),
+        };
+        synced.disk = DiskUse::Unmeasured {
+            cause: "permission denied".to_owned(),
+        };
+        let problems = ["series.jsonl line 3 is damaged".to_owned()];
+        let summary = run_summary(&warned, &series(), &problems);
+        for expected in [
+            "WARNING: zainod restarted itself more than once (2)",
+            "WARNING: zainod did not shut down cleanly",
+            "WARNING: disk use could not be measured: permission denied",
+            "disk: not measured",
+            "PROBLEM: series.jsonl line 3 is damaged",
+            "sync time: 50s",
+        ] {
+            assert!(summary.contains(expected), "no `{expected}` in:\n{summary}");
+        }
+        let records = [warned.clone()];
+        let table = runs_table(&records, &problems);
+        assert!(table.contains("run-1 warning: zainod restarted"), "{table}");
+        assert!(table.contains("PROBLEM: series.jsonl line 3"), "{table}");
+        assert!(
+            table.lines().any(|line| line.starts_with("run-1")
+                && line.contains("not measured")
+                && line.ends_with('3')),
+            "{table}"
+        );
+        let html = html(&[(warned, series())], &problems);
+        assert!(
+            html.contains("it was &lt;killed&gt;"),
+            "escaped in the report"
+        );
+        assert!(html.contains("Not measured: permission denied"));
+        assert!(html.contains("PROBLEM: series.jsonl line 3 is damaged"));
+    }
+
+    #[test]
+    fn a_run_that_built_nothing_says_so_in_place_of_empty_tables() {
+        let mut empty = record("run-1", "empty", 4.0, 0);
+        let synced = synced_of(&mut empty);
+        synced.height = None;
+        synced.stages = Stages::default();
+        let summary = run_summary(&empty, &[], &[]);
+        assert!(summary.contains(NOTHING_BUILT), "{summary}");
+        assert!(!summary.contains("Slowest bands"), "{summary}");
+        assert!(html(&[(empty, Vec::new())], &[]).contains(NOTHING_BUILT));
+
+        // indexes built, but no sample of the build: no band table to head
+        let unsampled = run_summary(&record("run-2", "full", 4.0, 9), &[], &[]);
+        assert!(unsampled.contains(NO_BANDS), "{unsampled}");
+        assert!(!unsampled.contains("from height"), "{unsampled}");
+    }
+
+    /// A chain shorter than one band: its one band is drawn as wide as it is,
+    /// and its one rate as a point.
+    #[test]
+    fn a_short_chain_is_drawn_inside_the_axes() {
+        let short = Band {
+            first_height: 0,
+            blocks: 1_200.0,
+            wall_secs: 2.0,
+            stages: StageSecs::of(&synced_of(&mut record("run-1", "full", 3.0, 1_199)).stages),
+            slowest: None,
+        };
+        let chart = band_chart(&[short]);
+        let right_edge = WIDTH - RIGHT;
+        for rect in chart.split("<rect class=\"s").skip(1) {
+            let number = |name: &str| -> f64 {
+                let from = rect.split(&format!("{name}=\"")).nth(1).expect("attribute");
+                from.split('"')
+                    .next()
+                    .expect("value")
+                    .parse()
+                    .expect("a number")
+            };
+            // legend swatches carry no x
+            if rect.contains(" x=\"") {
+                assert!(number(" x") + number("width") <= right_edge + 0.1, "{rect}");
+            }
+        }
+        let one_point = line_chart(
+            "blocks per second against height",
+            "height",
+            1.0,
+            "blocks per second",
+            &[Line {
+                slot: 1,
+                name: "full".to_owned(),
+                points: vec![(600.0, 588.0)],
+            }],
+        );
+        assert_eq!(one_point.matches("<circle").count(), 1, "{one_point}");
+    }
+
+    #[test]
+    fn polled_times_are_shown_in_whole_seconds() {
+        assert_eq!(polled(0.002), "0s");
+        assert_eq!(polled(3.01), "3s");
+        assert_eq!(polled(9.4), "9s");
+        assert_eq!(polled(185.0), "3m05s");
+    }
+
+    #[test]
+    fn a_long_label_is_cut_to_the_chart_with_the_whole_of_it_on_hover() {
+        let long = "lightclient +spent,address_history,tx_out_set,history_tree -headers";
+        let label = format!("{long} · 2026-11-25 22:07:05 UTC");
+        let chart = bar_chart(
+            "sync time per run",
+            &[BarRow {
+                label: label.clone(),
+                segments: vec![(1, 5.0, "sync time".to_owned())],
+                value: "5s".to_owned(),
+            }],
+        );
+        assert!(chart.contains(&format!("<title>{label}</title>")));
+        assert!(chart.contains('…'));
+        // the label ends at x = WIDTH/2 - 10 and is short enough to start in view
+        assert!(chart.contains(&format!("x=\"{}\"", WIDTH / 2.0 - 10.0)));
+        let short = bar_chart(
+            "sync time per run",
+            &[BarRow {
+                label: "full".to_owned(),
+                segments: vec![(1, 5.0, "sync time".to_owned())],
+                value: "5s".to_owned(),
+            }],
+        );
+        assert!(!short.contains('…'));
     }
 
     #[test]
@@ -1035,8 +1312,11 @@ mod tests {
 
     #[test]
     fn the_table_of_runs_lists_every_run_and_each_failure() {
-        assert_eq!(runs_table(&[]), "No runs are recorded yet.\n");
-        let table = runs_table(&[record("run-1", "lightclient", 4_320.0, 2_998_999), failed()]);
+        assert_eq!(runs_table(&[], &[]), "No runs are recorded yet.\n");
+        let table = runs_table(
+            &[record("run-1", "lightclient", 4_320.0, 2_998_999), failed()],
+            &[],
+        );
         let lines: Vec<&str> = table.lines().collect();
         assert!(lines.iter().any(|line| line.starts_with("run-1")
             && line.contains("lightclient")
@@ -1056,7 +1336,7 @@ mod tests {
             (record("run-2", "full", 80.0, 24_999), series()),
             (failed(), Vec::new()),
         ];
-        let html = html(&runs);
+        let html = html(&runs, &[]);
         for expected in [
             "aria-label=\"sync time per run\"",
             "aria-label=\"height against time\"",
@@ -1075,7 +1355,7 @@ mod tests {
         assert_eq!(html.matches("class=\"l1\"").count(), 2);
         assert_eq!(html.matches("class=\"l2\"").count(), 2);
         assert_eq!(html.matches("<h3>Stage time per index</h3>").count(), 2);
-        assert!(super::html(&[]).contains("No run has completed a sync yet."));
+        assert!(super::html(&[], &[]).contains("No run has completed a sync yet."));
     }
 
     #[test]
@@ -1088,7 +1368,7 @@ mod tests {
                 )
             })
             .collect();
-        let html = html(&runs);
+        let html = html(&runs, &[]);
         assert!(html.contains("most recent completed runs are drawn"));
         assert_eq!(html.matches("class=\"l8\"").count(), 2);
         assert!(!html.contains("class=\"l9\""));

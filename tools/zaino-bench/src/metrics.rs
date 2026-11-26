@@ -13,6 +13,9 @@ const WATERMARK: &str = "zaino_store_watermark_height";
 const TARGET: &str = "zaino_store_build_target_height";
 const INDEX_HEIGHT: &str = "zaino_store_index_tip_height";
 const CPU: &str = "process_cpu_seconds_total";
+const RESTARTS: &str = "zainod_restarts_total";
+const BUILD_FAILURES: &str = "zaino_store_build_failures_total";
+const PROCESS_START: &str = "process_start_time_seconds";
 const INDEX_LABEL: &str = "index";
 
 /// The pipeline's stages, in pipeline order.
@@ -193,15 +196,37 @@ fn slowest(sample: &Sample) -> Option<&str> {
     }
 }
 
-/// The run's time, band by band, from start (nothing built, no time spent)
-/// through the last sample. Time between two samples is shared out over the
-/// blocks built between them, evenly; time in which nothing was built goes to
-/// the band of the next block.
+/// The last sample taken before the store built its first block: where the
+/// build's time starts. `None` when the first sample already shows the build.
+fn last_before_build(samples: &[Sample]) -> Option<(usize, &Sample)> {
+    samples
+        .iter()
+        .enumerate()
+        .take_while(|(_, sample)| sample.is_before_build())
+        .last()
+}
+
+/// Seconds zainod ran before the store started building (connecting to the
+/// validator, building the chain head): no band's time.
+pub(crate) fn startup_secs(samples: &[Sample]) -> f64 {
+    last_before_build(samples).map_or(0.0, |(_, sample)| sample.elapsed_secs)
+}
+
+/// The build's time, band by band, from the last sample before the build
+/// (zainod's start when there is none) through the last sample. Time between
+/// two samples is shared out over the blocks built between them, evenly;
+/// time in which nothing was built goes to the band of the next block, but
+/// for time after the store reached its target, which is no band's. Blocks
+/// are counted at the lowest index, so the stage time of an index running
+/// ahead of it is put in the band the lowest index is in.
 pub(crate) fn bands(samples: &[Sample]) -> Vec<Band> {
     let origin = Sample::default();
     let mut acc: BTreeMap<u64, BandAcc> = BTreeMap::new();
-    let mut previous = &origin;
-    for sample in samples {
+    let (skipped, mut previous) = match last_before_build(samples) {
+        Some((at, sample)) => (at.saturating_add(1), sample),
+        None => (0, &origin),
+    };
+    for sample in samples.iter().skip(skipped) {
         let wall = (sample.elapsed_secs - previous.elapsed_secs).max(0.0);
         let from = blocks_built(previous);
         let to = blocks_built(sample).max(from);
@@ -219,8 +244,13 @@ pub(crate) fn bands(samples: &[Sample]) -> Vec<Band> {
                 *entry.slowest_secs.entry(name.to_owned()).or_default() += wall * portion;
             }
         };
+        // built to its target and building nothing: zainod is waiting (for
+        // the tool to see it local), which is no band's time
+        let waiting = previous.target.is_some() && previous.watermark == previous.target;
         if to == from {
-            share(from / BAND_BLOCKS, 0.0, 1.0);
+            if !waiting {
+                share(from / BAND_BLOCKS, 0.0, 1.0);
+            }
         } else {
             let built = to.saturating_sub(from) as f64;
             let mut start = from;
@@ -353,6 +383,20 @@ fn height(line: &Line<'_>) -> Result<u32, MetricsError> {
     }
 }
 
+/// A counter's value: whole and not negative.
+fn counter(line: &Line<'_>) -> Result<u64, MetricsError> {
+    let value = line.value;
+    if value.is_finite() && value >= 0.0 && value.fract() == 0.0 {
+        // whole and non-negative: saturates only past u64::MAX
+        Ok(value as u64)
+    } else {
+        Err(MetricsError(format!(
+            "{} is {value}, not a count",
+            line.name
+        )))
+    }
+}
+
 /// A stage timer's two halves, as they arrive on separate lines.
 #[derive(Default)]
 struct Halves {
@@ -403,7 +447,16 @@ pub(crate) fn parse(text: &str, elapsed_secs: f64) -> Result<Sample, MetricsErro
                 _ => None,
             }
         });
-        if timer_half.is_none() && ![WATERMARK, TARGET, INDEX_HEIGHT, CPU].contains(&name) {
+        let read = [
+            WATERMARK,
+            TARGET,
+            INDEX_HEIGHT,
+            CPU,
+            RESTARTS,
+            BUILD_FAILURES,
+            PROCESS_START,
+        ];
+        if timer_half.is_none() && !read.contains(&name) {
             continue;
         }
         let line = parse_line(raw)?;
@@ -426,6 +479,9 @@ pub(crate) fn parse(text: &str, elapsed_secs: f64) -> Result<Sample, MetricsErro
                 sample.heights.insert(index.to_owned(), height(&line)?);
             }
             CPU => sample.cpu_secs = Some(line.value),
+            RESTARTS => sample.restarts = Some(counter(&line)?),
+            BUILD_FAILURES => sample.build_failures = Some(counter(&line)?),
+            PROCESS_START => sample.process_start_unix = Some(counter(&line)?),
             _ => {}
         }
     }
@@ -499,6 +555,10 @@ mod tests {
         assert!(sample.target.is_some(), "{sample:?}");
         assert!(!sample.heights.is_empty());
         assert!(sample.cpu_secs.is_some_and(|secs| secs > 0.0));
+        assert_eq!(sample.restarts, Some(0));
+        assert_eq!(sample.build_failures, Some(0));
+        assert_eq!(sample.process_start_unix, Some(1_795_644_442));
+        assert!(!sample.is_before_build());
         assert!(sample.stages.fetch.blocks > 0);
         let watermark = sample.watermark.expect("checked");
         for (index, height) in &sample.heights {
@@ -517,7 +577,12 @@ mod tests {
         assert!(sample.heights.is_empty());
         assert_eq!(sample.stages, Stages::default());
         assert!(sample.cpu_secs.is_some());
-        assert!(bands(&[sample]).iter().all(|band| band.blocks == 0.0));
+        assert_eq!(sample.restarts, Some(0));
+        assert!(sample.is_before_build());
+        // time before the build is startup, and no band's
+        let samples = [sample];
+        assert_eq!(startup_secs(&samples), 0.5);
+        assert!(bands(&samples).is_empty());
     }
 
     #[test]
@@ -558,6 +623,8 @@ mod tests {
             "zaino_store_index_tip_height 7",
             "zaino_store_fetch_seconds_sum 2.0",
             "zaino_store_fold_seconds_sum{index=\"a} 2.0",
+            "zainod_restarts_total 1.5",
+            "zaino_store_build_failures_total -1",
         ] {
             assert!(parse(scrape, 0.0).is_err(), "{scrape}");
         }
@@ -601,6 +668,27 @@ mod tests {
     }
 
     #[test]
+    fn time_before_the_build_is_startup_and_no_bands() {
+        // two samples before the first block, then 10,000 blocks by 10s
+        let samples = [
+            sample(3.0, None, 0.0),
+            sample(4.0, None, 0.0),
+            sample(10.0, Some(9_999), 1.0),
+        ];
+        assert_eq!(startup_secs(&samples), 4.0);
+        let bands = bands(&samples);
+        let [only] = bands.as_slice() else {
+            panic!("one band: {bands:?}");
+        };
+        assert_eq!(only.blocks, 10_000.0);
+        assert!((only.wall_secs - 6.0).abs() < 1e-9, "{only:?}");
+        assert_eq!(only.blocks_per_sec(), Some(10_000.0 / 6.0));
+        // a series that starts in the build has no startup to set aside
+        assert_eq!(startup_secs(&samples[2..]), 0.0);
+        assert_eq!(startup_secs(&[]), 0.0);
+    }
+
+    #[test]
     fn time_in_which_nothing_is_built_goes_to_the_next_blocks_band() {
         let samples = [
             sample(5.0, None, 0.0),
@@ -612,7 +700,7 @@ mod tests {
             panic!("two bands: {bands:?}");
         };
         assert_eq!(first.blocks, 10_000.0);
-        assert!((first.wall_secs - 10.0).abs() < 1e-9);
+        assert!((first.wall_secs - 5.0).abs() < 1e-9);
         assert_eq!(second.first_height, 10_000);
         assert_eq!(second.blocks, 0.0);
         assert!((second.wall_secs - 30.0).abs() < 1e-9);
@@ -623,6 +711,21 @@ mod tests {
         let mut level = sample(10.0, Some(99), 1.0);
         level.heights.insert("txids".to_owned(), 99);
         assert_eq!(super::bands(&[level])[0].slowest, None);
+    }
+
+    /// A chain of exactly two bands, then a wait until the tool sees zainod
+    /// local: the wait is no band's, and no band past the chain's end appears.
+    #[test]
+    fn time_after_the_store_reached_its_target_is_no_bands() {
+        let mut built = sample(10.0, Some(19_999), 2.0);
+        built.target = Some(19_999);
+        let mut seen_local = sample(13.0, Some(19_999), 2.0);
+        seen_local.target = Some(19_999);
+        let bands = bands(&[built, seen_local]);
+        assert_eq!(bands.len(), 2, "{bands:?}");
+        let wall: f64 = bands.iter().map(|band| band.wall_secs).sum();
+        assert!((wall - 10.0).abs() < 1e-9, "the 3s wait is left out");
+        assert!(bands.iter().all(|band| band.blocks == 10_000.0));
     }
 
     #[test]
