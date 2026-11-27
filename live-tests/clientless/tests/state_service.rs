@@ -71,13 +71,18 @@ mod zebra {
             // peerless regtest node, so the two sides sample different text.
             assert_rpc_parity("getinfo", "", &frpc, &srpc, &["errorstimestamp", "errors"]).await?;
 
-            // TODO: Fix this! (the two backends' value pools disagree).
-            // assert_eq!(
-            //     fetch_service_blockchain_info.value_pools(),
-            //     state_service_blockchain_info.value_pools()
-            // );
             let fetch_info = frpc.call_value("getblockchaininfo", json!([])).await?;
             let state_info = srpc.call_value("getblockchaininfo", json!([])).await?;
+            assert_eq!(
+                fetch_info.get("valuePools"),
+                state_info.get("valuePools"),
+                "the two backends report the same value pools"
+            );
+            assert_eq!(
+                fetch_info.get("chainSupply"),
+                state_info.get("chainSupply"),
+                "the two backends report the same chain supply"
+            );
             assert_eq!(
                 fetch_info.get("blocks").and_then(Value::as_u64),
                 Some(u64::from(tip)),

@@ -585,7 +585,10 @@ impl OneShotGetBlockchainInfo for ZebraValidator {
     async fn get_blockchain_info(
         &self,
     ) -> Result<BlockchainInfo, QueryError<GetBlockchainInfoError>> {
-        fast_or_slow!(self, get_blockchain_info)
+        // RPC only, as the verbose block: it reports the tip's value pools,
+        // and the read-only state's are short of the deferred (lockbox)
+        // amounts of every non-finalised block, the tip among them.
+        self.rpc.get_blockchain_info().await
     }
 }
 

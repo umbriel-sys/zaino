@@ -1487,6 +1487,11 @@ impl zaino_source::OneShotGetDifficulty for ZebraReadStateAdapter {
     }
 }
 
+/// Not routed to by [`ZebraValidator`](crate::ZebraValidator), which answers
+/// this over JSON-RPC. Behind zebra's syncer the value pools here are short:
+/// the syncer commits non-finalised blocks without their deferred (lockbox)
+/// amounts, so the lockbox pool and the chain supply stop at the finalised
+/// tip's. Every other field is the validator's.
 impl zaino_source::OneShotGetBlockchainInfo for ZebraReadStateAdapter {
     async fn get_blockchain_info(
         &self,

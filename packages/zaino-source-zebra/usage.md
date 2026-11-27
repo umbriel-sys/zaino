@@ -100,13 +100,13 @@ self.rpc.method(args)                // RPC only — the state service cannot an
   transaction submission, node, peer and network info, and the passthrough
   RPCs zebrad answers from elsewhere.
 
-The verbose block (`get_block_verbose`, `get_block_verbose_by_hash`) is RPC
-only although zebrad's handler builds it from state requests. It reports the
-chain's value pools, and the read-only state does not hold them for
-non-finalised blocks: zebra's syncer commits those blocks without their
-deferred (lockbox) amounts, so the lockbox pool and the chain supply come out
-short, and nothing public says which blocks are finalised. The
-`getblock_parity` live test catches it.
+The verbose block (`get_block_verbose`, `get_block_verbose_by_hash`) and
+`get_blockchain_info` are RPC only although zebrad's handlers build them from
+state requests. Both report the chain's value pools, and the read-only state
+does not hold them for non-finalised blocks: zebra's syncer commits those
+blocks without their deferred (lockbox) amounts, so the lockbox pool and the
+chain supply come out short, and nothing public says which blocks are
+finalised. The `getblock_parity` and `check_info` live tests catch it.
 
 ### What the read-state adapter builds itself
 

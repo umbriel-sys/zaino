@@ -1,0 +1,16 @@
+[[changes]]
+crate = "zaino-source-zebra"
+kind = "fix"
+description = """
+The zebra source answers `get_blockchain_info` over JSON-RPC. Read from the \
+read-only state, the lockbox pool and the chain supply stopped at the \
+finalised tip's values: zebra's syncer commits non-finalised blocks without \
+their deferred (lockbox) amounts."""
+
+[[changes]]
+crate = "zainod"
+kind = "fix"
+description = """
+With a zebrad validator read through its state, `getblockchaininfo` reported \
+a lockbox pool and a chain supply short of the non-finalised blocks' \
+amounts. It now reports zebrad's own."""
