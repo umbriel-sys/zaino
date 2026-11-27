@@ -21,10 +21,7 @@
 //! client, which at this scale is the difference between bounded and unbounded
 //! memory.
 
-use zaino_chain_store::PoolFilter;
-use zaino_primitives::types::{
-    ChainMetadata, CompactBlock, Height, PreIndexCompactBlock, TreeRoots, TreeSize,
-};
+use zaino_primitives::types::{ChainMetadata, CompactBlock, Height, TreeRoots, TreeSize};
 
 use crate::composer::coverage::Segment;
 
@@ -162,41 +159,6 @@ pub(crate) fn approx_size(block: &CompactBlock) -> usize {
             PER_TRANSPARENT.saturating_mul(transparent),
         ])
     })
-}
-
-/// The compact block a caller asked for, from a pre-index projection.
-///
-/// Shared by the chain head and the validator so a compact block above the
-/// store's range has one definition however it was obtained.
-///
-/// # The filter is applied here, not skipped
-///
-/// The store pushes [`PoolFilter`] into its read, where it decides which row
-/// families decode at all. There is nothing to push it into for an
-/// already-projected block, so above the store it is applied afterwards. That
-/// is a performance difference and must not become a semantic one: a caller
-/// filtering to sapling gets the same shape from every provider. Like the
-/// store's, the block keeps every transaction, since position is the index.
-pub(crate) fn compact_from_pre_index(
-    pre_index: PreIndexCompactBlock,
-    chain_metadata: ChainMetadata,
-    pools: PoolFilter,
-) -> CompactBlock {
-    let transactions = pre_index
-        .transactions
-        .into_iter()
-        .map(|tx| tx.filtered(pools))
-        .collect();
-
-    CompactBlock {
-        hash: pre_index.hash,
-        prev_hash: pre_index.prev_hash,
-        height: pre_index.height,
-        time: pre_index.time,
-        bits: pre_index.bits,
-        transactions,
-        chain_metadata,
-    }
 }
 
 /// The cumulative tree sizes a compact block reports, from commitment roots.

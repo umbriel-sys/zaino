@@ -13,14 +13,19 @@ use std::sync::Arc;
 use futures::{stream, StreamExt as _, TryStreamExt as _};
 use tokio::sync::Semaphore;
 use zaino_primitives::types::{
-    rpc::BlockHeaderVerbose, Block, BlockHash, BlockVerbosity, ChainMetadata, CompactBlock, Height,
-    TreeRoots,
+    rpc::BlockHeaderVerbose, Block, BlockHash, CompactBlock, Height, TreeRoots,
 };
-use zaino_source::{NonDomainError, QueryError};
+use zaino_source::{FailureMode, NonDomainError, QueryError};
 
 use crate::composer::config::ChainViewConfig;
 use crate::error::{ChainViewError, Result};
 use crate::source::ChainViewSource;
+
+/// How often a range read that failed on the validator's connection is asked
+/// again.
+const CONNECTION_RETRIES: u32 = 2;
+/// The wait before each of those.
+const CONNECTION_RETRY_WAIT: std::time::Duration = std::time::Duration::from_millis(250);
 
 /// A validator answer, with a domain rejection folded into `None`.
 ///
@@ -139,8 +144,13 @@ impl<Source: ChainViewSource> Fetcher<Source> {
     /// Stops at the first height the validator does not have rather than
     /// leaving a hole mid-range: a caller walking heights would read a hole as
     /// "these blocks are empty".
+    ///
+    /// A read that fails on the validator's connection is asked again
+    /// ([`Self::attempted`]): one dropped connection must not fail a client's
+    /// whole range.
     async fn fill<K, T, F, Fut>(&self, keys: Vec<K>, fetch: F) -> Result<Vec<T>>
     where
+        K: Copy,
         F: Fn(K) -> Fut,
         Fut: core::future::Future<Output = Result<Option<T>>>,
     {
@@ -151,7 +161,7 @@ impl<Source: ChainViewSource> Fetcher<Source> {
             .max(1);
 
         let filled: Vec<Option<T>> = stream::iter(keys)
-            .map(|key| self.permitted(fetch(key)))
+            .map(|key| self.attempted(key, &fetch))
             .buffered(concurrency)
             .try_collect()
             .await?;
@@ -159,6 +169,33 @@ impl<Source: ChainViewSource> Fetcher<Source> {
         // `buffered` preserves order, so truncating at the first absence keeps
         // the run contiguous and ascending.
         Ok(filled.into_iter().map_while(|block| block).collect())
+    }
+
+    /// One key's read, under a permit; asked again, at most
+    /// [`CONNECTION_RETRIES`] times, when the validator's connection failed.
+    ///
+    /// Only a connection failure is asked again. A timeout has already
+    /// waited the read's whole allowance, a busy validator was already
+    /// retried by its client, and anything the validator answered is its
+    /// answer. The permit is released for the wait.
+    async fn attempted<K, T, F, Fut>(&self, key: K, fetch: &F) -> Result<Option<T>>
+    where
+        K: Copy,
+        F: Fn(K) -> Fut,
+        Fut: core::future::Future<Output = Result<Option<T>>>,
+    {
+        let mut retries = 0u32;
+        loop {
+            match self.permitted(fetch(key)).await {
+                Err(ChainViewError::SourceUnavailable(error))
+                    if error.mode == FailureMode::Connection && retries < CONNECTION_RETRIES =>
+                {
+                    retries = retries.saturating_add(1);
+                    tokio::time::sleep(CONNECTION_RETRY_WAIT).await;
+                }
+                answered => return answered,
+            }
+        }
     }
 
     /// A parsed block and its commitment roots.
@@ -182,41 +219,16 @@ impl<Source: ChainViewSource> Fetcher<Source> {
         Ok(Some((block, roots)))
     }
 
-    /// A compact block.
-    ///
-    /// Both requests are by height and independent, so they are issued
-    /// together — the projection from the compact port, and the cumulative tree
-    /// sizes from the verbose port. Fetching a whole block and projecting it
-    /// would transfer and parse data the caller filtered out, and chaining the
-    /// roots call behind it would double the latency of the read this crate is
-    /// shaped around.
+    /// A compact block: one read, the block's compact data and its tree
+    /// sizes as one answer about one block. `pools` goes to the source, as
+    /// it goes to the store's and the chain head's reads, so a caller
+    /// filtering to one pool gets the same shape from every provider.
     pub(crate) async fn compact_at(
         &self,
         height: Height,
         pools: zaino_chain_store::PoolFilter,
     ) -> Result<Option<CompactBlock>> {
-        let (compact, verbose) = futures::join!(
-            self.source.get_pre_index_compact_block(height),
-            self.source
-                .get_block_verbose(height, BlockVerbosity::TransactionIds),
-        );
-
-        let Some(pre_index) = miss(compact)? else {
-            return Ok(None);
-        };
-        let Some(verbose) = miss(verbose)? else {
-            return Ok(None);
-        };
-
-        Ok(Some(super::stream::compact_from_pre_index(
-            pre_index,
-            ChainMetadata {
-                sapling_tree_size: verbose.tree_sizes.sapling,
-                orchard_tree_size: verbose.tree_sizes.orchard,
-                ironwood_tree_size: verbose.tree_sizes.ironwood,
-            },
-            pools,
-        )))
+        miss(self.source.get_compact_block(height, pools).await)
     }
 
     /// Consensus bytes at `height`.

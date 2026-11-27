@@ -2,7 +2,7 @@
 
 use zaino_primitives::types::{
     rpc::{ChainTip, ChainTipStatus},
-    Block, BlockHash, Height, PreIndexCompactBlock,
+    Block, BlockHash, CompactBlock, Height, PoolFilter, PreIndexCompactBlock,
 };
 use zaino_source::{
     GetBestBlockHeightError, GetBlockByHashError, GetBlockError, GetBlockHeaderError,
@@ -88,16 +88,18 @@ impl zaino_source::OneShotGetRawBlockHeader for MockChain {
     }
 }
 
-impl zaino_source::OneShotGetPreIndexCompactBlock for MockChain {
-    async fn get_pre_index_compact_block(
+impl zaino_source::OneShotGetCompactBlock for MockChain {
+    async fn get_compact_block(
         &self,
         height: Height,
-    ) -> Result<PreIndexCompactBlock, QueryError<GetBlockError>> {
+        pools: PoolFilter,
+    ) -> Result<CompactBlock, QueryError<GetBlockError>> {
         let served = self
-            .enter("get_pre_index_compact_block", CallArg::Height(height))
+            .enter("get_compact_block", CallArg::Height(height))
             .await?;
         match served.at(height) {
-            Some(block) => Ok(PreIndexCompactBlock::from(&block.block)),
+            Some(block) => Ok(PreIndexCompactBlock::from(&block.block)
+                .into_compact(super::info::tree_sizes(block).into(), pools)),
             None => refused(GetBlockError::HeightNotFound(height)),
         }
     }

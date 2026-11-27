@@ -287,21 +287,65 @@ impl ZebraReadStateAdapter {
     }
 }
 
-impl zaino_source::OneShotGetPreIndexCompactBlock for ZebraReadStateAdapter {
-    #[cfg_attr(feature = "tracing", tracing::instrument(skip(self), fields(h = u32::from(height))))]
-    async fn get_pre_index_compact_block(
+impl zaino_source::OneShotGetCompactBlock for ZebraReadStateAdapter {
+    #[cfg_attr(feature = "tracing", tracing::instrument(skip(self, pools), fields(h = u32::from(height))))]
+    async fn get_compact_block(
         &self,
         height: Height,
-    ) -> Result<
-        zaino_primitives::types::PreIndexCompactBlock,
-        QueryError<GetBlockError, ReadStateError>,
-    > {
+        pools: zaino_primitives::types::PoolFilter,
+    ) -> Result<zaino_primitives::types::CompactBlock, QueryError<GetBlockError, ReadStateError>>
+    {
         // Zebra's read-state service serves whole blocks only; there is no
-        // compact-block read request. Read the full block and strip it down
-        // through the domain `Block`, exactly as the RPC adapter does.
+        // compact-block read request. The full block is read and stripped
+        // down through the domain `Block`, as the RPC adapter does, and its
+        // tree sizes are read by its own hash, so both describe one block.
         use zaino_source::OneShotGetBlock;
         let block = self.get_block(height).await?;
-        Ok(zaino_primitives::types::PreIndexCompactBlock::from(&block))
+        let hash = zebra_chain::block::Hash(block.header.hash.into());
+        // reorged out between the reads: the height no longer names it
+        let sizes = self
+            .tree_sizes(hash)
+            .await?
+            .ok_or(QueryError::Domain(GetBlockError::HeightNotFound(height)))?;
+        Ok(zaino_primitives::types::PreIndexCompactBlock::from(&block).into_compact(sizes, pools))
+    }
+}
+
+impl ZebraReadStateAdapter {
+    /// Each pool's cumulative note count after the block `hash`, in any
+    /// chain; `None` when the state holds no such block. A pool with no
+    /// notes yet counts zero, as zebrad's `getblock` reports it: the state
+    /// seeds every tree at genesis.
+    async fn tree_sizes(
+        &self,
+        hash: zebra_chain::block::Hash,
+    ) -> Result<Option<zaino_primitives::types::ChainMetadata>, ReadStateError> {
+        let (sapling, orchard, ironwood) = tokio::join!(
+            read(&self.state, ReadRequest::AnyChainSaplingTree(hash)),
+            read(&self.state, ReadRequest::AnyChainOrchardTree(hash)),
+            read(&self.state, ReadRequest::AnyChainIronwoodTree(hash)),
+        );
+        let sapling = match sapling? {
+            ReadResponse::SaplingTree(tree) => tree.map(|tree| tree.count()),
+            _ => return Err(unexpected_response("SaplingTree")),
+        };
+        let orchard = match orchard? {
+            ReadResponse::OrchardTree(tree) => tree.map(|tree| tree.count()),
+            _ => return Err(unexpected_response("OrchardTree")),
+        };
+        let ironwood = match ironwood? {
+            ReadResponse::IronwoodTree(tree) => tree.map(|tree| tree.count()),
+            _ => return Err(unexpected_response("IronwoodTree")),
+        };
+        let (Some(sapling), Some(orchard), Some(ironwood)) = (sapling, orchard, ironwood) else {
+            return Ok(None);
+        };
+        let size = |count: u64| TreeSize::try_from(count).map_err(ReadStateError::invalid_data);
+        Ok(Some(zaino_primitives::types::ChainMetadata {
+            sapling_tree_size: size(sapling)?,
+            orchard_tree_size: size(orchard)?,
+            ironwood_tree_size: size(ironwood)?,
+        }))
     }
 }
 
@@ -1221,6 +1265,147 @@ fn upgrade_wire_name(upgrade: zebra_chain::parameters::NetworkUpgrade) -> String
 /// Address a block by hash for the state service.
 fn hash_or_height(hash: BlockHash) -> zebra_state::HashOrHeight {
     zebra_state::HashOrHeight::Hash(zebra_chain::block::Hash(hash.into()))
+}
+
+/// What zebrad's `getblockheader` reports for one best-chain block.
+struct HeaderParts {
+    hash: zebra_chain::block::Hash,
+    height: zebra_chain::block::Height,
+    header: std::sync::Arc<zebra_chain::block::Header>,
+    confirmations: i64,
+    next_block_hash: Option<zebra_chain::block::Hash>,
+    block_commitments: [u8; 32],
+    final_sapling_root: [u8; 32],
+    sapling_tree_size: u64,
+    nonce: [u8; 32],
+    difficulty: f64,
+}
+
+impl HeaderParts {
+    /// zebrad's own verbose header object.
+    fn object(&self) -> zebra_rpc::client::BlockHeaderObject {
+        zebra_rpc::client::BlockHeaderObject::new(
+            self.hash,
+            self.confirmations,
+            self.height,
+            self.header.version,
+            self.header.merkle_root,
+            self.block_commitments,
+            self.final_sapling_root,
+            self.sapling_tree_size,
+            self.header.time.timestamp(),
+            self.nonce,
+            self.header.solution,
+            self.header.difficulty_threshold,
+            self.difficulty,
+            self.header.previous_block_hash,
+            self.next_block_hash,
+        )
+    }
+}
+
+// The verbose header, from the state: the reads and the rules of zebrad's own
+// `getblockheader` handler (zebra-rpc `methods.rs`), built as zebrad's
+// response object and read back exactly as the JSON-RPC adapter reads
+// zebrad's reply, so both transports answer alike.
+impl ZebraReadStateAdapter {
+    /// The header of the best-chain block `hash`; `None` when the best chain
+    /// holds no such block (zebrad's handler answers no other).
+    async fn header_parts(
+        &self,
+        hash: zebra_chain::block::Hash,
+    ) -> Result<Option<HeaderParts>, ReadStateError> {
+        use zebra_chain::block::Commitment;
+        use zebra_chain::serialization::BytesInDisplayOrder as _;
+
+        let depth = match read(&self.state, ReadRequest::Depth(hash)).await? {
+            ReadResponse::Depth(Some(depth)) => depth,
+            ReadResponse::Depth(None) => return Ok(None),
+            _ => return Err(unexpected_response("Depth")),
+        };
+        // Both by the resolved hash, so the header and its Sapling tree are
+        // one block's.
+        let (header, sapling) = tokio::join!(
+            read(&self.state, ReadRequest::BlockHeader(hash.into())),
+            read(&self.state, ReadRequest::SaplingTree(hash.into())),
+        );
+        let ReadResponse::BlockHeader {
+            header,
+            hash,
+            height,
+            next_block_hash,
+        } = header?
+        else {
+            return Err(unexpected_response("BlockHeader"));
+        };
+        let sapling_tree = match sapling? {
+            ReadResponse::SaplingTree(Some(tree)) => tree,
+            // reorged out between the reads
+            ReadResponse::SaplingTree(None) => return Ok(None),
+            _ => return Err(unexpected_response("SaplingTree")),
+        };
+
+        let mut nonce = *header.nonce;
+        nonce.reverse();
+        let sapling_active = NetworkUpgrade::Sapling
+            .activation_height(&self.network)
+            .is_some_and(|activation| height >= activation);
+        let final_sapling_root = match sapling_active {
+            true => {
+                let mut root: [u8; 32] = sapling_tree.root().into();
+                root.reverse();
+                root
+            }
+            false => [0; 32],
+        };
+        let block_commitments = match header
+            .commitment(&self.network, height)
+            .map_err(ReadStateError::invalid_data)?
+        {
+            Commitment::PreSaplingReserved(bytes) => bytes,
+            Commitment::FinalSaplingRoot(_) => final_sapling_root,
+            Commitment::ChainHistoryActivationReserved => [0; 32],
+            Commitment::ChainHistoryRoot(root) => root.bytes_in_display_order(),
+            Commitment::ChainHistoryBlockTxAuthCommitment(hash) => hash.bytes_in_display_order(),
+        };
+        Ok(Some(HeaderParts {
+            hash,
+            height,
+            // one more than the depth, which the height bounds
+            confirmations: i64::from(depth).saturating_add(1),
+            next_block_hash,
+            block_commitments,
+            final_sapling_root,
+            sapling_tree_size: sapling_tree.count(),
+            nonce,
+            difficulty: header
+                .difficulty_threshold
+                .relative_to_network(&self.network),
+            header,
+        }))
+    }
+}
+
+impl zaino_source::OneShotGetBlockHeader for ZebraReadStateAdapter {
+    async fn get_block_header(
+        &self,
+        hash: BlockHash,
+    ) -> Result<
+        zaino_primitives::types::rpc::BlockHeaderVerbose,
+        QueryError<zaino_source::GetBlockHeaderError, ReadStateError>,
+    > {
+        let Some(parts) = self
+            .header_parts(zebra_chain::block::Hash(hash.into()))
+            .await?
+        else {
+            return Err(QueryError::Domain(
+                zaino_source::GetBlockHeaderError::BlockNotFound(hash),
+            ));
+        };
+        let json = serde_json::to_value(parts.object()).map_err(ReadStateError::invalid_data)?;
+        Ok(zaino_source_zcash_rpc::parse_block_header_object(&json)
+            .map_err(ReadStateError::invalid_data)?)
+    }
 }
 
 impl zaino_source::OneShotGetTransaction for ZebraReadStateAdapter {

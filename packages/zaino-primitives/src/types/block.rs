@@ -137,6 +137,16 @@ pub struct ChainMetadata {
     pub ironwood_tree_size: TreeSize,
 }
 
+impl From<super::BlockTreeSizes> for ChainMetadata {
+    fn from(sizes: super::BlockTreeSizes) -> Self {
+        Self {
+            sapling_tree_size: sizes.sapling,
+            orchard_tree_size: sizes.orchard,
+            ironwood_tree_size: sizes.ironwood,
+        }
+    }
+}
+
 impl ChainMetadata {
     /// Every pool size zero.
     pub const ZERO: Self = Self {

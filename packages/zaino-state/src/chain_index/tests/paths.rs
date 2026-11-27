@@ -274,7 +274,7 @@ async fn reads_over_the_hole(rig: &Rig) {
     );
     asked(
         rig.asks(
-            "get_pre_index_compact_block",
+            "get_compact_block",
             rig.rpc.get_block(BlockId {
                 height: u64::from(IN_HOLE),
                 hash: Vec::new(),
@@ -871,7 +871,7 @@ async fn the_remaining_reads_take_their_paths() {
         assert!(asked_roots, "GetSubtreeRoots asks the validator");
         assert!(roots.iter().all(Result::is_ok));
         let (asked_range, range) = rig
-            .asks("get_pre_index_compact_block", async {
+            .asks("get_compact_block", async {
                 let stream = rig
                     .rpc
                     .get_block_range_nullifiers(BlockRange {

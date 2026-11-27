@@ -175,8 +175,8 @@ async fn validator_frames_are_not_kept() {
             .expect("filled")
     };
     let first = read().await;
-    let asked = source.calls("get_pre_index_compact_block");
+    let asked = source.calls("get_compact_block");
     assert!(asked > 0);
     assert_eq!(read().await, first);
-    assert_eq!(source.calls("get_pre_index_compact_block"), asked * 2);
+    assert_eq!(source.calls("get_compact_block"), asked * 2);
 }

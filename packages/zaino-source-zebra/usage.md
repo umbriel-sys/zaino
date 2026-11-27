@@ -94,8 +94,31 @@ self.rpc.method(args)                // RPC only — the state service cannot an
   find it. This preserves a behaviour the old connector had as an undocumented
   per-variant difference. `GetBlock` and `GetRawBlock` by height use it too:
   the read-only state answers "no block" until it has replayed a new block's
-  whole body, while zebrad already serves it.
-- **RPC only** for the mempool and the passthrough RPCs.
+  whole body, while zebrad already serves it. The verbose header uses it for
+  the same reason.
+- **RPC only** for what the state service does not hold: the mempool,
+  transaction submission, node, peer and network info, and the passthrough
+  RPCs zebrad answers from elsewhere.
+
+The verbose block (`get_block_verbose`, `get_block_verbose_by_hash`) is RPC
+only although zebrad's handler builds it from state requests. It reports the
+chain's value pools, and the read-only state does not hold them for
+non-finalised blocks: zebra's syncer commits those blocks without their
+deferred (lockbox) amounts, so the lockbox pool and the chain supply come out
+short, and nothing public says which blocks are finalised. The
+`getblock_parity` live test catches it.
+
+### What the read-state adapter builds itself
+
+- **The compact block** (`get_compact_block`): the block from state and its
+  three tree counts, read by that block's own hash, so both are one block's;
+  the pool filter is applied as the block is projected.
+- **The verbose header** (`get_block_header`): the state requests and the
+  rules of zebrad's own `getblockheader` handler, assembled as zebrad's
+  response object and read back exactly as the JSON-RPC adapter reads
+  zebrad's reply, so both transports answer alike. Best-chain blocks only, as
+  zebrad's handler; any other block is a domain miss, which falls back to
+  RPC.
 
 ## Two places the usual preference inverts
 

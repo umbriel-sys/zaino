@@ -47,9 +47,10 @@ pub struct ChainViewConfig {
     ///
     /// # The default
     ///
-    /// 24, sized against the validator. One permit covers one *block*, which
-    /// for a compact block is two requests issued together (the projection
-    /// and its tree sizes), so in-flight requests peak at twice this: 48.
+    /// 24, sized against the validator. One permit covers one *block*: one
+    /// compact-block read, which a JSON-RPC validator answers with two
+    /// requests issued together (the block and its tree sizes), so in-flight
+    /// requests peak at twice this: 48.
     /// That is under the 64 requests the validator's JSON-RPC client keeps
     /// in flight (`zaino_rpc::DEFAULT_MAX_IN_FLIGHT`), so range fills alone
     /// can never fill it; and well under the 100 zebrad serves at once (it

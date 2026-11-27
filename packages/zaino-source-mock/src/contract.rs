@@ -12,7 +12,8 @@ use zaino_consensus::branch_id;
 use zaino_primitives::types::{
     rpc::{ChainTipStatus, SpentOutpoint, TransactionVerbose, TransactionVerbosity},
     Block, BlockConfirmations, BlockHash, BlockTransactions, BlockVerbosity, Height,
-    NetworkUpgradeStatus, ShieldedPool, TransactionId, TransactionLocation,
+    NetworkUpgradeStatus, PoolFilter, PreIndexCompactBlock, ShieldedPool, TransactionId,
+    TransactionLocation,
 };
 use zaino_source::TransactionAnswer;
 use zaino_source::{
@@ -45,6 +46,50 @@ fn answered<T, E: std::fmt::Debug + std::fmt::Display, N: std::error::Error>(
 /// The best tip's height.
 async fn tip<S: zaino_source::OneShotGetBestBlockHeight>(source: &S) -> Result<Height, Broken> {
     answered("best block height", source.get_best_block_height().await)
+}
+
+/// A compact block is its block's own data with that block's tree sizes;
+/// the filter clears what it leaves out and keeps every transaction; past
+/// the tip is the domain refusal.
+pub async fn compact_blocks<S>(source: &S) -> Result<(), Broken>
+where
+    S: zaino_source::OneShotGetBestBlockHeight
+        + zaino_source::OneShotGetBlock
+        + zaino_source::OneShotGetBlockVerbose
+        + zaino_source::OneShotGetCompactBlock,
+{
+    let tip = tip(source).await?;
+    let nullifiers = PoolFilter::default().nullifiers_only();
+    for height in 0..=u32::from(tip) {
+        let height = Height::try_from(height).map_err(|e| e.to_string())?;
+        let block = answered("block", source.get_block(height).await)?;
+        let verbose = answered(
+            "verbose block",
+            source
+                .get_block_verbose(height, BlockVerbosity::TransactionIds)
+                .await,
+        )?;
+        let whole = PreIndexCompactBlock::from(&block);
+        for pools in [PoolFilter::all(), PoolFilter::default(), nullifiers] {
+            let compact = answered(
+                "compact block",
+                source.get_compact_block(height, pools).await,
+            )?;
+            let expected = whole.clone().into_compact(verbose.tree_sizes.into(), pools);
+            ensure(compact == expected, || {
+                format!("compact block {height} under {pools:?} is not its block and tree sizes")
+            })?;
+        }
+    }
+    let past = tip.checked_add(1).ok_or("tip at the maximum height")?;
+    ensure(
+        matches!(
+            source.get_compact_block(past, PoolFilter::all()).await,
+            Err(QueryError::Domain(GetBlockError::HeightNotFound(h))) if h == past
+        ),
+        || "a compact block past the tip is not HeightNotFound".to_owned(),
+    )?;
+    Ok(())
 }
 
 /// Blocks by height and by hash agree and link; past the tip and an unknown

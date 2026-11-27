@@ -114,7 +114,7 @@ fn pools<E: std::fmt::Debug + std::fmt::Display>(
     Ok((supply, balances))
 }
 
-fn tree_sizes(block: &MockBlock) -> BlockTreeSizes {
+pub(super) fn tree_sizes(block: &MockBlock) -> BlockTreeSizes {
     let size = |info: Option<&zaino_primitives::types::TreeRootInfo>| {
         info.map_or(TreeSize::ZERO, |info| info.size)
     };

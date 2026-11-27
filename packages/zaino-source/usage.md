@@ -32,6 +32,15 @@ A port returns what the validator returns and composes nothing: the getblock
 ports (`get_block_verbose`, `get_block_verbose_by_hash`) take the
 `BlockVerbosity` and answer the validator's whole `getblock`.
 
+`get_compact_block(height, pools)` answers the complete compact block: the
+block's compact data and its cumulative tree sizes, as one answer about one
+block, so a consumer filling a range makes one read per block. The source
+applies `pools`, as the store and the chain head apply it in their own reads:
+a pool it leaves out is cleared from every transaction, every transaction is
+kept, and the tree sizes are never filtered. An adapter that needs two
+validator calls to answer (the JSON-RPC adapter: `getblock` verbosity 0 and 1)
+issues them together and refuses replies that name different blocks.
+
 ## The error model, which is the point
 
 ```rust

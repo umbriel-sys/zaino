@@ -218,7 +218,8 @@ the product of clients and per-client concurrency — 5,000 clients fetching 16
 blocks each is 80,000 simultaneous fetches.
 
 The default is sized against the validator, not the clients. A permit covers
-one block, which for a compact block is two requests issued together, so 24
+one block: one compact-block read, which a JSON-RPC validator answers with two
+requests issued together (a zebrad read from its state makes none), so 24
 permits are at most 48 requests. That is under the 64 requests the validator's
 JSON-RPC client keeps in flight, so gap fills alone can never fill it, and
 well under the 100 zebrad serves at once (it answers the rest HTTP 429).
@@ -228,6 +229,11 @@ transaction, a treestate, an address balance) takes none: it waits its turn in
 the validator's client with every other request, the chain head's and the
 mempool's among them. Enough single reads at once can therefore delay those
 two; nothing fails, since every wait there is in order and bounded.
+
+A gap-fill read that fails on the validator's connection is asked again, at
+most twice more, 250 ms apart, with its permit released for the wait: one
+dropped connection does not fail a client's whole range. A timeout, a busy
+validator and anything the validator answered are not asked again.
 
 Two things make it safe to size modestly:
 

@@ -46,7 +46,7 @@ fn the_mock_implements_every_port() {
             + zaino_source::OneShotGetNetworkSolPs
             + zaino_source::OneShotGetNodeInfo
             + zaino_source::OneShotGetPeerInfo
-            + zaino_source::OneShotGetPreIndexCompactBlock
+            + zaino_source::OneShotGetCompactBlock
             + zaino_source::OneShotGetRawBlock
             + zaino_source::OneShotGetRawBlockByHash
             + zaino_source::OneShotGetRawBlockHeader
@@ -106,6 +106,9 @@ fn miner() -> String {
 async fn a_synthetic_chain_keeps_the_whole_contract() {
     let chain = with_subtree();
     contract::blocks(&chain).await.expect("blocks");
+    contract::compact_blocks(&chain)
+        .await
+        .expect("compact blocks");
     contract::tree_roots(&chain).await.expect("tree roots");
     contract::treestates(&chain).await.expect("treestates");
     contract::transactions(&chain).await.expect("transactions");

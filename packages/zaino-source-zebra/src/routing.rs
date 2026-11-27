@@ -4,9 +4,9 @@ use std::time::Duration;
 
 use tokio::sync::watch;
 use zaino_primitives::types::{
-    rpc, AddressBalance, AddressDelta, Block, BlockHash, BlockVerbose, BlockchainInfo, Difficulty,
-    Height, OutputIndex, PreIndexCompactBlock, ShieldedPool, SubtreeRoot, TransactionId, TreeRoots,
-    Treestate, Utxo,
+    rpc, AddressBalance, AddressDelta, Block, BlockHash, BlockVerbose, BlockchainInfo,
+    CompactBlock, Difficulty, Height, OutputIndex, PoolFilter, ShieldedPool, SubtreeRoot,
+    TransactionId, TreeRoots, Treestate, Utxo,
 };
 use zaino_source::*;
 use zaino_source_zcash_rpc::ZcashRpcAdapter;
@@ -204,12 +204,13 @@ impl OneShotGetBestBlockHeight for ZebraValidator {
     }
 }
 
-impl OneShotGetPreIndexCompactBlock for ZebraValidator {
-    async fn get_pre_index_compact_block(
+impl OneShotGetCompactBlock for ZebraValidator {
+    async fn get_compact_block(
         &self,
         height: Height,
-    ) -> Result<PreIndexCompactBlock, QueryError<GetBlockError>> {
-        fast_or_slow!(self, get_pre_index_compact_block, height)
+        pools: PoolFilter,
+    ) -> Result<CompactBlock, QueryError<GetBlockError>> {
+        fast_or_slow!(self, get_compact_block, height, pools)
     }
 }
 
@@ -418,6 +419,10 @@ impl OneShotGetBlockVerbose for ZebraValidator {
         height: Height,
         verbosity: zaino_primitives::types::BlockVerbosity,
     ) -> Result<BlockVerbose, QueryError<GetBlockVerboseError>> {
+        // RPC only. The verbose block reports the chain's value pools, and
+        // the read-only state does not hold them for non-finalised blocks:
+        // zebra's syncer commits those without their deferred (lockbox)
+        // amounts, and nothing public says which blocks are finalised.
         self.rpc.get_block_verbose(height, verbosity).await
     }
 }
@@ -428,6 +433,7 @@ impl OneShotGetBlockVerboseByHash for ZebraValidator {
         hash: BlockHash,
         verbosity: zaino_primitives::types::BlockVerbosity,
     ) -> Result<BlockVerbose, QueryError<GetBlockVerboseError>> {
+        // RPC only, as `get_block_verbose`.
         self.rpc.get_block_verbose_by_hash(hash, verbosity).await
     }
 }
@@ -437,6 +443,17 @@ impl OneShotGetBlockHeader for ZebraValidator {
         &self,
         hash: BlockHash,
     ) -> Result<rpc::BlockHeaderVerbose, QueryError<GetBlockHeaderError>> {
+        // `fast_then_slow!`, written out: the state adapter has an inherent
+        // `get_block_header` (by height, zebra's own type) that a method
+        // call would pick over the port's.
+        if let Some(fast) = self.fast() {
+            let result = OneShotGetBlockHeader::get_block_header(fast, hash)
+                .await
+                .map_err(to_seam);
+            if !retry_on_slow_path(&result) {
+                return result;
+            }
+        }
         self.rpc.get_block_header(hash).await
     }
 }

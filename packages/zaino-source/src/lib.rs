@@ -103,7 +103,7 @@ pub use get_commitment_tree_roots::{GetCommitmentTreeRootsError, OneShotGetCommi
 pub use get_commitment_tree_roots_by_height::{
     GetCommitmentTreeRootsByHeightError, OneShotGetCommitmentTreeRootsByHeight,
 };
-pub use get_compact_block::OneShotGetPreIndexCompactBlock;
+pub use get_compact_block::OneShotGetCompactBlock;
 pub use get_difficulty::{GetDifficultyError, OneShotGetDifficulty};
 pub use get_mempool_metadata::{GetMempoolMetadataError, MempoolTxMeta, OneShotGetMempoolMetadata};
 pub use get_mempool_source_tip::OneShotGetMempoolSourceTip;
@@ -150,7 +150,7 @@ pub use get_blockchain_info::GetBlockchainInfo;
 pub use get_chain_tips::GetChainTips;
 pub use get_commitment_tree_roots::GetCommitmentTreeRoots;
 pub use get_commitment_tree_roots_by_height::GetCommitmentTreeRootsByHeight;
-pub use get_compact_block::GetPreIndexCompactBlock;
+pub use get_compact_block::GetCompactBlock;
 pub use get_difficulty::GetDifficulty;
 pub use get_mempool_metadata::GetMempoolMetadata;
 pub use get_mempool_source_tip::GetMempoolSourceTip;

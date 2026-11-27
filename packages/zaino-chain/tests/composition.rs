@@ -498,10 +498,10 @@ async fn a_stream_does_no_work_until_polled() {
     );
 }
 
-/// A compact fill uses the compact port, not whole blocks, and pairs it with
-/// the by-height verbose port so both requests are independent.
+/// A compact fill is one read per block: the compact port answers the block
+/// and its tree sizes together.
 #[tokio::test]
-async fn a_compact_fill_uses_the_compact_and_verbose_ports() {
+async fn a_compact_fill_is_one_read_per_block() {
     let rig = syncing().await;
     let view = rig.view();
     let before = rig.chain.call_log().len();
@@ -514,14 +514,11 @@ async fn a_compact_fill_uses_the_compact_and_verbose_ports() {
 
     let calls = calls_after(&rig.chain, before);
     let at = CallArg::Height(height(IN_HOLE));
-    assert!(
-        called(&calls, "get_pre_index_compact_block", &at),
-        "{calls:?}"
-    );
-    assert!(called(&calls, "get_block_verbose", &at), "{calls:?}");
-    assert!(
-        !calls.iter().any(|call| call.port == "get_block"),
-        "a compact read must not fetch whole blocks: {calls:?}"
+    assert!(called(&calls, "get_compact_block", &at), "{calls:?}");
+    assert_eq!(
+        calls.len(),
+        1,
+        "a compact read is one validator read, the block and its tree sizes together: {calls:?}"
     );
 }
 

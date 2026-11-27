@@ -1,12 +1,11 @@
 //! Pre-index and serving compact block types.
 //!
-//! A [`PreIndexCompactBlock`] is what the source adapter provides: block data
-//! with proofs/sigs stripped, suitable for feeding the sync engine. It does NOT
-//! contain indexed state like commitment tree sizes.
+//! A [`PreIndexCompactBlock`] is a block's own data with proofs/sigs
+//! stripped. It does NOT contain indexed state like commitment tree sizes.
 //!
 //! A [`CompactBlock`] is the serving-ready format (proto-adherent) that includes
-//! [`ChainMetadata`]. It's the OUTPUT of indexing — constructed by reading from
-//! the indexed DB, not from the source directly.
+//! [`ChainMetadata`]: read from the store, or from the validator, which
+//! answers a block and its tree sizes together.
 //!
 //! Transaction sub-types (`TransparentInput`, `SaplingOutput`, etc.) are
 //! reused from [`super::transaction`] — no duplication. An action is the one
@@ -58,12 +57,11 @@ impl From<&OrchardAction> for CompactAction {
 // Pre-index compact block — source adapter output
 // ---------------------------------------------------------------------------
 
-/// A compact block as received from the source, before indexing.
+/// A block's own compact data, without cumulative indexed state (tree
+/// sizes).
 ///
-/// Contains all per-block data needed to build indexes, but no cumulative
-/// indexed state (tree sizes, etc.). The sync engine consumes this type.
-///
-/// Becomes a [`CompactBlock`] after indexing adds [`ChainMetadata`].
+/// Becomes a [`CompactBlock`] once its [`ChainMetadata`] is known
+/// ([`into_compact`](Self::into_compact)).
 #[derive(Debug, Clone)]
 pub struct PreIndexCompactBlock {
     /// Block hash.
@@ -156,6 +154,31 @@ impl PreIndexCompactTx {
     }
 }
 
+impl PreIndexCompactBlock {
+    /// The complete compact block: this one with its tree sizes, and each
+    /// transaction with the pools `pools` leaves out cleared. Every
+    /// transaction is kept, since position is the index.
+    pub fn into_compact(
+        self,
+        chain_metadata: ChainMetadata,
+        pools: super::PoolFilter,
+    ) -> CompactBlock {
+        CompactBlock {
+            hash: self.hash,
+            prev_hash: self.prev_hash,
+            height: self.height,
+            time: self.time,
+            bits: self.bits,
+            transactions: self
+                .transactions
+                .into_iter()
+                .map(|tx| tx.filtered(pools))
+                .collect(),
+            chain_metadata,
+        }
+    }
+}
+
 impl From<&super::Block> for PreIndexCompactBlock {
     fn from(block: &super::Block) -> Self {
         Self {
@@ -204,8 +227,6 @@ impl From<&super::transaction::Transaction> for PreIndexCompactTx {
 /// This is the proto-adherent `CompactBlock` format. It includes
 /// [`ChainMetadata`] (commitment tree sizes) which is cumulative indexed
 /// state — not available from the raw block data.
-///
-/// Constructed by reading from the indexed DB after sync completes.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CompactBlock {
     /// Block hash.

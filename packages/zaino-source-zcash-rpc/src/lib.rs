@@ -44,6 +44,18 @@ pub fn parse_transaction_object(
     parse::parse_transaction_verbose(value).map_err(TransactionObjectError)
 }
 
+/// A verbose `getblockheader` object the adapter could not read.
+#[derive(Debug, thiserror::Error)]
+#[error(transparent)]
+pub struct BlockObjectError(parse::ParseError);
+
+/// Reads a verbose `getblockheader` object exactly as the adapter does.
+pub fn parse_block_header_object(
+    value: &serde_json::Value,
+) -> Result<zaino_primitives::types::rpc::BlockHeaderVerbose, BlockObjectError> {
+    parse::parse_block_header_verbose(value).map_err(BlockObjectError)
+}
+
 /// Reads a `scriptPubKey` object exactly as the adapter does.
 pub fn parse_script_pub_key_object(
     value: &serde_json::Value,

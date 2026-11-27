@@ -155,7 +155,7 @@ mod generated {
     use crate::scripted::call;
     use zaino_primitives::types::{
         rpc::SpentOutpoint, AddressBalance, AddressDelta, Block, BlockHash, BlockVerbose,
-        BlockVerbosity, BlockchainInfo, Difficulty, Height, OutputIndex, PreIndexCompactBlock,
+        BlockVerbosity, BlockchainInfo, CompactBlock, Difficulty, Height, OutputIndex, PoolFilter,
         ShieldedPool, SubtreeRoot, TransactionId, TreeRoots, Treestate, Utxo,
     };
 
@@ -264,9 +264,10 @@ mod generated {
             :: get_commitment_tree_roots_by_height(height: Height = height(7))
             -> (BlockHash, TreeRoots),
             crate::get_commitment_tree_roots_by_height::GetCommitmentTreeRootsByHeightError;
-        GetPreIndexCompactBlock / OneShotGetPreIndexCompactBlock :: get_pre_index_compact_block(
-            height: Height = height(7)
-        ) -> PreIndexCompactBlock, crate::GetBlockError;
+        GetCompactBlock / OneShotGetCompactBlock :: get_compact_block(
+            height: Height = height(7),
+            pools: PoolFilter = PoolFilter::all()
+        ) -> CompactBlock, crate::GetBlockError;
         GetDifficulty / OneShotGetDifficulty :: get_difficulty()
             -> Difficulty, crate::GetDifficultyError;
         GetMempoolMetadata / OneShotGetMempoolMetadata :: get_mempool_metadata()

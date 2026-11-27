@@ -83,6 +83,9 @@ use zaino_primitives::types::rpc::{BlockDeltas, MiningInfo, NodeInfo, PeerInfo};
   includes and whether it reads outputs or only nullifiers.
   `PreIndexCompactTx::filtered(pools)` clears what a filter leaves out and
   `has_pool_data` says whether anything is left to serve.
+  `PreIndexCompactBlock::into_compact(chain_metadata, pools)` makes the
+  complete `CompactBlock` from a block's own data, its tree sizes and a
+  filter; `ChainMetadata` converts from a verbose block's `BlockTreeSizes`.
 - `types::rpc` — the response shapes for passthrough RPCs, in domain
   vocabulary rather than any interface's: `BlockDeltas`, `BlockchainInfo`,
   `ChainTip`, `MiningInfo`, `NodeInfo`, `PeerInfo`, `SpentInfo`, `TxOut`,

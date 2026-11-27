@@ -322,22 +322,41 @@ impl zaino_source::OneShotGetChainTip for ZcashRpcAdapter {
     }
 }
 
-impl zaino_source::OneShotGetPreIndexCompactBlock for ZcashRpcAdapter {
-    #[cfg_attr(feature = "tracing", tracing::instrument(skip(self), fields(h = u32::from(height))))]
-    async fn get_pre_index_compact_block(
+impl zaino_source::OneShotGetCompactBlock for ZcashRpcAdapter {
+    #[cfg_attr(feature = "tracing", tracing::instrument(skip(self, pools), fields(h = u32::from(height))))]
+    async fn get_compact_block(
         &self,
         height: Height,
-    ) -> Result<zaino_primitives::types::PreIndexCompactBlock, QueryError<GetBlockError>> {
-        // RPC returns full block bytes — no way to request compact from the validator.
-        // We full-deserialize via zebra-chain then convert to our compact type.
-        // The savings vs get_block is skipping the domain Block intermediate —
-        // we go zebra Block → compact directly.
-        //
-        // TODO: once compact_deserialize supports streaming (Reader instead of
-        // &[u8]), we can skip the full zebra deserialize on this path too.
-        use zaino_source::OneShotGetBlock;
-        let block = self.get_block(height).await?;
-        Ok(zaino_primitives::types::PreIndexCompactBlock::from(&block))
+        pools: zaino_primitives::types::PoolFilter,
+    ) -> Result<zaino_primitives::types::CompactBlock, QueryError<GetBlockError>> {
+        // The RPC has no compact-block request: the block's bytes come from
+        // `getblock` verbosity 0 and its tree sizes from verbosity 1. Both are
+        // asked together, and must name one block. The block is stripped down
+        // through the domain `Block`.
+        use zaino_source::{OneShotGetBlock, OneShotGetBlockVerbose};
+        let (block, verbose) = tokio::join!(
+            self.get_block(height),
+            self.get_block_verbose(
+                height,
+                zaino_primitives::types::BlockVerbosity::TransactionIds
+            ),
+        );
+        let block = block?;
+        let verbose = verbose.map_err(|error| match error {
+            QueryError::Domain(_) => QueryError::Domain(GetBlockError::HeightNotFound(height)),
+            QueryError::NonDomain(error) => QueryError::NonDomain(error),
+        })?;
+        if verbose.hash != block.header.hash {
+            return Err(QueryError::NonDomain(NonDomainError::new(
+                FailureMode::InvalidSourceData,
+                format!(
+                    "getblock answered two different blocks at height {height}: {} and {}",
+                    block.header.hash, verbose.hash
+                ),
+            )));
+        }
+        Ok(zaino_primitives::types::PreIndexCompactBlock::from(&block)
+            .into_compact(verbose.tree_sizes.into(), pools))
     }
 }
 
