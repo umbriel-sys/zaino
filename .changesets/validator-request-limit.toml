@@ -1,0 +1,88 @@
+[[changes]]
+crate = "zaino-rpc"
+kind = "breaking"
+description = """
+`RpcClient` keeps at most `RpcClientConfig::max_in_flight` requests in flight \
+(new field, default `DEFAULT_MAX_IN_FLIGHT` = 64); the rest wait their turn \
+for no longer than the request timeout, then fail with the new \
+`RpcError::Saturated`. zebrad and zakura serve 100 requests at once and \
+answer the rest HTTP 429, which failed the read. A busy validator (HTTP 429 \
+or 503) is asked again up to `max_retries` times, then the call fails with \
+the new `RpcError::Busy`. `RpcError::WorkQueueExhausted`, which was never \
+returned, is removed. The errors metric has `busy` and `saturated` outcomes."""
+migration = """
+A `RpcClientConfig` literal names `max_in_flight` or ends with \
+`..RpcClientConfig::default()`. An exhaustive match on `RpcError` handles \
+`Busy` and `Saturated` and drops `WorkQueueExhausted`."""
+
+[[changes]]
+crate = "zaino-rpc"
+kind = "fix"
+description = """
+An error code `-1` is no longer retried as "work queue full". zebrad and \
+zakura answer `-1` for any failed request, invalid parameters among them, so \
+each one cost five retries and 2.5 seconds before the same error came back. \
+No error object is asked again."""
+
+[[changes]]
+crate = "zaino-rpc"
+kind = "fix"
+description = """
+An error object is read whatever HTTP status carried it (zebrad and zakura \
+answer a request they cannot read with a 400 or 413 and the error in the \
+body); it was reduced to `http status 400`. A 401 or 403 stays an auth \
+failure."""
+
+[[changes]]
+crate = "zaino-rpc"
+kind = "fix"
+description = """
+A connection error no longer carries the validator's URL. Its text reaches \
+Zaino's own clients."""
+
+[[changes]]
+crate = "zaino-source"
+kind = "breaking"
+description = """
+`FailureMode::Busy`: the validator is up but would not take the request (HTTP \
+429 or 503), after the transport's own retries. `ValidatorClient` retries it. \
+It no longer retries the error code `-1`, which is not a busy signal."""
+migration = "An exhaustive match on `FailureMode` handles `Busy`."
+
+[[changes]]
+crate = "zaino-chain"
+kind = "fix"
+description = """
+`ChainViewConfig::passthrough_permits` defaults to 24 (was 512). 512 block \
+fetches are up to 1,024 requests, ten times what zebrad serves at once; 24 \
+are at most 48, under the 64 the validator's JSON-RPC client keeps in flight, \
+so range fills alone cannot fill it. Single reads take no permit and wait \
+their turn in the client."""
+
+[[changes]]
+crate = "zainod"
+kind = "fix"
+description = """
+A block range passed to a busy validator no longer fails with `INTERNAL` \
+"validator unreachable: http status 429". Zaino holds its own load under the \
+validator's limit and retries a busy answer."""
+
+[[changes]]
+crate = "zainod"
+kind = "fix"
+description = """
+A validator read that got no answer is worded the same over gRPC and \
+JSON-RPC: how it failed ("validator unreachable", "validator did not answer \
+in time", "validator busy", "validator refused Zaino's credentials", \
+"validator read failed"), then the cause. JSON-RPC answered −32603 with the \
+bare cause. A busy validator is `UNAVAILABLE` over gRPC."""
+
+[[changes]]
+crate = "zainod"
+kind = "fix"
+description = """
+A failure inside a `GetBlockRange`, `GetBlockRangeNullifiers` or \
+`GetBlockHeaders` stream carries its own gRPC code, as every other RPC does: `UNAVAILABLE` while the \
+store is building or the validator is busy, `UNIMPLEMENTED` for a read this \
+deployment does not serve, `INVALID_ARGUMENT` for a range the validator \
+rejects. It was `INTERNAL` whatever the failure. The message is unchanged."""

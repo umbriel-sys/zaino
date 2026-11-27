@@ -43,24 +43,22 @@ pub struct ChainViewConfig {
     ///
     /// Without it, concurrency is the product of clients and per-client
     /// concurrency: 5,000 clients each fetching 16 blocks at once is 80,000
-    /// simultaneous requests. Nothing else in the stack caps this — there is no
-    /// limit in `zaino-rpc`, the source adapters, or the daemon config — so a
-    /// catch-up deployment under load would exhaust sockets or overwhelm the
-    /// validator, and only under load.
+    /// simultaneous fetches.
     ///
     /// # The default
     ///
-    /// 512.
+    /// 24, sized against the validator. One permit covers one *block*, which
+    /// for a compact block is two requests issued together (the projection
+    /// and its tree sizes), so in-flight requests peak at twice this: 48.
+    /// That is under the 64 requests the validator's JSON-RPC client keeps
+    /// in flight (`zaino_rpc::DEFAULT_MAX_IN_FLIGHT`), so range fills alone
+    /// can never fill it; and well under the 100 zebrad serves at once (it
+    /// answers the rest HTTP 429, which failed the read).
     ///
-    /// Throughput is `permits / latency`: at a 5 ms validator round trip that
-    /// is roughly 100,000 block fetches per second, which saturates any
-    /// realistic gap-fill demand from 5,000–10,000 syncing clients while
-    /// keeping concurrent connections to one validator within what a JSON-RPC
-    /// server handles comfortably.
-    ///
-    /// Note when sizing: one permit covers one *block*, which for a compact
-    /// block is two requests issued together (the projection and its tree
-    /// sizes), so in-flight requests peak at about twice this.
+    /// Only range fills take a permit. A single read passed to the validator
+    /// (a transaction, a treestate, an address balance) takes none: it waits
+    /// its turn in the validator's client with every other request, the
+    /// chain head's and the mempool's among them.
     pub passthrough_permits: usize,
 
     /// The most validator fetches one request may have in flight.
@@ -101,7 +99,7 @@ impl Default for ChainViewConfig {
         Self {
             passthrough_enabled: true,
             store_enabled: true,
-            passthrough_permits: 512,
+            passthrough_permits: 24,
             passthrough_per_request: 16,
             chunk_budget_bytes: 2 * 1024 * 1024,
             max_address_scan_rows: 400_000,

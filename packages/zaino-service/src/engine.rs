@@ -294,7 +294,8 @@ impl<S: ServiceSource> Service<S> {
     }
 
     /// The validator source: ready, or failed once its own background work
-    /// has stopped.
+    /// has stopped. Retryable: a new connection to the validator starts
+    /// that work again.
     fn source_status(&self) -> ComponentStatus {
         let mut status = ComponentStatus::new(
             ComponentName("validator source"),
@@ -302,7 +303,7 @@ impl<S: ServiceSource> Service<S> {
             Health::Healthy,
         );
         if let Some(failure) = zaino_source::SourceLifecycle::failure(self.source.as_ref()) {
-            status.fail(failure, false);
+            status.fail(failure, true);
         }
         status
     }

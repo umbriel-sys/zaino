@@ -8,6 +8,8 @@ use zaino_source::{
     FailureMode, GetSpentInfoError, GetStandardFeeError, NonDomainError, SendRawTransactionError,
 };
 
+use crate::serve::validator_failure::ValidatorFailure;
+
 /// `RPC_MISC_ERROR`.
 pub(super) const MISC: i32 = -1;
 /// `RPC_INVALID_ADDRESS_OR_KEY`.
@@ -73,19 +75,22 @@ pub(super) fn chain_error(error: ChainViewError) -> ErrorObjectOwned {
     }
 }
 
-/// The validator's own code where it answered with one, else −32603.
+/// The validator's own code and message where it answered with one, else
+/// −32603 worded as on every interface: how the read failed, then its cause.
 fn unreachable_validator(error: &NonDomainError) -> ErrorObjectOwned {
-    match error.mode {
-        FailureMode::RpcError(code) => match i32::try_from(code) {
-            Ok(code) => rpc_error(code, &error.message),
-            Err(_) => internal(error),
-        },
+    let code = match error.mode {
+        FailureMode::RpcError(code) => i32::try_from(code).ok(),
         FailureMode::Connection
         | FailureMode::Timeout
+        | FailureMode::Busy
         | FailureMode::HttpStatus(_)
         | FailureMode::Parse
         | FailureMode::InvalidSourceData
-        | FailureMode::Auth => internal(error),
+        | FailureMode::Auth => None,
+    };
+    match code {
+        Some(code) => rpc_error(code, &error.message),
+        None => internal(ValidatorFailure::describe(error)),
     }
 }
 
@@ -108,5 +113,29 @@ fn rejection(error: &(dyn std::error::Error + Send + Sync + 'static)) -> ErrorOb
     match unsupported {
         true => not_served(error),
         false => rpc_error(INVALID_PARAMETER, error),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A failed validator read is −32603, worded as on every interface.
+    #[test]
+    fn a_failed_validator_read_is_worded_as_on_every_interface() {
+        for (error, _, described) in crate::serve::validator_failure::tests::failures() {
+            let served = chain_error(ChainViewError::SourceUnavailable(error));
+            assert_eq!(served.code(), ErrorCode::InternalError.code());
+            assert_eq!(served.message(), described);
+        }
+    }
+
+    /// An error the validator answered with keeps its own code and message.
+    #[test]
+    fn the_validators_own_error_keeps_its_code_and_message() {
+        let error = NonDomainError::new(FailureMode::RpcError(-8), "Block not found");
+        let served = chain_error(ChainViewError::SourceUnavailable(error));
+        assert_eq!(served.code(), -8);
+        assert_eq!(served.message(), "Block not found");
     }
 }

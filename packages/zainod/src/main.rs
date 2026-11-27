@@ -36,7 +36,7 @@ async fn main() {
         Command::Start { config } => {
             let config_path = config.unwrap_or_else(default_config_path);
             if let Err(e) = zainodlib::run(config_path).await {
-                eprintln!("Error: {}", e);
+                eprintln!("Error: {}", zaino_component::error_chain(&e));
                 std::process::exit(1);
             }
         }

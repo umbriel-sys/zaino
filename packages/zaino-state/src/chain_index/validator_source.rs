@@ -539,7 +539,7 @@ impl ZebraValidatorSource {
             zaino_source_zebra::ZebraReadStateAdapter::from_service(
                 read_state_service,
                 &network,
-                Some(Arc::new(sync_task_handle)),
+                Some(sync_task_handle),
             ),
         );
 

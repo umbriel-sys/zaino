@@ -12,6 +12,10 @@ pub enum FailureMode {
     Connection,
     /// Request timed out.
     Timeout,
+    /// The validator is up but would not take the request: it is at its
+    /// limit of requests (HTTP 429) or not serving for now (HTTP 503). The
+    /// transport has already asked again and given up.
+    Busy,
     /// Non-2xx HTTP status code.
     HttpStatus(u16),
     /// Server returned a JSON-RPC error code.

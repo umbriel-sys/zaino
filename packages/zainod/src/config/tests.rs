@@ -307,6 +307,73 @@ fn an_empty_set_is_validator_backed() {
     }
 }
 
+/// Range fills passed to the validator (two requests a permit) cannot alone
+/// fill the validator client's requests in flight, which stay under the 100
+/// zebrad serves at once. Single reads take no permit.
+#[test]
+fn range_fills_alone_cannot_fill_the_validator_client() {
+    let passthrough = ZainodConfig::default()
+        .service_config()
+        .chain_view
+        .passthrough_permits;
+    let in_flight = zaino_rpc::RpcClientConfig::default().max_in_flight;
+    assert!(passthrough * 2 < in_flight, "{passthrough} {in_flight}");
+    assert!(in_flight < 100, "{in_flight}");
+}
+
+/// An index set the store would refuse is refused at load, naming the key,
+/// the indexes involved and what to change.
+#[test]
+fn an_index_set_that_cannot_be_built_is_refused() {
+    let dependency = refused("[indexes]\nset = \"lightclient\"\ndisable = [\"headers\"]");
+    assert!(
+        dependency.contains(
+            "indexes.disable names `headers`, but `compact_block` is enabled and depends on it"
+        ),
+        "{dependency}"
+    );
+    assert!(
+        dependency.contains("add `compact_block` to indexes.disable"),
+        "{dependency}"
+    );
+
+    let unknown = refused("[indexes]\nenable = [\"nope\"]");
+    assert!(
+        unknown.contains("indexes.enable names `nope`, which is not an index"),
+        "{unknown}"
+    );
+    assert!(unknown.contains("history_tree"), "{unknown}");
+    assert!(refused("[indexes]\ndisable = [\"nope\"]").contains("indexes.disable names `nope`"));
+
+    load(
+        "[indexes]\nset = \"lightclient\"\ndisable = [\"compact_block\", \"headers\"]",
+        "ZAINOTEST_NONE",
+    )
+    .expect("an index and everything that needs it may be disabled together");
+}
+
+/// The dependencies the default config documents are the indexes' own.
+#[test]
+fn the_documented_index_dependencies_are_the_real_ones() {
+    let template = generate_default_config().expect("generates");
+    for &id in zaino_indexes::IndexId::ALL {
+        let mut needs: Vec<&str> = zaino_chain_store_service::IndexSet::of([id])
+            .iter()
+            .filter(|needed| *needed != id)
+            .map(|needed| needed.name())
+            .collect();
+        needs.sort_unstable();
+        let prefix = format!("#   {} needs ", id.name());
+        let mut documented: Vec<&str> = template
+            .lines()
+            .find_map(|line| line.strip_prefix(prefix.as_str()))
+            .map(|list| list.split(", ").collect())
+            .unwrap_or_default();
+        documented.sort_unstable();
+        assert_eq!(documented, needs, "{}", id.name());
+    }
+}
+
 /// Each key of the old configuration is a typed error naming it and what
 /// replaced it.
 #[test]

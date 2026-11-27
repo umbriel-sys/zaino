@@ -17,7 +17,9 @@ pub trait SourceLifecycle: Send + Sync {
 
     /// Why the source can no longer be relied on, once its own background
     /// work has stopped: its answers would no longer follow the validator.
-    /// `None` while it runs, and always for a source that owns none.
+    /// `None` while it runs, and always for a source that owns none. The
+    /// work belongs to a connection: connecting again starts it anew, so
+    /// the failure is one a restart may clear.
     fn failure(&self) -> Option<String> {
         None
     }

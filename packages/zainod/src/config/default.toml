@@ -63,7 +63,14 @@ set = "lightclient"
 #   address_history                transparent address balances, txids, utxos
 #   tx_out_set                     the UTXO set (gettxoutsetinfo; refused without it)
 #   history_tree                   ZIP 221 (GetHistoryProof; refused without it)
-# An index's dependencies are enabled with it.
+# An index's dependencies are enabled with it. An index that an enabled index
+# needs cannot be disabled: Zaino refuses to start and names both. To drop
+# one, disable every index that needs it too.
+#   compact_block needs headers, txids, txid_location, transparent, chain_metadata
+#   address_history needs txids, txid_location, transparent
+#   tx_out_set needs txids, txid_location, transparent
+#   txid_location needs txids
+#   spent needs txids
 enable = []
 # enable = ["history_tree"]
 disable = []

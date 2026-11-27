@@ -58,7 +58,7 @@ where
         let refused = match &error {
             QueryError::Domain(GetChainTipError::NotReady) => true,
             QueryError::NonDomain(fault) => match fault.mode {
-                FailureMode::RpcError(_) => true,
+                FailureMode::RpcError(_) | FailureMode::Busy => true,
                 FailureMode::Connection
                 | FailureMode::Timeout
                 | FailureMode::HttpStatus(_)

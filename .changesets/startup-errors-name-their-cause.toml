@@ -1,0 +1,25 @@
+[[changes]]
+crate = "zainod"
+kind = "fix"
+description = """
+A start-up, exit or shutdown error is printed with its whole cause chain. \
+`service error: index set` is now `service error: index set: headers is \
+disabled but compact_block depends on it`."""
+
+[[changes]]
+crate = "zainod"
+kind = "fix"
+description = """
+An index set that cannot be built is refused when the configuration is \
+loaded, before the validator is connected to. The error names the key, the \
+indexes involved and what to change: an index in `indexes.disable` that an \
+enabled index depends on, or a name in `indexes.enable` / `indexes.disable` \
+that is not an index. The default configuration lists each index's \
+dependencies."""
+
+[[changes]]
+crate = "zaino-component"
+kind = "fix"
+description = """
+`error_chain` does not repeat a cause whose text an outer error already \
+carries in its own message."""

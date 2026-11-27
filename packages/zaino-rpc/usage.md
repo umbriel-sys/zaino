@@ -33,22 +33,55 @@ this crate, `zaino-source-zcash-rpc` and `zainod`.
 works end to end:
 
 ```rust
-RpcError::Rpc { code, message }   // the server answered with an error object
-RpcError::Http(status)            // transport-level status
-RpcError::Transport(..)           // connection, timeout
-RpcError::Auth                    // credentials rejected
+RpcError::Rpc { code, message }   // the validator answered with an error object
+RpcError::Http(..)                // connection, timeout
+RpcError::Status(status)          // a failing HTTP status with no error object
+RpcError::Busy { attempts, status } // 429 or 503 through every retry
+RpcError::Saturated { .. }        // no request slot came free in this client
 ```
 
 The `code` on `RpcError::Rpc` is the thing a legacy-compatible client keys on,
 so it must survive to the served response. It does, via
-`FailureMode::RpcError(i64)` and the error mapping in `zainod::serve`.
+`FailureMode::RpcError(i64)` and the error mapping in `zainod::serve`. An
+error object is read whatever HTTP status carried it: zebrad and zakura answer
+a request they cannot read with a 400 or 413 and the error in the body. Two
+kinds of status are the answer whatever their body says: 429 and 503 (busy),
+and 401 and 403 (`FailureMode::Auth`; zebrad's 401 carries an error object
+whose code is the status).
 
-## The one retry this crate does
+A connection error does not carry the validator's URL: the text reaches
+Zaino's own clients.
 
-`-1` (work queue full) is retried here, at the transport, because it is a
-property of the connection rather than of the question. Everything else is left
-to `zaino_source::ValidatorClient`, which has the policy and the backoff. Do not add
-retry rules here — the layer above cannot see or override them.
+## Requests in flight
+
+A client keeps at most `RpcClientConfig::max_in_flight` requests in flight
+(default `DEFAULT_MAX_IN_FLIGHT`, 64). zebrad serves 100 requests at once and
+answers every other with HTTP 429, so the bound keeps one client's whole load
+under that with room for the validator's other clients. Share one `RpcClient`
+between everything that talks to one validator: two clients are two budgets.
+
+A call past the bound waits its turn, in order, for no longer than its request
+timeout. If no slot comes it fails with `RpcError::Saturated`, which the source
+layer classifies as `FailureMode::Timeout`. A slot is held for one request
+only, never across a retry sleep.
+
+## The retry this crate does
+
+A call the validator was too busy to take is retried here, at the transport,
+because it is a property of the connection rather than of the question. Busy
+is an HTTP status: 429 (zebrad and zakura past 100 requests in flight, so
+another client has filled the validator) or 503. Up to `max_retries` times
+(default 5), `retry_delay` apart (default 500 ms); after that the call fails
+with `RpcError::Busy`, which the source layer classifies as
+`FailureMode::Busy`.
+
+No JSON-RPC error code is a busy signal, and an error object is never asked
+again. In particular `-1` is not "work queue full": zebrad and zakura answer
+it for any failed request, invalid parameters among them.
+
+Everything else is left to `zaino_source::ValidatorClient`, which has the
+policy and the backoff. Do not add retry rules here — the layer above cannot
+see or override them.
 
 ## Probing a validator at startup
 
@@ -87,10 +120,12 @@ to pull in a configuration crate to get them:
 | Metric                                           | Meaning                                                   |
 | ------------------------------------------------ | --------------------------------------------------------- |
 | `zaino.rpc.outbound.duration_seconds{method}`    | one attempt that got a response (retry sleeps excluded)   |
-| `zaino.rpc.outbound.errors_total{method,outcome}`| `transport_error` unreachable / `rpc_error` refused / `retried` saturated |
+| `zaino.rpc.outbound.errors_total{method,outcome}`| `transport_error` unreachable / `rpc_error` refused / `retried` validator busy, asked again / `busy` still busy after every retry / `saturated` no slot came free |
 
 - Attempt volume = `duration_seconds` `_count` (no success counter)
-- Rising `retried` share = validator queue filling (a refusal is fast → latency drops, share rises)
+- Rising `retried` share = the validator is busy (HTTP 429 or 503): something else is filling
+  it, since this client stays under its limit. A refusal is fast → latency drops, share rises
+- Any `saturated` = this client's `max_in_flight` slots stayed full for a whole request timeout
 - `method` = a label → `call` takes `&'static str` (cardinality capped at compile time; the
   recorder never evicts)
 

@@ -213,10 +213,21 @@ match view.serviceability().get(ChainCapability::SpendStatus) {
 ## Validator concurrency
 
 Gap fills share one permit pool across every client, sized by
-`ChainViewConfig::passthrough_permits` (default 512). Without it, concurrency is
+`ChainViewConfig::passthrough_permits` (default 24). Without it, concurrency is
 the product of clients and per-client concurrency — 5,000 clients fetching 16
-blocks each is 80,000 simultaneous requests — and nothing else in the stack caps
-it.
+blocks each is 80,000 simultaneous fetches.
+
+The default is sized against the validator, not the clients. A permit covers
+one block, which for a compact block is two requests issued together, so 24
+permits are at most 48 requests. That is under the 64 requests the validator's
+JSON-RPC client keeps in flight, so gap fills alone can never fill it, and
+well under the 100 zebrad serves at once (it answers the rest HTTP 429).
+
+Only gap fills take a permit. A single read passed to the validator (a
+transaction, a treestate, an address balance) takes none: it waits its turn in
+the validator's client with every other request, the chain head's and the
+mempool's among them. Enough single reads at once can therefore delay those
+two; nothing fails, since every wait there is in order and bounded.
 
 Two things make it safe to size modestly:
 

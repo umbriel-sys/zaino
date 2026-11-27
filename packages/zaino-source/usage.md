@@ -148,9 +148,15 @@ let source = ValidatorClient::new(adapter, RetryPolicy::default());
 let block = source.get_block(height).await?; // -> SourceError<GetBlockError>
 ```
 
-Retryable: `Connection`, `Timeout`, `HttpStatus(>= 500)`, and exactly two RPC
-codes — `-1` (work queue full) and `-28` (in warmup). Both mean the node is up
-and busy or starting. Every other code is the validator's considered reply.
+Retryable: `Connection`, `Timeout`, `Busy`, `HttpStatus(>= 500)`, and exactly
+one RPC code, `-28` (in warmup): the node is up and starting. Every other code
+is the validator's considered reply. That includes `-1`, which zebrad and
+zakura answer for any failure of a request, invalid parameters among them; it
+is not a busy signal.
+
+`FailureMode::Busy` is the validator declining for now: HTTP 429 (zebrad and
+zakura past 100 requests in flight) or HTTP 503. The transport has already
+asked again before reporting it.
 
 Subscriptions (`SubscribeBlocks`, `SubscribeChainTip`) are forwarded unchanged:
 they are synchronous and return `Option<Receiver>`, not `Result`, so there is
@@ -252,8 +258,8 @@ authenticated to fails at once.
 `SourceLifecycle::failure()` says why a source can no longer be relied on once
 its own background work has stopped (zebra's state syncer), `None` while it
 runs. A source that owns no background work inherits `None`. The service
-reports it as the `validator source` component.
-
+reports it as the `validator source` component, as a failure a restart may
+clear: the work belongs to a connection, and connecting again starts it anew.
 ## Testing
 
 A fake validator for consumers' tests is `zaino-source-mock`'s `MockChain`

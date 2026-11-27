@@ -3,7 +3,9 @@
 
 use zaino_chain::ChainViewError;
 use zaino_service::ServiceError;
-use zaino_source::{FailureMode, GetStandardFeeError, NonDomainError, SendRawTransactionError};
+use zaino_source::{GetStandardFeeError, NonDomainError, SendRawTransactionError};
+
+use crate::serve::validator_failure::ValidatorFailure;
 
 /// How a failed validator read is worded on the wire.
 const BACKING_NODE: &str = "InternalServerError: error receiving data from backing node: \
@@ -78,12 +80,25 @@ impl Refusal {
         Self::new(Kind::Internal, format!("{BACKING_NODE}{reason}"))
     }
 
-    fn unreachable_validator(error: &NonDomainError) -> Self {
+    /// A validator read that got no answer, worded as on every interface.
+    /// A busy validator is `Unavailable`: a later attempt is answered.
+    fn failed_validator(error: &NonDomainError) -> Self {
+        let failure = ValidatorFailure::of(error);
+        let kind = match failure {
+            ValidatorFailure::Busy => Kind::Unavailable,
+            ValidatorFailure::Unreachable
+            | ValidatorFailure::TimedOut
+            | ValidatorFailure::Unauthorized
+            | ValidatorFailure::Failed => Kind::Internal,
+        };
         Self {
-            unreachable: matches!(error.mode, FailureMode::Connection | FailureMode::Timeout),
+            unreachable: matches!(
+                failure,
+                ValidatorFailure::Unreachable | ValidatorFailure::TimedOut
+            ),
             ..Self::new(
-                Kind::Internal,
-                format!("{BACKING_NODE}validator unreachable: {error}"),
+                kind,
+                format!("{BACKING_NODE}{}", ValidatorFailure::describe(error)),
             )
         }
     }
@@ -93,7 +108,7 @@ impl Refusal {
         match error {
             ServiceError::InvalidParameter(message) => Self::new(Kind::InvalidArgument, message),
             ServiceError::Chain(error) => Self::of_chain(error),
-            ServiceError::ValidatorUnreachable(error) => Self::unreachable_validator(&error),
+            ServiceError::ValidatorUnreachable(error) => Self::failed_validator(&error),
             ServiceError::ValidatorRejected(error) => Self::of_rejection(error.as_ref()),
             error @ ServiceError::NotServed { .. } => {
                 Self::new(Kind::Unimplemented, error.to_string())
@@ -142,7 +157,7 @@ impl Refusal {
     pub(super) fn of_chain(error: ChainViewError) -> Self {
         match error {
             ChainViewError::Rejected(message) => Self::rejected_query(message),
-            ChainViewError::SourceUnavailable(error) => Self::unreachable_validator(&error),
+            ChainViewError::SourceUnavailable(error) => Self::failed_validator(&error),
             error @ ChainViewError::InvalidRange { .. } => Self::rejected_query(error),
             error @ (ChainViewError::NotServed(_)
             | ChainViewError::NotBuilt(_)
@@ -172,12 +187,23 @@ impl Refusal {
 
     /// The gRPC status clients receive.
     pub(super) fn status(self) -> tonic::Status {
+        let code = self.code();
+        tonic::Status::new(code, self.message)
+    }
+
+    /// The gRPC status of a failure inside a stream: the refusal's own
+    /// code, worded as its one line.
+    pub(super) fn stream_status(self) -> tonic::Status {
+        tonic::Status::new(self.code(), self.line())
+    }
+
+    fn code(&self) -> tonic::Code {
         match self.kind {
-            Kind::Internal => tonic::Status::internal(self.message),
-            Kind::InvalidSnapshot => tonic::Status::failed_precondition(self.message),
-            Kind::Unavailable => tonic::Status::unavailable(self.message),
-            Kind::InvalidArgument => tonic::Status::invalid_argument(self.message),
-            Kind::Unimplemented => tonic::Status::unimplemented(self.message),
+            Kind::Internal => tonic::Code::Internal,
+            Kind::InvalidSnapshot => tonic::Code::FailedPrecondition,
+            Kind::Unavailable => tonic::Code::Unavailable,
+            Kind::InvalidArgument => tonic::Code::InvalidArgument,
+            Kind::Unimplemented => tonic::Code::Unimplemented,
         }
     }
 
@@ -199,4 +225,28 @@ pub(super) fn of_service(error: ServiceError) -> tonic::Status {
 /// A chain view read's failure as its gRPC status.
 pub(super) fn of_chain(error: ChainViewError) -> tonic::Status {
     Refusal::of_chain(error).status()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A failed validator read is worded as on every interface, after
+    /// lightwalletd's prefix; only a busy validator is `UNAVAILABLE`.
+    #[test]
+    fn a_failed_validator_read_is_worded_as_on_every_interface() {
+        for (error, failure, described) in crate::serve::validator_failure::tests::failures() {
+            let (code, kind) = match failure {
+                ValidatorFailure::Busy => (tonic::Code::Unavailable, "unavailable"),
+                _ => (tonic::Code::Internal, "internal server error"),
+            };
+            let status =
+                Refusal::of_chain(ChainViewError::SourceUnavailable(error)).stream_status();
+            assert_eq!(status.code(), code, "{described}");
+            assert_eq!(
+                status.message(),
+                format!("{kind}: {BACKING_NODE}{described}")
+            );
+        }
+    }
 }

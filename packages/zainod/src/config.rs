@@ -13,8 +13,9 @@ use std::{
 
 use serde::{Deserialize, Serialize};
 use tracing::{info, warn};
-use zaino_chain_store_service::{ChainStoreServiceConfig, OnCorruption};
+use zaino_chain_store_service::{ChainStoreServiceConfig, IndexSet, OnCorruption, SetError};
 pub use zaino_chain_store_service::{IndexesConfig, IngestConfig, NamedSet};
+use zaino_indexes::IndexId;
 use zaino_persistence_lsm_tree::{fs::RealFs, LsmConfig, LsmTreeStorage, DEFAULT_WRITE_BUFFER_MIB};
 use zaino_primitives::types::Network;
 use zaino_rpc::net::{try_resolve_address, AddressResolution};
@@ -327,6 +328,7 @@ impl ZainodConfig {
         self.check_validator()?;
         self.check_servers()?;
         self.check_mempool()?;
+        self.check_indexes()?;
         self.check_paths(paths::cache_base_known())?;
         if let Some(address) = &self.donation_address {
             zcash_address::ZcashAddress::try_from_encoded(address).map_err(|error| {
@@ -463,6 +465,34 @@ impl ZainodConfig {
             }
         }
         Ok(())
+    }
+
+    /// The index set the store would refuse at boot is refused here, before
+    /// anything is connected, naming the key to change.
+    fn check_indexes(&self) -> Result<(), IndexerError> {
+        let indexes = &self.indexes;
+        match IndexSet::resolve(indexes.set, &indexes.enable, &indexes.disable) {
+            Ok(_) => Ok(()),
+            Err(SetError::UnknownIndex(name)) => {
+                let key = match indexes.enable.contains(&name) {
+                    true => "enable",
+                    false => "disable",
+                };
+                let known: Vec<&str> = IndexId::ALL.iter().map(|id| id.name()).collect();
+                Err(config_error(format!(
+                    "indexes.{key} names `{name}`, which is not an index. The indexes are: {}",
+                    known.join(", ")
+                )))
+            }
+            Err(SetError::DisabledDependency {
+                disabled,
+                needed_by,
+            }) => Err(config_error(format!(
+                "indexes.disable names `{disabled}`, but `{needed_by}` is enabled and depends \
+                 on it. Remove `{disabled}` from indexes.disable, or add `{needed_by}` to \
+                 indexes.disable as well"
+            ))),
+        }
     }
 
     fn check_mempool(&self) -> Result<(), IndexerError> {

@@ -145,7 +145,7 @@ pub struct ZebraReadStateAdapter {
     /// Held so shutdown can stop it: a syncer outliving the indexer would keep
     /// writing to a database nothing is reading. `None` when the service was
     /// opened read-only, which starts no syncer of its own.
-    syncer: Option<std::sync::Arc<tokio::task::JoinHandle<()>>>,
+    syncer: Option<Syncer>,
     /// Retained because difficulty is network-relative: the same threshold
     /// means a different multiple of the minimum on each network, so it cannot
     /// be computed from the tip alone.
@@ -183,7 +183,16 @@ impl ZebraReadStateAdapter {
     pub fn from_service(
         state: ReadStateService,
         network: &Network,
-        syncer: Option<std::sync::Arc<tokio::task::JoinHandle<()>>>,
+        syncer: Option<tokio::task::JoinHandle<()>>,
+    ) -> Self {
+        Self::with_syncer(state, network, syncer.map(Syncer::watch))
+    }
+
+    /// [`Self::from_service`] with a syncer already watched.
+    pub(crate) fn with_syncer(
+        state: ReadStateService,
+        network: &Network,
+        syncer: Option<Syncer>,
     ) -> Self {
         Self {
             state,
@@ -191,6 +200,80 @@ impl ZebraReadStateAdapter {
             network: network.clone(),
         }
     }
+}
+
+/// zebra's state syncer task, watched: why it ended is kept, and it is
+/// stopped when this drops, so a syncer never outlives what reads its state.
+pub(crate) struct Syncer {
+    stop: tokio::task::AbortHandle,
+    /// The task, until how it ended has been read.
+    task: std::sync::Mutex<Option<tokio::task::JoinHandle<()>>>,
+    /// Why the task ended, once that has been read; never set for a task
+    /// that `stop` ended.
+    ended: std::sync::OnceLock<String>,
+}
+
+impl Syncer {
+    /// Holds `task`, to stop it and to say why it ended.
+    pub(crate) fn watch(task: tokio::task::JoinHandle<()>) -> Self {
+        Self {
+            stop: task.abort_handle(),
+            task: std::sync::Mutex::new(Some(task)),
+            ended: std::sync::OnceLock::new(),
+        }
+    }
+
+    /// Why the syncer ended, if it has: read from the finished task, which
+    /// needs no runtime and starts no task of its own.
+    pub(crate) fn ended(&self) -> Option<&str> {
+        if let Some(cause) = self.ended.get() {
+            return Some(cause);
+        }
+        // a poisoned lock means only that another reader panicked
+        let mut task = self
+            .task
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let Some(handle) = task.as_mut() else {
+            // another reader got there first
+            return self.ended.get().map(String::as_str);
+        };
+        if !handle.is_finished() {
+            return None;
+        }
+        // A finished task answers at once; the one exception is a caller
+        // whose own task budget is spent, and then the next look reads it
+        let mut context = std::task::Context::from_waker(std::task::Waker::noop());
+        let read = std::future::Future::poll(std::pin::Pin::new(handle), &mut context);
+        let std::task::Poll::Ready(result) = read else {
+            return None;
+        };
+        *task = None;
+        let cause = match result {
+            Ok(()) => "it returned".to_owned(),
+            Err(error) if error.is_cancelled() => return None,
+            Err(error) => match error.try_into_panic() {
+                Ok(panic) => format!("it panicked: {}", panic_message(panic.as_ref())),
+                Err(error) => error.to_string(),
+            },
+        };
+        Some(self.ended.get_or_init(|| cause))
+    }
+}
+
+impl Drop for Syncer {
+    fn drop(&mut self) {
+        self.stop.abort();
+    }
+}
+
+/// A panic's message, where it has one.
+fn panic_message(panic: &(dyn std::any::Any + Send)) -> &str {
+    panic
+        .downcast_ref::<&str>()
+        .copied()
+        .or_else(|| panic.downcast_ref::<String>().map(String::as_str))
+        .unwrap_or("(no message)")
 }
 
 #[cfg(feature = "test_dependencies")]
@@ -781,22 +864,26 @@ impl zaino_source::SourceLifecycle for ZebraReadStateAdapter {
     /// syncer would outlive it and keep writing, so it is aborted explicitly.
     fn shutdown(&self) {
         if let Some(syncer) = &self.syncer {
-            syncer.abort();
+            syncer.stop.abort();
         }
     }
 
-    /// The syncer has stopped: the state no longer follows the validator.
+    /// The syncer has ended: the state no longer follows the validator.
     fn failure(&self) -> Option<String> {
         self.syncer
             .as_ref()
-            .filter(|syncer| syncer.is_finished())
-            .map(|_| SYNCER_STOPPED.to_owned())
+            .and_then(Syncer::ended)
+            .map(syncer_ended)
     }
 }
 
-/// What a stopped syncer means, for an operator.
-pub(crate) const SYNCER_STOPPED: &str = "zebra's state syncer has stopped, so the state Zaino \
-     reads no longer follows the validator (is zebra's indexer gRPC address reachable?)";
+/// What an ended syncer means, for an operator, with why it ended.
+pub(crate) fn syncer_ended(cause: &str) -> String {
+    format!(
+        "zebra's state syncer has ended ({cause}), so the state Zaino reads no longer follows \
+         the validator; reconnecting to the validator starts a new one"
+    )
+}
 
 /// Reading the state directly gives no push notification of new blocks — that
 /// signal belongs to the syncer, not the read handle.
@@ -1885,5 +1972,90 @@ mod tree_root_info_tests {
             NonDomainError::from(full).mode,
             FailureMode::InvalidSourceData
         );
+    }
+}
+
+#[cfg(test)]
+mod syncer_tests {
+    use super::{syncer_ended, Syncer};
+
+    /// Why `syncer` ended, once its watcher has seen it end.
+    async fn ended(syncer: &Syncer) -> String {
+        loop {
+            if let Some(cause) = syncer.ended() {
+                return cause.to_owned();
+            }
+            tokio::task::yield_now().await;
+        }
+    }
+
+    /// A syncer that panics is reported with its panic message, a `&str` or
+    /// a formatted one, and the failure says what it means.
+    #[tokio::test]
+    async fn a_panicked_syncer_is_reported_with_its_message() {
+        let syncer = Syncer::watch(tokio::spawn(async { panic!("the tip went missing") }));
+        assert_eq!(ended(&syncer).await, "it panicked: the tip went missing");
+
+        let height = 7;
+        let formatted = Syncer::watch(tokio::spawn(async move { panic!("no block at {height}") }));
+        let cause = ended(&formatted).await;
+        assert_eq!(cause, "it panicked: no block at 7");
+        assert_eq!(
+            syncer_ended(&cause),
+            "zebra's state syncer has ended (it panicked: no block at 7), so the state Zaino \
+             reads no longer follows the validator; reconnecting to the validator starts a \
+             new one"
+        );
+    }
+
+    /// A syncer that returns has ended too.
+    #[tokio::test]
+    async fn a_syncer_that_returns_has_ended() {
+        let syncer = Syncer::watch(tokio::spawn(async {}));
+        assert_eq!(ended(&syncer).await, "it returned");
+    }
+
+    /// A running syncer has not ended, and one that was stopped is not a
+    /// failure, however often it is looked at.
+    #[tokio::test]
+    async fn a_stopped_syncer_is_not_a_failure() {
+        let syncer = Syncer::watch(tokio::spawn(std::future::pending::<()>()));
+        assert_eq!(syncer.ended(), None);
+        syncer.stop.abort();
+        while !syncer.stop.is_finished() {
+            tokio::task::yield_now().await;
+        }
+        assert_eq!(syncer.ended(), None);
+        assert_eq!(syncer.ended(), None);
+    }
+
+    /// Dropping the watch stops the syncer.
+    #[tokio::test]
+    async fn dropping_the_watch_stops_the_syncer() {
+        let task = tokio::spawn(std::future::pending::<()>());
+        let stopped = task.abort_handle();
+        drop(Syncer::watch(task));
+        while !stopped.is_finished() {
+            tokio::task::yield_now().await;
+        }
+    }
+
+    /// Watching and reading a syncer needs no runtime: a task that ended on
+    /// one is read after that runtime is gone.
+    #[test]
+    fn a_syncer_is_read_outside_a_runtime() {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .build()
+            .expect("builds");
+        let task = runtime.spawn(async { panic!("the tip went missing") });
+        runtime.block_on(async {
+            while !task.is_finished() {
+                tokio::task::yield_now().await;
+            }
+        });
+        drop(runtime);
+        let syncer = Syncer::watch(task);
+        assert_eq!(syncer.ended(), Some("it panicked: the tip went missing"));
+        assert_eq!(syncer.ended(), Some("it panicked: the tip went missing"));
     }
 }

@@ -5,6 +5,7 @@
 use std::sync::Arc;
 
 use tracing::info;
+use zaino_component::error_chain;
 use zaino_rpc::{auth_from_parts, probe_node, RpcClient, RpcClientConfig};
 use zaino_source::{GetBlockchainInfo, RetryPolicy, ValidatorClient};
 use zaino_source_zcash_rpc::ZcashRpcAdapter;
@@ -100,13 +101,13 @@ pub(crate) async fn launch(
             };
             let source = ZebraValidator::connect(rpc, config.network, settings)
                 .await
-                .map_err(|error| IndexerError::Validator(error.to_string()))?;
+                .map_err(|error| IndexerError::Validator(error_chain(&error)))?;
             drop(heartbeat);
             Indexer::launch(Arc::new(source), config, listeners).await
         }
         (ValidatorKind::ZcashRpc, None) => {
             let client = RpcClient::new(rpc())
-                .map_err(|error| IndexerError::Validator(error.to_string()))?;
+                .map_err(|error| IndexerError::Validator(error_chain(&error)))?;
             let source = ZcashRpcAdapter::new(client);
             // a fresh validator answers RPC before its first block
             zaino_source::first_chain_tip(&source, |error| {
@@ -114,10 +115,13 @@ pub(crate) async fn launch(
             })
             .await
             .map_err(|error| {
-                IndexerError::Validator(format!("the validator serves no chain tip: {error}"))
+                IndexerError::Validator(format!(
+                    "the validator serves no chain tip: {}",
+                    error_chain(&error)
+                ))
             })?;
             let adopting = RpcClient::new(rpc())
-                .map_err(|error| IndexerError::Validator(error.to_string()))?;
+                .map_err(|error| IndexerError::Validator(error_chain(&error)))?;
             info!("checking the validator's network and activation heights");
             verify_network(
                 config.network,

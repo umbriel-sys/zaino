@@ -27,6 +27,7 @@ use crate::config::load_config;
 use crate::error::IndexerError;
 use crate::indexer::start_indexer;
 use tracing::{error, info};
+use zaino_component::error_chain;
 
 #[cfg(feature = "prometheus")]
 pub(crate) mod admin;
@@ -116,18 +117,18 @@ pub async fn run(config_path: PathBuf) -> Result<(), IndexerError> {
                             continue;
                         }
                         Err(e) => {
-                            error!(%e, "exiting Zaino with error");
+                            error!(cause = %error_chain(&e), "exiting Zaino with error");
                             return Err(e);
                         }
                     },
                     Err(e) => {
-                        error!(%e, "Zaino exited early with error");
+                        error!(cause = %error_chain(&e), "Zaino exited early with error");
                         return Err(e.into());
                     }
                 }
             }
             Err(e) => {
-                error!(%e, "Zaino failed to start");
+                error!(cause = %error_chain(&e), "Zaino failed to start");
                 return Err(e);
             }
         }

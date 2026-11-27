@@ -219,7 +219,15 @@ answered in kind.
 | a submission the validator refuses | the validator's own (−25, −26, −27) |
 | a method this deployment or its validator does not answer | −32601 |
 | parameters jsonrpsee cannot decode; a start above an end; a `getblockhash` index past the tip | −1 (zcashd's code for invalid parameters), as zebrad |
-| the validator is unreachable, or Zaino failed | −32603 |
+| the validator answered with an error object of its own | the validator's code and message |
+| a validator read got no answer, or Zaino failed | −32603 |
+
+A validator read that got no answer is worded the same over JSON-RPC and gRPC:
+how it failed, then the cause. It is one of "validator unreachable",
+"validator did not answer in time", "validator busy", "validator refused
+Zaino's credentials" and "validator read failed". gRPC puts lightwalletd's
+prefix before it and answers a busy validator `UNAVAILABLE`, the rest
+`INTERNAL`. The validator's address is never in the text.
 
 `getblockchaininfo.chainwork` is the best block's cumulative work as zcashd's
 64 hex digits: Zaino's own where it holds the block, else the validator's;
@@ -252,7 +260,10 @@ Zaino never waits without end and never serves through a failed component.
 | --- | --- |
 | The validator answers no chain tip at start-up | waits five minutes, then exits with the cause |
 | zebra's state does not reach, or stops advancing toward, the validator's tip | exits after five minutes without progress |
-| zebra's state syncer stops, at start-up or later | exits: `validator source` is `Critical` |
+| zebra's state syncer ends before the state is synced, at start-up | starts it again (waits of 5 seconds, doubling to 60) for five minutes, then exits with how often it ended and why |
+| zebra's state syncer ends later | `validator source` is `Critical` with why it ended (its panic message); Zaino restarts, which starts a new syncer |
+| The validator is at its limit of requests (zebrad and zakura answer HTTP 429 past 100 in flight), or answers 503 | Zaino keeps at most 64 in flight itself; a 429 caused by the validator's other clients is retried five times, 500 ms apart, then the read fails as "validator busy" (`UNAVAILABLE` over gRPC, −32603 over JSON-RPC) |
+| The configuration cannot run as written (an index set that cannot be built, for one) | exits before connecting, naming the key and what to change |
 | A component's task panics or stops | exits with that component's cause |
 | The store fails to build for a fault of its own, or cannot write its record | exits with the cause |
 | The validator stops answering (chain head, store build, mempool) | each retries with a bound; once one gives up, Zaino restarts |

@@ -110,9 +110,6 @@ impl RetryPolicy {
     }
 }
 
-/// The validator's work queue is full — it is up, but busy.
-const WORK_QUEUE_FULL: i64 = -1;
-
 /// The validator is still warming up and not yet serving.
 ///
 /// A transient startup condition, not a rejection: it ends on its own once the
@@ -126,10 +123,13 @@ fn is_retryable(kind: &FailureMode) -> bool {
     match kind {
         FailureMode::Connection => true,
         FailureMode::Timeout => true,
+        FailureMode::Busy => true,
         FailureMode::HttpStatus(code) => *code >= 500,
         // Everything else the validator answers with a code is its considered
-        // reply, and asking again will produce the same one.
-        FailureMode::RpcError(code) => *code == WORK_QUEUE_FULL || *code == IN_WARMUP,
+        // reply, and asking again will produce the same one. That includes
+        // -1: zebrad and zakura answer it for any failure of the request,
+        // invalid parameters among them.
+        FailureMode::RpcError(code) => *code == IN_WARMUP,
         FailureMode::Parse => false,
         FailureMode::InvalidSourceData => false,
         FailureMode::Auth => false,

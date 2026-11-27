@@ -10,13 +10,19 @@ use std::error::Error;
 /// failure surfaces its whole chain — not just the outermost variant, which
 /// alone rarely names the root.
 ///
+/// A cause whose text an outer error already carries (one that formats its
+/// source into its own message) is not repeated.
+///
 /// [`ComponentStatus::reason`]: crate::ComponentStatus::reason
 pub fn error_chain(err: &dyn Error) -> String {
     let mut chain = err.to_string();
     let mut source = err.source();
     while let Some(cause) = source {
-        chain.push_str(": ");
-        chain.push_str(&cause.to_string());
+        let text = cause.to_string();
+        if !chain.contains(&text) {
+            chain.push_str(": ");
+            chain.push_str(&text);
+        }
         source = cause.source();
     }
     chain
@@ -42,6 +48,18 @@ mod tests {
     fn joins_the_whole_source_chain() {
         assert_eq!(
             error_chain(&Top(Middle(Root))),
+            "top failed: middle failed: root cause"
+        );
+    }
+
+    #[derive(Debug, thiserror::Error)]
+    #[error("top failed: {0}")]
+    struct Embedding(#[source] Middle);
+
+    #[test]
+    fn a_cause_the_outer_error_already_carries_is_not_repeated() {
+        assert_eq!(
+            error_chain(&Embedding(Middle(Root))),
             "top failed: middle failed: root cause"
         );
     }

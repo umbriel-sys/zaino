@@ -52,11 +52,22 @@ a consensus branch this build does not know), launches the read-state
 syncer and waits until it holds zebra's tip, by hash.
 
 Neither wait is open-ended. `connect` fails with the cause when zebra serves
-no tip within five minutes, when the syncer stops, or when the state sits
-behind zebra's tip for five minutes without advancing (the usual cause is an
-unreachable indexer gRPC address). Once connected, a stopped syncer is
-reported through `SourceLifecycle::failure()`: the state would no longer
-follow zebra, so its tip must not be served as current. Every read of the
+no tip within five minutes, or when the state sits behind zebra's tip for
+five minutes without advancing (the usual cause is an unreachable indexer
+gRPC address).
+
+zebra's syncer is a task of zebra's own, and it can end (it panics on some
+faults). `connect` watches it. If it ends before the state is synced,
+`connect` opens the state and starts a syncer again, waiting 5 seconds and
+doubling to 60 between tries, for five minutes from the first time; then it
+fails with `ConnectError::SyncerKeepsEnding`, which says how often it ended,
+why the last time (the panic message), and what to check. Once connected, an
+ended syncer is reported through `SourceLifecycle::failure()` with why it
+ended: the state would no longer follow zebra, so its tip must not be served
+as current. Connecting again starts a new one. The syncer is stopped when the
+adapter shuts down or drops, and when a `connect` fails.
+`ZebraReadStateAdapter::from_service` takes the syncer's `JoinHandle` itself
+so that it can be watched. Every read of the
 state is bounded by a 120-second timeout and fails as `FailureMode::Timeout`.
 
 ## The quirk table

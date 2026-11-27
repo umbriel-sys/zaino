@@ -6,14 +6,16 @@ use crate::{GetChainTip as _, GetChainTipError, SubscribeBlocks as _, SubscribeC
 const TRANSIENT: [FailureMode; 5] = [
     FailureMode::Connection,
     FailureMode::Timeout,
-    FailureMode::HttpStatus(503),
-    FailureMode::RpcError(WORK_QUEUE_FULL),
+    FailureMode::Busy,
+    FailureMode::HttpStatus(502),
     FailureMode::RpcError(IN_WARMUP),
 ];
 
-/// Every fatal mode: passed through at once.
-const FATAL: [FailureMode; 4] = [
+/// Every fatal mode: passed through at once. `-1` is the validator's code
+/// for any failed request, not a busy signal.
+const FATAL: [FailureMode; 5] = [
     FailureMode::HttpStatus(404),
+    FailureMode::RpcError(-1),
     FailureMode::RpcError(-8),
     FailureMode::Parse,
     FailureMode::Auth,

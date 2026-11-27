@@ -530,9 +530,7 @@ impl<S: ServiceSource> Lightwallet<S> {
                     while let Some(chunk) = chunks.next().await {
                         let blocks = match chunk {
                             Ok(blocks) => blocks.into_iter().map(Ok).collect(),
-                            Err(error) => vec![Err(tonic::Status::internal(
-                                Refusal::of_chain(error).line(),
-                            ))],
+                            Err(error) => vec![Err(Refusal::of_chain(error).stream_status())],
                         };
                         for block in blocks {
                             if sender.send(block).await.is_err() {

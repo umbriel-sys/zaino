@@ -7,7 +7,7 @@ use std::time::Duration;
 use futures::future::BoxFuture;
 use tokio::time::Instant;
 use tracing::info;
-use zaino_component::{ComponentName, ComponentStatus, Health, Lifecycle};
+use zaino_component::{error_chain, ComponentName, ComponentStatus, Health, Lifecycle};
 use zaino_service::{Service, ServiceError, ServiceSource};
 
 use crate::serve::{
@@ -114,7 +114,7 @@ impl<S: ServiceSource> Indexer<S> {
     ) -> Result<Running, IndexerError> {
         let node = zaino_source::OneShotGetNodeInfo::get_node_info(source.as_ref())
             .await
-            .map_err(|error| IndexerError::Validator(error.to_string()))?;
+            .map_err(|error| IndexerError::Validator(error_chain(&error)))?;
         info!(build = %node.build, subversion = %node.subversion, "connected to the validator");
         info!(
             store = %config.persistence.path.display(),
@@ -266,7 +266,7 @@ impl<S: ServiceSource> Indexer<S> {
         self.service
             .shutdown()
             .await
-            .map_err(|error| IndexerError::Flush(error.to_string()))
+            .map_err(|error| IndexerError::Flush(error_chain(&error)))
     }
 
     /// The status of every service component, the gRPC server and, when
@@ -526,7 +526,7 @@ mod tests {
     fn a_failed_component_is_an_exit_unless_every_failure_is_the_validators() {
         let ready = status("mempool", Lifecycle::Ready, Health::Healthy);
         let lost = failed("head", "gave up on the validator", true);
-        let broken = failed("validator source", "the syncer stopped", false);
+        let broken = failed("store", "an index is corrupt", false);
 
         match failure_of(&[ready.clone(), lost.clone()]) {
             Some(IndexerError::Restart(causes)) => {
@@ -536,7 +536,7 @@ mod tests {
         }
         match failure_of(&[ready, lost, broken]) {
             Some(IndexerError::Critical(causes)) => {
-                assert!(causes.contains("the syncer stopped"), "{causes}");
+                assert!(causes.contains("an index is corrupt"), "{causes}");
                 assert!(causes.contains("gave up on the validator"), "{causes}");
             }
             other => panic!("an exit was expected, not {other:?}"),

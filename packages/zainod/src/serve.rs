@@ -9,6 +9,7 @@ pub mod grpc;
 pub mod jsonrpc;
 #[cfg(test)]
 pub(crate) mod testing;
+pub(crate) mod validator_failure;
 
 /// Prometheus metric names emitted by this crate; the single source of truth shared with `zainod`'s `describe_*` registrations (which carry the descriptions).
 #[allow(missing_docs)] // names are self-describing; descriptions live in zainod
