@@ -30,7 +30,15 @@ The config must:
   an address nothing is listening on: the tool refuses one in use, as it
   would read another process's answers as this run's. It also checks, from
   the start time `/metrics` reports, that the process answering is the zainod
-  it started, before it trusts any answer.
+  it started, before it trusts any answer;
+- leave zainod's serving addresses free: `[serve.grpc] listen_address`
+  (default `127.0.0.1:8137`) and `[serve.jsonrpc] listen_address` if set. The
+  tool does not check them; zainod does not start on one in use, and the run
+  fails.
+
+The validator must be synced to the chain tip before the run. zainod builds
+to the validator's tip, so a validator still syncing is what the run would
+time.
 
 Without `--zainod <binary>` the tool builds this checkout's zainod with
 `cargo build --release -p zainod --features no_tls_with_prometheus`. A prebuilt
@@ -109,9 +117,11 @@ Everything goes under `bench-results/` (git-ignored):
 
 - `runs.jsonl`: one line per run, with the zainod commit and binary hash, the
   machine, the measurements, and the config that ran. The config's
-  `[validator]` `user` and `password` are redacted, and a config zainod
-  rejected is not recorded at all, as a mistyped key in it could hold a
-  credential;
+  `[validator]` `user` and `password` are redacted. The config is recorded
+  only once zainod has loaded it and its admin endpoint has answered: one
+  zainod refuses to load is left out, as a mistyped key in it could hold a
+  credential. A config zainod loads and then fails on, such as an index set
+  it cannot build, is recorded with the failed run;
 - `runs/<run>/series.jsonl`: the run's `/metrics` samples;
 - `runs/<run>/zainod.log`: zainod's output;
 - `report.html`: written by `report` (`-o` puts it elsewhere).
