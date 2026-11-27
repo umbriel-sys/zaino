@@ -1,0 +1,19 @@
+[[changes]]
+crate = "zaino-chain-store-service"
+kind = "fix"
+description = """
+The store build asks for each block's tree roots by height, which it already \
+knows, and checks the answer names its block. The by-hash read made the \
+source look the height up first: on zebra's state that lookup cost about \
+twice the tree reads themselves. A best chain that moves between the two \
+reads is asked again (`NotReady`)."""
+
+[[changes]]
+crate = "zaino-chain-store"
+kind = "breaking"
+description = """
+`ChainStoreSource` requires `OneShotGetCommitmentTreeRootsByHeight` in place \
+of `OneShotGetCommitmentTreeRoots`."""
+migration = """
+A `ChainStoreSource` implements `OneShotGetCommitmentTreeRootsByHeight`; \
+every source adapter and the mock already do."""

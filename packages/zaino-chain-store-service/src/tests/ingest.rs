@@ -225,6 +225,110 @@ async fn an_index_enabled_later_catches_up() {
 /// refused at the fetch, whatever the source claims.
 #[tokio::test]
 async fn a_block_failing_its_merkle_root_is_refused() {
+    refuses_a_bad_merkle_root().await;
+}
+
+/// A validator whose best chain moves between a block's read and its tree
+/// roots: the roots name another block.
+struct Moved(MockChain);
+
+impl zaino_source::ValidatorSource for Moved {
+    type NonDomain = zaino_source::NonDomainError;
+}
+
+impl zaino_source::OneShotGetBestBlockHeight for Moved {
+    async fn get_best_block_height(
+        &self,
+    ) -> Result<Height, zaino_source::QueryError<zaino_source::GetBestBlockHeightError>> {
+        self.0.get_best_block_height().await
+    }
+}
+
+impl zaino_source::OneShotGetBlock for Moved {
+    async fn get_block(
+        &self,
+        height: Height,
+    ) -> Result<zaino_primitives::types::Block, zaino_source::QueryError<zaino_source::GetBlockError>>
+    {
+        self.0.get_block(height).await
+    }
+}
+
+impl zaino_source::OneShotGetBlockByHash for Moved {
+    async fn get_block_by_hash(
+        &self,
+        hash: zaino_primitives::types::BlockHash,
+    ) -> Result<
+        zaino_primitives::types::Block,
+        zaino_source::QueryError<zaino_source::GetBlockByHashError>,
+    > {
+        self.0.get_block_by_hash(hash).await
+    }
+}
+
+impl zaino_source::OneShotGetCommitmentTreeRootsByHeight for Moved {
+    async fn get_commitment_tree_roots_by_height(
+        &self,
+        height: Height,
+    ) -> Result<
+        (
+            zaino_primitives::types::BlockHash,
+            zaino_primitives::types::TreeRoots,
+        ),
+        zaino_source::QueryError<zaino_source::GetCommitmentTreeRootsByHeightError>,
+    > {
+        let (_, roots) = self.0.get_commitment_tree_roots_by_height(height).await?;
+        Ok((zaino_primitives::types::BlockHash::from([0xab; 32]), roots))
+    }
+}
+
+impl zaino_source::OneShotGetTreestate for Moved {
+    async fn get_treestate(
+        &self,
+        height: Height,
+    ) -> Result<
+        zaino_primitives::types::Treestate,
+        zaino_source::QueryError<zaino_source::GetTreestateError>,
+    > {
+        self.0.get_treestate(height).await
+    }
+}
+
+impl zaino_source::OneShotGetSubtreeRoots for Moved {
+    async fn get_subtree_roots(
+        &self,
+        pool: zaino_primitives::types::ShieldedPool,
+        start_index: u16,
+        limit: Option<u16>,
+    ) -> Result<
+        Vec<zaino_primitives::types::SubtreeRoot>,
+        zaino_source::QueryError<zaino_source::GetSubtreeRootsError>,
+    > {
+        self.0.get_subtree_roots(pool, start_index, limit).await
+    }
+}
+
+/// Tree roots that name another block than the one read are not folded
+/// with it: the block is asked again (`NotReady`), never built.
+#[tokio::test]
+async fn tree_roots_of_another_block_are_not_paired_with_the_block() {
+    let chain = chain();
+    assemble(&chain, &schedule(), height(1), false)
+        .await
+        .expect("a block and its own roots");
+    let moved = Moved(chain);
+    let refused = assemble(&moved, &schedule(), height(1), false).await;
+    assert!(
+        matches!(
+            &refused,
+            Err(ChainStoreSourceError::NotReady { message, .. })
+                if message.contains("changed between its read and its tree roots")
+        ),
+        "{refused:?}"
+    );
+}
+
+async fn refuses_a_bad_merkle_root() {
     let mut blocks = ChainBuilder::new().blocks(2).into_blocks();
     if let Some(tampered) = blocks.get_mut(1) {
         tampered.block.header.merkle_root = MerkleRoot::from([9; 32]);

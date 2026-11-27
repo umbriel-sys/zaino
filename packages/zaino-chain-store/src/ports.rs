@@ -72,7 +72,7 @@ pub trait ChainStoreSource:
     zaino_source::OneShotGetBestBlockHeight
     + zaino_source::OneShotGetBlock
     + zaino_source::OneShotGetBlockByHash
-    + zaino_source::OneShotGetCommitmentTreeRoots
+    + zaino_source::OneShotGetCommitmentTreeRootsByHeight
     + zaino_source::OneShotGetTreestate
     + zaino_source::OneShotGetSubtreeRoots
     + Send
@@ -85,7 +85,7 @@ impl<T> ChainStoreSource for T where
     T: zaino_source::OneShotGetBestBlockHeight
         + zaino_source::OneShotGetBlock
         + zaino_source::OneShotGetBlockByHash
-        + zaino_source::OneShotGetCommitmentTreeRoots
+        + zaino_source::OneShotGetCommitmentTreeRootsByHeight
         + zaino_source::OneShotGetTreestate
         + zaino_source::OneShotGetSubtreeRoots
         + Send

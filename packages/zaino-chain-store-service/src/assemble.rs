@@ -36,10 +36,20 @@ pub(crate) async fn assemble<S: ChainStoreSource>(
             "block {height}: its merkle root does not commit to its transactions"
         )));
     }
-    let tree_roots = source
-        .get_commitment_tree_roots(header.hash)
+    // By height, which is already known: a by-hash read makes the source
+    // find the height first. The answer names its block, so the two reads
+    // are held to one block; a best chain that moved between them is asked
+    // again.
+    let (roots_of, tree_roots) = source
+        .get_commitment_tree_roots_by_height(height)
         .await
         .map_err(|error| query("tree roots", error))?;
+    if roots_of != header.hash {
+        return Err(ChainStoreSourceError::not_ready(format!(
+            "block {height} changed between its read and its tree roots: {} then {roots_of}",
+            header.hash
+        )));
+    }
     let (frontiers, subtrees) = match trees {
         true => notes(source, &block, &tree_roots).await?,
         false => (PoolFrontiers::default(), Vec::new()),
