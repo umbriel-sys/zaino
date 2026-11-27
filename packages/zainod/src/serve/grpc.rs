@@ -66,9 +66,8 @@ impl TonicServer {
     ///
     /// Lets a test harness bind `127.0.0.1:0`, read the OS-assigned port, and
     /// hand the still-open socket here — closing the pick-a-port / bind-later
-    /// race. `TcpIncoming::from` applies the same nodelay/keepalive defaults as
-    /// `TcpIncoming::bind`, so the served socket is identical to the production
-    /// path.
+    /// race. Both paths serve through `spawn_inner`, so the served socket is
+    /// identical to the production path.
     pub async fn spawn_from_listener(
         routes: Routes,
         server_config: GrpcServerConfig,
@@ -136,7 +135,9 @@ impl TonicServer {
         };
         let server_future = server_builder
             .add_routes(routes)
-            .serve_with_incoming_shutdown(tcp_incoming, shutdown_signal);
+            // TCP_NODELAY: a hand-built incoming leaves it unset, and a small
+            // response then waits on the client's delayed ACK.
+            .serve_with_incoming_shutdown(tcp_incoming.with_nodelay(Some(true)), shutdown_signal);
 
         let task_status = status.clone();
         let server_handle = tokio::task::spawn(async move {

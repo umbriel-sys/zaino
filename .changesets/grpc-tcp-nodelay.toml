@@ -1,0 +1,6 @@
+[[changes]]
+crate = "zainod"
+kind = "fix"
+description = """
+The gRPC server sets `TCP_NODELAY` on accepted connections. Without it every \
+small response waited on the client's delayed ACK, about 40 ms per call."""
