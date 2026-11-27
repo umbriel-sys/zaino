@@ -1,0 +1,58 @@
+consumed_in = "zainod-0-11-0"
+[[changes]]
+crate = "zaino-chain"
+kind = "feature"
+description = """
+The ChainView rework (D-51, D-56). The head snapshot is taken before the \
+store reader. Treestates and subtree roots, and the four address reads, are \
+answered from the store (at or below its tip) and the chain head (above it) \
+where both build them with nothing between, equal to the validator's \
+answers and refusals; else the validator answers. New `HistoryTreeRead` \
+(store + head, no validator) with `ChainCapability::HistoryTree` and \
+`serving_history_tree`. The serviceability manifest reads the head's \
+`HeadCapabilities`, so the UTXO set is advertised only once the head has \
+built it (it was advertised from the store's indexes while the read needed \
+the head)."""
+
+[[changes]]
+crate = "zaino-chain-head-service"
+kind = "fix"
+description = """
+`capabilities()` always includes transactions: they are answered by a window \
+scan where the extension is not built."""
+
+[[changes]]
+crate = "zaino-chain-store"
+kind = "feature"
+description = """
+`ChainStoreReader::network()`: the network the store indexes."""
+
+[[changes]]
+crate = "zaino-chain-store-service"
+kind = "feature"
+description = """
+Readers answer `network()` from the store's configuration."""
+
+
+[[changes]]
+crate = "zaino-primitives"
+kind = "feature"
+description = """
+`frontier_from_legacy_tree` moves here from `zaino-indexes`, with its inverse \
+`legacy_tree_from_frontier`, which writes the legacy tree encoding as zebrad \
+does (all 31 parent slots). `TransparentAddress::key()`: the key an index \
+holds the address under."""
+
+[[changes]]
+crate = "zaino-indexes"
+kind = "breaking"
+description = """
+`frontier_from_legacy_tree` and `LegacyTreeError` moved to `zaino-primitives`."""
+
+[[changes]]
+crate = "zaino-source-mock"
+kind = "fix"
+description = """
+Matches zebrad where it did not: treestates carry all 31 parent slots, and \
+genesis outputs are in no address's history and not in `get_tx_out` (never \
+spendable, so in no UTXO set or address index). The contract checks both."""

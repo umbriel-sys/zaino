@@ -57,82 +57,56 @@ timers? If not, downgrade. Leave a brief comment only if the choice is
 non-obvious (e.g. "multi_thread required: test exercises a race between
 writer and reader on the db").
 
-## Persistence-boundary conversions: named methods, not `From`/`TryFrom`
+## Boundary conversions: named methods, not `From`/`TryFrom`
 
-Every DB-boundary helper that mirrors a business-layer type — named
-`Persistent<X>` by convention — crosses its boundary through inherent
-methods, not `impl From` / `impl TryFrom`. The canonical pair:
+A conversion that crosses the wire boundary (JSON-RPC, gRPC) or the
+persistence boundary is a named method or function, never `impl From` /
+`impl TryFrom`.
 
-- `impl PersistentX { pub(super) fn from_business(src: &X) -> Self }`
-  (replaces `impl From<&X> for PersistentX`)
-- `impl PersistentX { pub(super) fn into_business(self) -> X }`
-  (replaces `impl From<PersistentX> for X`; return `Result<X, ..>` if
-  the on-disk → business step can fail validation)
+**Why**:
 
-Both methods live on the persistent type. Visibility is `pub(super)` —
-`PersistentX` is module-private-by-design; only its sibling consumers
-in the same directory need access.
+1. The inbound direction (wire → domain, disk → domain) *is* the validation
+   step for bytes Zaino did not produce. A named method puts that contract in
+   the API; a `TryFrom` leaves it implicit.
+1. `TryFrom` forces one `Error` type per impl; named methods give each
+   conversion its own error.
+1. Named methods are grep-friendly and say direction and boundary at every
+   call site (`request.into_domain()`; `.into()` hides both).
 
-**Why this rule exists**:
+**JSON-RPC wire types** (`packages/zainod/src/serve/jsonrpc/wire/`). The wire
+type owns both directions:
 
-1. The `PersistentX → X` direction *is* the validation step for bytes
-   coming off disk. A named method puts that contract in the API; a
-   `TryFrom` leaves it implicit.
-1. `TryFrom` forces one `Error` type per impl; separate methods give
-   per-conversion error granularity.
-1. Named methods are grep-friendly and disambiguate direction at every
-   call site (`pbc.into_business()` reads direction and boundary; `.into()`
-   hides both).
+- `impl XWire { pub fn from_domain(x: X) -> Self }` — domain → wire.
+  Infallible unless the domain value cannot be written, then
+  `Result<Self, _>`.
+- `impl XWire { pub fn into_domain(self) -> Result<X, XError> }` — wire →
+  domain. This is the external-input validation; the error type names each
+  rejection.
 
-**Reference**: `PersistentBlockContext` in
-`packages/zaino-state/src/chain_index/types/db/block.rs`. Copy its shape
-when adding new `Persistent*` types.
+Reference: `GetInfoWire::from_domain` and `AddressesRequestWire::into_domain`
+in `packages/zainod/src/serve/jsonrpc/wire/served.rs`.
 
-**Scope**: this rule covers DB-boundary conversions. It does not govern
-conversions between two business-layer types, error `From` impls used
-with `?`, or conversions involving foreign types that don't cross the
-persistence or wire boundaries.
+**Proto types** are generated, so they take no inherent methods. Their
+conversions are free functions in `zaino_proto::compact`, named
+`<thing>_to_wire` and `<thing>_from_wire` (`compact_block_to_wire`,
+`pool_filter_from_wire`).
 
-## Wire-boundary conversions: named methods, not `From`/`TryFrom`
+**Persistence**. Records reach disk through the layouts in `zaino-indexes`,
+not through serde mirror types. If a `Persistent*` mirror type is ever
+needed, it is private to its module and crosses through named methods on
+itself, and it does nothing else.
 
-The same rule applies at the gRPC/wire boundary for the same reasons —
-the wire → business direction is the *external-input* validation step
-and the named method encodes that contract in the API surface. Canonical
-methods live on the business-layer type (proto types are foreign; we
-can't add inherent methods to them):
+**Enforcement**:
 
-- `impl X { pub fn to_wire(&self) -> proto::X }` — infallible forward.
-  Replaces `impl From<X> for proto::X`.
-- `impl X { pub fn try_from_wire(w: proto::X) -> Result<Self, WireXError> }`
-  — fallible reverse. The conversion *is* the wire-input validation
-  step; the `WireXError` enum documents each rejection reason.
-  Replaces `impl TryFrom<proto::X> for X`.
+- `makers lint-boundary-conversions` (part of `makers lint`) fails on any
+  `impl From` / `impl TryFrom` where either side is a `Persistent*` type or a
+  `proto::` type.
+- Review: a wire type's two methods are named `from_domain` / `into_domain`;
+  any other name has an in-file comment saying why. Each conversion has a
+  golden or round-trip test in the same file.
 
-**Enforcement (covers both boundaries)**:
-
-- CI lint: `makers lint-boundary-conversions` (run as part of
-  `makers lint`) greps the tree for any `impl From` / `impl TryFrom`
-  where either side is a `Persistent*` type or a `proto::` type and
-  fails the build. Mechanically prevents the common drift at both
-  boundaries.
-- Review checklist — apply on every PR that touches `types/db/`,
-  `types/wire.rs`, or introduces a new `Persistent*` type or wire
-  conversion:
-  1. No `impl From<&X> for PersistentY` / `impl From<PersistentX> for Y`;
-     no `impl From<X> for proto::Y` / `impl TryFrom<proto::X> for Y`.
-     (The lint catches these, but read for them anyway.)
-  1. Persistence methods are named `from_business` / `into_business`
-     (fallible variants `into_business*`). Wire methods are named
-     `to_wire` / `try_from_wire`. Any deviation has an in-file comment
-     explaining why.
-  1. `Persistent*` types are `pub(super)`. Wire methods are `pub`
-     (they're part of the business type's public API). Don't widen
-     `Persistent*` speculatively.
-  1. `Persistent*` types do *nothing else* — no business logic, no
-     accessors — they only cross the serde boundary. Round-trip tests
-     for the pair live in the same file under `#[cfg(test)] mod tests`.
-     Wire conversions get the same treatment: a golden / round-trip
-     test next to the method, not in a distant test module.
+**Scope**: boundary conversions only. Conversions between two domain types
+and error `From` impls used with `?` are not covered.
 
 ## No `.unwrap()`: propagate or handle every error
 
@@ -180,13 +154,23 @@ say so when you do.
 ## Crate usage guides: keep them current
 
 Each crate is documented by a usage guide at `packages/<crate>/usage.md`, indexed
-from the root `README.md`'s "Crate usage guides" section. The set is deliberately
-incomplete and filled in crate by crate.
+from the root `README.md`'s "Crate usage guides" section. Every crate has one.
 
 When a change adds or alters a crate's **public capability** — a new port,
 service, config knob, public method, or a behavioural contract consumers rely on
 — update that crate's guide: fold it into the relevant existing section, or add
-one if none fits. If the crate has no guide yet, create it and add it to the
-README index. This mirrors the CHANGELOG discipline: the CHANGELOG records *what
-changed*, the guide records *how to use it*, and neither substitutes for the
-other. Purely internal refactors need no guide edit.
+one if none fits. A new crate comes with its guide and its README index line.
+This mirrors the changeset discipline: the changeset records *what changed*,
+the guide records *how to use it*, and neither substitutes for the other.
+Purely internal refactors need no guide edit.
+
+## No placeholder data
+
+A field in a production type carries the real value from its authoritative
+source or does not exist. `ZERO` / `Default` / always-`None` stand-ins for
+documented data are defects — in new code and in code being touched — and a
+comment saying "placeholder", "not a measurement" or "for now" marks one.
+Mocks never fill what the adapters leave empty; the contract suite asserts
+every field a mock fills against its authoritative port. When a change
+touches such a field, fix it or remove the field in that change, and report
+it as a defect.

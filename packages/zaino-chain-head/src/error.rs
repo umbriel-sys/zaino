@@ -4,11 +4,11 @@ use zaino_primitives::types::Height;
 
 /// A ChainHead query could not be answered.
 ///
-/// A range asked for wrongly is the only failure. Every other query on
-/// [`ChainHeadSnapshot`](crate::ChainHeadSnapshot) is a total function of a
-/// graph the caller is already holding: a hash that is not retained, a height
-/// outside the window and a transaction that appears nowhere are all *absence*,
-/// reported as `None` or an empty collection, not failure.
+/// A range asked for wrongly, or a capability the snapshot does not build.
+/// Every other query on [`ChainHeadSnapshot`](crate::ChainHeadSnapshot) is a
+/// total function of a graph the caller is already holding: a hash that is not
+/// retained, a height outside the window and a transaction that appears nowhere
+/// are all *absence*, reported as `None` or an empty collection, not failure.
 ///
 /// `#[non_exhaustive]` because a snapshot implementation that does not hold its
 /// whole graph in memory — one paging from a store, say — could fail to answer
@@ -26,12 +26,35 @@ pub enum ChainHeadError {
         /// The requested end.
         end: Height,
     },
-    /// A range starting below the retained window, whose blocks are not held.
-    #[error("range start {start} is below the retained window's floor {floor}")]
-    BelowWindow {
-        /// The requested start.
-        start: Height,
-        /// The lowest canonical height retained.
-        floor: Height,
+    /// The capability's extension is not built on this snapshot: not
+    /// enabled. The consumer falls back.
+    #[error("the chain head does not build {capability}")]
+    NotBuilt {
+        /// The capability asked for.
+        capability: &'static str,
+    },
+    /// The capability's extension failed and is not yet rebuilt.
+    #[error("the chain head's {capability} failed: {reason}")]
+    Failed {
+        /// The capability asked for.
+        capability: &'static str,
+        /// Why it failed.
+        reason: String,
+    },
+    /// The capability is built but reading it failed: a fault, not a reason
+    /// to fall back.
+    #[error("the chain head failed to read {capability}: {reason}")]
+    ReadFailed {
+        /// The capability asked for.
+        capability: &'static str,
+        /// Why.
+        reason: String,
+    },
+    /// A read would hold more rows than the query's limit; refused before
+    /// they are read.
+    #[error("more than {limit} rows of address history")]
+    TooManyRows {
+        /// The query's limit.
+        limit: usize,
     },
 }

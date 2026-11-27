@@ -1,0 +1,132 @@
+//! Fixtures the index tests fold: a small consistent chain and a backend.
+
+use zaino_persistence::in_memory::InMemoryBackend;
+use zaino_persistence::{Backend, BackendWriter as _, WriteOp};
+use zaino_primitives::types::{
+    BlockCommitments, BlockHash, BlockHeader, BlockRef, CompactDifficulty, EquihashSolution,
+    Height, MerkleRoot, PoolBalances, PreIndexCompactTx, TransactionId, TreeRoots,
+};
+
+use crate::block::{FoldBlock, FoldBlockParts, FoldTx, PoolFrontiers};
+use crate::index::{Fold, Index};
+use crate::schema::Schema;
+
+/// Regtest's easiest target, a valid compact encoding.
+pub(crate) const REGTEST_BITS: u32 = 0x207f_ffff;
+
+/// The hash of block `n` in the fixture chain.
+pub(crate) fn hash(n: u32) -> BlockHash {
+    let mut bytes = [0xab; 32];
+    bytes[..4].copy_from_slice(&n.to_be_bytes());
+    BlockHash::from(bytes)
+}
+
+/// The header of block `n`, which extends block `n - 1`.
+pub(crate) fn header(n: u32) -> BlockHeader {
+    BlockHeader {
+        hash: hash(n),
+        version: 4,
+        prev_hash: match n {
+            0 => BlockHash::from([0; 32]),
+            n => hash(n - 1),
+        },
+        height: Height::try_from(n).expect("fixture height"),
+        time: 1_700_000_000 + n,
+        merkle_root: MerkleRoot::from([n as u8; 32]),
+        block_commitments: BlockCommitments::from([0x11; 32]),
+        bits: CompactDifficulty::try_from_bits(REGTEST_BITS).expect("regtest bits"),
+        nonce: [n as u8 ^ 0x55; 32],
+        solution: EquihashSolution::Regtest([n as u8; 36]),
+    }
+}
+
+/// A transaction with no inputs, outputs or pools; txid from `n`.
+pub(crate) fn tx(n: u32) -> FoldTx {
+    let mut txid = [0xcd; 32];
+    txid[..4].copy_from_slice(&n.to_be_bytes());
+    let compact = PreIndexCompactTx {
+        txid: TransactionId::from(txid),
+        transparent_inputs: Vec::new(),
+        transparent_outputs: Vec::new(),
+        sapling_nullifiers: Vec::new(),
+        sapling_outputs: Vec::new(),
+        orchard_actions: Vec::new(),
+        ironwood_actions: Vec::new(),
+        fee: None,
+        sapling_outputs_unread: 0,
+    };
+    FoldTx::try_new(compact, PoolBalances::default(), Some(Vec::new())).expect("no inputs")
+}
+
+/// A test block's size: distinct per height, so a read-back names its block.
+pub(crate) fn block_size(header: &BlockHeader) -> u32 {
+    1_000_u32.saturating_add(u32::from(header.height))
+}
+
+/// The parts of a pre-Overwinter block of `header` with no pools, holding
+/// `transactions`.
+pub(crate) fn parts(header: BlockHeader, transactions: Vec<FoldTx>) -> FoldBlockParts {
+    FoldBlockParts {
+        size: block_size(&header),
+        header,
+        branch: None,
+        transactions,
+        tree_roots: TreeRoots {
+            sapling: None,
+            orchard: None,
+            ironwood: None,
+        },
+        frontiers: PoolFrontiers::default(),
+        subtrees: Vec::new(),
+    }
+}
+
+/// A block of `header` holding only a coinbase.
+pub(crate) fn block_of(header: BlockHeader) -> FoldBlock {
+    let coinbase = tx(u32::from(header.height));
+    FoldBlock::try_new(parts(header, vec![coinbase])).expect("fixture block")
+}
+
+/// Block `n` of the fixture chain.
+pub(crate) fn block(n: u32) -> FoldBlock {
+    block_of(header(n))
+}
+
+/// Block `n` holding `count` empty transactions, txids from `n * 100 + i`.
+pub(crate) fn busy(n: u32, count: u32) -> FoldBlock {
+    block_with(n, (0..count).map(|i| tx(n * 100 + i)).collect())
+}
+
+/// Block `n` holding `transactions`.
+pub(crate) fn block_with(n: u32, transactions: Vec<FoldTx>) -> FoldBlock {
+    FoldBlock::try_new(parts(header(n), transactions)).expect("fixture block")
+}
+
+/// An empty backend declaring `schema`'s namespaces.
+pub(crate) fn backend(schema: &Schema) -> InMemoryBackend {
+    InMemoryBackend::new(&schema.specs().expect("declared")).expect("fixture specs")
+}
+
+/// Folds `blocks` into `backend` one commit each, as a writer would, and
+/// returns the state after the last.
+pub(crate) fn fold_all<I: Index>(
+    backend: &InMemoryBackend,
+    blocks: &[FoldBlock],
+) -> Option<I::State> {
+    let mut state = I::resume(&backend.reader().expect("reader")).expect("resume");
+    for block in blocks {
+        let Fold { ops, next } = I::fold(state.as_ref(), block).expect("fold");
+        commit(backend, block.reference(), ops);
+        state = Some(next);
+    }
+    state
+}
+
+/// One commit at `tip`.
+pub(crate) fn commit(backend: &InMemoryBackend, tip: BlockRef, ops: Vec<WriteOp>) {
+    backend
+        .writer()
+        .expect("writer")
+        .commit(tip, ops)
+        .expect("commit");
+}

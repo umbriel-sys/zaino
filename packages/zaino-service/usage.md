@@ -1,0 +1,151 @@
+# `zaino-service` — usage
+
+One configurable indexer service: ChainView over the chain head and the store,
+the coherent mempool, and validator passthrough, behind one manifest that says
+who answers each capability.
+
+## Spawning
+
+```rust,ignore
+let service = Service::spawn(Arc::new(validator), ServiceConfig {
+    store: Store::DiskAccelerated(Box::new(DiskStore {
+        store: chain_store_config,          // root, network, `indexes.set`
+        storage: lsm_tree_storage,          // filesystem and engine tuning
+        mode: Mode::Primary,                // or Linked { refresh_interval }
+    })),
+    chain_view: ChainViewConfig::default(),
+    chain_head: ChainHeadConfig::with_max_depth(depth),
+    mempool: MempoolConfig::default(),
+}).await?;
+```
+
+- `Store::ValidatorBacked { network }`: no store. The validator answers below
+  the chain head's window.
+- `Store::DiskAccelerated` with `Mode::Primary`: this process boots and builds
+  the store (`zaino-chain-store-service`). A background sync keeps it at the
+  head's floor.
+- `Mode::Linked`: another process builds the store. This one reads it
+  (`LinkedChainStore`, refreshed every `refresh_interval`) and runs its own
+  head and mempool.
+
+`spawn` returns once serving can begin: the store is open and the head is
+anchored. It never waits for the store to catch up (D6-10); until then, reads
+the store can't answer go to the validator. The disk modes ask the validator
+for its upgrade schedule once.
+
+The chain head gets one extension per index the store builds (D-50), seeded
+from the store's tip, so the window answers the same reads the store does.
+
+The source is any `ServiceSource`: each tier's ports, the mempool's, and the
+passthrough controls, over `NonDomainError`.
+
+## The manifest
+
+`Service::manifest` gives each `Capability` (ChainView's, plus the mempool,
+broadcast and node status) a `Provision`:
+
+| Provision | Meaning |
+| --- | --- |
+| `Local(Some(index))` | answered from that index (and the head above it) |
+| `Local(None)` | the chain head's window or the mempool |
+| `Validator` | the validator answers; no index is built for it |
+| `Building { index, height }` | the index is catching up; served as far as it reaches |
+| `Unavailable(index)` | not served; enabling `index` (`indexes.enable`) would serve it |
+
+It is derived from ChainView's serviceability and the store's per-index state,
+so it never disagrees with what the reads do. `require(&[Capability])` is the
+embedder's check: it returns `ServiceError::NotServed`, naming the index, for
+the first capability that is unavailable.
+
+## Reads
+
+`Service::snapshot()` pins one chain state. `chain()` is ChainView's reads
+(blocks, compact blocks and frames, transactions, treestates, subtrees, chain
+tips, address history, spends, the txout set, the history tree), each routed
+by ChainView. Built on top:
+
+| Read | Path |
+| --- | --- |
+| `block_header(at)` | composed from the indexed block (header, Sapling root, chainwork) as zebrad composes it, genesis's all-zero parent named; the validator fills holes through ChainView |
+| `block_deltas(hash)` | composed from the indexed block and `previous_outputs`, with its chainwork where the store has built it; the validator's `getblockdeltas` where prevouts are not local |
+| `spent_info(outpoint)` | `Spend::Mined` from the spend index (I-09 and the head); else `Spend::Mempool` from the mempool coherent with the snapshot (`MempoolIncoherent` if only a mempool for another tip holds a spender); else the validator, `NotServed` if it lacks the method |
+| `txout_set_info()` | I-11 and the head; `NotServed` without them, ChainView's `Building` while the store has not reached the window, a fault if the head's set failed |
+| `transaction(txid, verbosity, block)` | the validator's `getrawtransaction` answer (`TransactionAnswer::Raw` bytes or the `Object`) for a transaction Zaino's state knows: one ChainView places (best chain, side chain, or a hole), or one the tip-agnostic mempool set lists, unadmitted ones included; raw bytes the mempool holds are served from it. `None` otherwise, whatever the validator would answer. With `block`, only a transaction ChainView places in that block. Its height is `transaction_status`'s to give |
+| `address_utxos(addresses, page)` | ChainView's page and the tip it describes |
+| `address_txids(addresses, start, end)` | ChainView's, over zebrad's `build_height_range`: an absent start is genesis, an absent or zero end the tip, both clamp to the snapshot's tip; a start above the end is `ServiceError::InvalidRange` (zebrad's message) |
+| `address_deltas(request)` | ChainView's, over the same range rule (the single-address form reads the whole chain); with `chain_info`, the range's bounding blocks |
+| `raw_block_header(at)` | the header ChainView finds, encoded: Zaino's own where it holds the block, the validator's block's otherwise |
+| `raw_block`, `block_verbose(at, verbosity)` | the validator's answer (`getblock` 0 to 3), by the hash the snapshot holds |
+| `block_subsidy(height)` | the validator, at the tip when `None` |
+| `block_hash(index)` | Zaino's headers; `index` from genesis, or from the tip when negative (`-1` is the tip), as zebrad reads it |
+| `block_hashes(low, high)` | Zaino's headers: the blocks whose own time is in `[low, high)`, by time then hash. A median-time search brackets the heights (the drift rule per network); selected by `nTime`, since zcashd's logical times are not indexed, so a transport refuses `logicalTimes` |
+| `history_proof(block, tip)` | the ZIP 221 proof that `block` is in the tree `tip`'s header commits to (the tip's epoch, through the block before it; the snapshot's tip when `None`), from the history tree (C6): the leaf, its sibling at each level and the tree's peaks. `None` if either is off the best chain; `InvalidParameter` if the block is not below the tip, is in an earlier epoch, or the tip commits to no tree; ChainView's `NotServed` without the index |
+| `blockchain_info`, `node_info`, `peer_info`, `network_info`, `ping`, `mining_info`, `difficulty_at_tip`, `network_sol_ps`, `standard_fee`, `tx_out`, `send_raw_transaction` | the validator |
+
+The mempool reads (D6-02) never ask the validator:
+
+| Read | From |
+| --- | --- |
+| `mempool_txids`, `mempool_info`, `mempool_entries(exclude)` | the tip-agnostic set; a malformed exclude is `InvalidParameter`, never trimmed |
+| `mempool_stream(pinned)` | the coherent view until the tip moves; `pinned` asks for one coherent with this snapshot (`None` otherwise); a lag ends it with `MempoolStreamLagged` |
+| `transaction_status(txid)` | its blocks, and the mempool: `best` when coherent with this snapshot, `elsewhere` (at the successor of the mempool's tip as the chain holds it now) when not |
+
+The listings and the stream need no snapshot, so `Service` has them too:
+`mempool_txids`, `mempool_info`, `mempool_entries(exclude)` and
+`mempool_stream(chain)`, coherent with `chain` when given.
+
+Compact blocks read under `PoolFilter::nullifiers_only` carry each
+transaction's unread Sapling outputs as a count
+(`PreIndexCompactTx::sapling_outputs_unread`), so a transaction with only
+outputs is still served, empty, at its index (lightwalletd's
+`GetBlockNullifiers`).
+
+## The upgrade schedule
+
+`schedule_at(upgrades, tip)` reads a validator's schedule against a tip:
+Sapling's activation, the branch in force and the next upgrade, disabled
+upgrades skipped. `GetLightdInfo` reports them; an unscheduled one is absent,
+never a made-up height.
+
+A difficulty is computed as zcashd's `GetDifficulty` computes it, against the
+network's proof-of-work limit. A transaction larger than a block is refused
+before the validator is asked.
+
+## Errors
+
+`ServiceError` is the one error type (D6-02). A domain miss is `Ok(None)`.
+`ValidatorRejected` keeps the port's typed error, so a transport can downcast
+it to pick its own code. `ServiceError::from_query` classifies a validator
+query's failure as refused or unreachable.
+
+Every other cause has its own variant: `InvalidRange`, `MissingBlock`,
+`MissingPrevout`, `AmountOutOfRange`, `HeightOverflow`, `SpendCountMismatch`
+and `MinedAndInMempool` are faults or invalid requests; `MempoolIncoherent`,
+`MempoolStreamLagged` and `SyncStopped` are retryable.
+ChainView's refusals arrive in `Chain`: `NotServed`, `NotBuilt` and
+`ValidatorDisabled` are final, `Building` retryable.
+
+## Lifecycle
+
+`statuses()` gives each component's `ComponentStatus` (`Statuses`: store,
+head, mempool, coherence, the validator source, and the sync for a primary
+store). Every component's task is supervised: one that panics or stops is
+`Critical` with the cause, never left at its last status. The validator
+source is `Critical` once its own background work (zebra's state syncer) has
+stopped. `caught_up()` resolves once a primary store has caught up with the
+head's floor (`is_caught_up()` asks now). `wait_until_local()` resolves once
+nothing is still building: the store built and the chain head's extensions
+folded over it (`is_local()` asks now). Both fail with
+`ServiceError::ComponentFailed` if a component fails first; neither waits
+without end. `spawn` never waits for either; they are for a
+caller that wants only local answers, such as a test comparing two
+deployments. `index_states()` lists how far each index of the store serves
+(`Absent`, `Building(height)`, `ToHeight(height)`), for a readiness report.
+`store_tip()` is the store's committed tip and
+`mempool_frozen_for()` how long the coherent mempool has been frozen.
+`chain_snapshot()`, `with_chain(chain)` and `subscribe_tip()` give the chain
+view's snapshot, the service's reads over one, and the epochs as published.
+
+`shutdown().await` stops every task and flushes a primary store; `stop()`
+stops them without the flush, for synchronous teardown, and so does dropping
+the service.

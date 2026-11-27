@@ -1,29 +1,70 @@
-# Zaino RPC APIs
-## Lightwallet gRPC Services
-Zaino Currently Serves the following gRPC services as defined in the [LightWallet Protocol](https://github.com/zcash/lightwallet-protocol/blob/main/walletrpc/service.proto):
+# Served RPCs
 
-(gRPC service (function) arguments and return values are defined [here](https://github.com/zcash/lightwallet-protocol/blob/main/walletrpc/compact_formats.proto))
+Every method `zainod` serves, and where its answer comes from. Parameters,
+results, error codes and limits are in
+[`zainod`'s guide](../packages/zainod/usage.md#serving).
 
-  - GetLatestBlock (ChainSpec) returns (BlockID)
-  - GetBlock (BlockID) returns (CompactBlock)
-  - GetBlockNullifiers (BlockID) returns (CompactBlock)
-  - GetBlockRange (BlockRange) returns (stream CompactBlock)
-  - GetBlockRangeNullifiers (BlockRange) returns (stream CompactBlock)
-  - GetTransaction (TxFilter) returns (RawTransaction)
-  - SendTransaction (RawTransaction) returns (SendResponse)
-  - GetTaddressTransactions (TransparentAddressBlockFilter) returns (stream RawTransaction)
-  - GetTaddressBalance (AddressList) returns (Balance)
-  - GetTaddressBalanceStream (stream Address) returns (Balance) (**MARKED FOR DEPRECATION**)
-  - GetMempoolTx (Exclude) returns (stream CompactTx)
-  - GetMempoolStream (Empty) returns (stream RawTransaction)
-  - GetTreeState (BlockID) returns (TreeState)
-  - GetLatestTreeState (Empty) returns (TreeState)
-  - GetSubtreeRoots (GetSubtreeRootsArg) returns (stream SubtreeRoot)
-  - GetAddressUtxos (GetAddressUtxosArg) returns (GetAddressUtxosReplyList)
-  - GetAddressUtxosStream (GetAddressUtxosArg) returns (stream GetAddressUtxosReply)
-  - GetLightdInfo (Empty) returns (LightdInfo)
+Where an answer comes from:
 
-## Zcash RPC Services
-Zaino has also committed to taking over responsibility for serving all [Zcash RPC Services](https://zcash.github.io/rpc/) required by non-validator (miner) clients from the legacy Zcash full node.
-A full specification of the Zcash RPC services served by Zaino, and their current state of development, can be seen [here](./Zaino-zcash-rpcs.pdf).
+- **Zaino**: Zaino's own state. For a chain read that means the indexes of
+  the chain store and the chain head. Without the index that serves it (see
+  `[indexes]`), or at a height the store has not built yet, the validator
+  answers instead; nothing is refused for being unbuilt.
+- **Mempool**: Zaino's mirror of the validator's mempool.
+- **Validator**: passed through; Zaino keeps nothing for it.
 
+## gRPC: `cash.z.wallet.sdk.rpc.CompactTxStreamer`
+
+The [lightwallet protocol](https://github.com/zcash/lightwallet-protocol),
+v0.6.0 (`LightdInfo.lightwalletProtocolVersion`).
+
+| Method | From |
+| --- | --- |
+| `GetLatestBlock` | Zaino |
+| `GetBlock`, `GetBlockNullifiers` | Zaino |
+| `GetBlockRange`, `GetBlockRangeNullifiers` | Zaino, as encoded frames shared between clients |
+| `GetTransaction` | Zaino places the transaction (chain or mempool); bytes from the mempool, else the validator |
+| `SendTransaction` | Validator |
+| `GetTaddressTxids`, `GetTaddressTransactions` | Zaino for the txids; each transaction as `GetTransaction` |
+| `GetTaddressBalance`, `GetTaddressBalanceStream` | Zaino |
+| `GetAddressUtxos`, `GetAddressUtxosStream` | Zaino |
+| `GetMempoolTx`, `GetMempoolStream` | Mempool |
+| `GetTreeState`, `GetLatestTreeState` | Zaino |
+| `GetSubtreeRoots` | Zaino |
+| `GetLightdInfo` | Validator, with Zaino's tip and build |
+| `GetStandardFee` | Validator; `UNIMPLEMENTED` when it lacks `getstandardfee` |
+| `Ping` | never enabled: `FAILED_PRECONDITION`, as lightwalletd answers when it is off |
+
+## gRPC: Zaino's own services
+
+| Method | From |
+| --- | --- |
+| `zaino.lightclient.v1.LightClientService/GetBlockHeaders` | Zaino |
+| `zaino.lightclient.v1.LightClientService/GetHistoryProof` | Zaino (the `history_tree` index; `UNIMPLEMENTED` without it) |
+| `zaino.index.v1.IndexedTipService/SubscribeIndexedTips` | Zaino |
+
+## JSON-RPC
+
+Shapes and codes follow zebrad 7.
+
+| Method | From |
+| --- | --- |
+| `getbestblockhash`, `getblockcount`, `getchaintips` | Zaino |
+| `getblockhash`, `getblockhashes` | Zaino |
+| `getblockheader` | Zaino |
+| `getblock` | Validator, at the hash Zaino holds for the block asked |
+| `getblockdeltas` | Zaino; the validator where previous outputs are not local |
+| `getrawtransaction` | Validator, only for a transaction Zaino places (chain or mempool); raw bytes from the mempool where it holds them |
+| `gettxout` | Validator |
+| `getspentinfo` | Zaino, then the mempool, then the validator |
+| `gettxoutsetinfo` | Zaino (the `tx_out_set` index; −32601 without it) |
+| `getaddressbalance`, `getaddresstxids`, `getaddressutxos`, `getaddressdeltas` | Zaino |
+| `z_gettreestate`, `z_getsubtreesbyindex` | Zaino |
+| `getrawmempool`, `getmempoolinfo` | Mempool |
+| `sendrawtransaction` | Validator |
+| `validateaddress`, `z_validateaddress` | Zaino (no chain data) |
+| `getblockchaininfo` | Validator, with Zaino's chainwork where it holds the block |
+| `getinfo`, `getnetworkinfo`, `getpeerinfo`, `ping` | Validator |
+| `getmininginfo`, `getnetworksolps`, `getdifficulty`, `getblocksubsidy`, `getstandardfee` | Validator |
+
+A method the validator does not answer is −32601.

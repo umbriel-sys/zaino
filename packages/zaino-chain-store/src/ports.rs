@@ -33,13 +33,15 @@ use futures::Stream;
 use tokio::sync::watch;
 use zaino_component::StatusSource;
 use zaino_primitives::types::{
-    BlockHash, BlockTxPosition, CompactBlock, Height, Outpoint, TransactionId,
+    AbsoluteChainWork, BlockHash, BlockTxPosition, CompactBlock, Height, Network, Outpoint,
+    PoolFrontier, ShieldedPool, SubtreeRoot, TransactionId, TransparentOutput, TreeRoots,
 };
 
-use crate::block::{FrozenBlock, PoolFilter, StoredBlock};
-use crate::capability::{StoreCapabilities, StoreCapability, StoreSchema, StoreWatermark};
+use crate::block::{PoolFilter, StoredHeader};
+use crate::capability::{StoreCapabilities, StoreCapability, StoreWatermark};
 use crate::error::{ChainStoreError, ChainStoreSourceError};
-use crate::output::{SpenderRef, StoredTxOut};
+use crate::output::SpenderRef;
+use crate::tree::{HistoryEpoch, HistoryPeaks};
 use crate::txout_set::TxOutSetAccumulator;
 
 /// Everything a chain store asks of a validator.
@@ -53,10 +55,12 @@ use crate::txout_set::TxOutSetAccumulator;
 ///
 /// - the chain tip, to know how far there is to build;
 /// - blocks by height, to build from;
-/// - blocks by hash, and transactions, which only the passthrough mode needs —
-///   a store configured to hold nothing answers reads from the validator, and
-///   so asks questions a building store never does;
-/// - commitment tree roots, which are not derivable from a block alone.
+/// - blocks by hash, which only the passthrough mode needs — a store
+///   configured to hold nothing answers reads from the validator, and so asks
+///   a question a building store never does;
+/// - commitment tree roots, which are not derivable from a block alone;
+/// - treestates and subtree roots, for the note frontiers and completed
+///   subtrees an index fold takes beside each block (D-85).
 ///
 /// Blocks are asked for parsed rather than raw. A store that took bytes would
 /// have to parse them itself, duplicating work the source adapter has already
@@ -68,8 +72,9 @@ pub trait ChainStoreSource:
     zaino_source::OneShotGetBestBlockHeight
     + zaino_source::OneShotGetBlock
     + zaino_source::OneShotGetBlockByHash
-    + zaino_source::OneShotGetCommitmentTreeRoots
-    + zaino_source::OneShotGetTransaction
+    + zaino_source::OneShotGetCommitmentTreeRootsByHeight
+    + zaino_source::OneShotGetTreestate
+    + zaino_source::OneShotGetSubtreeRoots
     + Send
     + Sync
     + 'static
@@ -80,8 +85,9 @@ impl<T> ChainStoreSource for T where
     T: zaino_source::OneShotGetBestBlockHeight
         + zaino_source::OneShotGetBlock
         + zaino_source::OneShotGetBlockByHash
-        + zaino_source::OneShotGetCommitmentTreeRoots
-        + zaino_source::OneShotGetTransaction
+        + zaino_source::OneShotGetCommitmentTreeRootsByHeight
+        + zaino_source::OneShotGetTreestate
+        + zaino_source::OneShotGetSubtreeRoots
         + Send
         + Sync
         + 'static
@@ -133,12 +139,12 @@ pub trait ChainStoreReader:
 
     /// What this store currently offers.
     ///
-    /// Runtime state, not a type-level fact: a store on an older schema lacks
-    /// indexes a newer one has, and gains them during a migration.
+    /// Runtime state, not a type-level fact: a store lacks an index until it
+    /// has built it.
     fn capabilities(&self) -> StoreCapabilities;
 
-    /// The schema on disk, and whether it is migrating.
-    fn schema(&self) -> impl Future<Output = Result<StoreSchema, ChainStoreError>> + Send;
+    /// The network this store indexes.
+    fn network(&self) -> Network;
 
     /// The canonical hash at `height`.
     ///
@@ -160,53 +166,36 @@ pub trait ChainStoreReader:
         &self,
         hash: BlockHash,
     ) -> impl Future<Output = Result<Option<Height>, ChainStoreError>> + Send;
-}
 
-/// Reading indexed blocks.
-///
-/// Optional: a deployment serving only wallet sync builds compact blocks and
-/// never materialises these.
-pub trait StoredBlockRead: ChainStoreReader {
-    /// The blocks in `start..=end`, inclusive and ascending.
-    ///
-    /// One transaction, one batch. This is the primitive: a single block is
-    /// `blocks_chunk(h, h)`, which is why there is no point-read method — one
-    /// would either duplicate this or spawn a task to fetch one block.
+    /// The headers in `start..=end`, each with its cumulative work, ascending.
     ///
     /// A range extending above the watermark is truncated to it rather than
     /// rejected, so a caller merging with the recent window asks both halves
     /// for the same range and lets each answer what it holds. A range whose
-    /// start is above its end is [`ChainStoreError::InvalidRange`].
-    fn blocks_chunk(
+    /// start is above its end is [`ChainStoreError::InvalidRange`]. A single
+    /// header is `headers_chunk(h, h)`.
+    fn headers_chunk(
         &self,
         start: Height,
         end: Height,
-    ) -> impl Future<Output = Result<Vec<StoredBlock>, ChainStoreError>> + Send;
+    ) -> impl Future<Output = Result<Vec<StoredHeader>, ChainStoreError>> + Send;
 
-    /// The blocks in `start..=end` as a stream of chunks.
+    /// Cumulative work from genesis through the block at `height`.
     ///
-    /// For ranges too large to hold at once. The store chooses chunk
-    /// boundaries to bound how long it holds a read transaction; they carry no
-    /// meaning and a consumer must not read anything into them.
-    fn blocks_stream(
+    /// `None` for a height the store does not hold; above the watermark is
+    /// [`ChainStoreError::AboveWatermark`]. The one number a consumer rebasing
+    /// the recent window's work needs, read without the header beside it.
+    fn chainwork(
         &self,
-        start: Height,
-        end: Height,
-    ) -> impl Future<
-        Output = Result<
-            impl Stream<Item = Result<Vec<StoredBlock>, ChainStoreError>> + Send + use<Self>,
-            ChainStoreError,
-        >,
-    > + Send;
+        height: Height,
+    ) -> impl Future<Output = Result<Option<AbsoluteChainWork>, ChainStoreError>> + Send;
 }
 
 /// Reading compact blocks.
 ///
-/// Separate from [`StoredBlockRead`] because the filter is pushed into the
-/// read: it decides which of the store's per-pool data is touched at all. A
-/// consumer deriving compact blocks from stored ones would make a sapling-only
-/// wallet pay to decode orchard and ironwood data, and the commitment tree
-/// roots, for every block of its sync.
+/// The filter is pushed into the read: it decides which of the store's
+/// per-pool data is touched at all, so a sapling-only wallet does not pay to
+/// decode orchard and ironwood data for every block of its sync.
 pub trait CompactBlockRead: ChainStoreReader {
     /// The compact blocks in `start..=end`, inclusive and ascending.
     ///
@@ -275,39 +264,15 @@ pub trait SpentOutputIndex: ChainStoreReader {
         outpoints: &[Outpoint],
     ) -> impl Future<Output = Result<Vec<Option<SpenderRef>>, ChainStoreError>> + Send;
 
-    /// What each outpoint refers to, in the order asked.
-    ///
-    /// `None` when the store does not hold the creating transaction. Batched
-    /// for the same reason as [`Self::outpoint_spenders`]: resolving the
-    /// inputs of recent blocks against finalised outputs asks about every
-    /// input of every block at once.
-    fn previous_outputs(
+    /// The outputs `outpoints` name, in the order asked, as the chain holds
+    /// them: value and script. `None` when the store does not hold the
+    /// creating transaction. Batched for the same reason as
+    /// [`Self::outpoint_spenders`]; what a fold running above this store reads
+    /// for the inputs that spend below it.
+    fn outputs_by_outpoint(
         &self,
         outpoints: &[Outpoint],
-    ) -> impl Future<Output = Result<Vec<Option<StoredTxOut>>, ChainStoreError>> + Send;
-
-    /// The output at `outpoint` if it exists and this store has not seen it
-    /// spent.
-    ///
-    /// A first-class question rather than two: composed from
-    /// [`Self::previous_outputs`] and [`Self::outpoint_spenders`] it costs two
-    /// reads across two indexes, and the caller has to know that "exists" and
-    /// "unspent" are different lookups. As with `outpoint_spenders`, unspent
-    /// here means unspent *as far as this store knows*.
-    fn unspent_output(
-        &self,
-        outpoint: Outpoint,
-    ) -> impl Future<Output = Result<Option<StoredTxOut>, ChainStoreError>> + Send;
-
-    /// The transparent outputs of the transaction at `position`.
-    ///
-    /// `None` when the store does not hold that position. Needed to decide how
-    /// many of a transaction's outputs remain unspent, which is what the
-    /// txout-set's transaction count is counting.
-    fn transparent_outputs(
-        &self,
-        position: BlockTxPosition,
-    ) -> impl Future<Output = Result<Option<Vec<StoredTxOut>>, ChainStoreError>> + Send;
+    ) -> impl Future<Output = Result<Vec<Option<TransparentOutput>>, ChainStoreError>> + Send;
 }
 
 /// The store's running totals over the unspent transparent output set.
@@ -322,14 +287,97 @@ pub trait TxOutSetIndex: ChainStoreReader {
     fn txout_set(
         &self,
     ) -> impl Future<Output = Result<TxOutSetAccumulator, ChainStoreError>> + Send;
+
+    /// How many counted outputs each of `txids` still has unspent as of the
+    /// watermark, in the order asked; `None` for a transaction holding none.
+    /// The count the set's `transactions` total is made of (D-69), so a fold
+    /// extending this set knows when a transaction leaves it.
+    fn remaining_outputs(
+        &self,
+        txids: &[TransactionId],
+    ) -> impl Future<Output = Result<Vec<Option<u32>>, ChainStoreError>> + Send;
+}
+
+/// Commitment tree roots and sizes after each block (I-08).
+///
+/// Its own port rather than part of [`CompactBlockRead`]: a compact block
+/// carries only the sizes, and a consumer wanting the roots (an indexed block,
+/// verbose `getblock`) should not have to require the compact-block index to
+/// get them.
+pub trait TreeRootsIndex: ChainStoreReader {
+    /// The roots and sizes after each block in `start..=end`, ascending.
+    ///
+    /// Truncated at the watermark; a start above the end is
+    /// [`ChainStoreError::InvalidRange`].
+    fn tree_roots_chunk(
+        &self,
+        start: Height,
+        end: Height,
+    ) -> impl Future<Output = Result<Vec<TreeRoots>, ChainStoreError>> + Send;
+}
+
+/// Note commitment trees within the finalised range (C2).
+pub trait TreeStateIndex: ChainStoreReader {
+    /// `pool`'s tree after `height`: absent before the pool activates,
+    /// empty before its first note, else its frontier.
+    ///
+    /// `None` for a height the store does not hold; above the watermark is
+    /// [`ChainStoreError::AboveWatermark`].
+    fn pool_frontier(
+        &self,
+        pool: ShieldedPool,
+        height: Height,
+    ) -> impl Future<Output = Result<Option<PoolFrontier>, ChainStoreError>> + Send;
+
+    /// Up to `limit` of `pool`'s completed 2¹⁶ subtree roots from index
+    /// `start`, ascending; only subtrees completed at or below the watermark.
+    fn subtree_roots(
+        &self,
+        pool: ShieldedPool,
+        start: u64,
+        limit: u64,
+    ) -> impl Future<Output = Result<Vec<SubtreeRoot>, ChainStoreError>> + Send;
+}
+
+/// The ZIP 221 chain history tree within the finalised range (C6).
+pub trait HistoryTreeIndex: ChainStoreReader {
+    /// The `hashChainHistoryRoot` committed by the block after `height`:
+    /// `None` before Heartwood or for a height the store does not hold.
+    fn history_root(
+        &self,
+        height: Height,
+    ) -> impl Future<Output = Result<Option<[u8; 32]>, ChainStoreError>> + Send;
+
+    /// The epoch (one per network upgrade) the tree is in after `height`:
+    /// `None` before Heartwood or for a height the store does not hold.
+    fn history_epoch(
+        &self,
+        height: Height,
+    ) -> impl Future<Output = Result<Option<HistoryEpoch>, ChainStoreError>> + Send;
+
+    /// The peaks of the epoch's MMR after `height`, left to right as MMR
+    /// position and encoded entry: what a fold continuing the tree above the
+    /// store appends onto. `None` as `history_epoch`.
+    fn history_peaks(
+        &self,
+        height: Height,
+    ) -> impl Future<Output = Result<Option<HistoryPeaks>, ChainStoreError>> + Send;
+
+    /// The encoded MMR entries at `positions` of the epoch in force after
+    /// `height`, in the order asked (ZIP 221 entry encoding); `None` for a
+    /// position the epoch does not hold.
+    fn history_entries(
+        &self,
+        height: Height,
+        positions: &[u32],
+    ) -> impl Future<Output = Result<Vec<Option<Vec<u8>>>, ChainStoreError>> + Send;
 }
 
 /// Transparent address history within the finalised range.
 ///
-/// Declared and feature-gated. The chain head declares the matching half
+/// The chain head declares the matching half
 /// (`ChainHeadTransparentHistoryService`), and a complete answer is the two
 /// merged — neither alone is an address's history.
-#[cfg(feature = "transparent_address_history_experimental")]
 pub trait TransparentHistoryIndex: ChainStoreReader {
     /// What happened to `query`'s addresses within its height range.
     ///
@@ -393,9 +441,9 @@ sealed_capability!(
     StoreCapability::Core
 );
 sealed_capability!(
-    StoredBlockReadCapability,
-    StoredBlockRead,
-    StoreCapability::StoredBlocks
+    TreeRootsIndexCapability,
+    TreeRootsIndex,
+    StoreCapability::TreeRoots
 );
 sealed_capability!(
     CompactBlockReadCapability,
@@ -418,10 +466,19 @@ sealed_capability!(
     StoreCapability::TxOutSet
 );
 sealed_capability!(
-    #[cfg(feature = "transparent_address_history_experimental")]
     TransparentHistoryIndexCapability,
     TransparentHistoryIndex,
     StoreCapability::TransparentHistory
+);
+sealed_capability!(
+    TreeStateIndexCapability,
+    TreeStateIndex,
+    StoreCapability::TreeState
+);
+sealed_capability!(
+    HistoryTreeIndexCapability,
+    HistoryTreeIndex,
+    StoreCapability::HistoryTree
 );
 
 /// Driving a chain store forward.
@@ -437,7 +494,9 @@ pub trait ChainStoreIngest: Send + Sync {
     /// one database multiply memory rather than throughput.
     ///
     /// Takes no source. The store owns the validator it was built with, so a
-    /// consumer cannot point it at a different chain part-way through.
+    /// consumer cannot point it at a different chain part-way through. It is
+    /// the only write path (D-72): every block reaches the store by being
+    /// fetched from that validator, never handed over by a consumer.
     fn build_to(
         &self,
         target: Height,
@@ -447,7 +506,9 @@ pub trait ChainStoreIngest: Send + Sync {
     ///
     /// The store's history is append-only in normal operation — a reorg deep
     /// enough to affect it is outside the window the chain head covers — so
-    /// this is a repair path, not part of following the chain.
+    /// this is a repair path, not part of following the chain. A store that
+    /// never rewinds (it rebuilds instead) answers
+    /// [`ChainStoreError::Unsupported`].
     fn rewind_to(&self, height: Height)
         -> impl Future<Output = Result<(), ChainStoreError>> + Send;
 
@@ -456,41 +517,6 @@ pub trait ChainStoreIngest: Send + Sync {
 
     /// Stops the store and releases its backend.
     fn shutdown(&self) -> impl Future<Output = Result<(), ChainStoreError>> + Send;
-}
-
-/// Accepting blocks that have fallen below the reorg seam.
-///
-/// Optional, and an optimisation rather than a mechanism: it spares the store
-/// re-fetching blocks a composer already has. [`ChainStoreIngest::build_to`]
-/// remains the authority, and a store that never receives a frozen block must
-/// still reach the same state.
-///
-/// It is deliberately *not* [`StoredBlock`]: a frozen block carries no
-/// chainwork. Cumulative work needs an unbroken chain below a block, so the
-/// store is the only party that can know it, and it derives its own — folding
-/// each block's work onto its tip's, which it can always do because freezing
-/// appends at `tip + 1`. A caller has at best work measured from somewhere
-/// else, and handing that over would put a wrong absolute chainwork on disk.
-///
-/// # The stream this consumes is not reliable
-///
-/// Frozen blocks arrive best-effort: a subscriber that falls behind loses
-/// some, a restart loses everything in flight, and a reorg that lowers the tip
-/// and re-advances can deliver the same heights twice with different hashes.
-/// An implementation must therefore be idempotent on `(height, hash)` and must
-/// not assume it receives a contiguous run. This is why the source-driven
-/// build path cannot be removed.
-pub trait ChainStoreFreezeSink: Send + Sync {
-    /// Ingests blocks that are now beyond reorg.
-    ///
-    /// Takes a slice rather than one block: the store writes a batch under one
-    /// transaction with its index entries sorted, which turns random-keyed
-    /// writes into a sequential sweep. One call per block gives up that, and
-    /// pays a transaction and a durability barrier for each.
-    fn freeze(
-        &self,
-        blocks: &[FrozenBlock],
-    ) -> impl Future<Output = Result<(), ChainStoreError>> + Send;
 }
 
 #[cfg(test)]

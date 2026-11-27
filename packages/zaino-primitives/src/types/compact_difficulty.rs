@@ -174,9 +174,13 @@ fn expand(bits: u32) -> Result<U256, CompactDifficultyError> {
         }
         (mantissa << 8, 29)
     } else if raw_exponent < EXPONENT_OFFSET {
-        (mantissa >> (8 * (EXPONENT_OFFSET - raw_exponent)), 0)
+        // at most 24 bits shifted out of a 24-bit mantissa
+        let shift = EXPONENT_OFFSET
+            .saturating_sub(raw_exponent)
+            .saturating_mul(8);
+        (mantissa.checked_shr(shift).unwrap_or(0), 0)
     } else {
-        (mantissa, raw_exponent - EXPONENT_OFFSET)
+        (mantissa, raw_exponent.saturating_sub(EXPONENT_OFFSET))
     };
 
     let target = U256::target(mantissa, exponent);

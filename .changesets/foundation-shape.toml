@@ -1,0 +1,72 @@
+consumed_in = "zainod-0-11-0"
+[[changes]]
+crate = "zaino-primitives"
+kind = "feature"
+description = """
+Feature `zebra` adds the `zebra` module, the `zebra_chain` → domain \
+conversions (`block_from_zebra`, `header_from_zebra`, \
+`transaction_from_zebra`, `ConvertError`) that were the `zaino-convert-zebra` \
+crate, with its consensus and difficulty agreement tests. `Network` (the \
+network kind) and `ActivationHeights` (a regtest schedule) move here from \
+`zaino-common`, serialisable under the new `serde` feature and, under \
+`zebra`, convertible through `Network::from_zebra`, \
+`ActivationHeights::to_zebra` and `to_regtest_network`. Both features are \
+off by default; the crate's footprint is unchanged without them. \
+`zaino-convert-zebra` and `zaino-common` are removed."""
+
+[[changes]]
+crate = "zaino-source-zcash-rpc"
+kind = "breaking"
+description = """
+Renamed from `zaino-source-zebra-rpc`, and `ZebraRpcAdapter` to \
+`ZcashRpcAdapter`: the adapter speaks the zcash JSON-RPC interface and names \
+no validator. What the spec leaves to the node is read through a `Quirks` \
+table (`ZcashRpcAdapter::with_quirks`); `new` reads every reply as the spec \
+says, so a node's result cap is a failure unless its table reads it."""
+
+[[changes]]
+crate = "zaino-source-zebra"
+kind = "breaking"
+description = """
+Absorbs `zaino-source-zebra-readstate`: `ZebraReadStateAdapter` and the \
+`tracing` and `test_dependencies` features are this crate's. `rpc_adapter` \
+builds the zcash RPC adapter with zebrad's quirk table (its `-8 more than \
+{cap} … match` result cap), the one place that table lives. `ZebraValidator` \
+takes a `ZcashRpcAdapter`."""
+
+[[changes]]
+crate = "zaino-rpc"
+kind = "feature"
+description = """
+Home of the network utilities every endpoint needs: `net` (address \
+resolution: `resolve_socket_addr`, `try_resolve_address`, \
+`AddressResolution`) and `ensure_default_crypto_provider` (the process-level \
+rustls provider), both moved from `zaino-common`. No longer depends on \
+`zaino-common`."""
+
+[[changes]]
+crate = "zaino-state"
+kind = "breaking"
+description = """
+`zaino_state::legacy` holds what the legacy stack keeps for its users: \
+`legacy::config` (`ServiceConfig`, `StorageConfig`, `CacheConfig`, \
+`DatabaseConfig`, re-exporting the store's budget types) and `legacy::xdg`, \
+both from the removed `zaino-common`. The network kind is \
+`zaino_primitives::types::Network`. Builds its validator through \
+`zaino_source_zebra::rpc_adapter` and the `zaino_primitives::zebra` \
+conversions."""
+
+
+[[changes]]
+crate = "zainod"
+kind = "internal"
+description = """
+Initialises logging through `zaino-logging`, resolves addresses through \
+`zaino_rpc::net`, takes its configuration types from `zaino-primitives` and \
+`zaino_state::legacy`, and owns `ValidatorConfig` (`zainod::config`)."""
+
+[[changes]]
+crate = "zainod"
+kind = "internal"
+description = """
+Takes the rustls provider from `zaino-rpc` instead of `zaino-common`."""

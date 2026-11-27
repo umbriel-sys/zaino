@@ -1,6 +1,6 @@
 [package]
 name = "zainod"
-version = "0.10.1"
+version = "0.11.0"
 description = "Crate containing the Zaino Indexer binary."
 authors = { workspace = true }
 repository = { workspace = true }
@@ -22,23 +22,17 @@ path = "src/lib.rs"
 [features]
 default = []
 
-# Test-only seam: `Indexer::launch_inner_with_listeners`, which threads
-# pre-bound listeners through to the gRPC/JSON-RPC servers. Forwards to
-# zaino-serve.
-test_dependencies = ["zaino-serve/test_dependencies"]
-
 # TEST-ONLY seam: non-finalised depth 1001 -> 100 (NFS tests mine no 1k-block chain)
-# - forwards to zaino-state (owns the depth constant)
-fast-test-seam = ["zaino-state/fast-test-seam"]
+fast-test-seam = []
 
 # Removes network restrictions.
-no_tls_use_unencrypted_traffic = ["zaino-serve/no_tls_use_unencrypted_traffic"]
+no_tls_use_unencrypted_traffic = ["tonic/tls-native-roots"]
 
 # Operator build: no TLS + Prometheus metrics endpoint.
 no_tls_with_prometheus = ["no_tls_use_unencrypted_traffic", "prometheus"]
 
 # Prometheus /metrics scrape endpoint.
-prometheus = ["dep:metrics", "dep:metrics-exporter-prometheus", "dep:metrics-process", "dep:hyper", "dep:hyper-util", "dep:http-body-util"]
+prometheus = ["dep:metrics-exporter-prometheus", "dep:metrics-process", "dep:hyper", "dep:hyper-util"]
 
 # DANGER: allows the JSON-RPC server to bind to a public (non-private,
 # non-loopback) address. The JSON-RPC interface has NO transport encryption and
@@ -48,27 +42,11 @@ prometheus = ["dep:metrics", "dep:metrics-exporter-prometheus", "dep:metrics-pro
 # mesh/proxy that terminates encryption).
 allow_unencrypted_public_json_rpc_bind = []
 
-# **Experimental and alpha features**
-# Exposes the **complete** set of experimental / alpha features currently implemented in Zaino.
-experimental_features = ["transparent_address_history_experimental"]
-
-# Activates transparent address history capability in zaino
-#
-# NOTE: currently this is only implemented in the finalised state.
-transparent_address_history_experimental = [
-  "zaino-state/transparent_address_history_experimental",
-  "zaino-serve/transparent_address_history_experimental"
-]
-
 [dependencies]
-zaino-common = { workspace = true }
+zaino-primitives = { workspace = true, features = ["serde"] }
+zaino-logging = { workspace = true }
 zaino-rpc = { workspace = true }
-zaino-state = { workspace = true }
-zaino-chain-head-service = { workspace = true }
-zaino-serve = { workspace = true }
-
-# Zebra
-zebra-state = { workspace = true }
+zaino-chain-head-service.workspace = true
 
 # Runtime
 tokio = { workspace = true, features = ["full"] }
@@ -83,13 +61,13 @@ tracing = { workspace = true }
 http = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
 
-# Metrics (behind "prometheus" feature)
-metrics = { workspace = true, optional = true }
+# Metrics: the names are always emitted; the exporter is behind "prometheus"
+metrics = { workspace = true }
 metrics-exporter-prometheus = { workspace = true, optional = true }
 metrics-process = { workspace = true, optional = true }
 hyper = { workspace = true, optional = true, features = ["server", "http1"] }
 hyper-util = { workspace = true, optional = true, features = ["tokio"] }
-http-body-util = { workspace = true, optional = true }
+http-body-util.workspace = true
 
 # Utility
 thiserror = { workspace = true }
@@ -97,10 +75,44 @@ thiserror = { workspace = true }
 # Formats
 toml = { workspace = true }
 config = { workspace = true }
-zaino-status.workspace = true
 zaino-mempool.workspace = true
+zaino-component.workspace = true
+zaino-proto = { workspace = true, features = ["heavy", "zaino-primitives"] }
+futures.workspace = true
+tower.workspace = true
+hex.workspace = true
+serde_json.workspace = true
+indexmap.workspace = true
+zaino-source.workspace = true
+zaino-consensus.workspace = true
+zaino-address.workspace = true
+tonic = { workspace = true, features = ["tls-native-roots", "tls-aws-lc"] }
+jsonrpsee = { workspace = true, features = ["server", "macros"] }
+zaino-service = { workspace = true }
+zaino-chain.workspace = true
+zaino-mempool-service.workspace = true
+zaino-indexes = { workspace = true }
+zaino-chain-store-service.workspace = true
+zaino-chain-head.workspace = true
+zaino-source-zebra = { workspace = true, features = ["tracing"] }
+zaino-source-zcash-rpc.workspace = true
+bytes.workspace = true
+zcash_address.workspace = true
+zaino-persistence-lsm-tree = { path = "../zaino-persistence-lsm-tree" }
+base64 = "0.22"
+subtle = "2.6"
+rand = "0.9"
+zcash_protocol.workspace = true
+prost.workspace = true
+zaino-encoding.workspace = true
 
 [dev-dependencies]
 tempfile = { workspace = true }
+tokio = { workspace = true, features = ["test-util", "macros"] }
+zaino-persistence-lsm-tree = { path = "../zaino-persistence-lsm-tree", features = ["testing"] }
+zaino-source-mock.workspace = true
 zcash_address = { workspace = true }
 zcash_protocol = { workspace = true }
+
+[build-dependencies]
+whoami.workspace = true

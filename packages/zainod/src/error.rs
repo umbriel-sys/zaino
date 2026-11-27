@@ -1,10 +1,8 @@
 //! Hold error types for the Indexer and related functionality.
 
-use zaino_serve::server::error::ServerError;
+use crate::serve::error::ServerError;
 
-use zaino_state::NodeBackedIndexerServiceError;
-
-/// Zingo-Indexer errors.
+/// Zainod errors.
 #[derive(Debug, thiserror::Error)]
 pub enum IndexerError {
     /// Server based errors.
@@ -13,12 +11,26 @@ pub enum IndexerError {
     /// Configuration errors.
     #[error("Configuration error: {0}")]
     ConfigError(String),
-    /// Could not reach the backing validator's JSON-RPC endpoint at startup.
-    #[error("validator probe error: {0}")]
+    /// A key of the configuration before the service rewrite.
+    #[error("Configuration error: `{key}` is no longer a key: use `{replacement}`")]
+    OldConfigKey {
+        /// The old key.
+        key: &'static str,
+        /// What replaced it.
+        replacement: &'static str,
+    },
+    /// The validator's credentials or RPC client could not be set up.
+    #[error("validator connection error: {0}")]
     ProbeError(#[from] zaino_rpc::ProbeError),
-    /// NodeBackedIndexerService errors.
-    #[error("NodeBackedIndexerService error: {0}")]
-    NodeBackedIndexerServiceError(Box<NodeBackedIndexerServiceError>),
+    /// The validator could not be connected to.
+    #[error("validator connection error: {0}")]
+    Validator(String),
+    /// The validator's activation schedule is not the configured network's.
+    #[error("{0}")]
+    Network(#[from] zaino_source_zebra::AdoptError),
+    /// The service did not start.
+    #[error("service error: {0}")]
+    Service(#[from] zaino_service::SpawnError),
     /// HTTP related errors due to invalid URI.
     #[error("HTTP error: Invalid URI {0}")]
     HttpError(#[from] http::Error),
@@ -32,13 +44,14 @@ pub enum IndexerError {
     #[cfg(feature = "prometheus")]
     #[error("Metrics error: {0}")]
     MetricsError(String),
-    /// Zaino restart signal.
-    #[error("Restart Zaino")]
-    Restart,
-}
-
-impl From<NodeBackedIndexerServiceError> for IndexerError {
-    fn from(value: NodeBackedIndexerServiceError) -> Self {
-        IndexerError::NodeBackedIndexerServiceError(Box::new(value))
-    }
+    /// Components failed because the validator stopped answering:
+    /// restarting may clear it.
+    #[error("Zaino lost its validator: {0}")]
+    Restart(String),
+    /// A component failed for a fault restarting cannot clear.
+    #[error("Zaino failed: {0}")]
+    Critical(String),
+    /// Zaino stopped, but its store did not flush.
+    #[error("the store did not flush cleanly: {0}")]
+    Flush(String),
 }

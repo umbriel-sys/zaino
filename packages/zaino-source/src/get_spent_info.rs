@@ -46,27 +46,11 @@ pub enum GetSpentInfoError {
 /// would force every consumer to invent a code on the way out, which is exactly
 /// how this method came to report `-8` for a condition the legacy full node reports as `-5`.
 ///
-/// # TODO: Zaino could answer this itself, and does not
+/// # The fallback behind Zaino's own index
 ///
-/// This is a straight passthrough to the validator — it has been one since
-/// `getspentinfo` was added, and no version of Zaino has ever answered it from
-/// its own index. That is a problem now that zebrad is the supported backend,
-/// because zebrad will never implement it: as things stand the method dies with
-/// the legacy full node, even though Zaino is meant to take over from the legacy full node.
-///
-/// Zaino already indexes most of what the answer needs.
-/// `FinalisedStateReader::get_outpoint_spender` (zaino-state, DB v1.2 and up)
-/// maps an outpoint to the `TxLocation { block_height, tx_index }` that spent
-/// it. That covers the response's `height` directly and its `txid` with one
-/// further read. What is missing is the response's `index` — the position of
-/// the spend within the spending transaction's input list — which the index
-/// does not store and which would have to be recovered by scanning that
-/// transaction's inputs for the outpoint.
-///
-/// Not implemented here because this crate is the port layer and has no
-/// database, and not implemented in `zaino-state` in this change because it
-/// would be new indexer capability rather than the rewire this work is doing.
-/// Recorded so the gap is a decision rather than an oversight.
+/// `zaino-service` answers `getspentinfo` from I-09 (`spent`) and the chain
+/// head where they are built, and asks this port only otherwise. zebrad does
+/// not implement the method, so there only the legacy full node answers it.
 #[zaino_source_macros::resilient_port]
 pub trait OneShotGetSpentInfo: ValidatorSource + Send + Sync {
     /// Locate an output's spender.

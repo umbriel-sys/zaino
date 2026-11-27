@@ -18,11 +18,12 @@ let
     fileset = lib.fileset.unions [
       (craneLib.fileset.commonCargoSources ../.)
       # commonCargoSources only includes .rs & cargo files
-      #   .proto — read by tonic-build (zaino-proto/build.rs)
-      #   .txt   — embedded via include_str! (db schema)
-      #   .mmd   — embedded via simple_mermaid::mermaid! (doc diagrams)
+      #   .proto   — read by tonic-prost-build (zaino-proto/build.rs)
+      #   usage.md — crate docs, embedded via include_str!
+      #   .mmd     — embedded via simple_mermaid::mermaid! (doc diagrams)
       (lib.fileset.fileFilter (f: f.hasExt "proto") ../packages/zaino-proto)
-      (lib.fileset.fileFilter (f: f.hasExt "txt" || f.hasExt "mmd") ../packages/zaino-state/src)
+      (lib.fileset.fileFilter (f: f.name == "usage.md") ../packages)
+      (lib.fileset.fileFilter (f: f.hasExt "mmd") ../packages/zaino-state/src)
     ];
   };
 
@@ -79,7 +80,7 @@ craneLib.buildPackage (commonArgs // {
 
   meta = {
     description = "Indexer and proxy server for the Zcash protocol";
-    homepage = "https://github.com/zingolabs/zaino";
+    homepage = "https://github.com/umbriel-sys/zaino";
     license = lib.licenses.asl20;
     mainProgram = "zainod";
     platforms = lib.platforms.unix;

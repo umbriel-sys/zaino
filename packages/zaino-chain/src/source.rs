@@ -31,10 +31,9 @@ pub trait ChainViewSource:
     + zaino_source::OneShotGetBlockHeader
     + zaino_source::OneShotGetRawBlock
     + zaino_source::OneShotGetRawBlockByHash
-    // The compact projection, so filling a hole in a wallet-sync range does not
-    // pay to transfer and parse whole blocks.
-    + zaino_source::OneShotGetPreIndexCompactBlock
-    + zaino_source::OneShotGetBlockVerbose
+    // The complete compact block, so filling a hole in a wallet-sync range
+    // is one read per block.
+    + zaino_source::OneShotGetCompactBlock
     + zaino_source::OneShotGetCommitmentTreeRoots
     // Consensus bytes and commitment trees, which no tier retains.
     + zaino_source::OneShotGetTransaction
@@ -57,8 +56,7 @@ impl<T> ChainViewSource for T where
         + zaino_source::OneShotGetBlockHeader
         + zaino_source::OneShotGetRawBlock
         + zaino_source::OneShotGetRawBlockByHash
-        + zaino_source::OneShotGetPreIndexCompactBlock
-        + zaino_source::OneShotGetBlockVerbose
+        + zaino_source::OneShotGetCompactBlock
         + zaino_source::OneShotGetCommitmentTreeRoots
         + zaino_source::OneShotGetTransaction
         + zaino_source::OneShotGetTreestate

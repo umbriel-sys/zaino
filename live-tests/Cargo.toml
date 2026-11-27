@@ -7,26 +7,45 @@ members = [
 resolver = "2"
 
 [workspace.package]
-authors = ["Zingo Lab Cyan"]
-repository = "https://github.com/zingolabs"
-homepage = "https://www.zingolabs.org/"
+authors = ["Umbriel Systems Ltd"]
+repository = "https://github.com/umbriel-sys/zaino"
+homepage = "https://github.com/umbriel-sys/zaino"
 edition = "2021"
 license = "Apache-2.0"
 version = "0.2.0"
 
+# The indexer and its dependencies are optimised even in a dev build: the
+# suite's time is spent inside them, not in the test code.
+[profile.dev.package."*"]
+opt-level = 3
+
 [workspace.dependencies]
 zaino-testutils = { path = "zaino-testutils" }
-ztest = "0.1"
+
+# The indexer under test runs in-process, at its operational seam depth.
+zainod = { path = "../packages/zainod" }
+zaino-primitives = { path = "../packages/zaino-primitives", features = ["serde"] }
+zaino-proto = { path = "../packages/zaino-proto", default-features = false }
+
 tokio = { version = "1.38", features = ["full"] }
 anyhow = "1.0"
+serde = { version = "1.0", features = ["derive"] }
 serde_json = { version = "1.0", features = ["preserve_order"] }
 rstest = "0.23"
+tonic = "0.14"
+prost = "0.14"
+reqwest = { version = "0.13", default-features = false, features = ["json"] }
+hex = "0.4"
+sha2 = "0.10"
+toml = "1.1"
+tempfile = "3.2"
+nix = { version = "0.31", features = ["signal", "process"] }
+tracing = "0.1"
+thiserror = "2.0"
+zcash_protocol = "0.11"
 
 # `legacy_parser` (the independent second parser the transaction vectors compare
-# against) and the vectors it parses. Path deps into packages/ are limited to
-# `zaino-proto`, whose generated compact-format types the parser renders into.
-zaino-proto = { path = "../packages/zaino-proto", default-features = false }
-zebra-chain = "12.0"
-prost = "0.14"
-thiserror = "2.0"
+# against) and the vectors it parses.
+zebra-chain = "16.0"
+orchard = "0.16"
 wire_serialized_transaction_test_data = "1.0.0"

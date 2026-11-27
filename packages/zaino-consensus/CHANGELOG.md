@@ -13,6 +13,15 @@ and this library adheres to Rust's notion of
 ### Removed
 ### Fixed
 
+## [0.2.1] - 2026-11-21
+### Added
+- `branch_id`: the consensus branch ids from Overwinter to NU7, checked against zebra's.
+- `median_time_past` and `MEDIAN_TIME_SPAN`: protocol §7.7.3's `MedianTime` over the last eleven block times, the one definition of a block's `mediantime`.
+- `BLOCK_MAX_TIME_SINCE_MEDIAN` and `TESTNET_MAX_TIME_START_HEIGHT`, checked against zebra.
+- `difficulty(bits, pow_limit_bits)` and the Mainnet, Testnet and Regtest proof-of-work limits, checked against zebra.
+### Internal
+- Denies panicking code in production.
+
 ## [0.2.0] - 2026-09-26
 ### Changed
 - `work_from_bits`, `WorkError` and the `work` module are removed; `zaino-primitives` owns the one native difficulty pipeline.

@@ -1,66 +1,40 @@
 # `zaino-encoding` — usage
 
-Versioned encoding for records that go on disk. A leaf crate: it depends on
-nothing of Zaino's, and it knows about no domain type. Implementations live with
-the types they encode — for the finalised state, that is
-[`zaino-chain-store-zainodb`](../zaino-chain-store-zainodb/usage.md).
+Zcash consensus bytes → Zaino's domain `Block` and `Transaction`. A decoder
+only: no validator, no RPC, no node library.
 
-```rust
-use zaino_encoding::ZainoVersionedSerde;
+## What it does
 
-let bytes = record.to_bytes()?;          // current version tag + body
-let round_tripped = MyRecord::from_bytes(&bytes)?;
-```
+- `parse_block(bytes, light)` — a serialized block. `light` adds the
+  header's merkle root over the txids, and every anchor, note commitment and
+  Orchard-shaped nullifier as a canonical field element.
+- `parse_transaction(bytes)` — one serialized transaction, structure only,
+  for bytes a validator has verified (a mempool transaction). Trailing bytes
+  are refused.
+- `encode_header(&header)` — a block header back to its consensus bytes
+  (1,487 with a standard Equihash solution), the bytes its hash commits to.
+- `GENESIS_COINBASE_SCRIPT_SIG` — the one coinbase without a BIP 34 height.
 
-## Every record carries its version, and old decoders never leave
+Malformed input is a typed `DecodeError`, never a panic.
 
-The format is one version tag byte, then a body. `Self::VERSION` is the newest
-version *this build writes*; reading dispatches on the tag that is actually
-there. So a database written by an older build stays readable, and that is the
-entire point of the crate.
+## What it checks, and what it does not
 
-Adding a format:
+It enforces the structure `zcash_primitives` and `zebra-chain` check when
+parsing: lengths, canonical CompactSizes, versions and version groups, known
+branch ids and pool activation, reserved flag bits, value ranges, BIP 34
+coinbase heights. Txids are computed here (SHA-256d up to v4, ZIP 244 /
+ZIP 229 from v5).
 
-1. Add `encode_vN` / `decode_vN` for the new layout.
-2. Bump `const VERSION` to the new tag.
-3. Point `encode_latest` / `decode_latest` at the new helpers.
-4. **Leave every earlier `decode_vM` in place.** Deleting one makes every row
-   written before the bump unreadable, and nothing in the type system will tell
-   you.
+It does no curve arithmetic and checks no proof, signature or consensus
+rule: the bytes come from a validator that has.
 
-Only implement the `encode_vN` helpers you actually need to reproduce historical
-bytes; the defaults return an error, which keeps an implementation explicit
-about what it can and cannot regenerate.
+On every block zebra accepts, the result matches `zebra-chain` +
+`zaino_primitives::zebra`; the tests check this against zebra's block vectors
+and arbitrary blocks and transactions for every upgrade, including v6. zebra
+is a test oracle only.
 
-## Nested fields must have their version pinned
+## Who uses it
 
-This is the rule that bites, and it is not optional.
-
-`StoredEntry*` checksums are `blake2b256(encoded_key ‖ encoded_value)` over the
-exact bytes on disk. If a record contains another `ZainoVersionedSerde` field,
-producing a *historical* top-level encoding requires the inner field to encode
-at its historical version too — otherwise the nested tag and body change, the
-bytes differ, and the checksum fails to verify against a row that was never
-corrupt.
-
-```rust
-// Right: the nested field is pinned to the version the historical writer used.
-inner.serialize_with_version(&mut w, Some(version::V1))?;
-
-// Wrong: writes whatever this build's VERSION is, silently changing the bytes.
-inner.serialize(&mut w)?;
-```
-
-## Endianness is a choice each field makes
-
-Both orders are provided because both are used. Keys that must sort correctly
-under LMDB's byte comparison — block heights, above all — are big-endian;
-payload fields are little-endian. Neither is a default; pick per field and match
-whatever is already on disk.
-
-## Pin new formats with golden vectors
-
-Anything encoded here ends up in a file that outlives the build that wrote it. A
-type whose encoding is not pinned by checked-in hex can be changed by a
-refactor with nothing failing until a user opens an old database. Put the
-vectors next to the implementation, not here.
+- `zaino-source-zcash-rpc` decodes the blocks it fetches, and adds its `Full`
+  level (zebra's own parse as a cross-check) on top.
+- `zaino-mempool-service` decodes each mempool transaction once at ingest.

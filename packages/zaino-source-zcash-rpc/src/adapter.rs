@@ -1,0 +1,1573 @@
+//! Trait implementations: zaino-source query traits on [`ZcashRpcAdapter`].
+
+use zaino_primitives::types::rpc::TransactionVerbosity;
+use zaino_primitives::types::{Block, BlockHash, Height, TransactionId, Treestate};
+use zaino_rpc::RpcClient;
+use zaino_source::{
+    FailureMode, GetBlockError, GetChainTipError, GetTreestateError, NonDomainError, QueryError,
+};
+
+use crate::parse;
+use crate::raw_block::{self, BlockVerification};
+
+/// Zcash JSON-RPC adapter.
+///
+/// Implements zaino-source query traits by delegating to an [`RpcClient`],
+/// parsing replies as the zcash RPC spec defines them (raw blocks by zaino's
+/// own non-validating parser), and converting to domain types.
+/// Single-attempt — wrap with [`zaino_source::ValidatorClient`] for retries.
+pub struct ZcashRpcAdapter {
+    rpc: RpcClient,
+    quirks: Quirks,
+    verification: BlockVerification,
+    /// The node's network, read once when a quirk needs it.
+    network: std::sync::OnceLock<zaino_primitives::types::Network>,
+}
+
+impl ZcashRpcAdapter {
+    /// Wrap an existing [`RpcClient`], reading every reply as the spec says.
+    pub fn new(rpc: RpcClient) -> Self {
+        Self::with_quirks(rpc, Quirks::default())
+    }
+
+    /// Wrap an existing [`RpcClient`], reading the replies the spec leaves to
+    /// the node through `quirks`.
+    pub fn with_quirks(rpc: RpcClient, quirks: Quirks) -> Self {
+        Self {
+            rpc,
+            quirks,
+            verification: BlockVerification::default(),
+            network: std::sync::OnceLock::new(),
+        }
+    }
+
+    /// The node's network, from `getblockchaininfo`'s `chain`, read once.
+    async fn network<E>(&self) -> Result<zaino_primitives::types::Network, QueryError<E>>
+    where
+        E: std::fmt::Debug + std::fmt::Display,
+    {
+        if let Some(network) = self.network.get() {
+            return Ok(*network);
+        }
+        let network = self
+            .call_parsed("getblockchaininfo", vec![], parse::parse_network)
+            .await?;
+        Ok(*self.network.get_or_init(|| network))
+    }
+
+    /// The first of `addresses` not for the node's network, checked only under
+    /// [`Quirks::unchecked_address_network`]; otherwise the node checks.
+    async fn foreign_address<'a, E>(
+        &self,
+        addresses: &'a [String],
+    ) -> Result<Option<&'a str>, QueryError<E>>
+    where
+        E: std::fmt::Debug + std::fmt::Display,
+    {
+        if !self.quirks.unchecked_address_network {
+            return Ok(None);
+        }
+        let network = self.network().await?;
+        Ok(addresses
+            .iter()
+            .find(|address| {
+                !zaino_primitives::types::TransparentAddress::try_new(address.as_str())
+                    .is_ok_and(|parsed| parsed.is_for(network))
+            })
+            .map(String::as_str))
+    }
+
+    /// Check raw blocks to `verification` (default [`BlockVerification::Off`]).
+    pub fn with_block_verification(self, verification: BlockVerification) -> Self {
+        Self {
+            verification,
+            ..self
+        }
+    }
+}
+
+/// Readings of the replies the zcash RPC spec leaves to the node, supplied by
+/// the crate that knows which node answers. `Quirks::default()` reads every
+/// reply as the spec says.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct Quirks {
+    /// Reads the node's refusal of an address query that matched too many
+    /// rows, answering the cap. The spec has no such refusal: without this,
+    /// every such reply is a failure.
+    pub result_cap: Option<fn(&NonDomainError) -> Option<usize>>,
+    /// The node answers another network's address empty where zcashd refuses
+    /// it; the adapter then checks each address's network itself.
+    pub unchecked_address_network: bool,
+}
+
+impl zaino_source::ValidatorSource for ZcashRpcAdapter {
+    // The RPC adapter's non-domain faults are already the seam type, via
+    // `From<RpcError> for NonDomainError`; the identity mapping applies.
+    type NonDomain = NonDomainError;
+}
+
+/// Parse errors are always non-retryable.
+fn from_parse(e: parse::ParseError) -> NonDomainError {
+    NonDomainError::from_cause(FailureMode::Parse, e)
+}
+
+/// The RPC error codes a validator uses to say "the thing you asked about does
+/// not exist".
+///
+/// - `-8` (`InvalidParameter`) is zebrad's code for `getblock`'s literal
+///   `"Block not found"`.
+/// - `-5` (`InvalidAddressOrKey`) is its code for the same answer on the
+///   hash-addressed methods, and for `getrawtransaction`'s "no information
+///   about transaction".
+///
+/// # Why reading these as "absent" is safe here
+///
+/// Both codes are overloaded upstream: `-8` also means "your parameter was
+/// malformed", `-5` also means "that address is not valid". Reading them as
+/// absence would be dangerous if a caller could send a malformed parameter —
+/// a Zaino bug would surface as a silent `None` instead of an error.
+///
+/// It cannot, on the methods that use [`absent_or_fetch`]. Every parameter
+/// there is rendered from a domain type: a [`Height`] becomes a decimal `u32`,
+/// a [`BlockHash`] or [`TransactionHash`] becomes exactly 64 hex characters,
+/// and the verbosity arguments are literals in this file. None of those can be
+/// malformed, so on those methods these codes have one meaning.
+///
+/// The address-keyed methods are the exception and are handled separately: for
+/// them `-5` *is* the caller's address being rejected, which is why their
+/// domain error says so rather than saying "not found".
+const NOT_FOUND_CODES: [i64; 2] = [-5, -8];
+
+/// The code a validator uses to reject a caller's address.
+///
+/// `-5` (`InvalidAddressOrKey`) only. `-8` is deliberately excluded here: on
+/// the address-keyed methods it means the *request envelope* was malformed —
+/// a bad `start`/`end` range, or a missing field — which is a Zaino bug, not
+/// the caller's address being wrong, and must surface as a failure.
+const INVALID_ADDRESS_CODE: i64 = -5;
+
+/// `getspentinfo`'s answer for an outpoint with no spend on record.
+///
+/// The same `-5` as [`INVALID_ADDRESS_CODE`], named separately because it says
+/// something different: on `getspentinfo` there is no address to reject, and
+/// the legacy full node uses this code for "unspent, unknown, or no spent index" alike.
+const NO_SPEND_ON_RECORD: i64 = -5;
+
+/// The JSON-RPC standard code for a method the server does not implement.
+///
+/// Not a legacy full-node legacy code — it comes from the envelope, not the application.
+/// Relevant because `getspentinfo` is legacy-only, so a zebrad-backed
+/// deployment answers every call with this.
+const METHOD_NOT_FOUND: i64 = -32601;
+
+/// Whether an error is the validator rejecting one of the addresses asked about.
+fn is_invalid_address(error: &NonDomainError) -> bool {
+    matches!(error.mode, FailureMode::RpcError(INVALID_ADDRESS_CODE))
+}
+
+/// Whether an error is the validator answering "that does not exist".
+fn is_not_found(error: &NonDomainError) -> bool {
+    matches!(error.mode, FailureMode::RpcError(code) if NOT_FOUND_CODES.contains(&code))
+}
+
+/// Classifies a transport failure as either the port's "absent" domain answer
+/// or a genuine fetch failure.
+///
+/// The distinction is load-bearing, not cosmetic: [`QueryError::Domain`] is an
+/// answer and is returned immediately, while [`QueryError::NonDomain`] is a failure
+/// and is retried by [`ValidatorClient`](zaino_source::ValidatorClient) and escalated by
+/// consumers. A missing block reported as a fetch failure stalls the sync loop
+/// against a healthy validator, which is exactly what it did before this
+/// existed.
+fn absent_or_fetch<E>(error: zaino_rpc::RpcError, absent: impl FnOnce() -> E) -> QueryError<E>
+where
+    E: std::fmt::Debug + std::fmt::Display,
+{
+    let error: NonDomainError = error.into();
+    if is_not_found(&error) {
+        QueryError::Domain(absent())
+    } else {
+        QueryError::NonDomain(error)
+    }
+}
+
+/// The codes a validator uses to reject a submitted transaction.
+///
+/// `-22` (`Deserialization`) is the transaction failing to parse; `-25`
+/// (`Verify`), `-26` (`VerifyRejected`) and `-27` (`VerifyAlreadyInChain`) are
+/// the validator considering it and declining. All four are answers about the
+/// transaction, not failures to reach the node, so a client should see the
+/// reason rather than a generic transport error.
+fn submission_rejection(error: &NonDomainError) -> Option<zaino_source::SendRawTransactionError> {
+    use zaino_source::SendRawTransactionError as Rejection;
+
+    let message = error.message.clone();
+    match error.mode {
+        FailureMode::RpcError(-22) => Some(Rejection::Malformed(message)),
+        FailureMode::RpcError(-25) => Some(Rejection::Rejected(message)),
+        FailureMode::RpcError(-26) => Some(Rejection::RejectedByPolicy(message)),
+        FailureMode::RpcError(-27) => Some(Rejection::AlreadyInChain(message)),
+        _ => None,
+    }
+}
+
+/// The codes `getspentinfo` answers with rather than fails with.
+///
+/// `-5` is the legacy full node saying it has no spend on record; `-32601` is a validator
+/// saying it does not implement the method, which for this legacy-only method
+/// means the backing node is zebrad. Both are answers about the question, so a
+/// client should see the reason rather than a generic transport error — and
+/// they must stay distinct, because reading "I cannot answer" as "the output is
+/// unspent" would report a spent output as unspent.
+fn spent_info_rejection(error: &NonDomainError) -> Option<zaino_source::GetSpentInfoError> {
+    use zaino_source::GetSpentInfoError as Rejection;
+
+    match error.mode {
+        FailureMode::RpcError(NO_SPEND_ON_RECORD) => Some(Rejection::NotSpent),
+        FailureMode::RpcError(METHOD_NOT_FOUND) => Some(Rejection::Unsupported),
+        _ => None,
+    }
+}
+
+/// Classifies a transport failure on a method the validator may not implement.
+///
+/// `-32601` is the validator saying it does not implement the method (on
+/// `getrawmempool`, that it exposes no mempool at all). That is an answer about
+/// the node rather than a failure of this request: retrying cannot change it,
+/// so a consumer should be told rather than left to re-poll a validator that
+/// will never answer.
+///
+/// Nothing else is classified. A mempool that is merely empty answers with an
+/// empty list, and a validator still starting up fails at the transport level —
+/// both of which are correctly *not* this.
+fn method_missing_or_fetch<E>(
+    error: zaino_rpc::RpcError,
+    unavailable: impl FnOnce() -> E,
+) -> QueryError<E>
+where
+    E: std::fmt::Debug + std::fmt::Display,
+{
+    let error: NonDomainError = error.into();
+    if matches!(error.mode, FailureMode::RpcError(METHOD_NOT_FOUND)) {
+        QueryError::Domain(unavailable())
+    } else {
+        QueryError::NonDomain(error)
+    }
+}
+
+/// Classifies a transport failure on an address-keyed method.
+///
+/// Separate from [`absent_or_fetch`] because these methods reject the caller's
+/// *address*, not a missing object, and only `-5` says so — see
+/// [`INVALID_ADDRESS_CODE`]. `too_many` maps the node's result cap, read by
+/// [`Quirks::result_cap`], for the methods that have one.
+fn invalid_address_or_fetch<E>(
+    quirks: &Quirks,
+    error: zaino_rpc::RpcError,
+    invalid: impl FnOnce(String) -> E,
+    too_many: impl FnOnce(usize) -> Option<E>,
+) -> QueryError<E>
+where
+    E: std::fmt::Debug + std::fmt::Display,
+{
+    let error: NonDomainError = error.into();
+    if is_invalid_address(&error) {
+        return QueryError::Domain(invalid(error.message));
+    }
+    let cap = quirks.result_cap.and_then(|read| read(&error));
+    match cap.and_then(too_many) {
+        Some(rejection) => QueryError::Domain(rejection),
+        None => QueryError::NonDomain(error),
+    }
+}
+
+impl zaino_source::OneShotGetBlock for ZcashRpcAdapter {
+    #[cfg_attr(feature = "tracing", tracing::instrument(skip(self), fields(h = u32::from(height))))]
+    async fn get_block(&self, height: Height) -> Result<Block, QueryError<GetBlockError>> {
+        // Fetch raw hex block via getblock(height, 0).
+        let params = vec![
+            serde_json::Value::String(u32::from(height).to_string()),
+            serde_json::Value::Number(0.into()),
+        ];
+        let value =
+            self.rpc.call("getblock", params).await.map_err(|error| {
+                absent_or_fetch(error, || GetBlockError::HeightNotFound(height))
+            })?;
+
+        // Hex decode.
+        let raw_bytes = parse::parse_raw_block(&value).map_err(from_parse)?;
+        raw_block::parse_block(&raw_bytes, self.verification)
+            .map_err(|e| NonDomainError::from_cause(FailureMode::Parse, e).into())
+    }
+}
+
+impl zaino_source::OneShotGetChainTip for ZcashRpcAdapter {
+    #[cfg_attr(feature = "tracing", tracing::instrument(skip(self)))]
+    async fn get_chain_tip(&self) -> Result<(BlockHash, Height), QueryError<GetChainTipError>> {
+        let hash_value = self
+            .rpc
+            .call("getbestblockhash", vec![])
+            .await
+            .map_err(|e| QueryError::NonDomain(e.into()))?;
+        let hash = parse::parse_block_hash(&hash_value).map_err(from_parse)?;
+
+        let height_value = self
+            .rpc
+            .call("getblockcount", vec![])
+            .await
+            .map_err(|e| QueryError::NonDomain(e.into()))?;
+        let height = parse::parse_height(&height_value).map_err(from_parse)?;
+
+        Ok((hash, height))
+    }
+}
+
+impl zaino_source::OneShotGetCompactBlock for ZcashRpcAdapter {
+    #[cfg_attr(feature = "tracing", tracing::instrument(skip(self, pools), fields(h = u32::from(height))))]
+    async fn get_compact_block(
+        &self,
+        height: Height,
+        pools: zaino_primitives::types::PoolFilter,
+    ) -> Result<zaino_primitives::types::CompactBlock, QueryError<GetBlockError>> {
+        // The RPC has no compact-block request: the block's bytes come from
+        // `getblock` verbosity 0 and its tree sizes from verbosity 1. Both are
+        // asked together, and must name one block. The block is stripped down
+        // through the domain `Block`.
+        use zaino_source::{OneShotGetBlock, OneShotGetBlockVerbose};
+        let (block, verbose) = tokio::join!(
+            self.get_block(height),
+            self.get_block_verbose(
+                height,
+                zaino_primitives::types::BlockVerbosity::TransactionIds
+            ),
+        );
+        let block = block?;
+        let verbose = verbose.map_err(|error| match error {
+            QueryError::Domain(_) => QueryError::Domain(GetBlockError::HeightNotFound(height)),
+            QueryError::NonDomain(error) => QueryError::NonDomain(error),
+        })?;
+        if verbose.hash != block.header.hash {
+            return Err(QueryError::NonDomain(NonDomainError::new(
+                FailureMode::InvalidSourceData,
+                format!(
+                    "getblock answered two different blocks at height {height}: {} and {}",
+                    block.header.hash, verbose.hash
+                ),
+            )));
+        }
+        Ok(zaino_primitives::types::PreIndexCompactBlock::from(&block)
+            .into_compact(verbose.tree_sizes.into(), pools))
+    }
+}
+
+impl zaino_source::OneShotGetTreestate for ZcashRpcAdapter {
+    #[cfg_attr(feature = "tracing", tracing::instrument(skip(self), fields(h = u32::from(height))))]
+    async fn get_treestate(
+        &self,
+        height: Height,
+    ) -> Result<Treestate, QueryError<GetTreestateError>> {
+        let params = vec![serde_json::Value::String(u32::from(height).to_string())];
+        let value = self
+            .rpc
+            .call("z_gettreestate", params)
+            .await
+            .map_err(|error| {
+                absent_or_fetch(error, || GetTreestateError::HeightNotFound(height))
+            })?;
+        parse::parse_treestate(&value).map_err(|e| from_parse(e).into())
+    }
+}
+
+/// Build the positional params for a hash-addressed call.
+fn hash_param(hash: BlockHash) -> Vec<serde_json::Value> {
+    vec![serde_json::Value::String(hash_to_display_hex(hash))]
+}
+
+/// Render a block hash in RPC display order (big-endian hex).
+fn hash_to_display_hex(hash: BlockHash) -> String {
+    let mut bytes = <[u8; 32]>::from(hash);
+    bytes.reverse();
+    hex::encode(bytes)
+}
+
+/// Render a transaction id in RPC display order (big-endian hex).
+fn txid_to_display_hex(txid: TransactionId) -> String {
+    let mut bytes = <[u8; 32]>::from(txid);
+    bytes.reverse();
+    hex::encode(bytes)
+}
+
+fn addresses_param(addresses: &[String]) -> serde_json::Value {
+    serde_json::json!({ "addresses": addresses })
+}
+
+impl ZcashRpcAdapter {
+    /// Issue a call and parse its result, classifying transport failures with
+    /// `classify` and parse failures as [`QueryError::NonDomain`].
+    ///
+    /// The classifier is what separates the wrappers below: it decides whether a
+    /// given transport failure is the port's domain answer or a real fetch
+    /// failure. `timeout` is the per-request bound, `None` for the client's
+    /// default.
+    async fn call_parsed_classified<T, E>(
+        &self,
+        method: &'static str,
+        params: Vec<serde_json::Value>,
+        timeout: Option<std::time::Duration>,
+        parse: impl FnOnce(&serde_json::Value) -> Result<T, parse::ParseError>,
+        classify: impl FnOnce(zaino_rpc::RpcError) -> QueryError<E>,
+    ) -> Result<T, QueryError<E>>
+    where
+        E: std::fmt::Debug + std::fmt::Display,
+    {
+        let value = self
+            .rpc
+            .call_with_timeout(method, params, timeout)
+            .await
+            .map_err(classify)?;
+        parse(&value).map_err(|e| QueryError::NonDomain(from_parse(e)))
+    }
+
+    /// Issue a call and parse its result, mapping transport and parse failures
+    /// into the caller's error type.
+    async fn call_parsed<T, E>(
+        &self,
+        method: &'static str,
+        params: Vec<serde_json::Value>,
+        parse: impl FnOnce(&serde_json::Value) -> Result<T, parse::ParseError>,
+    ) -> Result<T, QueryError<E>>
+    where
+        E: std::fmt::Debug + std::fmt::Display,
+    {
+        self.call_parsed_classified(method, params, None, parse, |error| {
+            QueryError::NonDomain(error.into())
+        })
+        .await
+    }
+
+    /// [`call_parsed`](Self::call_parsed), but reporting the validator's
+    /// not-found codes as the port's own "absent" answer.
+    ///
+    /// For the methods whose port defines one — see [`NOT_FOUND_CODES`] for why
+    /// reading those codes this way is unambiguous on exactly these methods.
+    async fn call_parsed_or_absent<T, E>(
+        &self,
+        method: &'static str,
+        params: Vec<serde_json::Value>,
+        parse: impl FnOnce(&serde_json::Value) -> Result<T, parse::ParseError>,
+        absent: impl FnOnce() -> E,
+    ) -> Result<T, QueryError<E>>
+    where
+        E: std::fmt::Debug + std::fmt::Display,
+    {
+        self.call_parsed_classified(method, params, None, parse, |error| {
+            absent_or_fetch(error, absent)
+        })
+        .await
+    }
+
+    /// [`call_parsed`](Self::call_parsed), for the address-keyed methods,
+    /// reporting the validator's address rejection as the port's own
+    /// `InvalidAddress` answer.
+    async fn call_parsed_or_invalid_address<T, E>(
+        &self,
+        method: &'static str,
+        addresses: &[String],
+        params: Vec<serde_json::Value>,
+        parse: impl FnOnce(&serde_json::Value) -> Result<T, parse::ParseError>,
+        invalid: impl FnOnce(String) -> E,
+        too_many: impl FnOnce(usize) -> Option<E>,
+    ) -> Result<T, QueryError<E>>
+    where
+        E: std::fmt::Debug + std::fmt::Display,
+    {
+        if let Some(address) = self.foreign_address(addresses).await? {
+            return Err(QueryError::Domain(invalid(format!(
+                "an address for another network: {address}"
+            ))));
+        }
+        self.call_parsed_classified(method, params, None, parse, |error| {
+            invalid_address_or_fetch(&self.quirks, error, invalid, too_many)
+        })
+        .await
+    }
+
+    /// [`call_parsed`](Self::call_parsed), but reporting the validator's
+    /// not-found codes as `Ok(None)`.
+    ///
+    /// For `gettxout`, whose *ordinary* answer is already optional: an unspent
+    /// output is a successful query with nothing to report. the legacy full node returns JSON
+    /// `null` and zebrad returns a not-found code; both mean absent.
+    ///
+    /// `getspentinfo` used to share this, and should not have: it has no null
+    /// answer in the interface, so absence is a domain rejection carrying its
+    /// own code rather than an `Ok(None)`. See
+    /// [`GetSpentInfo`](zaino_source::GetSpentInfo).
+    async fn call_parsed_optional<T, E>(
+        &self,
+        method: &'static str,
+        params: Vec<serde_json::Value>,
+        parse: impl FnOnce(&serde_json::Value) -> Result<Option<T>, parse::ParseError>,
+    ) -> Result<Option<T>, QueryError<E>>
+    where
+        E: std::fmt::Debug + std::fmt::Display,
+    {
+        match self.rpc.call(method, params).await {
+            Ok(value) => parse(&value).map_err(|e| QueryError::NonDomain(from_parse(e))),
+            Err(error) => {
+                let error: NonDomainError = error.into();
+                if is_not_found(&error) {
+                    Ok(None)
+                } else {
+                    Err(QueryError::NonDomain(error))
+                }
+            }
+        }
+    }
+}
+
+impl zaino_source::OneShotGetBlockByHash for ZcashRpcAdapter {
+    async fn get_block_by_hash(
+        &self,
+        hash: BlockHash,
+    ) -> Result<Block, QueryError<zaino_source::GetBlockByHashError>> {
+        let params = vec![
+            serde_json::Value::String(hash_to_display_hex(hash)),
+            serde_json::Value::Number(0.into()),
+        ];
+        let raw_bytes: Vec<u8> = self
+            .call_parsed_or_absent("getblock", params, parse::parse_raw_block, || {
+                zaino_source::GetBlockByHashError::NotFound(hash)
+            })
+            .await?;
+
+        raw_block::parse_block(&raw_bytes, self.verification)
+            .map_err(|e| NonDomainError::from_cause(FailureMode::Parse, e).into())
+    }
+}
+
+impl zaino_source::OneShotGetBestBlockHeight for ZcashRpcAdapter {
+    async fn get_best_block_height(
+        &self,
+    ) -> Result<Height, QueryError<zaino_source::GetBestBlockHeightError>> {
+        self.call_parsed("getblockcount", vec![], parse::parse_height)
+            .await
+    }
+}
+
+impl zaino_source::OneShotGetBlockVerbose for ZcashRpcAdapter {
+    async fn get_block_verbose(
+        &self,
+        height: Height,
+        verbosity: zaino_primitives::types::BlockVerbosity,
+    ) -> Result<zaino_primitives::types::BlockVerbose, QueryError<zaino_source::GetBlockVerboseError>>
+    {
+        let params = vec![
+            serde_json::Value::String(u32::from(height).to_string()),
+            serde_json::Value::Number(verbosity.level().into()),
+        ];
+        self.call_parsed_or_absent("getblock", params, parse::parse_block_verbose, || {
+            zaino_source::GetBlockVerboseError::HeightNotFound(height)
+        })
+        .await
+    }
+}
+
+impl zaino_source::OneShotGetBlockVerboseByHash for ZcashRpcAdapter {
+    async fn get_block_verbose_by_hash(
+        &self,
+        hash: BlockHash,
+        verbosity: zaino_primitives::types::BlockVerbosity,
+    ) -> Result<zaino_primitives::types::BlockVerbose, QueryError<zaino_source::GetBlockVerboseError>>
+    {
+        let params = vec![
+            serde_json::Value::String(hash_to_display_hex(hash)),
+            serde_json::Value::Number(verbosity.level().into()),
+        ];
+        self.call_parsed_or_absent("getblock", params, parse::parse_block_verbose, || {
+            zaino_source::GetBlockVerboseError::BlockNotFound(hash)
+        })
+        .await
+    }
+}
+
+impl zaino_source::OneShotGetBlockHeader for ZcashRpcAdapter {
+    async fn get_block_header(
+        &self,
+        hash: BlockHash,
+    ) -> Result<
+        zaino_primitives::types::rpc::BlockHeaderVerbose,
+        QueryError<zaino_source::GetBlockHeaderError>,
+    > {
+        let params = vec![
+            serde_json::Value::String(hash_to_display_hex(hash)),
+            serde_json::Value::Bool(true),
+        ];
+        self.call_parsed_or_absent(
+            "getblockheader",
+            params,
+            parse::parse_block_header_verbose,
+            || zaino_source::GetBlockHeaderError::BlockNotFound(hash),
+        )
+        .await
+    }
+}
+
+impl zaino_source::OneShotGetRawBlockHeader for ZcashRpcAdapter {
+    async fn get_raw_block_header(
+        &self,
+        hash: BlockHash,
+    ) -> Result<Vec<u8>, QueryError<zaino_source::GetBlockHeaderError>> {
+        let params = vec![
+            serde_json::Value::String(hash_to_display_hex(hash)),
+            serde_json::Value::Bool(false),
+        ];
+        self.call_parsed_or_absent("getblockheader", params, parse::parse_raw_block, || {
+            zaino_source::GetBlockHeaderError::BlockNotFound(hash)
+        })
+        .await
+    }
+}
+
+impl zaino_source::OneShotGetBlockDeltas for ZcashRpcAdapter {
+    async fn get_block_deltas(
+        &self,
+        hash: BlockHash,
+    ) -> Result<
+        zaino_primitives::types::rpc::BlockDeltas,
+        QueryError<zaino_source::GetBlockDeltasError>,
+    > {
+        self.call_parsed_or_absent(
+            "getblockdeltas",
+            hash_param(hash),
+            parse::parse_block_deltas,
+            || zaino_source::GetBlockDeltasError::BlockNotFound(hash),
+        )
+        .await
+    }
+}
+
+impl zaino_source::OneShotGetChainTips for ZcashRpcAdapter {
+    async fn get_chain_tips(
+        &self,
+    ) -> Result<
+        Vec<zaino_primitives::types::rpc::ChainTip>,
+        QueryError<zaino_source::GetChainTipsError>,
+    > {
+        self.call_parsed_classified(
+            "getchaintips",
+            vec![],
+            None,
+            parse::parse_chain_tips,
+            |error| method_missing_or_fetch(error, || zaino_source::GetChainTipsError::Unsupported),
+        )
+        .await
+    }
+}
+
+impl zaino_source::OneShotGetDifficulty for ZcashRpcAdapter {
+    async fn get_difficulty(
+        &self,
+    ) -> Result<zaino_primitives::types::Difficulty, QueryError<zaino_source::GetDifficultyError>>
+    {
+        self.call_parsed("getdifficulty", vec![], parse::as_f64)
+            .await
+    }
+}
+
+impl zaino_source::OneShotGetBlockchainInfo for ZcashRpcAdapter {
+    async fn get_blockchain_info(
+        &self,
+    ) -> Result<
+        zaino_primitives::types::BlockchainInfo,
+        QueryError<zaino_source::GetBlockchainInfoError>,
+    > {
+        self.call_parsed("getblockchaininfo", vec![], parse::parse_blockchain_info)
+            .await
+    }
+}
+
+impl zaino_source::OneShotGetMempoolTxids for ZcashRpcAdapter {
+    async fn get_mempool_txids(
+        &self,
+    ) -> Result<Vec<TransactionId>, QueryError<zaino_source::GetMempoolTxidsError>> {
+        self.call_parsed_classified(
+            "getrawmempool",
+            vec![],
+            None,
+            parse::parse_mempool_txids,
+            |error| {
+                method_missing_or_fetch(error, || zaino_source::GetMempoolTxidsError::Unavailable)
+            },
+        )
+        .await
+    }
+}
+
+impl zaino_source::OneShotGetMempoolMetadata for ZcashRpcAdapter {
+    async fn get_mempool_metadata(
+        &self,
+    ) -> Result<Vec<zaino_source::MempoolTxMeta>, QueryError<zaino_source::GetMempoolMetadataError>>
+    {
+        // The validator answers this by walking its entire mempool, loading
+        // full transactions and aggregating descendant stats. Under the
+        // client-wide timeout a busy validator would read as a hard error, so
+        // this method names its own bound rather than inheriting the default —
+        // the only axis on which it differs from an ordinary call.
+        self.call_parsed_classified(
+            "getrawmempool",
+            vec![serde_json::Value::Bool(true)],
+            Some(zaino_rpc::HEAVY_METHOD_TIMEOUT),
+            parse::parse_mempool_metadata,
+            |error| {
+                method_missing_or_fetch(error, || {
+                    zaino_source::GetMempoolMetadataError::Unavailable
+                })
+            },
+        )
+        .await
+    }
+}
+
+impl zaino_source::OneShotGetRawMempoolTransaction for ZcashRpcAdapter {
+    async fn get_raw_mempool_transaction(
+        &self,
+        txid: TransactionId,
+    ) -> Result<Vec<u8>, QueryError<zaino_source::GetRawMempoolTransactionError>> {
+        // Verbosity 0: the bytes alone. The caller already knows this
+        // transaction is in the mempool — it came from the listing — so the
+        // location `getrawtransaction 1` would add is redundant.
+        let params = vec![
+            serde_json::Value::String(txid_to_display_hex(txid)),
+            serde_json::Value::Number(0.into()),
+        ];
+        self.call_parsed_or_absent(
+            "getrawtransaction",
+            params,
+            parse::parse_raw_transaction,
+            || zaino_source::GetRawMempoolTransactionError::NotFound(txid),
+        )
+        .await
+    }
+}
+
+impl zaino_source::OneShotGetMempoolSourceTip for ZcashRpcAdapter {
+    async fn get_mempool_source_tip(
+        &self,
+    ) -> Result<(BlockHash, Height), QueryError<std::convert::Infallible>> {
+        // `getblockchaininfo` rather than the `GetChainTip` pair, because it
+        // answers hash and height in one round trip. Reading them separately
+        // would let a block land between the two calls and hand the mempool a
+        // tip that never existed.
+        let info: zaino_primitives::types::BlockchainInfo = self
+            .call_parsed("getblockchaininfo", vec![], parse::parse_blockchain_info)
+            .await?;
+
+        Ok((info.best_block_hash, info.blocks))
+    }
+}
+
+impl zaino_source::OneShotGetAddressBalance for ZcashRpcAdapter {
+    async fn get_address_balance(
+        &self,
+        addresses: Vec<String>,
+    ) -> Result<
+        zaino_primitives::types::AddressBalance,
+        QueryError<zaino_source::GetAddressBalanceError>,
+    > {
+        self.call_parsed_or_invalid_address(
+            "getaddressbalance",
+            &addresses,
+            vec![addresses_param(&addresses)],
+            parse::parse_address_balance,
+            zaino_source::GetAddressBalanceError::InvalidAddress,
+            |_| None,
+        )
+        .await
+    }
+}
+
+impl zaino_source::OneShotGetAddressDeltas for ZcashRpcAdapter {
+    async fn get_address_deltas(
+        &self,
+        addresses: Vec<String>,
+        start: Height,
+        end: Height,
+    ) -> Result<
+        Vec<zaino_primitives::types::AddressDelta>,
+        QueryError<zaino_source::GetAddressDeltasError>,
+    > {
+        let params = vec![serde_json::json!({
+            "addresses": addresses,
+            "start": u32::from(start),
+            "end": u32::from(end),
+        })];
+        self.call_parsed_or_invalid_address(
+            "getaddressdeltas",
+            &addresses,
+            params,
+            parse::parse_address_deltas,
+            zaino_source::GetAddressDeltasError::InvalidAddress,
+            |_| None,
+        )
+        .await
+    }
+}
+
+impl zaino_source::OneShotGetAddressTxids for ZcashRpcAdapter {
+    async fn get_address_txids(
+        &self,
+        addresses: Vec<String>,
+        start: Height,
+        end: Height,
+    ) -> Result<Vec<TransactionId>, QueryError<zaino_source::GetAddressTxidsError>> {
+        let params = vec![serde_json::json!({
+            "addresses": addresses,
+            "start": u32::from(start),
+            "end": u32::from(end),
+        })];
+        self.call_parsed_or_invalid_address(
+            "getaddresstxids",
+            &addresses,
+            params,
+            parse::parse_txids,
+            zaino_source::GetAddressTxidsError::InvalidAddress,
+            |limit| Some(zaino_source::GetAddressTxidsError::TooManyResults { limit }),
+        )
+        .await
+    }
+}
+
+impl zaino_source::OneShotGetAddressUtxos for ZcashRpcAdapter {
+    async fn get_address_utxos(
+        &self,
+        addresses: Vec<String>,
+        page: zaino_source::UtxoPage,
+    ) -> Result<Vec<zaino_primitives::types::Utxo>, QueryError<zaino_source::GetAddressUtxosError>>
+    {
+        let params = serde_json::json!({
+            "addresses": addresses,
+            "startHeight": u32::from(page.start()),
+            "maxEntries": page.max_entries().map_or(0, |max| max.get()),
+        });
+        let utxos = self
+            .call_parsed_or_invalid_address(
+                "getaddressutxos",
+                &addresses,
+                vec![params],
+                parse::parse_address_utxos,
+                zaino_source::GetAddressUtxosError::InvalidAddress,
+                |limit| Some(zaino_source::GetAddressUtxosError::TooManyResults { limit }),
+            )
+            .await?;
+        // the page again, for a validator that ignores the fields
+        page.select(utxos, |utxo| utxo.height).map_err(|limit| {
+            QueryError::Domain(zaino_source::GetAddressUtxosError::TooManyResults { limit })
+        })
+    }
+}
+
+impl zaino_source::OneShotGetTreestateByHash for ZcashRpcAdapter {
+    async fn get_treestate_by_hash(
+        &self,
+        hash: BlockHash,
+    ) -> Result<Treestate, QueryError<zaino_source::GetTreestateByHashError>> {
+        self.call_parsed_or_absent(
+            "z_gettreestate",
+            hash_param(hash),
+            parse::parse_treestate,
+            || zaino_source::GetTreestateByHashError::BlockNotFound(hash),
+        )
+        .await
+    }
+}
+
+impl ZcashRpcAdapter {
+    /// Tree roots for the block `params` name (a height or a hash). Sapling
+    /// and Orchard come from the verbose block, which carries their roots;
+    /// the rest from `z_gettreestate`, whose frontier is hashed to a root
+    /// only for the pools the block reply lacked.
+    async fn tree_roots<E>(
+        &self,
+        params: Vec<serde_json::Value>,
+        absent: impl Fn() -> E,
+    ) -> Result<(BlockHash, zaino_primitives::types::TreeRoots), QueryError<E>>
+    where
+        E: std::fmt::Debug + std::fmt::Display,
+    {
+        let mut block_params = params.clone();
+        block_params.push(serde_json::Value::Number(1.into()));
+        let block = self
+            .call_parsed_or_absent(
+                "getblock",
+                block_params,
+                parse::parse_block_tree_roots,
+                &absent,
+            )
+            .await?;
+        let hash = block.hash;
+        let treestate = self
+            .call_parsed_or_absent("z_gettreestate", params, |value| Ok(value.clone()), &absent)
+            .await?;
+        // Hashing a frontier to its root is milliseconds of CPU; off the async
+        // thread, so fetches in flight hash in parallel instead of in turn.
+        let roots =
+            tokio::task::spawn_blocking(move || parse::complete_tree_roots(block, &treestate))
+                .await
+                .map_err(|join| {
+                    QueryError::from(NonDomainError::from_cause(FailureMode::Parse, join))
+                })?
+                .map_err(from_parse)?;
+        Ok((hash, roots))
+    }
+}
+
+impl zaino_source::OneShotGetCommitmentTreeRoots for ZcashRpcAdapter {
+    async fn get_commitment_tree_roots(
+        &self,
+        block: BlockHash,
+    ) -> Result<
+        zaino_primitives::types::TreeRoots,
+        QueryError<zaino_source::GetCommitmentTreeRootsError>,
+    > {
+        self.tree_roots(hash_param(block), || {
+            zaino_source::GetCommitmentTreeRootsError::BlockNotFound(block)
+        })
+        .await
+        .map(|(_, roots)| roots)
+    }
+}
+
+impl zaino_source::OneShotGetCommitmentTreeRootsByHeight for ZcashRpcAdapter {
+    async fn get_commitment_tree_roots_by_height(
+        &self,
+        height: Height,
+    ) -> Result<
+        (BlockHash, zaino_primitives::types::TreeRoots),
+        QueryError<zaino_source::GetCommitmentTreeRootsByHeightError>,
+    > {
+        self.tree_roots(
+            vec![serde_json::Value::String(u32::from(height).to_string())],
+            || zaino_source::GetCommitmentTreeRootsByHeightError::HeightNotFound(height),
+        )
+        .await
+    }
+}
+
+impl zaino_source::OneShotGetSubtreeRoots for ZcashRpcAdapter {
+    async fn get_subtree_roots(
+        &self,
+        pool: zaino_primitives::types::ShieldedPool,
+        start_index: u16,
+        limit: Option<u16>,
+    ) -> Result<
+        Vec<zaino_primitives::types::SubtreeRoot>,
+        QueryError<zaino_source::GetSubtreeRootsError>,
+    > {
+        let mut params = vec![
+            serde_json::Value::String(pool.to_string()),
+            serde_json::Value::Number(start_index.into()),
+        ];
+        // Omit the limit rather than sending a sentinel: the validator's own
+        // default applies when the argument is absent.
+        if let Some(limit) = limit {
+            params.push(serde_json::Value::Number(limit.into()));
+        }
+        self.call_parsed_classified(
+            "z_getsubtreesbyindex",
+            params,
+            None,
+            parse::parse_subtree_roots,
+            |error| pool_unavailable_or_fetch(error, pool),
+        )
+        .await
+    }
+}
+
+/// zcashd refuses a pool it lacks with `-8`, its only `-8` on this method;
+/// zebrad answers every pool it names.
+fn pool_unavailable_or_fetch(
+    error: zaino_rpc::RpcError,
+    pool: zaino_primitives::types::ShieldedPool,
+) -> QueryError<zaino_source::GetSubtreeRootsError> {
+    let error: NonDomainError = error.into();
+    match error.mode {
+        FailureMode::RpcError(-8) => {
+            QueryError::Domain(zaino_source::GetSubtreeRootsError::PoolUnavailable(pool))
+        }
+        _ => QueryError::NonDomain(error),
+    }
+}
+
+impl zaino_source::OneShotGetSpentInfo for ZcashRpcAdapter {
+    async fn get_spent_info(
+        &self,
+        outpoint: zaino_primitives::types::rpc::SpentOutpoint,
+    ) -> Result<zaino_primitives::types::rpc::SpentInfo, QueryError<zaino_source::GetSpentInfoError>>
+    {
+        use zaino_source::GetSpentInfoError;
+
+        let params = vec![serde_json::json!({
+            "txid": txid_to_display_hex(outpoint.txid),
+            "index": outpoint.index,
+        })];
+
+        let value = self
+            .rpc
+            .call("getspentinfo", params)
+            .await
+            .map_err(|error| {
+                let error: NonDomainError = error.into();
+                match spent_info_rejection(&error) {
+                    Some(rejection) => QueryError::Domain(rejection),
+                    None => QueryError::NonDomain(error),
+                }
+            })?;
+
+        // A `null` body would be the same fact by a different route. the legacy full node
+        // does not send one, but reading it as "no spend on record" keeps the
+        // two spellings from producing different answers.
+        parse::parse_spent_info(&value)
+            .map_err(|e| QueryError::NonDomain(from_parse(e)))?
+            .ok_or(QueryError::Domain(GetSpentInfoError::NotSpent))
+    }
+}
+
+impl zaino_source::OneShotGetTxOut for ZcashRpcAdapter {
+    async fn get_tx_out(
+        &self,
+        txid: TransactionId,
+        index: zaino_primitives::types::OutputIndex,
+        include_mempool: bool,
+    ) -> Result<Option<zaino_primitives::types::rpc::TxOut>, QueryError<zaino_source::GetTxOutError>>
+    {
+        let params = vec![
+            serde_json::Value::String(txid_to_display_hex(txid)),
+            serde_json::Value::Number(index.into()),
+            serde_json::Value::Bool(include_mempool),
+        ];
+        self.call_parsed_optional("gettxout", params, parse::parse_tx_out)
+            .await
+    }
+}
+
+impl zaino_source::OneShotSendRawTransaction for ZcashRpcAdapter {
+    async fn send_raw_transaction(
+        &self,
+        transaction: Vec<u8>,
+    ) -> Result<TransactionId, QueryError<zaino_source::SendRawTransactionError>> {
+        let params = vec![serde_json::Value::String(hex::encode(transaction))];
+        // The one mutating call, and the one whose rejections are the point:
+        // a client that submitted a bad transaction needs to know why.
+        let value = match self.rpc.call("sendrawtransaction", params).await {
+            Ok(value) => value,
+            Err(error) => {
+                let error: NonDomainError = error.into();
+                return Err(match submission_rejection(&error) {
+                    Some(rejection) => QueryError::Domain(rejection),
+                    None => QueryError::NonDomain(error),
+                });
+            }
+        };
+        parse::as_txid(&value).map_err(|e| QueryError::NonDomain(from_parse(e)))
+    }
+}
+
+impl zaino_source::OneShotGetNodeInfo for ZcashRpcAdapter {
+    async fn get_node_info(
+        &self,
+    ) -> Result<zaino_primitives::types::rpc::NodeInfo, QueryError<zaino_source::GetNodeInfoError>>
+    {
+        self.call_parsed("getinfo", vec![], parse::parse_node_info)
+            .await
+    }
+}
+
+impl zaino_source::OneShotGetPeerInfo for ZcashRpcAdapter {
+    async fn get_peer_info(
+        &self,
+    ) -> Result<
+        Vec<zaino_primitives::types::rpc::PeerInfo>,
+        QueryError<zaino_source::GetPeerInfoError>,
+    > {
+        self.call_parsed("getpeerinfo", vec![], parse::parse_peer_info)
+            .await
+    }
+}
+
+impl zaino_source::OneShotGetNetworkInfo for ZcashRpcAdapter {
+    async fn get_network_info(
+        &self,
+    ) -> Result<zaino_primitives::types::rpc::NetworkInfo, QueryError<std::convert::Infallible>>
+    {
+        self.call_parsed("getnetworkinfo", vec![], parse::parse_network_info)
+            .await
+    }
+}
+
+impl zaino_source::OneShotPing for ZcashRpcAdapter {
+    async fn ping(&self) -> Result<(), QueryError<std::convert::Infallible>> {
+        // answered with `null`, which carries nothing
+        self.call_parsed("ping", vec![], |_| Ok(())).await
+    }
+}
+
+impl zaino_source::OneShotGetMiningInfo for ZcashRpcAdapter {
+    async fn get_mining_info(
+        &self,
+    ) -> Result<
+        zaino_primitives::types::rpc::MiningInfo,
+        QueryError<zaino_source::GetMiningInfoError>,
+    > {
+        self.call_parsed("getmininginfo", vec![], parse::parse_mining_info)
+            .await
+    }
+}
+
+impl zaino_source::OneShotGetStandardFee for ZcashRpcAdapter {
+    async fn get_standard_fee(
+        &self,
+    ) -> Result<
+        zaino_primitives::types::rpc::StandardFee,
+        QueryError<zaino_source::GetStandardFeeError>,
+    > {
+        self.call_parsed_classified(
+            "getstandardfee",
+            vec![],
+            None,
+            parse::parse_standard_fee,
+            |error| {
+                method_missing_or_fetch(error, || zaino_source::GetStandardFeeError::Unsupported)
+            },
+        )
+        .await
+    }
+}
+
+impl zaino_source::OneShotGetBlockSubsidy for ZcashRpcAdapter {
+    async fn get_block_subsidy(
+        &self,
+        height: Height,
+    ) -> Result<
+        zaino_primitives::types::rpc::BlockSubsidy,
+        QueryError<zaino_source::GetBlockSubsidyError>,
+    > {
+        let params = vec![serde_json::Value::Number(u32::from(height).into())];
+        self.call_parsed_or_absent(
+            "getblocksubsidy",
+            params,
+            parse::parse_block_subsidy,
+            || zaino_source::GetBlockSubsidyError::HeightNotReached(height),
+        )
+        .await
+    }
+}
+
+/// `getnetworksolps`'s positional parameters. A height cannot be sent without
+/// a count before it, so the default window is then spelled out (120).
+fn sol_ps_params(
+    window: zaino_source::SolutionRateWindow,
+    height: Option<Height>,
+) -> Vec<serde_json::Value> {
+    const DEFAULT_WINDOW: i64 = 120;
+    let mut params = Vec::new();
+    match (window.to_rpc(), height) {
+        (None, None) => {}
+        (count, _) => params.push(serde_json::Value::from(count.unwrap_or(DEFAULT_WINDOW))),
+    }
+    if let Some(height) = height {
+        params.push(serde_json::Value::from(u32::from(height)));
+    }
+    params
+}
+
+impl zaino_source::OneShotGetNetworkSolPs for ZcashRpcAdapter {
+    async fn get_network_sol_ps(
+        &self,
+        window: zaino_source::SolutionRateWindow,
+        height: Option<Height>,
+    ) -> Result<u64, QueryError<zaino_source::GetNetworkSolPsError>> {
+        self.call_parsed(
+            "getnetworksolps",
+            sol_ps_params(window, height),
+            parse::as_u64,
+        )
+        .await
+    }
+}
+
+/// The RPC adapter owns no background work: it holds a connection pool that
+/// drops with it, so there is nothing to release.
+impl zaino_source::SourceLifecycle for ZcashRpcAdapter {}
+
+/// Reaching the validator over request/response gives no push path, so this
+/// adapter has no block-arrival signal to offer and inherits `None`. Consumers
+/// pace themselves on their own timer.
+impl zaino_source::SubscribeBlocks for ZcashRpcAdapter {}
+
+impl zaino_source::OneShotGetTransaction for ZcashRpcAdapter {
+    async fn get_transaction(
+        &self,
+        txid: TransactionId,
+        verbosity: TransactionVerbosity,
+    ) -> Result<zaino_source::TransactionAnswer, QueryError<zaino_source::GetTransactionError>>
+    {
+        let params = vec![
+            serde_json::Value::String(txid_to_display_hex(txid)),
+            serde_json::Value::Number(verbosity.level().into()),
+        ];
+        let parse = move |value: &serde_json::Value| match verbosity {
+            TransactionVerbosity::Raw => {
+                parse::parse_raw_transaction(value).map(zaino_source::TransactionAnswer::Raw)
+            }
+            TransactionVerbosity::Object => parse::parse_transaction_verbose(value)
+                .map(|object| zaino_source::TransactionAnswer::Object(Box::new(object))),
+        };
+        self.call_parsed_or_absent("getrawtransaction", params, parse, || {
+            zaino_source::GetTransactionError::NotFound(txid)
+        })
+        .await
+    }
+}
+
+impl zaino_source::OneShotGetRawBlock for ZcashRpcAdapter {
+    async fn get_raw_block(
+        &self,
+        height: Height,
+    ) -> Result<Vec<u8>, QueryError<zaino_source::GetBlockError>> {
+        let params = vec![
+            serde_json::Value::String(u32::from(height).to_string()),
+            serde_json::Value::Number(0.into()),
+        ];
+        self.call_parsed_or_absent("getblock", params, parse::parse_raw_block, || {
+            zaino_source::GetBlockError::HeightNotFound(height)
+        })
+        .await
+    }
+}
+
+impl zaino_source::OneShotGetRawBlockByHash for ZcashRpcAdapter {
+    async fn get_raw_block_by_hash(
+        &self,
+        hash: BlockHash,
+    ) -> Result<Vec<u8>, QueryError<zaino_source::GetBlockByHashError>> {
+        let params = vec![
+            serde_json::Value::String(hash_to_display_hex(hash)),
+            serde_json::Value::Number(0.into()),
+        ];
+        self.call_parsed_or_absent("getblock", params, parse::parse_raw_block, || {
+            zaino_source::GetBlockByHashError::NotFound(hash)
+        })
+        .await
+    }
+}
+
+#[cfg(test)]
+mod classification_tests {
+    use super::*;
+    use zaino_source::{GetBlockError, SendRawTransactionError};
+
+    fn rpc(code: i64, message: &str) -> zaino_rpc::RpcError {
+        zaino_rpc::RpcError::Rpc {
+            code,
+            message: message.to_string(),
+        }
+    }
+
+    fn height() -> Height {
+        Height::try_from(42u32).expect("a valid height")
+    }
+
+    /// The regression this classification exists for. `getblock` for a height
+    /// above the tip answers `-8 Block not found`, which the sync loop asks for
+    /// on every iteration. Reported as a fetch failure it exhausts the retry
+    /// ladder and stops the indexer against a perfectly healthy validator.
+    #[test]
+    fn a_missing_block_is_an_answer_not_a_failure() {
+        let classified: QueryError<GetBlockError> =
+            absent_or_fetch(rpc(-8, "Block not found"), || {
+                GetBlockError::HeightNotFound(height())
+            });
+
+        assert!(
+            matches!(
+                classified,
+                QueryError::Domain(GetBlockError::HeightNotFound(_))
+            ),
+            "a missing block must be a domain answer, got {classified:?}"
+        );
+    }
+
+    /// zebrad uses `-5` for the same answer on the hash-addressed methods.
+    #[test]
+    fn both_not_found_codes_are_recognised() {
+        for code in NOT_FOUND_CODES {
+            let classified: QueryError<GetBlockError> =
+                absent_or_fetch(rpc(code, "not found"), || {
+                    GetBlockError::HeightNotFound(height())
+                });
+            assert!(
+                matches!(classified, QueryError::Domain(_)),
+                "code {code} must read as absent"
+            );
+        }
+    }
+
+    /// Everything else stays a failure. A validator that is down, warming up,
+    /// or erroring must not be reported as "the block does not exist" — that
+    /// would have consumers treat an outage as an empty chain.
+    #[test]
+    fn other_codes_stay_fetch_failures() {
+        for code in [-1, -3, -20, -22, -25, -28, -32_600] {
+            let classified: QueryError<GetBlockError> =
+                absent_or_fetch(rpc(code, "something else"), || {
+                    GetBlockError::HeightNotFound(height())
+                });
+            assert!(
+                matches!(classified, QueryError::NonDomain(_)),
+                "code {code} must stay a fetch failure"
+            );
+        }
+    }
+
+    /// Transport failures are never domain answers, whatever the port.
+    #[test]
+    fn transport_failures_stay_fetch_failures() {
+        let classified: QueryError<GetBlockError> =
+            absent_or_fetch(zaino_rpc::RpcError::Status(503), || {
+                GetBlockError::HeightNotFound(height())
+            });
+
+        assert!(matches!(classified, QueryError::NonDomain(_)));
+    }
+
+    /// On the address-keyed methods `-5` is the caller's address being
+    /// rejected, and `-8` is a malformed request envelope — a Zaino bug, which
+    /// must surface as a failure rather than as "that address has no history".
+    #[test]
+    fn only_minus_five_rejects_an_address() {
+        use zaino_source::GetAddressBalanceError;
+
+        let rejected: QueryError<GetAddressBalanceError> = invalid_address_or_fetch(
+            &Quirks::default(),
+            rpc(-5, "invalid address"),
+            GetAddressBalanceError::InvalidAddress,
+            |_| None,
+        );
+        assert!(matches!(
+            rejected,
+            QueryError::Domain(GetAddressBalanceError::InvalidAddress(_))
+        ));
+
+        let malformed: QueryError<GetAddressBalanceError> = invalid_address_or_fetch(
+            &Quirks::default(),
+            rpc(-8, "start must be less than end"),
+            GetAddressBalanceError::InvalidAddress,
+            |_| None,
+        );
+        assert!(
+            matches!(malformed, QueryError::NonDomain(_)),
+            "a malformed request is Zaino's bug and must not read as a bad address"
+        );
+    }
+
+    /// A result cap is the node's to read: through a quirk it is the port's
+    /// `TooManyResults`; without one, the same reply stays a failure, as does
+    /// any `-8` the quirk does not read.
+    #[test]
+    fn a_result_cap_is_read_only_through_the_quirk_table() {
+        use zaino_source::GetAddressTxidsError;
+
+        fn cap(error: &NonDomainError) -> Option<usize> {
+            error
+                .message
+                .strip_prefix("cap ")
+                .and_then(|cap| cap.parse().ok())
+        }
+        let classify = |quirks: &Quirks, error| {
+            invalid_address_or_fetch(
+                quirks,
+                error,
+                GetAddressTxidsError::InvalidAddress,
+                |limit| Some(GetAddressTxidsError::TooManyResults { limit }),
+            )
+        };
+        let quirks = Quirks {
+            result_cap: Some(cap),
+            ..Quirks::default()
+        };
+
+        assert!(matches!(
+            classify(&quirks, rpc(-8, "cap 100000")),
+            QueryError::Domain(GetAddressTxidsError::TooManyResults { limit: 100_000 })
+        ));
+        assert!(matches!(
+            classify(&quirks, rpc(-8, "start must be less than end")),
+            QueryError::NonDomain(_)
+        ));
+        assert!(matches!(
+            classify(&Quirks::default(), rpc(-8, "cap 100000")),
+            QueryError::NonDomain(_)
+        ));
+    }
+
+    /// A rejected submission is an answer about the transaction. Reporting it
+    /// as a transport failure loses the reason, which is the only useful part.
+    #[test]
+    fn a_rejected_submission_carries_its_reason() {
+        let malformed = submission_rejection(&rpc(-22, "tx unparseable").into());
+        assert!(matches!(
+            malformed,
+            Some(SendRawTransactionError::Malformed(_))
+        ));
+
+        // getnetworksolps: nothing for the defaults, −1 for the averaging
+        // window, and the default count spelled out before a height
+        use zaino_source::SolutionRateWindow as Window;
+        let at = Height::try_from(7u32).expect("a valid height");
+        let params = |window, height| serde_json::Value::from(sol_ps_params(window, height));
+        assert_eq!(params(Window::Default, None), serde_json::json!([]));
+        assert_eq!(
+            params(Window::Default, Some(at)),
+            serde_json::json!([120, 7])
+        );
+        assert_eq!(
+            params(Window::DifficultyAveraging, None),
+            serde_json::json!([-1])
+        );
+        assert_eq!(
+            params(Window::from_rpc(Some(30)), Some(at)),
+            serde_json::json!([30, 7])
+        );
+
+        for code in [-22, -25, -26, -27] {
+            let rejection = submission_rejection(&rpc(code, "rejected").into());
+            assert_eq!(
+                rejection
+                    .as_ref()
+                    .map(|rejection| (rejection.legacy_code(), rejection.message())),
+                Some((code, "rejected")),
+                "code {code} keeps its code and the validator's message"
+            );
+        }
+
+        assert!(
+            submission_rejection(&rpc(-28, "warming up").into()).is_none(),
+            "a warming-up validator has not considered the transaction at all"
+        );
+    }
+
+    /// `getspentinfo` is legacy-only, so a zebrad-backed deployment answers
+    /// every call `-32601`. That must not be read as "unspent": one says the
+    /// output has no spend on record, the other says this node cannot tell you
+    /// either way, and collapsing them reports spent outputs as unspent.
+    #[test]
+    fn an_unsupported_method_is_not_an_unspent_output() {
+        use zaino_source::GetSpentInfoError;
+
+        assert_eq!(
+            spent_info_rejection(&rpc(-5, "Unable to get spent info").into()),
+            Some(GetSpentInfoError::NotSpent)
+        );
+        assert_eq!(
+            spent_info_rejection(&rpc(-32601, "Method not found").into()),
+            Some(GetSpentInfoError::Unsupported)
+        );
+    }
+
+    /// Everything else is a failure to reach or be served by the node, and must
+    /// stay retryable rather than becoming a claim about the outpoint.
+    #[test]
+    fn other_spent_info_codes_stay_fetch_failures() {
+        for code in [-8, -28, -1, -32603] {
+            assert!(
+                spent_info_rejection(&rpc(code, "something else").into()).is_none(),
+                "code {code} says nothing about whether the output was spent"
+            );
+        }
+
+        assert!(spent_info_rejection(&NonDomainError::new(
+            zaino_source::FailureMode::Timeout,
+            "timed out"
+        ))
+        .is_none());
+    }
+
+    /// A validator that does not implement `getrawmempool` is answering about
+    /// itself, not failing to answer. Reported as the port's domain error so a
+    /// consumer stops asking, rather than as a fetch failure it would re-poll
+    /// forever against a node that will never serve one.
+    #[test]
+    fn a_missing_mempool_method_is_the_ports_own_answer() {
+        use zaino_source::GetMempoolTxidsError;
+
+        let classified = method_missing_or_fetch(rpc(-32601, "Method not found"), || {
+            GetMempoolTxidsError::Unavailable
+        });
+        assert!(matches!(
+            classified,
+            QueryError::Domain(GetMempoolTxidsError::Unavailable)
+        ));
+    }
+
+    /// A validator without `getstandardfee` is the port's `Unsupported` answer.
+    #[test]
+    fn a_missing_standard_fee_method_is_unsupported() {
+        use zaino_source::GetStandardFeeError;
+
+        let classified = method_missing_or_fetch(rpc(-32601, "Method not found"), || {
+            GetStandardFeeError::Unsupported
+        });
+        assert!(matches!(
+            classified,
+            QueryError::Domain(GetStandardFeeError::Unsupported)
+        ));
+    }
+
+    /// zcashd's `-8` for a pool it lacks is the port's `PoolUnavailable`; its
+    /// `-1` (method disabled) and transport failures stay faults.
+    #[test]
+    fn an_unsupported_pool_is_pool_unavailable() {
+        use zaino_primitives::types::ShieldedPool;
+        use zaino_source::GetSubtreeRootsError;
+
+        let lacking = pool_unavailable_or_fetch(
+            rpc(-8, "Requested pool must be \"sapling\" or \"orchard\""),
+            ShieldedPool::Ironwood,
+        );
+        assert!(matches!(
+            lacking,
+            QueryError::Domain(GetSubtreeRootsError::PoolUnavailable(
+                ShieldedPool::Ironwood
+            ))
+        ));
+        for code in [-1, -28, -32603] {
+            assert!(
+                matches!(
+                    pool_unavailable_or_fetch(rpc(code, "other"), ShieldedPool::Sapling),
+                    QueryError::NonDomain(_)
+                ),
+                "code {code} says nothing about the pool"
+            );
+        }
+    }
+
+    /// Everything else is a failure to reach or be served by the node. In
+    /// particular an empty mempool is a successful empty list and never reaches
+    /// here, and a warming-up validator (-28) is transient — calling either
+    /// "unavailable" would tell a consumer to give up on a healthy node.
+    #[test]
+    fn other_mempool_codes_stay_fetch_failures() {
+        use zaino_source::GetMempoolTxidsError;
+
+        for code in [-5, -8, -28, -1, -32603] {
+            let classified = method_missing_or_fetch(rpc(code, "something else"), || {
+                GetMempoolTxidsError::Unavailable
+            });
+            assert!(
+                matches!(classified, QueryError::NonDomain(_)),
+                "code {code} does not say this validator lacks a mempool"
+            );
+        }
+    }
+}

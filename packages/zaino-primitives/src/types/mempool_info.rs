@@ -20,10 +20,7 @@ pub struct MempoolInfo {
     /// Sum of the serialised sizes of those transactions, in bytes.
     pub bytes: u64,
 
-    /// Approximate memory the mempool occupies, in bytes.
-    ///
-    /// Distinct from `bytes`: it accounts for the cost of holding a
-    /// transaction rather than the length of its serialisation, so the two do
-    /// not track each other and neither bounds the other.
+    /// The memory the mempool set occupies, in bytes: the serialised
+    /// transactions and the structures holding them, so at least `bytes`.
     pub usage: u64,
 }

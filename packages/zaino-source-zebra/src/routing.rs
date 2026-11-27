@@ -4,15 +4,15 @@ use std::time::Duration;
 
 use tokio::sync::watch;
 use zaino_primitives::types::{
-    rpc, AddressBalance, AddressDelta, Block, BlockHash, BlockVerbose, BlockchainInfo, Difficulty,
-    Height, OutputIndex, PreIndexCompactBlock, ShieldedPool, SubtreeRoot, TransactionId, TreeRoots,
-    Treestate, Utxo,
+    rpc, AddressBalance, AddressDelta, Block, BlockHash, BlockVerbose, BlockchainInfo,
+    CompactBlock, Difficulty, Height, OutputIndex, PoolFilter, ShieldedPool, SubtreeRoot,
+    TransactionId, TreeRoots, Treestate, Utxo,
 };
 use zaino_source::*;
-use zaino_source_zebra_readstate::ZebraReadStateAdapter;
-use zaino_source_zebra_rpc::ZebraRpcAdapter;
+use zaino_source_zcash_rpc::ZcashRpcAdapter;
 
 use crate::fallback::retry_on_slow_path;
+use crate::read_state::ZebraReadStateAdapter;
 
 /// Normalise a sub-adapter's own non-domain error to the seam type, so the
 /// composite presents one `QueryError<E>` regardless of which transport answered.
@@ -34,7 +34,7 @@ fn to_seam<
 pub struct ZebraValidator {
     /// Always present: the mempool and the passthrough RPCs are reachable no
     /// other way.
-    rpc: ZebraRpcAdapter,
+    rpc: ZcashRpcAdapter,
     /// The accelerator, when this deployment has direct database access.
     readstate: Option<ZebraReadStateAdapter>,
     /// Synthesised tip subscription, present once `with_tip_polling` is called.
@@ -43,7 +43,7 @@ pub struct ZebraValidator {
 
 impl ZebraValidator {
     /// A validator reached over JSON-RPC alone.
-    pub fn rpc_only(rpc: ZebraRpcAdapter) -> Self {
+    pub fn rpc_only(rpc: ZcashRpcAdapter) -> Self {
         Self {
             rpc,
             readstate: None,
@@ -55,7 +55,7 @@ impl ZebraValidator {
     ///
     /// The JSON-RPC adapter is still required: it serves the mempool and the
     /// passthrough RPCs, which the state database cannot answer at all.
-    pub fn with_read_state(rpc: ZebraRpcAdapter, readstate: ZebraReadStateAdapter) -> Self {
+    pub fn with_read_state(rpc: ZcashRpcAdapter, readstate: ZebraReadStateAdapter) -> Self {
         Self {
             rpc,
             readstate: Some(readstate),
@@ -113,8 +113,9 @@ impl ZebraValidator {
 /// miss.
 ///
 /// Used only where the fast path is *semantically* narrower than the slow one —
-/// side-chain blocks and unmined transactions — not as a general availability
-/// fallback. See [`retry_on_slow_path`].
+/// side-chain blocks, unmined transactions, and blocks the read-only state
+/// has not finished replaying — not as a general availability fallback. See
+/// [`retry_on_slow_path`].
 ///
 /// A macro rather than a function because a function cannot express it: the
 /// call has to dispatch the same method name across two unrelated types and
@@ -153,9 +154,9 @@ impl zaino_source::ValidatorSource for ZebraValidator {
 
 impl OneShotGetBlock for ZebraValidator {
     async fn get_block(&self, height: Height) -> Result<Block, QueryError<GetBlockError>> {
-        // A height names a best-chain block, which the finalized state has, so
-        // there is nothing the slow path could add on a miss.
-        fast_or_slow!(self, get_block, height)
+        // The read-only state answers `None` for a block whose body it has
+        // not finished replaying; zebrad itself already serves it.
+        fast_then_slow!(self, get_block, height)
     }
 }
 
@@ -175,7 +176,8 @@ impl OneShotGetBlockByHash for ZebraValidator {
 
 impl OneShotGetRawBlock for ZebraValidator {
     async fn get_raw_block(&self, height: Height) -> Result<Vec<u8>, QueryError<GetBlockError>> {
-        fast_or_slow!(self, get_raw_block, height)
+        // Same replay gap as `GetBlock`.
+        fast_then_slow!(self, get_raw_block, height)
     }
 }
 
@@ -202,12 +204,13 @@ impl OneShotGetBestBlockHeight for ZebraValidator {
     }
 }
 
-impl OneShotGetPreIndexCompactBlock for ZebraValidator {
-    async fn get_pre_index_compact_block(
+impl OneShotGetCompactBlock for ZebraValidator {
+    async fn get_compact_block(
         &self,
         height: Height,
-    ) -> Result<PreIndexCompactBlock, QueryError<GetBlockError>> {
-        fast_or_slow!(self, get_pre_index_compact_block, height)
+        pools: PoolFilter,
+    ) -> Result<CompactBlock, QueryError<GetBlockError>> {
+        fast_or_slow!(self, get_compact_block, height, pools)
     }
 }
 
@@ -219,11 +222,12 @@ impl OneShotGetTransaction for ZebraValidator {
     async fn get_transaction(
         &self,
         txid: TransactionId,
-    ) -> Result<TransactionResponse, QueryError<GetTransactionError>> {
+        verbosity: zaino_primitives::types::rpc::TransactionVerbosity,
+    ) -> Result<TransactionAnswer, QueryError<GetTransactionError>> {
         // The state service has no mempool, so its `NotFound` means "not
         // mined". An unmined transaction is found only over JSON-RPC, which is
         // why this is a fallback rather than a preference.
-        fast_then_slow!(self, get_transaction, txid)
+        fast_then_slow!(self, get_transaction, txid, verbosity)
     }
 }
 
@@ -318,10 +322,14 @@ impl OneShotGetAddressUtxos for ZebraValidator {
     async fn get_address_utxos(
         &self,
         addresses: Vec<String>,
+        page: zaino_source::UtxoPage,
     ) -> Result<Vec<Utxo>, QueryError<GetAddressUtxosError>> {
         match self.fast() {
-            Some(fast) => fast.get_address_utxos(addresses).await.map_err(to_seam),
-            None => self.rpc.get_address_utxos(addresses).await,
+            Some(fast) => fast
+                .get_address_utxos(addresses, page)
+                .await
+                .map_err(to_seam),
+            None => self.rpc.get_address_utxos(addresses, page).await,
         }
     }
 }
@@ -340,10 +348,8 @@ impl OneShotGetAddressDeltas for ZebraValidator {
         // implement. Against Zebra the state service is not an accelerator
         // here; it is the only thing that can answer at all.
         //
-        // Both paths report mined transactions only, so the routing does not
-        // change which transactions are covered. Against the legacy full node the RPC path
-        // additionally reports spends, which the state service cannot resolve
-        // (see the readstate implementation).
+        // Both paths report mined transactions only, receives and spends
+        // alike, so the routing does not change which deltas are covered.
         match self.fast() {
             Some(fast) => fast
                 .get_address_deltas(addresses, start, end)
@@ -401,10 +407,9 @@ impl OneShotGetMempoolSourceTip for ZebraValidator {
 }
 
 impl OneShotGetChainTips for ZebraValidator {
+    /// zebrad has no `getchaintips`: refused without a round trip.
     async fn get_chain_tips(&self) -> Result<Vec<rpc::ChainTip>, QueryError<GetChainTipsError>> {
-        // Enumerating the block tree includes side-chain tips, which the
-        // finalized state does not retain.
-        self.rpc.get_chain_tips().await
+        Err(QueryError::Domain(GetChainTipsError::Unsupported))
     }
 }
 
@@ -412,8 +417,13 @@ impl OneShotGetBlockVerbose for ZebraValidator {
     async fn get_block_verbose(
         &self,
         height: Height,
+        verbosity: zaino_primitives::types::BlockVerbosity,
     ) -> Result<BlockVerbose, QueryError<GetBlockVerboseError>> {
-        self.rpc.get_block_verbose(height).await
+        // RPC only. The verbose block reports the chain's value pools, and
+        // the read-only state does not hold them for non-finalised blocks:
+        // zebra's syncer commits those without their deferred (lockbox)
+        // amounts, and nothing public says which blocks are finalised.
+        self.rpc.get_block_verbose(height, verbosity).await
     }
 }
 
@@ -421,8 +431,10 @@ impl OneShotGetBlockVerboseByHash for ZebraValidator {
     async fn get_block_verbose_by_hash(
         &self,
         hash: BlockHash,
+        verbosity: zaino_primitives::types::BlockVerbosity,
     ) -> Result<BlockVerbose, QueryError<GetBlockVerboseError>> {
-        self.rpc.get_block_verbose_by_hash(hash).await
+        // RPC only, as `get_block_verbose`.
+        self.rpc.get_block_verbose_by_hash(hash, verbosity).await
     }
 }
 
@@ -431,6 +443,17 @@ impl OneShotGetBlockHeader for ZebraValidator {
         &self,
         hash: BlockHash,
     ) -> Result<rpc::BlockHeaderVerbose, QueryError<GetBlockHeaderError>> {
+        // `fast_then_slow!`, written out: the state adapter has an inherent
+        // `get_block_header` (by height, zebra's own type) that a method
+        // call would pick over the port's.
+        if let Some(fast) = self.fast() {
+            let result = OneShotGetBlockHeader::get_block_header(fast, hash)
+                .await
+                .map_err(to_seam);
+            if !retry_on_slow_path(&result) {
+                return result;
+            }
+        }
         self.rpc.get_block_header(hash).await
     }
 }
@@ -459,6 +482,12 @@ impl OneShotGetBlockDeltas for ZebraValidator {
     }
 }
 
+impl OneShotGetStandardFee for ZebraValidator {
+    async fn get_standard_fee(&self) -> Result<rpc::StandardFee, QueryError<GetStandardFeeError>> {
+        self.rpc.get_standard_fee().await
+    }
+}
+
 impl OneShotGetBlockSubsidy for ZebraValidator {
     async fn get_block_subsidy(
         &self,
@@ -480,6 +509,20 @@ impl OneShotGetPeerInfo for ZebraValidator {
     }
 }
 
+impl zaino_source::OneShotGetNetworkInfo for ZebraValidator {
+    async fn get_network_info(
+        &self,
+    ) -> Result<rpc::NetworkInfo, QueryError<std::convert::Infallible>> {
+        self.rpc.get_network_info().await
+    }
+}
+
+impl zaino_source::OneShotPing for ZebraValidator {
+    async fn ping(&self) -> Result<(), QueryError<std::convert::Infallible>> {
+        self.rpc.ping().await
+    }
+}
+
 impl OneShotGetMiningInfo for ZebraValidator {
     async fn get_mining_info(&self) -> Result<rpc::MiningInfo, QueryError<GetMiningInfoError>> {
         self.rpc.get_mining_info().await
@@ -489,10 +532,10 @@ impl OneShotGetMiningInfo for ZebraValidator {
 impl OneShotGetNetworkSolPs for ZebraValidator {
     async fn get_network_sol_ps(
         &self,
-        blocks: Option<u32>,
+        window: zaino_source::SolutionRateWindow,
         height: Option<Height>,
     ) -> Result<u64, QueryError<GetNetworkSolPsError>> {
-        self.rpc.get_network_sol_ps(blocks, height).await
+        self.rpc.get_network_sol_ps(window, height).await
     }
 }
 
@@ -542,7 +585,10 @@ impl OneShotGetBlockchainInfo for ZebraValidator {
     async fn get_blockchain_info(
         &self,
     ) -> Result<BlockchainInfo, QueryError<GetBlockchainInfoError>> {
-        fast_or_slow!(self, get_blockchain_info)
+        // RPC only, as the verbose block: it reports the tip's value pools,
+        // and the read-only state's are short of the deferred (lockbox)
+        // amounts of every non-finalised block, the tip among them.
+        self.rpc.get_blockchain_info().await
     }
 }
 
@@ -583,5 +629,11 @@ impl SourceLifecycle for ZebraValidator {
         if let Some(readstate) = &self.readstate {
             readstate.shutdown();
         }
+    }
+
+    fn failure(&self) -> Option<String> {
+        self.rpc
+            .failure()
+            .or_else(|| self.readstate.as_ref().and_then(SourceLifecycle::failure))
     }
 }

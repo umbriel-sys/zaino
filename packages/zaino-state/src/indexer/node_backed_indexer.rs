@@ -3,7 +3,7 @@
 use crate::chain_index::chain_view::BestTip as _;
 use futures::StreamExt;
 use hex::FromHex;
-use std::{io::Cursor, str::FromStr, time};
+use std::time;
 use tokio::time::timeout;
 use tracing::{info, instrument, warn};
 use zaino_chain::ForkReconcile;
@@ -20,7 +20,7 @@ use zebra_rpc::{
 use zaino_address::{ValidatedAddress, ZValidatedAddress};
 use zaino_primitives::types::rpc::{
     AddressDeltas, AddressDeltasRequest, BlockDeltas, BlockHeaderVerbose, BlockSubsidy, MiningInfo,
-    NodeInfo, PeerInfo,
+    NodeInfo, PeerInfo, StandardFee,
 };
 
 use zaino_proto::proto::{
@@ -31,20 +31,13 @@ use zaino_proto::proto::{
         PingResponse, RawTransaction, SendResponse, TransparentAddressBlockFilter, TreeState,
         TxFilter,
     },
-    utils::{
-        blockid_to_hashorheight, compact_block_to_nullifiers, PoolTypeFilter,
-        ValidatedBlockRangeRequest,
-    },
+    utils::{PoolTypeFilter, ValidatedBlockRangeRequest},
 };
 
-use crate::{
-    chain_index::chain_head::WithChainHeadSource, chain_index::chain_store::WithChainStoreSource,
-    chain_index::chain_view::WithChainViewSource, ChainIndex, ChainIndexRpcExt,
-    NodeBackedChainIndex, NodeBackedChainIndexSubscriber,
-};
+use crate::legacy::status::{Status, StatusType};
 #[allow(deprecated)]
 use crate::{
-    chain_index::{source::BlockchainSource, types, validator_source::ZebraValidatorSource},
+    chain_index::{types, validator_source::ZebraValidatorSource},
     config::{
         CommonBackendConfig, DonationAddress, NodeBackedIndexerServiceConfig,
         ValidatorConnectionType,
@@ -57,16 +50,19 @@ use crate::{
     },
     utils::{get_build_info, ServiceMetadata},
 };
-use zaino_status::{Status, StatusType};
+use crate::{
+    ChainIndex, ChainIndexRpcExt, ChainIndexSourcePorts, NodeBackedChainIndex,
+    NodeBackedChainIndexSubscriber,
+};
+use zaino_service::ServiceSource;
+use zaino_source_zebra::ZebraValidator;
 
 /// A single node-backed chain-fetch + tx-submission service, generic over its
-/// [`BlockchainSource`].
+/// `zaino-source` validator.
 ///
-/// Replaces the former `FetchService` / `StateService` split: the JSON-RPC (`Rpc`) and
-/// direct-`ReadStateService` (`Direct`) backends are now one type selected at runtime
-/// via [`NodeBackedIndexerServiceConfig`]. Production instantiates the default
-/// `Source = ZebraValidatorSource` (which itself carries the `Rpc`/`Direct` arm); tests
-/// may instantiate over a mock source.
+/// The JSON-RPC (`Rpc`) and direct-`ReadStateService` (`Direct`) backends are one
+/// type selected at runtime via [`NodeBackedIndexerServiceConfig`]. Production
+/// instantiates the default `V = ZebraValidator`; tests may use a mock validator.
 ///
 /// This service is a central service — create a [`NodeBackedIndexerServiceSubscriber`]
 /// (via [`ZcashService::get_subscriber`]) to fetch data. This lets large numbers of
@@ -74,30 +70,22 @@ use zaino_status::{Status, StatusType};
 ///
 /// NOTE: We do not implement `Clone` for the central service: it owns and closes its
 /// child processes. Subscribers are the clone-safe read handles.
-pub struct NodeBackedIndexerService<
-    Source: BlockchainSource + WithChainHeadSource + WithChainStoreSource + WithChainViewSource = crate::chain_index::validator_source::ZebraValidatorSource,
-> {
+pub struct NodeBackedIndexerService<V: ChainIndexSourcePorts + ServiceSource = ZebraValidator> {
     /// Core indexer.
-    indexer: NodeBackedChainIndex<Source>,
+    indexer: NodeBackedChainIndex<V>,
     /// Service metadata.
     data: ServiceMetadata,
     /// Connection-independent config (validator RPC, storage, network, ...).
     config: CommonBackendConfig,
 }
 
-impl<
-        Source: BlockchainSource + WithChainHeadSource + WithChainStoreSource + WithChainViewSource,
-    > Status for NodeBackedIndexerService<Source>
-{
+impl<V: ChainIndexSourcePorts + ServiceSource> Status for NodeBackedIndexerService<V> {
     fn status(&self) -> StatusType {
         self.indexer.status()
     }
 }
 
-impl<
-        Source: BlockchainSource + WithChainHeadSource + WithChainStoreSource + WithChainViewSource,
-    > NodeBackedIndexerService<Source>
-{
+impl<V: ChainIndexSourcePorts + ServiceSource> NodeBackedIndexerService<V> {
     /// Tears down the indexer (sync loop, finalised DB, mempool, and any source-owned
     /// syncer task) from a synchronous context. Shared by [`ZcashService::close`] and
     /// [`Drop`].
@@ -115,7 +103,9 @@ impl<
             Ok(handle) if handle.runtime_flavor() == RuntimeFlavor::MultiThread => {
                 tokio::task::block_in_place(|| {
                     handle.block_on(async {
-                        let _ = self.indexer.shutdown().await;
+                        if let Err(error) = self.indexer.shutdown().await {
+                            warn!(%error, "chain index shutdown failed");
+                        }
                     });
                 });
             }
@@ -124,8 +114,8 @@ impl<
     }
 }
 
-impl ZcashService for NodeBackedIndexerService<ZebraValidatorSource> {
-    type Subscriber = NodeBackedIndexerServiceSubscriber<ZebraValidatorSource>;
+impl ZcashService for NodeBackedIndexerService<ZebraValidator> {
+    type Subscriber = NodeBackedIndexerServiceSubscriber<ZebraValidator>;
     type Config = NodeBackedIndexerServiceConfig;
 
     fn finalised_state_mode(&self) -> crate::FinalisedStateMode {
@@ -162,41 +152,30 @@ impl ZcashService for NodeBackedIndexerService<ZebraValidatorSource> {
         );
         info!(build = %data.zebra_build(), subversion = %data.zebra_subversion(), "Connected to Zcash node");
 
+        #[allow(deprecated)]
         let indexer = NodeBackedChainIndex::new(
             source,
             crate::config::ChainIndexConfig::from_backend_config(&config.common, network),
         )
         .await
         .map_err(|error| NodeBackedIndexerServiceError::Critical(error.to_string()))?;
+        // the head at the validator's tip before serving; never the store's build
+        indexer
+            .wait_for_head()
+            .await
+            .map_err(|error| NodeBackedIndexerServiceError::Critical(error.to_string()))?;
 
-        let service = Self {
+        Ok(Self {
             indexer,
             data,
             config: config.common,
-        };
-
-        // wait for sync to complete, return error on sync fail.
-        loop {
-            match service.status() {
-                StatusType::Ready | StatusType::Closing => break,
-                StatusType::CriticalError => {
-                    return Err(NodeBackedIndexerServiceError::Critical(
-                        "ChainIndex initial sync failed, check full log for details.".to_string(),
-                    ));
-                }
-                _ => {
-                    tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
-                }
-            }
-        }
-
-        Ok(service)
+        })
     }
 
     /// Returns a [`NodeBackedIndexerServiceSubscriber`].
     fn get_subscriber(
         &self,
-    ) -> IndexerSubscriber<NodeBackedIndexerServiceSubscriber<ZebraValidatorSource>> {
+    ) -> IndexerSubscriber<NodeBackedIndexerServiceSubscriber<ZebraValidator>> {
         IndexerSubscriber::new(NodeBackedIndexerServiceSubscriber {
             indexer: self.indexer.subscriber(),
             data: self.data.clone(),
@@ -211,50 +190,51 @@ impl ZcashService for NodeBackedIndexerService<ZebraValidatorSource> {
     }
 }
 
-impl<
-        Source: BlockchainSource + WithChainHeadSource + WithChainStoreSource + WithChainViewSource,
-    > Drop for NodeBackedIndexerService<Source>
-{
+impl<V: ChainIndexSourcePorts + ServiceSource> Drop for NodeBackedIndexerService<V> {
     fn drop(&mut self) {
         self.shutdown_blocking();
     }
 }
 
 /// A clone-safe, read-only subscriber to a [`NodeBackedIndexerService`].
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub struct NodeBackedIndexerServiceSubscriber<
-    Source: BlockchainSource + WithChainHeadSource + WithChainStoreSource + WithChainViewSource = crate::chain_index::validator_source::ZebraValidatorSource,
+    V: ChainIndexSourcePorts + ServiceSource = ZebraValidator,
 > {
     /// Core indexer.
-    pub indexer: NodeBackedChainIndexSubscriber<Source>,
+    pub indexer: NodeBackedChainIndexSubscriber<V>,
     /// Service metadata.
     pub data: ServiceMetadata,
     /// Connection-independent config (validator RPC, storage, network, ...).
     config: CommonBackendConfig,
 }
 
-impl<
-        Source: BlockchainSource + WithChainHeadSource + WithChainStoreSource + WithChainViewSource,
-    > Status for NodeBackedIndexerServiceSubscriber<Source>
-{
+/// Written out: the validator is shared, so `V` need not be `Clone`.
+impl<V: ChainIndexSourcePorts + ServiceSource> Clone for NodeBackedIndexerServiceSubscriber<V> {
+    fn clone(&self) -> Self {
+        Self {
+            indexer: self.indexer.clone(),
+            data: self.data.clone(),
+            config: self.config.clone(),
+        }
+    }
+}
+
+impl<V: ChainIndexSourcePorts + ServiceSource> Status for NodeBackedIndexerServiceSubscriber<V> {
     fn status(&self) -> StatusType {
         self.indexer.status()
     }
 }
 
-impl<
-        Source: BlockchainSource + WithChainHeadSource + WithChainStoreSource + WithChainViewSource,
-    > crate::IndexedTipIndexer for NodeBackedIndexerServiceSubscriber<Source>
+impl<V: ChainIndexSourcePorts + ServiceSource> crate::IndexedTipIndexer
+    for NodeBackedIndexerServiceSubscriber<V>
 {
     fn subscribe_indexed_tips(&self) -> crate::IndexedTipStream {
         self.indexer.indexed_tip_stream()
     }
 }
 
-impl<
-        Source: BlockchainSource + WithChainHeadSource + WithChainStoreSource + WithChainViewSource,
-    > NodeBackedIndexerServiceSubscriber<Source>
-{
+impl<V: ChainIndexSourcePorts + ServiceSource> NodeBackedIndexerServiceSubscriber<V> {
     /// Fetches the current status
     #[deprecated(note = "Use the Status trait method instead")]
     pub fn get_status(&self) -> StatusType {
@@ -279,8 +259,112 @@ fn parse_txid(txid_hex: &str) -> Result<types::TransactionHash, NodeBackedIndexe
     })
 }
 
+/// The pools a compact-block read serves: the requested ones, or for a
+/// nullifier read only their shielded nullifiers (D6-18).
+fn served_pools(
+    requested: &PoolTypeFilter,
+    nullifiers_only: bool,
+) -> zaino_primitives::types::PoolFilter {
+    use zaino_primitives::types::{PoolFilter, ShieldedPool};
+    let pools = zaino_proto::compact::pool_filter_from_wire(requested);
+    match nullifiers_only {
+        false => pools,
+        true => ShieldedPool::ALL
+            .into_iter()
+            .filter(|pool| pools.includes(*pool))
+            .fold(PoolFilter::none(), PoolFilter::with_pool)
+            .nullifiers_only(),
+    }
+}
+
+/// An error's causes, itself first.
+fn causes(
+    error: &NodeBackedIndexerServiceError,
+) -> impl Iterator<Item = &(dyn std::error::Error + 'static)> {
+    std::iter::successors(Some(error as &(dyn std::error::Error + 'static)), |error| {
+        error.source()
+    })
+}
+
+/// The legacy code and message a refusal carries, the validator's own for a
+/// rejected submission.
+fn legacy_rejection(error: &NodeBackedIndexerServiceError) -> Option<(i32, String)> {
+    let rejection =
+        causes(error).find_map(|cause| cause.downcast_ref::<crate::error::LegacyRpcError>())?;
+    Some((
+        i32::try_from(rejection.code).ok()?,
+        rejection.message.clone(),
+    ))
+}
+
+/// Whether the validator could not be reached (a transport failure, not an
+/// answer).
+fn unreachable(error: &NodeBackedIndexerServiceError) -> bool {
+    causes(error).any(|cause| {
+        cause
+            .downcast_ref::<zaino_source::NonDomainError>()
+            .is_some_and(|failure| {
+                matches!(
+                    failure.mode,
+                    zaino_source::FailureMode::Connection | zaino_source::FailureMode::Timeout
+                )
+            })
+    })
+}
+
+/// The fee on the wire; a zero fee, which no sane validator reports, is
+/// refused, as lightwalletd refuses it.
+fn nonzero_standard_fee(
+    fee: &StandardFee,
+) -> Result<zaino_proto::proto::service::StandardFee, tonic::Status> {
+    if fee.fee_per_action == zaino_primitives::types::Zatoshis::ZERO {
+        return Err(tonic::Status::internal(
+            "Error: the validator reported a zero standard fee.",
+        ));
+    }
+    Ok(crate::chain_index::wire_types::standard_fee_to_wire(fee))
+}
+
 /// The legacy RPC's answer for a transaction it cannot find.
 #[allow(deprecated)]
+/// The height lightwalletd reports for a transaction: its best-chain
+/// block's, `u64::MAX` if mined only off the best chain, 0 in a mempool;
+/// `None` when nothing places it.
+fn light_wallet_height(
+    best: Option<&types::BestChainLocation>,
+    non_best: &std::collections::HashSet<types::NonBestChainLocation>,
+) -> Option<u64> {
+    match best {
+        Some(types::BestChainLocation::Block(_, height)) => return Some(u64::from(height.0)),
+        Some(types::BestChainLocation::Mempool(_)) => return Some(0),
+        None => {}
+    }
+    let off_best = |mined: bool| {
+        non_best
+            .iter()
+            .any(|location| matches!(location, types::NonBestChainLocation::Block(..)) == mined)
+    };
+    if off_best(true) {
+        Some(u64::MAX)
+    } else {
+        off_best(false).then_some(0)
+    }
+}
+
+/// A `BlockId` as zebra's hash-or-height: a 32-byte hash, else the height.
+fn blockid_to_hashorheight(block_id: BlockId) -> Option<HashOrHeight> {
+    <[u8; 32]>::try_from(block_id.hash)
+        .map(zebra_chain::block::Hash)
+        .map(HashOrHeight::from)
+        .or_else(|_| {
+            block_id
+                .height
+                .try_into()
+                .map(|height| HashOrHeight::Height(Height(height)))
+        })
+        .ok()
+}
+
 fn no_such_transaction() -> NodeBackedIndexerServiceError {
     NodeBackedIndexerServiceError::RpcError(crate::error::LegacyRpcError::new(
         zebra_rpc::server::error::LegacyCode::InvalidAddressOrKey,
@@ -288,22 +372,17 @@ fn no_such_transaction() -> NodeBackedIndexerServiceError {
     ))
 }
 
-/// The UTXOs at or above `start_height`, at most `max_entries` of them (0 is
-/// unlimited).
-fn requested_utxos(
-    utxos: Vec<zaino_primitives::types::Utxo>,
-    start_height: u64,
-    max_entries: u32,
-) -> impl Iterator<Item = zaino_primitives::types::Utxo> {
-    let limit = if max_entries > 0 {
-        max_entries as usize
-    } else {
-        usize::MAX
-    };
-    utxos
-        .into_iter()
-        .filter(move |utxo| u64::from(u32::from(utxo.height)) >= start_height)
-        .take(limit)
+/// The request's page: its `start_height` and `max_entries` (0: no bound but
+/// the cap), as lightwalletd passes them to the validator (#46).
+fn utxo_page(start_height: u64, max_entries: u32) -> Result<zaino_source::UtxoPage, tonic::Status> {
+    let start = u32::try_from(start_height)
+        .ok()
+        .and_then(|height| zaino_primitives::types::Height::try_from(height).ok())
+        .ok_or_else(|| tonic::Status::invalid_argument("Error: Start height out of range."))?;
+    let max_entries = usize::try_from(max_entries)
+        .map_err(|_| tonic::Status::invalid_argument("Error: Max entries out of range."))?;
+    zaino_source::UtxoPage::new(start, max_entries)
+        .map_err(|error| tonic::Status::invalid_argument(format!("Error: {error}.")))
 }
 
 /// A UTXO as the light-wallet protocol's reply.
@@ -337,7 +416,7 @@ fn utxo_reply(utxo: zaino_primitives::types::Utxo) -> Result<GetAddressUtxosRepl
 fn test_service_parts(
     network: zebra_chain::parameters::Network,
 ) -> (ServiceMetadata, CommonBackendConfig) {
-    let network_kind = zaino_common::Network::from(network.clone());
+    let network_kind = zaino_primitives::types::Network::from_zebra(&network);
     (
         ServiceMetadata::new(
             get_build_info("test".to_string()),
@@ -350,8 +429,8 @@ fn test_service_parts(
             None,
             None,
             None,
-            zaino_common::ServiceConfig::default(),
-            zaino_common::StorageConfig::default(),
+            crate::legacy::config::ServiceConfig::default(),
+            crate::legacy::config::StorageConfig::default(),
             true,
             network_kind,
             None,
@@ -360,16 +439,13 @@ fn test_service_parts(
 }
 
 #[cfg(test)]
-impl<
-        Source: BlockchainSource + WithChainHeadSource + WithChainStoreSource + WithChainViewSource,
-    > NodeBackedIndexerService<Source>
-{
-    /// Wraps a chain index in a service for tests, with placeholder
+impl<V: ChainIndexSourcePorts + ServiceSource> NodeBackedIndexerService<V> {
+    /// Wraps a chain index in a service for tests, with test-only
     /// metadata/config. Lets unit tests exercise the service lifecycle over a
     /// mock source (no real validator). Production builds go through
     /// [`ZcashService::spawn`].
     pub(crate) fn new_for_test(
-        indexer: NodeBackedChainIndex<Source>,
+        indexer: NodeBackedChainIndex<V>,
         network: zebra_chain::parameters::Network,
     ) -> Self {
         let (data, config) = test_service_parts(network);
@@ -382,15 +458,12 @@ impl<
 }
 
 #[cfg(test)]
-impl<
-        Source: BlockchainSource + WithChainHeadSource + WithChainStoreSource + WithChainViewSource,
-    > NodeBackedIndexerServiceSubscriber<Source>
-{
-    /// Wraps a chain-index subscriber in a service subscriber for tests, with placeholder
+impl<V: ChainIndexSourcePorts + ServiceSource> NodeBackedIndexerServiceSubscriber<V> {
+    /// Wraps a chain-index subscriber in a service subscriber for tests, with test-only
     /// metadata/config. Lets unit tests drive the service RPC layer over a mock source
     /// (no real validator). Production builds go through [`ZcashService::get_subscriber`].
     pub(crate) fn new_for_test(
-        indexer: NodeBackedChainIndexSubscriber<Source>,
+        indexer: NodeBackedChainIndexSubscriber<V>,
         network: zebra_chain::parameters::Network,
     ) -> Self {
         let (data, config) = test_service_parts(network);
@@ -421,10 +494,7 @@ impl ChainTipSubscriber {
     }
 }
 
-impl<
-        Source: BlockchainSource + WithChainHeadSource + WithChainStoreSource + WithChainViewSource,
-    > NodeBackedIndexerServiceSubscriber<Source>
-{
+impl<V: ChainIndexSourcePorts + ServiceSource> NodeBackedIndexerServiceSubscriber<V> {
     /// A subscriber to chain-tip updates, when the backing source exposes a
     /// local tip-change stream. `Some` only on the `Direct` connection; the
     /// `Rpc` connection (and any other stream-less source) observes tips by
@@ -435,11 +505,30 @@ impl<
         })
     }
 
-    /// A transaction as the light-wallet `RawTransaction`: its best-chain
-    /// height, `u64::MAX` if mined only on a non-best chain, or 0 in the mempool.
+    /// The page of unspent outputs a `GetAddressUtxos` request asks for.
+    async fn requested_utxos(
+        &self,
+        request: GetAddressUtxosArg,
+    ) -> Result<Vec<zaino_primitives::types::Utxo>, NodeBackedIndexerServiceError> {
+        let status = NodeBackedIndexerServiceError::TonicStatusError;
+        super::validate_utxo_address_count(request.addresses.len()).map_err(status)?;
+        let page = utxo_page(request.start_height, request.max_entries).map_err(status)?;
+        let snapshot = self.indexer.snapshot_nonfinalized_state();
+        Ok(self
+            .indexer
+            .address_utxos_in(
+                &snapshot,
+                GetAddressBalanceRequest::new(request.addresses),
+                page,
+            )
+            .await?)
+    }
+
+    /// A transaction as the light-wallet `RawTransaction`, at its
+    /// [`light_wallet_height`]; `Unavailable` while nothing places it.
     async fn light_wallet_transaction(
         &self,
-        snapshot: &crate::chain_index::chain_view::ChainIndexSnapshot<Source>,
+        snapshot: &crate::chain_index::chain_view::ChainIndexSnapshot<V>,
         txid_hex: &str,
     ) -> Result<RawTransaction, NodeBackedIndexerServiceError> {
         let txid = parse_txid(txid_hex)?;
@@ -447,18 +536,19 @@ impl<
             .indexer
             .get_raw_transaction(snapshot, &txid)
             .await?
-            .ok_or_else(no_such_transaction)?;
+            .ok_or_else(|| {
+                NodeBackedIndexerServiceError::TonicStatusError(tonic::Status::not_found(format!(
+                    "transaction not found: {txid_hex}"
+                )))
+            })?;
         let (best, non_best) = self.indexer.get_transaction_status(snapshot, &txid).await?;
-        let height = match best {
-            Some(types::BestChainLocation::Block(_, height)) => u64::from(height.0),
-            _ if non_best
-                .iter()
-                .any(|location| matches!(location, types::NonBestChainLocation::Block(..))) =>
-            {
-                u64::MAX
-            }
-            _ => 0,
-        };
+        // bytes without a location (the validator's, read before the indexes
+        // place it) are not a mempool transaction: refused, to be asked again
+        let height = light_wallet_height(best.as_ref(), &non_best).ok_or_else(|| {
+            NodeBackedIndexerServiceError::TonicStatusError(tonic::Status::unavailable(format!(
+                "transaction {txid_hex} is not placed yet"
+            )))
+        })?;
         Ok(RawTransaction {
             data: bytes::Bytes::from(bytes),
             height,
@@ -488,25 +578,23 @@ impl<
                             "Error: Invalid hash and/or height out of range. Hash not found in chain",
                         )));
                     }
-                    Err(_e) => {
-                        return Err(status(tonic::Status::internal("Error: Internal db error.")));
+                    Err(error) => {
+                        return Err(NodeBackedIndexerServiceError::ChainIndexError(error))
                     }
                 }
             }
         };
 
+        // `BlockID` has no `poolTypes`: one block is the whole block, every
+        // pool and every transaction, as lightwalletd serves it (#18, #19);
+        // a nullifier read keeps each transaction with only its nullifiers.
+        let every_pool = PoolTypeFilter::includes_all();
+        let pools = served_pools(&every_pool, nullifiers_only);
         let block = self
             .indexer
-            .get_compact_block(
-                &snapshot,
-                types::Height(height),
-                // `BlockID` has no `poolTypes`; unfiltered is served the legacy set, as
-                // `GetBlockRange` serves an empty one.
-                PoolTypeFilter::default(),
-            )
+            .compact_block(&snapshot, types::Height(height), pools, true)
             .await;
         let failure = match block {
-            Ok(Some(block)) if nullifiers_only => return Ok(compact_block_to_nullifiers(block)),
             Ok(Some(block)) => return Ok(block),
             Ok(None) => status(tonic::Status::not_found(
                 "Error: Failed to retrieve block from state.",
@@ -535,19 +623,19 @@ impl<
     }
 
     /// Shared body of `get_block_range` and `get_block_range_nullifiers`: streams the
-    /// requested compact-block range through a channel, applying `map_block` to every
-    /// block before it is sent. `rpc_name` labels log lines and nothing else.
+    /// requested compact-block range through a channel, each block read with only its
+    /// nullifiers when `nullifiers_only`. `rpc_name` labels log lines and nothing else.
     #[allow(deprecated)]
     async fn spawn_block_range_stream(
         &self,
         request: &BlockRange,
         rpc_name: &'static str,
-        map_block: impl Fn(CompactBlock) -> CompactBlock + Send + Sync + 'static,
+        nullifiers_only: bool,
     ) -> Result<CompactBlockStream, NodeBackedIndexerServiceError> {
         let validated_request = ValidatedBlockRangeRequest::new_from_block_range(request)
             .map_err(NodeBackedIndexerServiceError::from)?;
 
-        let pool_type_filter = validated_request.pool_type_filter().clone();
+        let pools = served_pools(validated_request.pool_type_filter(), nullifiers_only);
 
         let start = validated_request.start();
         let end = validated_request.end();
@@ -561,18 +649,16 @@ impl<
             4,
             tonic::Status::deadline_exceeded(format!("Error: {rpc_name} gRPC request timed out.")),
             |channel_tx| async move {
-                let stream = indexer
-                    .get_compact_block_stream(
-                        &snapshot,
-                        types::Height(start),
-                        types::Height(end),
-                        pool_type_filter,
-                    )
-                    .await;
+                let stream = indexer.compact_block_stream(
+                    &snapshot,
+                    types::Height(start),
+                    types::Height(end),
+                    pools,
+                );
                 let failure = match stream {
                     Ok(Some(mut compact_block_stream)) => {
                         while let Some(stream_item) = compact_block_stream.next().await {
-                            if channel_tx.send(stream_item.map(&map_block)).await.is_err() {
+                            if channel_tx.send(stream_item).await.is_err() {
                                 return;
                             }
                         }
@@ -599,18 +685,15 @@ impl<
 /// Methods available only on the production (`ZebraValidatorSource`-backed) subscriber:
 /// the `Direct` connection owns a `ReadStateService` that the generic source
 /// abstraction does not expose.
-impl NodeBackedIndexerServiceSubscriber<ZebraValidatorSource> {
-    /// The backing Zebra [`zebra_state::ReadStateService`] (`Direct` connection only).
+impl NodeBackedIndexerServiceSubscriber<ZebraValidator> {
+    /// The backing Zebra [`zebra_state::ReadStateService`]; `None` over an RPC
+    /// connection.
     ///
     /// Test-only escape hatch: live tests recompute expected chain data directly off the
     /// `ReadStateService`. Production code goes through the `ChainIndex` API.
     #[cfg(feature = "test_dependencies")]
-    pub fn read_state_service(&self) -> zebra_state::ReadStateService {
-        self.indexer
-            .source()
-            .read_state_service()
-            .expect("read_state_service requires the Direct connection")
-            .clone()
+    pub fn read_state_service(&self) -> Option<zebra_state::ReadStateService> {
+        self.indexer.source().read_state_service().cloned()
     }
 
     /// The indexer's mempool subscriber.
@@ -619,14 +702,13 @@ impl NodeBackedIndexerServiceSubscriber<ZebraValidatorSource> {
     /// directly off the mempool's entries. Production code goes through the `ChainIndex`
     /// mempool API.
     #[cfg(feature = "test_dependencies")]
-    pub fn mempool(&self) -> &zaino_mempool_service::MempoolSubscriber {
+    pub fn mempool(&self) -> zaino_mempool_service::MempoolSubscriber {
         self.indexer.mempool_subscriber()
     }
 }
 
-impl<
-        Source: BlockchainSource + WithChainHeadSource + WithChainStoreSource + WithChainViewSource,
-    > ZcashIndexer for NodeBackedIndexerServiceSubscriber<Source>
+impl<V: ChainIndexSourcePorts + ServiceSource> ZcashIndexer
+    for NodeBackedIndexerServiceSubscriber<V>
 {
     type Error = NodeBackedIndexerServiceError;
 
@@ -721,6 +803,10 @@ impl<
         Ok(self.indexer.get_block_subsidy(height).await?)
     }
 
+    async fn get_standard_fee(&self) -> Result<StandardFee, Self::Error> {
+        Ok(self.indexer.get_standard_fee().await?)
+    }
+
     /// Returns the total balance of a provided `addresses` in an [`AddressBalance`](zaino_primitives::types::AddressBalance) instance.
     ///
     /// Zcash RPC reference: [`getaddressbalance`](https://zcash.github.io/rpc/getaddressbalance.html)
@@ -751,7 +837,7 @@ impl<
     }
 
     /// Sends the raw bytes of a signed transaction to the local node's mempool, if the transaction is valid.
-    /// Returns the [`TransactionHash`](zaino_primitives::types::TransactionHash) for the transaction, as a JSON string.
+    /// Returns the transaction's id, as a JSON string.
     ///
     /// Zcash RPC reference: [`sendrawtransaction`](https://zcash.github.io/rpc/sendrawtransaction.html)
     /// method: post
@@ -837,7 +923,7 @@ impl<
     /// tags: blockchain
     async fn get_tx_out_set_info(
         &self,
-    ) -> Result<Option<zaino_primitives::types::TxOutSetInfo>, Self::Error> {
+    ) -> Result<zaino_primitives::types::TxOutSetInfo, Self::Error> {
         Ok(self.indexer.get_tx_out_set_info().await?)
     }
 
@@ -942,37 +1028,8 @@ impl<
         &self,
         hash_or_height: String,
     ) -> Result<zaino_primitives::types::Treestate, Self::Error> {
-        let snapshot = self.indexer.snapshot_nonfinalized_state();
-        if !self
-            .indexer
-            .hash_or_height_known_for_treestate(&snapshot, &hash_or_height)
-            .await?
-        {
-            #[allow(deprecated)]
-            return Err(NodeBackedIndexerServiceError::RpcError(
-                crate::error::LegacyRpcError::new(
-                    zebra_rpc::server::error::LegacyCode::InvalidParameter,
-                    "Failed to fetch block data.",
-                ),
-            ));
-        }
-
-        let at = match HashOrHeight::from_str(&hash_or_height)? {
-            HashOrHeight::Hash(hash) => {
-                zaino_chain::BlockId::Hash(zaino_primitives::types::BlockHash::from(hash.0))
-            }
-            HashOrHeight::Height(height) => zaino_chain::BlockId::Height(
-                zaino_primitives::types::Height::try_from(height.0).map_err(|e| {
-                    NodeBackedIndexerServiceError::TonicStatusError(tonic::Status::internal(
-                        format!("block height out of range: {e}"),
-                    ))
-                })?,
-            ),
-        };
-        match zaino_chain::TreestateRead::treestate(&snapshot, at).await {
-            Ok(Some(treestate)) => Ok(treestate),
-            _ => Ok(self.indexer.get_treestate_by_id(hash_or_height).await?),
-        }
+        // ChainView's answer; a block it does not hold is zebrad's −8
+        Ok(self.indexer.get_treestate_by_id(hash_or_height).await?)
     }
 
     /// Returns information about a range of Sapling, Orchard, or Ironwood subtrees.
@@ -1053,10 +1110,9 @@ impl<
 
         let transaction = zebra_chain::transaction::Transaction::zcash_deserialize(
             serialized_transaction.as_slice(),
-        )
-        .map_err(|_| no_such_transaction())?;
+        )?;
 
-        let (best_chain_location, _non_best_chain_locations) = self
+        let (best_chain_location, non_best_chain_locations) = self
             .indexer
             .get_transaction_status(&snapshot, &txid)
             .await?;
@@ -1102,17 +1158,23 @@ impl<
                         Some(confirmations.is_in_best_chain()),
                     )
                 }
+                // as zebrad (#39): a mempool transaction has no confirmations
+                // key; one mined only on a side chain names that block
                 Some(types::BestChainLocation::Mempool(_height)) => {
-                    let confirmations = zaino_primitives::types::TxConfirmations::Mempool;
-                    (
-                        None,
-                        Some(confirmations.to_rpc_i64()),
-                        None,
-                        None,
-                        Some(confirmations.is_in_best_chain()),
-                    )
+                    (None, None, None, None, Some(false))
                 }
-                None => (None, None, None, None, Some(false)),
+                None => {
+                    let side_block =
+                        non_best_chain_locations
+                            .iter()
+                            .find_map(|location| match location {
+                                types::NonBestChainLocation::Block(hash, _) => {
+                                    Some(zebra_chain::block::Hash::from(*hash))
+                                }
+                                types::NonBestChainLocation::Mempool(_) => None,
+                            });
+                    (None, None, side_block, None, Some(false))
+                }
             };
 
         Ok(GetRawTransaction::Object(Box::new(
@@ -1147,7 +1209,7 @@ impl<
     async fn get_spent_info(
         &self,
         outpoint: zaino_primitives::types::rpc::SpentOutpoint,
-    ) -> Result<zaino_primitives::types::rpc::SpentInfo, Self::Error> {
+    ) -> Result<zaino_service::Spend, Self::Error> {
         Ok(self.indexer.get_spent_info(outpoint).await?)
     }
 
@@ -1230,9 +1292,8 @@ impl<
 }
 
 #[allow(deprecated)]
-impl<
-        Source: BlockchainSource + WithChainHeadSource + WithChainStoreSource + WithChainViewSource,
-    > LightWalletIndexer for NodeBackedIndexerServiceSubscriber<Source>
+impl<V: ChainIndexSourcePorts + ServiceSource> LightWalletIndexer
+    for NodeBackedIndexerServiceSubscriber<V>
 {
     /// Return the height of the tip of the best chain
     async fn get_latest_block(&self) -> Result<BlockId, Self::Error> {
@@ -1246,9 +1307,8 @@ impl<
         self.compact_block_by_id(request, false).await
     }
 
-    /// Same as GetBlock except actions contain only nullifiers
-    ///
-    /// NOTE: Currently this only returns Orchard nullifiers to follow Lightwalletd functionality but Sapling could be added if required by wallets.
+    /// Same as GetBlock, carrying only the shielded nullifiers (Sapling spends,
+    /// Orchard and Ironwood actions) and zero tree sizes.
     async fn get_block_nullifiers(&self, request: BlockId) -> Result<CompactBlock, Self::Error> {
         self.compact_block_by_id(request, true).await
     }
@@ -1259,24 +1319,19 @@ impl<
         &self,
         request: BlockRange,
     ) -> Result<CompactBlockStream, Self::Error> {
-        self.spawn_block_range_stream(&request, "GetBlockRange", |block| block)
+        self.spawn_block_range_stream(&request, "GetBlockRange", false)
             .await
     }
 
-    /// Same as GetBlockRange except actions contain only nullifiers
-    ///
-    /// NOTE: Currently this only returns Orchard nullifiers to follow Lightwalletd functionality but Sapling could be added if required by wallets.
+    /// Same as GetBlockRange, carrying only the shielded nullifiers (Sapling
+    /// spends, Orchard and Ironwood actions) and zero tree sizes.
     #[allow(deprecated)]
     async fn get_block_range_nullifiers(
         &self,
         request: BlockRange,
     ) -> Result<CompactBlockStream, Self::Error> {
-        self.spawn_block_range_stream(
-            &request,
-            "GetBlockRangeNullifiers",
-            compact_block_to_nullifiers,
-        )
-        .await
+        self.spawn_block_range_stream(&request, "GetBlockRangeNullifiers", true)
+            .await
     }
 
     /// Return the requested full (not compact) transaction (as from the legacy full node)
@@ -1294,15 +1349,25 @@ impl<
 
     /// Submit the given transaction to the Zcash network
     async fn send_transaction(&self, request: RawTransaction) -> Result<SendResponse, Self::Error> {
-        let hex_tx = hex::encode(request.data);
-        let tx_output = self.send_raw_transaction(hex_tx).await?;
-
-        Ok(SendResponse {
-            error_code: 0,
-            // The domain hash's `Display` is already RPC display order, the
-            // same as the wire type's was.
-            error_message: tx_output.to_string(),
-        })
+        // as lightwalletd (#38): the quoted txid on success; a rejection is an
+        // OK reply carrying the validator's code and message; unreachable is
+        // `UNAVAILABLE`
+        match self.send_raw_transaction(hex::encode(request.data)).await {
+            Ok(txid) => Ok(SendResponse {
+                error_code: 0,
+                error_message: format!("\"{txid}\""),
+            }),
+            Err(error) => match (legacy_rejection(&error), unreachable(&error)) {
+                (Some((error_code, error_message)), _) => Ok(SendResponse {
+                    error_code,
+                    error_message,
+                }),
+                (None, true) => Err(NodeBackedIndexerServiceError::TonicStatusError(
+                    tonic::Status::unavailable(error.to_string()),
+                )),
+                (None, false) => Err(error),
+            },
+        }
     }
 
     // Return the transactions corresponding to the given t-address within the given block range
@@ -1310,9 +1375,18 @@ impl<
         &self,
         request: TransparentAddressBlockFilter,
     ) -> Result<RawTransactionStream, Self::Error> {
-        let txids = self.get_taddress_txids_helper(request).await?;
-        let service = self.clone();
+        // one snapshot for the ids and the transactions (#49)
+        let request = super::taddress_txids_request(request)
+            .map_err(NodeBackedIndexerServiceError::TonicStatusError)?;
         let snapshot = self.indexer.snapshot_nonfinalized_state();
+        let txids: Vec<String> = self
+            .indexer
+            .address_txids_in(&snapshot, request)
+            .await?
+            .into_iter()
+            .map(|txid| txid.to_rpc_hex())
+            .collect();
+        let service = self.clone();
         Ok(RawTransactionStream::new(super::spawn_timed_stream(
             self.timeout_channel_size(),
             4,
@@ -1368,26 +1442,31 @@ impl<
         let total_balance = timeout(
             time::Duration::from_secs(u64::from(self.config.service.timeout) * 4),
             async {
-                // A running total past the money supply means the addresses
-                // overlap or the source double-counts, and is refused.
-                let mut total_balance = zaino_primitives::types::Zatoshis::ZERO;
+                // each address once, at most the limit, then one query over
+                // one snapshot (Q-45, as lightwalletd)
+                let mut seen = std::collections::HashSet::new();
+                let mut addresses = Vec::new();
                 while let Some(address) = request.next().await {
-                    let address = address.map_err(|e| {
-                        tonic::Status::unknown(format!("Failed to read from stream: {e}"))
-                    })?;
-                    let balance = self
-                        .z_get_address_balance(GetAddressBalanceRequest::new(vec![address.address]))
-                        .await
-                        .map_err(tonic::Status::from)?;
-                    total_balance =
-                        total_balance.checked_add(balance.balance).ok_or_else(|| {
-                            tonic::Status::data_loss(
-                                "Error: address balances total past the money supply; the \
-                                     requested addresses overlap or the source data is corrupt.",
-                            )
-                        })?;
+                    let address = address
+                        .map_err(|e| {
+                            tonic::Status::unknown(format!("Failed to read from stream: {e}"))
+                        })?
+                        .address;
+                    if !seen.insert(address.clone()) {
+                        continue;
+                    }
+                    super::validate_balance_address_count(seen.len())?;
+                    addresses.push(address);
                 }
-                Ok(u64::from(total_balance))
+                let snapshot = self.indexer.snapshot_nonfinalized_state();
+                let balance = self
+                    .indexer
+                    .address_balance_in(&snapshot, GetAddressBalanceRequest::new(addresses))
+                    .await
+                    .map_err(|error| {
+                        tonic::Status::from(NodeBackedIndexerServiceError::from(error))
+                    })?;
+                Ok(u64::from(balance.balance))
             },
         )
         .await
@@ -1431,6 +1510,15 @@ impl<
         // and count checks it hand-rolled now live with the matcher that
         // enforces them.
         let exclude_txids = request.exclude_txid_suffixes.clone();
+        // as lightwalletd: no pools is the shielded ones, an invalid pool is
+        // refused, and a transaction with nothing in them is dropped (#44)
+        let pools = PoolTypeFilter::new_from_slice(&request.pool_types)
+            .map(|filter| zaino_proto::compact::pool_filter_from_wire(&filter))
+            .map_err(|error| {
+                NodeBackedIndexerServiceError::from(
+                    zaino_proto::proto::utils::GetBlockRangeError::PoolTypeArgumentError(error),
+                )
+            })?;
 
         let mempool = self.indexer.clone();
         Ok(CompactTransactionStream::new(super::spawn_timed_stream(
@@ -1441,35 +1529,15 @@ impl<
                 match mempool.get_mempool_transactions(exclude_txids).await {
                     Ok(entries) => {
                         for entry in entries {
-                            // One parse, not two. This used to deserialize
-                            // the same bytes into a `zebra_chain`
-                            // transaction and then again into
-                            // `zaino-fetch`'s `FullTransaction`, purely to
-                            // reach the latter's `to_compact`. The domain
-                            // conversion reaches the same compact shape
-                            // from the zebra transaction directly, which is
-                            // what the TODO this replaces asked for.
-                            let compact = zebra_chain::transaction::Transaction::zcash_deserialize(
-                                &mut Cursor::new(entry.serialized_bytes()),
-                            )
-                            .map_err(|e| {
-                                tonic::Status::unknown(format!(
-                                    "mempool transaction did not deserialize: {e}"
-                                ))
-                            })
-                            .and_then(|transaction| {
-                                zaino_convert_zebra::transaction_from_zebra(&transaction)
-                                    .map_err(|e| tonic::Status::unknown(e.to_string()))
-                            })
-                            .map(|transaction| {
-                                // A mempool transaction is in no block, so index 0.
-                                zaino_chain_store_zainodb::conversion::compact_tx_to_wire(
-                                    0,
-                                    &zaino_primitives::types::PreIndexCompactTx::from(&transaction),
-                                )
-                            });
+                            // the entry's compact form, decoded once at ingest
+                            let compact = entry.compact.clone().filtered(pools);
+                            if !compact.has_pool_data() {
+                                continue;
+                            }
+                            // A mempool transaction is in no block, so index 0.
+                            let compact = zaino_proto::compact::compact_tx_to_wire(0, &compact);
 
-                            if channel_tx.send(compact).await.is_err() {
+                            if channel_tx.send(Ok(compact)).await.is_err() {
                                 break;
                             }
                         }
@@ -1597,6 +1665,57 @@ impl<
         )
     }
 
+    /// The subtree roots and their completing blocks, all from one snapshot
+    /// (#49): each completing block's hash is the one the snapshot holds.
+    async fn get_subtree_roots(
+        &self,
+        request: zaino_proto::proto::service::GetSubtreeRootsArg,
+    ) -> Result<crate::stream::SubtreeRootReplyStream, Self::Error> {
+        let (pool, start_index, limit) = super::subtree_roots_request(&request)
+            .map_err(NodeBackedIndexerServiceError::TonicStatusError)?;
+        let snapshot = self.indexer.snapshot_nonfinalized_state();
+        let subtrees =
+            zaino_chain::TreestateRead::subtree_roots(&snapshot, pool, start_index, limit)
+                .await
+                .map_err(crate::error::ChainIndexError::from)?;
+        Ok(crate::stream::SubtreeRootReplyStream::new(
+            super::spawn_timed_stream(
+                self.timeout_channel_size(),
+                4,
+                tonic::Status::deadline_exceeded("Error: get_subtree_roots gRPC request timed out"),
+                |channel_tx| async move {
+                    for subtree in subtrees {
+                        let height = subtree.end_height;
+                        let reply =
+                            match zaino_chain::BlockRead::block_hash(&snapshot, height).await {
+                                Ok(Some(hash)) => {
+                                    let mut display = <[u8; 32]>::from(hash);
+                                    display.reverse();
+                                    Ok(zaino_proto::proto::service::SubtreeRoot {
+                                        root_hash: <[u8; 32]>::from(subtree.root).to_vec(),
+                                        completing_block_hash: display.to_vec(),
+                                        completing_block_height: u64::from(u32::from(height)),
+                                    })
+                                }
+                                Ok(None) => Err(tonic::Status::internal(format!(
+                                    "Error: no block at {height}, where a subtree completed."
+                                ))),
+                                Err(error) => {
+                                    Err(tonic::Status::from(NodeBackedIndexerServiceError::from(
+                                        crate::error::ChainIndexError::from(error),
+                                    )))
+                                }
+                            };
+                        let failed = reply.is_err();
+                        if channel_tx.send(reply).await.is_err() || failed {
+                            return;
+                        }
+                    }
+                },
+            ),
+        ))
+    }
+
     /// Returns all unspent outputs for a list of addresses.
     ///
     /// Ignores all utxos below block height [GetAddressUtxosArg.start_height].
@@ -1607,10 +1726,10 @@ impl<
         &self,
         request: GetAddressUtxosArg,
     ) -> Result<GetAddressUtxosReplyList, Self::Error> {
-        super::validate_utxo_address_count(request.addresses.len())?;
-        let taddrs = GetAddressBalanceRequest::new(request.addresses);
-        let utxos = self.z_get_address_utxos(taddrs).await?;
-        let address_utxos = requested_utxos(utxos, request.start_height, request.max_entries)
+        let address_utxos = self
+            .requested_utxos(request)
+            .await?
+            .into_iter()
             .map(utxo_reply)
             .collect::<Result<Vec<_>, _>>()
             .map_err(NodeBackedIndexerServiceError::TonicStatusError)?;
@@ -1628,9 +1747,7 @@ impl<
         &self,
         request: GetAddressUtxosArg,
     ) -> Result<UtxoReplyStream, Self::Error> {
-        super::validate_utxo_address_count(request.addresses.len())?;
-        let taddrs = GetAddressBalanceRequest::new(request.addresses);
-        let utxos = self.z_get_address_utxos(taddrs).await?;
+        let utxos = self.requested_utxos(request).await?;
         Ok(UtxoReplyStream::new(super::spawn_timed_stream(
             self.timeout_channel_size(),
             4,
@@ -1638,9 +1755,7 @@ impl<
                 "Error: get_address_utxos_stream gRPC request timed out",
             ),
             |channel_tx| async move {
-                for reply in requested_utxos(utxos, request.start_height, request.max_entries)
-                    .map(utxo_reply)
-                {
+                for reply in utxos.into_iter().map(utxo_reply) {
                     let failed = reply.is_err();
                     if channel_tx.send(reply).await.is_err() || failed {
                         return;
@@ -1653,35 +1768,25 @@ impl<
     /// Return information about this lightwalletd instance and the blockchain
     async fn get_lightd_info(&self) -> Result<LightdInfo, Self::Error> {
         let blockchain_info = self.get_blockchain_info().await?;
-
-        // Sapling's consensus branch id is protocol-fixed; the domain names
-        // upgrades by branch id, so it is matched directly rather than through
-        // a hex-string key.
-        const SAPLING_BRANCH_ID: u32 = 0x76b8_09bb;
-
-        let sapling_activation_height = blockchain_info
-            .upgrades
-            .iter()
-            .find(|upgrade| u32::from(upgrade.branch_id) == SAPLING_BRANCH_ID)
-            .map_or(1, |upgrade| u32::from(upgrade.activation_height));
-
+        let schedule =
+            zaino_service::schedule_at(&blockchain_info.upgrades, blockchain_info.blocks);
+        // a schedule without Sapling is refused, never reported as height 0 (K-02)
+        let sapling_activation = schedule.sapling_activation.ok_or_else(|| {
+            tonic::Status::internal(
+                "Error: the validator's upgrade schedule has no Sapling activation.",
+            )
+        })?;
         let consensus_branch_id = zebra_chain::parameters::ConsensusBranchId::from(u32::from(
             blockchain_info.consensus.chain_tip,
         ))
         .to_string();
 
-        // The upgrade name is now the validator's own, carried through the
-        // domain type, rather than this build's `NetworkUpgrade` rendering of
-        // the same branch id.
-        let latest_upgrade = super::latest_network_upgrade(&blockchain_info.upgrades)
-            .map_err(NodeBackedIndexerServiceError::TonicStatusError)?;
-
         Ok(LightdInfo {
             version: self.data.build_info().version(),
-            vendor: "ZingoLabs ZainoD".to_string(),
+            vendor: "Umbriel Systems ZainoD".to_string(),
             taddr_support: true,
             chain_name: blockchain_info.chain.clone(),
-            sapling_activation_height: u64::from(sapling_activation_height),
+            sapling_activation_height: u64::from(u32::from(sapling_activation)),
             consensus_branch_id,
             block_height: u64::from(u32::from(blockchain_info.blocks)),
             git_commit: self.data.build_info().commit_hash(),
@@ -1697,22 +1802,80 @@ impl<
                 .as_ref()
                 .map(DonationAddress::encode)
                 .unwrap_or_default(),
-            upgrade_name: latest_upgrade.name.clone(),
-            upgrade_height: u64::from(u32::from(latest_upgrade.activation_height)),
-            lightwallet_protocol_version: "v0.5.0".to_string(),
+            upgrade_name: schedule
+                .next_upgrade
+                .map(|upgrade| upgrade.name.clone())
+                .unwrap_or_default(),
+            upgrade_height: schedule
+                .next_upgrade
+                .map_or(0, |upgrade| u64::from(u32::from(upgrade.activation_height))),
+            lightwallet_protocol_version: "v0.6.0".to_string(),
         })
     }
 
-    /// Testing-only, requires lightwalletd --ping-very-insecure (do not enable in production)
-    ///
-    /// NOTE: Currently unimplemented in Zaino.
+    async fn get_standard_fee(
+        &self,
+    ) -> Result<zaino_proto::proto::service::StandardFee, Self::Error> {
+        // as lightwalletd (#59): unreachable is `UNAVAILABLE`, and a zero fee,
+        // which no sane validator reports, is refused
+        let status = NodeBackedIndexerServiceError::TonicStatusError;
+        let fee = ZcashIndexer::get_standard_fee(self)
+            .await
+            .map_err(|error| match unreachable(&error) {
+                true => status(tonic::Status::unavailable(error.to_string())),
+                false => error,
+            })?;
+        nonzero_standard_fee(&fee).map_err(status)
+    }
+
+    /// Testing-only in lightwalletd, behind `--ping-very-insecure`; Zaino
+    /// never enables it, and answers as lightwalletd does when disabled.
     async fn ping(&self, _request: Duration) -> Result<PingResponse, Self::Error> {
         Err(NodeBackedIndexerServiceError::TonicStatusError(
-            tonic::Status::unimplemented(
-                "Ping not yet implemented. If you require this RPC \
-            please open an issue or PR at the Zaino github \
-            (https://github.com/zingolabs/zaino.git).",
-            ),
+            tonic::Status::failed_precondition("Error: Ping is not enabled."),
         ))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::HashSet;
+
+    use super::types::{BestChainLocation, BlockHash, Height, NonBestChainLocation};
+    use super::{light_wallet_height, nonzero_standard_fee, StandardFee};
+    use zaino_primitives::types::Zatoshis;
+
+    /// lightwalletd's heights: the best-chain block's; `u64::MAX` mined only
+    /// off the best chain; 0 in a mempool; none when nothing places it,
+    /// never 0.
+    #[test]
+    fn an_unplaced_transaction_has_no_light_wallet_height() {
+        let hash = BlockHash([7; 32]);
+        let mined = BestChainLocation::Block(hash, Height(9));
+        let pending = BestChainLocation::Mempool(Height(10));
+        let off_best = HashSet::from([NonBestChainLocation::Block(hash, Height(8))]);
+        let other_mempool = HashSet::from([NonBestChainLocation::Mempool(None)]);
+        let nowhere = HashSet::new();
+
+        assert_eq!(light_wallet_height(Some(&mined), &off_best), Some(9));
+        assert_eq!(light_wallet_height(Some(&pending), &nowhere), Some(0));
+        assert_eq!(light_wallet_height(None, &off_best), Some(u64::MAX));
+        assert_eq!(light_wallet_height(None, &other_mempool), Some(0));
+        assert_eq!(light_wallet_height(None, &nowhere), None);
+    }
+
+    /// A zero standard fee is refused; any other is served.
+    #[test]
+    fn a_zero_standard_fee_is_refused() {
+        let fee = |zatoshis| StandardFee {
+            fee_per_action: Zatoshis::new(zatoshis).expect("in range"),
+            version: 0,
+        };
+        let refused = nonzero_standard_fee(&fee(0)).expect_err("zero");
+        assert_eq!(refused.code(), tonic::Code::Internal);
+        assert_eq!(
+            nonzero_standard_fee(&fee(5_000)).expect("served").fee_zat,
+            5_000
+        );
     }
 }

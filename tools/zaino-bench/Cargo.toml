@@ -1,0 +1,24 @@
+# Standalone dev-tooling crate: its own workspace (not a member of the root one),
+# so it is neither test code nor a production crate and builds into neither.
+# It runs the zainod binary on a config, times its sync and reports where the
+# time went.
+[package]
+name = "zaino-bench"
+version = "0.0.0"
+edition = "2021"
+publish = false
+
+# Own workspace root -> isolated resolution, independent of the production tree.
+[workspace]
+
+[lints.rust]
+unsafe_code = "forbid"
+
+# Versions pinned to the root workspace's.
+[dependencies]
+tokio = { version = "1.38", features = ["full"] }
+clap = { version = "4.0", features = ["derive"] }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+reqwest = { version = "0.13", default-features = false }
+toml = "1.1"

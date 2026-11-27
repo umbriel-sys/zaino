@@ -1,0 +1,12 @@
+consumed_in = "zainod-0-11-0"
+[[changes]]
+crate = "zaino-source-mock"
+kind = "breaking"
+description = """
+Mock parity with zebrad (#55). `get_difficulty` is the next block's expected \
+difficulty by zebrad's division. `NodeFacts::standard_fee` is a switch \
+(`bool`): `get_standard_fee` computes ZIP 317's marginal fee for the block \
+after the tip, or is `Unsupported`. `get_block_subsidy` answers at any \
+height, from NU7 only up to the block after the tip. `get_mempool_txids` is \
+sorted as displayed and `get_mempool_metadata` carries an entry time. \
+`get_transaction` on a transaction without bytes is a fault, not empty bytes."""

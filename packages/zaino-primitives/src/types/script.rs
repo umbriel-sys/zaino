@@ -68,36 +68,42 @@ impl ScriptType {
 /// arm changes what is written, so it belongs with a migration rather than
 /// here.
 pub fn classify_script(script: &[u8]) -> ([u8; 20], ScriptType) {
-    // P2PKH: OP_DUP OP_HASH160 <20> ... OP_EQUALVERIFY OP_CHECKSIG
-    const P2PKH_PREFIX: &[u8] = &[0x76, 0xa9, 0x14];
-    const P2PKH_SUFFIX: &[u8] = &[0x88, 0xac];
-    // P2SH: OP_HASH160 <20> ... OP_EQUAL
-    const P2SH_PREFIX: &[u8] = &[0xa9, 0x14];
-    const P2SH_SUFFIX: &[u8] = &[0x87];
-
+    if let Some(key) = standard_script(script) {
+        return (key.hash, key.script_type);
+    }
+    if let Some((&tag, rest)) = script.split_first() {
+        if let Ok(hash) = <[u8; 20]>::try_from(rest) {
+            let script_type = match tag {
+                0x00 => ScriptType::P2PKH,
+                0x01 => ScriptType::P2SH,
+                _ => ScriptType::NonStandard,
+            };
+            return (hash, script_type);
+        }
+    }
     let mut hash = [0u8; 20];
-
-    if script.len() == 25 && script.starts_with(P2PKH_PREFIX) && script.ends_with(P2PKH_SUFFIX) {
-        hash.copy_from_slice(&script[3..23]);
-        return (hash, ScriptType::P2PKH);
+    for (slot, byte) in hash.iter_mut().zip(script) {
+        *slot = *byte;
     }
-    if script.len() == 23 && script.starts_with(P2SH_PREFIX) && script.ends_with(P2SH_SUFFIX) {
-        hash.copy_from_slice(&script[2..22]);
-        return (hash, ScriptType::P2SH);
-    }
-    if script.len() == 21 {
-        hash.copy_from_slice(&script[1..21]);
-        let script_type = match script[0] {
-            0x00 => ScriptType::P2PKH,
-            0x01 => ScriptType::P2SH,
-            _ => ScriptType::NonStandard,
-        };
-        return (hash, script_type);
-    }
-
-    let usable = script.len().min(20);
-    hash[..usable].copy_from_slice(&script[..usable]);
     (hash, ScriptType::NonStandard)
+}
+
+/// The key of a 25-byte P2PKH or 23-byte P2SH script, the only two forms an
+/// address names; `None` for anything else.
+fn standard_script(script: &[u8]) -> Option<TransparentAddressKey> {
+    // P2PKH: OP_DUP OP_HASH160 <20> hash OP_EQUALVERIFY OP_CHECKSIG
+    if let [0x76, 0xa9, 0x14, body @ .., 0x88, 0xac] = script {
+        if let Ok(hash) = <[u8; 20]>::try_from(body) {
+            return Some(TransparentAddressKey::new(hash, ScriptType::P2PKH));
+        }
+    }
+    // P2SH: OP_HASH160 <20> hash OP_EQUAL
+    if let [0xa9, 0x14, body @ .., 0x87] = script {
+        if let Ok(hash) = <[u8; 20]>::try_from(body) {
+            return Some(TransparentAddressKey::new(hash, ScriptType::P2SH));
+        }
+    }
+    None
 }
 
 /// How an index keys a transparent output: its 20-byte hash and the script
@@ -122,10 +128,18 @@ impl TransparentAddressKey {
         Self { hash, script_type }
     }
 
-    /// The key a locking script is indexed under.
+    /// The key a locking script is indexed under, by [`classify_script`]
+    /// (including its legacy 21-byte arm).
     pub fn from_script(script: &[u8]) -> Self {
         let (hash, script_type) = classify_script(script);
         Self { hash, script_type }
+    }
+
+    /// The address a raw on-chain locking script pays: `Some` only for an
+    /// exact 25-byte P2PKH or 23-byte P2SH script, as zcashd's `Solver`.
+    /// What every new index keys by; it has no legacy 21-byte arm.
+    pub fn from_standard_script(script: &[u8]) -> Option<Self> {
+        standard_script(script)
     }
 
     /// Whether this key names a standard, reconstructible address.
@@ -274,5 +288,35 @@ mod address_key_tests {
     fn only_the_standard_forms_are_standard() {
         assert!(TransparentAddressKey::from_script(&p2pkh([7; 20])).is_standard());
         assert!(!TransparentAddressKey::new([0; 20], ScriptType::NonStandard).is_standard());
+    }
+
+    /// The strict form accepts exactly the 25-byte P2PKH and 23-byte P2SH
+    /// scripts; the legacy 21-byte forms and near-misses name no address.
+    #[test]
+    fn only_exact_standard_scripts_name_an_address() {
+        let mut p2sh = vec![0xa9, 0x14];
+        p2sh.extend_from_slice(&[9; 20]);
+        p2sh.push(0x87);
+        assert_eq!(
+            TransparentAddressKey::from_standard_script(&p2pkh([7; 20])),
+            Some(TransparentAddressKey::new([7; 20], ScriptType::P2PKH))
+        );
+        assert_eq!(
+            TransparentAddressKey::from_standard_script(&p2sh),
+            Some(TransparentAddressKey::new([9; 20], ScriptType::P2SH))
+        );
+        let mut tagged = vec![0x00];
+        tagged.extend_from_slice(&[7; 20]);
+        let mut long = p2pkh([7; 20]);
+        long.push(0x00);
+        let mut wrong_push = p2pkh([7; 20]);
+        wrong_push[2] = 0x15;
+        for script in [tagged, long, wrong_push, vec![0x6a, 1, 2], Vec::new()] {
+            assert_eq!(
+                TransparentAddressKey::from_standard_script(&script),
+                None,
+                "{script:02x?}"
+            );
+        }
     }
 }

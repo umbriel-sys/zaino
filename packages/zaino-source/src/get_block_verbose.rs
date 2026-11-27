@@ -1,8 +1,8 @@
-//! Query: fetch verbose block metadata at a given height.
+//! Query: the validator's verbose `getblock` answer.
 
 use std::future::Future;
 
-use zaino_primitives::types::{BlockHash, BlockVerbose, Height};
+use zaino_primitives::types::{BlockHash, BlockVerbose, BlockVerbosity, Height};
 
 use super::{QueryError, ValidatorSource};
 
@@ -23,31 +23,31 @@ pub enum GetBlockVerboseError {
     BlockNotFound(BlockHash),
 }
 
-/// Fetch verbose block metadata at a given height.
+/// The validator's verbose `getblock` answer at a given height.
 ///
-/// Maps to `getblock(height, 1)` over JSON-RPC.
+/// Maps to `getblock(height, verbosity)` over JSON-RPC.
 #[zaino_source_macros::resilient_port]
 pub trait OneShotGetBlockVerbose: ValidatorSource + Send + Sync {
-    /// Fetch verbose metadata.
+    /// Fetch the verbose block.
     fn get_block_verbose(
         &self,
         height: Height,
+        verbosity: BlockVerbosity,
     ) -> impl Future<Output = Result<BlockVerbose, QueryError<GetBlockVerboseError, Self::NonDomain>>>
            + Send;
 }
 
-/// Fetch a block's chain-state facts, addressed by hash.
+/// The validator's verbose `getblock` answer, addressed by hash.
 ///
-/// Separate from [`GetBlockVerbose`] for the same reason as
-/// [`GetBlockByHash`](super::GetBlockByHash): a height names a best-chain
-/// block, whereas a hash can name one on a side chain — where `confirmations`
-/// is negative and there is no next block.
+/// Separate from [`GetBlockVerbose`]: a hash can name a side-chain block,
+/// where `confirmations` is negative and there is no next block.
 #[zaino_source_macros::resilient_port]
 pub trait OneShotGetBlockVerboseByHash: ValidatorSource + Send + Sync {
-    /// Fetch verbose metadata by block hash.
+    /// Fetch the verbose block by hash.
     fn get_block_verbose_by_hash(
         &self,
-        hash: zaino_primitives::types::BlockHash,
+        hash: BlockHash,
+        verbosity: BlockVerbosity,
     ) -> impl Future<Output = Result<BlockVerbose, QueryError<GetBlockVerboseError, Self::NonDomain>>>
            + Send;
 }

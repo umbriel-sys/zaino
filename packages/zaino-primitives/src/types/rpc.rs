@@ -23,7 +23,7 @@
 //!    validate or reason about, and it has no place in a business type.
 //!
 //! Leniency buys compatibility; it does not require passthrough. Those were
-//! conflated in the previous `zaino-fetch` wire types, which were inconsistent
+//! conflated in the wire types these replace, which were inconsistent
 //! about it: one type forwarded unknown fields via `#[serde(flatten)]` while
 //! four others set `deny_unknown_fields` and *failed* on them — the latter
 //! being outright hostile to a generic backend.
@@ -42,20 +42,30 @@ mod block_header;
 mod block_subsidy;
 mod chain_tip;
 mod mining_info;
+mod network_info;
 mod node_info;
 mod peer_info;
 mod spent_info;
+mod standard_fee;
 mod subtree_roots;
+mod transaction_verbose;
 mod tx_out;
 
 pub use address_deltas::{AddressDeltas, AddressDeltasRequest};
 pub use block_deltas::{BlockDelta, BlockDeltas, InputDelta, OutputDelta};
-pub use block_header::BlockHeaderVerbose;
+pub use block_header::{BlockHeaderVerbose, HeaderDisplay};
 pub use block_subsidy::{BlockSubsidy, FundingStream, LockboxStream};
 pub use chain_tip::{ChainTip, ChainTipStatus};
 pub use mining_info::MiningInfo;
+pub use network_info::{LocalAddress, NetworkEntry, NetworkInfo};
 pub use node_info::NodeInfo;
 pub use peer_info::PeerInfo;
 pub use spent_info::{SpentInfo, SpentOutpoint};
+pub use standard_fee::StandardFee;
 pub use subtree_roots::SubtreeRoots;
+pub use transaction_verbose::{
+    InputVerbose, JoinSplitVerbose, OrchardActionVerbose, OrchardFlagsVerbose, OrchardVerbose,
+    OutputVerbose, PrevoutVerbose, SaplingOutputVerbose, SaplingSpendVerbose, TransactionVerbose,
+    TransactionVerbosity,
+};
 pub use tx_out::{ScriptPubKey, TxOut};

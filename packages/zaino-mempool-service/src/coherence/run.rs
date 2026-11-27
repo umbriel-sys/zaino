@@ -7,7 +7,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use tokio::sync::broadcast;
-use zaino_status::StatusType;
+use zaino_component::{Health, Lifecycle};
 
 use zaino_mempool::ports::{Mempool, NfsEpochObserver};
 use zaino_mempool::update::MempoolUpdate;
@@ -41,7 +41,8 @@ impl<M: Mempool, N: NfsEpochObserver> super::CoherenceService<M, N> {
     /// rather than in per-reconcile spans.
     #[tracing::instrument(name = "mempool_coherence_loop", skip_all)]
     pub(super) async fn run(self: Arc<Self>) {
-        self.status.store(StatusType::Syncing);
+        self.status
+            .set_unless_closing(Lifecycle::Syncing, Health::Healthy);
 
         let mut updates = self.mempool.subscribe_updates();
         // The NS tip advances on Zaino's own sync, which does not always coincide
@@ -75,14 +76,17 @@ impl<M: Mempool, N: NfsEpochObserver> super::CoherenceService<M, N> {
                     self.reconcile();
                     self.report_frozen(&mut escalated);
                 }
-                _ = async {
+                closed = async {
                     match epoch_wake.as_mut() {
-                        Some(rx) => {
-                            let _ = rx.changed().await;
-                        }
-                        None => std::future::pending::<()>().await,
+                        Some(rx) => rx.changed().await.is_err(),
+                        None => std::future::pending::<bool>().await,
                     }
                 } => {
+                    // a wake whose sender is gone fires at once forever: drop it
+                    if closed {
+                        tracing::debug!("epoch wake closed; reconciling on the interval");
+                        epoch_wake = None;
+                    }
                     self.reconcile();
                 }
                 update = updates.recv() => {

@@ -1,8 +1,9 @@
 //! `getblockdeltas` — per-transaction transparent value movements in a block.
 
 use crate::types::{
-    BlockConfirmations, BlockHash, BlockTime, CompactDifficulty, Difficulty, EquihashNonce, Height,
-    MerkleRoot, OutputIndex, SignedZatoshis, TransactionId, TransparentAddress, TxIndex, Zatoshis,
+    AbsoluteChainWork, BlockConfirmations, BlockHash, BlockTime, CompactDifficulty, Difficulty,
+    EquihashNonce, Height, MerkleRoot, OutputIndex, SignedZatoshis, TransactionId,
+    TransparentAddress, TxIndex, Zatoshis,
 };
 
 /// Transparent value movements for every transaction in a block.
@@ -34,6 +35,9 @@ pub struct BlockDeltas {
     pub bits: CompactDifficulty,
     /// Difficulty as a multiple of the network minimum.
     pub difficulty: Difficulty,
+    /// Cumulative chainwork at this block; `None` where it is not known (the
+    /// validator omits it, or the store has not built it).
+    pub chainwork: Option<AbsoluteChainWork>,
     /// Hash of the previous block. `None` for genesis.
     pub previous_block_hash: Option<BlockHash>,
     /// Hash of the next block on the best chain. `None` at the tip, or when

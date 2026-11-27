@@ -1,34 +1,27 @@
-use super::{load_test_vectors_and_sync_chain_index, MockchainMode, DEEP_FINALISED_SEED_TIP};
+use super::{regtest, served_tip, synced, MockchainMode, CHAIN_TIP, STANDARD_FEE};
 use crate::chain_index::chain_view::BestTip as _;
 use crate::{
     chain_index::{
-        tests::vectors::MockSource,
-        tests::{
-            poll::poll_until,
-            vectors::{indexed_block_chain, load_test_vectors, TestVectorBlockData},
-        },
-        types::{BestChainLocation, ChainScope, TransactionHash},
+        tests::poll::poll_until,
+        types::{local_hash, local_txid, BestChainLocation, ChainScope, TransactionHash},
         ChainIndex, ChainIndexRpcExt, NodeBackedChainIndexSubscriber,
     },
-    BlockchainSource as _, Outpoint,
+    Outpoint,
 };
+use std::collections::HashSet;
 use tokio::time::Duration;
 use tokio_stream::StreamExt as _;
 use zaino_primitives::types::rpc::{AddressDeltas, AddressDeltasRequest};
+use zaino_source_mock::MockChain;
+use zaino_source_mock::{MockBlock, RawBlock, Upgrade, MINER_SCRIPT};
 use zebra_chain::serialization::{ZcashDeserializeInto, ZcashSerialize as _};
 use zebra_rpc::client::{GetAddressBalanceRequest, GetAddressTxIdsRequest};
 use zebra_rpc::methods::GetBlock;
-use zebra_state::HashOrHeight;
 
 /// Polls the indexer's nonfinalized-state snapshot until its best-tip height
 /// equals `expected`, or panics after a 10 s budget.
-///
-/// Use this wherever a test previously relied on a fixed `sleep` to hope the
-/// indexer's sync task had caught up with the mockchain tip: the indexer
-/// publishes new tips asynchronously via its background loop, and under
-/// full-suite parallel load those updates can lag well past 2 s.
 async fn wait_for_indexer_tip(
-    index_reader: &NodeBackedChainIndexSubscriber<MockSource>,
+    index_reader: &NodeBackedChainIndexSubscriber<MockChain>,
     expected: u32,
 ) {
     poll_until(
@@ -43,23 +36,18 @@ async fn wait_for_indexer_tip(
     .await;
 }
 
-/// Polls until the mempool's txid set equals `expected`.
-///
-/// The mempool is an eventually-consistent read model refreshed by its own poll
-/// loop, so — like [`wait_for_indexer_tip`] for the chain tip — a test must wait
-/// for it to converge before asserting on mempool data. Sleeping a fixed
-/// interval instead is what made the previous mempool tests flaky under
-/// full-suite parallel load.
+/// Polls until the mempool's txid set equals `expected`: the mempool is an
+/// eventually-consistent read model refreshed by its own poll loop.
 async fn wait_for_mempool_txids(
-    index_reader: &NodeBackedChainIndexSubscriber<MockSource>,
-    expected: &std::collections::HashSet<TransactionHash>,
+    index_reader: &NodeBackedChainIndexSubscriber<MockChain>,
+    expected: &HashSet<TransactionHash>,
 ) {
     poll_until(
         "mempool to reflect expected txids",
         Duration::from_secs(10),
         Duration::from_millis(25),
         || async {
-            let txids: std::collections::HashSet<TransactionHash> = index_reader
+            let txids: HashSet<TransactionHash> = index_reader
                 .get_mempool_txids()
                 .await
                 .ok()?
@@ -74,15 +62,11 @@ async fn wait_for_mempool_txids(
 /// Polls until the coherence layer has blessed the current set for the current
 /// snapshot.
 ///
-/// Distinct from [`wait_for_mempool_txids`] and both are needed: the tip-agnostic
-/// core publishes its txids before the coherence layer reconciles the two tips,
-/// so a test of the *coherent* reads (`get_raw_transaction`,
-/// `get_transaction_status`, `get_mempool_stream`) that waited only for the
-/// txids would race the reconcile.
-///
-/// A `Some` stream is the same guard the coherent point reads use, so this
-/// observes exactly what they will see. The stream is dropped immediately.
-async fn wait_for_mempool_coherent(index_reader: &NodeBackedChainIndexSubscriber<MockSource>) {
+/// Distinct from [`wait_for_mempool_txids`]: the tip-agnostic core publishes
+/// its txids before the coherence layer reconciles the two tips, so a test of
+/// the coherent reads that waited only for the txids would race the
+/// reconcile. A `Some` stream is the guard the coherent point reads use.
+async fn wait_for_mempool_coherent(index_reader: &NodeBackedChainIndexSubscriber<MockChain>) {
     poll_until(
         "mempool coherence to bless the current tip",
         Duration::from_secs(10),
@@ -95,194 +79,245 @@ async fn wait_for_mempool_coherent(index_reader: &NodeBackedChainIndexSubscriber
     .await;
 }
 
-/// The mempool the active mockchain models: the non-coinbase transactions of the
-/// block at `tip + 1`.
-fn expected_mempool_txids(
-    block_data: &[zebra_chain::block::Block],
-    mockchain_tip: u32,
-) -> std::collections::HashSet<TransactionHash> {
-    block_data
-        .get(mockchain_tip as usize + 1)
+/// A built block's consensus bytes.
+fn raw(block: &MockBlock) -> &RawBlock {
+    block
+        .raw
+        .as_ref()
+        .expect("every built block carries its bytes")
+}
+
+/// Each of `block`'s transactions, in block order: its id and bytes.
+fn transactions(block: &MockBlock) -> impl Iterator<Item = (TransactionHash, &[u8])> {
+    block
+        .block
+        .transactions()
+        .iter()
+        .zip(&raw(block).transactions)
+        .map(|(transaction, bytes)| (local_txid(transaction.txid), bytes.as_slice()))
+}
+
+/// The mempool the mock serves at `tip`: the next block's non-coinbase
+/// transactions, sorted by id.
+fn mempool_at(blocks: &[MockBlock], tip: u32) -> Vec<(TransactionHash, Vec<u8>)> {
+    let mut mempool: Vec<_> = blocks
+        .get(tip as usize + 1)
         .map(|block| {
-            block
-                .transactions
-                .iter()
-                .filter(|tx| !tx.is_coinbase())
-                .map(|tx| TransactionHash::from(tx.hash()))
+            transactions(block)
+                .skip(1)
+                .map(|(txid, bytes)| (txid, bytes.to_vec()))
                 .collect()
         })
-        .unwrap_or_default()
+        .unwrap_or_default();
+    mempool.sort();
+    mempool
 }
 
-fn faucet_transparent_address() -> String {
-    let vector_data = load_test_vectors().unwrap();
-
-    let (transparent_address, _transaction_hash, _output_index, _script, _value, _height) =
-        vector_data.faucet.utxos[0].clone().into_parts();
-
-    transparent_address.to_string()
+fn expected_mempool_txids(blocks: &[MockBlock], tip: u32) -> HashSet<TransactionHash> {
+    mempool_at(blocks, tip)
+        .into_iter()
+        .map(|(txid, _)| txid)
+        .collect()
 }
 
-#[tokio::test(flavor = "multi_thread")]
+/// The address the miner's coinbases pay: credited every block, debited by
+/// every spend.
+fn miner_address() -> String {
+    zaino_source_mock::address_of(&MINER_SCRIPT, zaino_primitives::types::Network::Regtest)
+        .expect("the miner pays a standard script")
+}
+
+#[tokio::test]
 async fn get_block_range() {
-    let (blocks, _indexer, index_reader, _mockchain) =
-        load_test_vectors_and_sync_chain_index(MockchainMode::Static).await;
-    let nonfinalized_snapshot = index_reader.snapshot_nonfinalized_state();
+    let index = synced(MockchainMode::Static).await;
+    let nonfinalized_snapshot = index.reader.snapshot_nonfinalized_state();
 
-    let start = crate::Height(0);
+    let indexer_blocks = ChainIndex::get_block_range(
+        &index.reader,
+        &nonfinalized_snapshot,
+        crate::Height(0),
+        None,
+    )
+    .unwrap()
+    .collect::<Vec<_>>()
+    .await;
 
-    let indexer_blocks =
-        ChainIndex::get_block_range(&index_reader, &nonfinalized_snapshot, start, None)
-            .unwrap()
-            .collect::<Vec<_>>()
-            .await;
-
-    for (i, block) in indexer_blocks.into_iter().enumerate() {
-        let parsed_block = block
-            .unwrap()
-            .zcash_deserialize_into::<zebra_chain::block::Block>()
-            .unwrap();
-
-        let expected_block = &blocks[i].zebra_block;
-        assert_eq!(&parsed_block, expected_block);
+    assert_eq!(indexer_blocks.len(), index.blocks.len());
+    for (block, expected) in indexer_blocks.into_iter().zip(&index.blocks) {
+        assert_eq!(block.unwrap(), raw(expected).block);
     }
 }
 
-#[tokio::test(flavor = "multi_thread")]
-async fn get_raw_transaction() {
-    let (blocks, _indexer, index_reader, _mockchain) =
-        load_test_vectors_and_sync_chain_index(MockchainMode::Static).await;
-    let nonfinalized_snapshot = index_reader.snapshot_nonfinalized_state();
-    for (expected_transaction, height) in blocks.into_iter().flat_map(|block| {
-        block
-            .zebra_block
-            .transactions
-            .into_iter()
-            .map(move |transaction| (transaction, block.height))
-    }) {
-        let (transaction, branch_id) = index_reader
-            .get_raw_transaction(
-                &nonfinalized_snapshot,
-                &TransactionHash::from(expected_transaction.hash()),
-            )
-            .await
-            .unwrap()
-            .unwrap();
-        let zaino_transaction = transaction
-            .zcash_deserialize_into::<zebra_chain::transaction::Transaction>()
-            .unwrap();
-        assert_eq!(expected_transaction.as_ref(), &zaino_transaction);
-        assert_eq!(
-            branch_id,
-            if height == 0 {
-                None
-            } else if height == 1 {
-                zebra_chain::parameters::NetworkUpgrade::Canopy
-                    .branch_id()
-                    .map(u32::from)
-            } else {
-                zebra_chain::parameters::NetworkUpgrade::Nu6_2
-                    .branch_id()
-                    .map(u32::from)
+/// Ranges in both directions are served block for block, and a range
+/// reaching past the tip yields one error.
+#[tokio::test]
+async fn get_block_range_serves_both_directions_up_to_the_tip() {
+    let index = synced(MockchainMode::Static).await;
+    let snapshot = index.reader.snapshot_nonfinalized_state();
+
+    for low in 0..=CHAIN_TIP - 8 {
+        let high = low + 9;
+        for (start, end) in [(low, high), (high, low)] {
+            let blocks: Vec<_> = index
+                .reader
+                .get_block_range(&snapshot, crate::Height(start), Some(crate::Height(end)))
+                .expect("a range always yields a stream")
+                .collect()
+                .await;
+
+            if high > CHAIN_TIP {
+                assert!(
+                    matches!(blocks.as_slice(), [Err(_)]),
+                    "a range above the tip yields one error",
+                );
+                continue;
             }
-        );
+            let heights: Vec<u32> = if start <= end {
+                (start..=end).collect()
+            } else {
+                (end..=start).rev().collect()
+            };
+            assert_eq!(blocks.len(), heights.len(), "every height is served");
+            for (block, height) in blocks.into_iter().zip(heights) {
+                assert_eq!(
+                    block.unwrap(),
+                    raw(&index.blocks[height as usize]).block,
+                    "height {height}"
+                );
+            }
+        }
     }
 }
 
-#[tokio::test(flavor = "multi_thread")]
-async fn get_transaction_status() {
-    let (blocks, _indexer, index_reader, _mockchain) =
-        load_test_vectors_and_sync_chain_index(MockchainMode::Static).await;
-    let nonfinalized_snapshot = index_reader.snapshot_nonfinalized_state();
+/// Every best-chain block is its own fork point.
+#[tokio::test]
+async fn find_fork_point_of_a_best_chain_block_is_itself() {
+    let index = synced(MockchainMode::Static).await;
+    let snapshot = index.reader.snapshot_nonfinalized_state();
 
-    for (expected_transaction, block_hash, block_height) in blocks.into_iter().flat_map(|block| {
-        block
-            .zebra_block
-            .transactions
-            .iter()
-            .cloned()
-            .map(|transaction| {
-                (
-                    transaction,
-                    block.zebra_block.hash(),
-                    block.zebra_block.coinbase_height(),
-                )
-            })
-            .collect::<Vec<_>>()
-            .into_iter()
-    }) {
-        let expected_txid = expected_transaction.hash();
-
-        let (transaction_status_best_chain, transaction_status_nonbest_chain) = index_reader
-            .get_transaction_status(
-                &nonfinalized_snapshot,
-                &TransactionHash::from(expected_txid),
-            )
+    for block in &index.blocks {
+        let hash = local_hash(block.hash());
+        let fork_point = index
+            .reader
+            .find_fork_point(&snapshot, &hash)
             .await
-            .unwrap();
-        assert!(transaction_status_nonbest_chain.is_empty());
-        assert_eq!(
-            transaction_status_best_chain.unwrap(),
-            BestChainLocation::Block(
-                crate::BlockHash(block_hash.0),
-                crate::Height(block_height.unwrap().0)
-            )
-        );
+            .unwrap()
+            .expect("a best-chain block has a fork point");
+        assert_eq!(fork_point, (hash, crate::Height(u32::from(block.height()))));
     }
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
-async fn sync_blocks_after_startup() {
-    let (_blocks, _indexer, index_reader, mockchain) =
-        load_test_vectors_and_sync_chain_index(MockchainMode::Active).await;
+/// The reported tip is the source's own tip.
+#[tokio::test]
+async fn best_chaintip_is_the_source_tip() {
+    let index = synced(MockchainMode::Static).await;
+    let snapshot = index.reader.snapshot_nonfinalized_state();
 
-    let indexer_tip = u32::from(dbg!(index_reader.snapshot_nonfinalized_state().best_tip()).height);
-    let active_mockchain_tip = dbg!(mockchain.source().active_height());
-    assert_eq!(active_mockchain_tip, indexer_tip);
+    let tip = index.reader.best_chaintip(&snapshot).await.unwrap();
+    assert_eq!(tip.height.0, CHAIN_TIP);
+}
+
+#[tokio::test]
+async fn get_standard_fee_passes_the_validator_answer_through() {
+    let index = synced(MockchainMode::Static).await;
+
+    let fee = index
+        .reader
+        .get_standard_fee()
+        .await
+        .expect("the mockchain serves getstandardfee");
+    assert_eq!(fee.fee_per_action.as_u64(), STANDARD_FEE);
+    assert_eq!(fee.version, 0);
+}
+
+#[tokio::test]
+async fn get_raw_transaction() {
+    let index = synced(MockchainMode::Static).await;
+    let nonfinalized_snapshot = index.reader.snapshot_nonfinalized_state();
+
+    for block in &index.blocks {
+        let height = u32::from(block.height());
+        for (txid, expected) in transactions(block) {
+            let (transaction, branch_id) = index
+                .reader
+                .get_raw_transaction(&nonfinalized_snapshot, &txid)
+                .await
+                .unwrap()
+                .unwrap();
+            assert_eq!(transaction, expected);
+            // Genesis is pre-Overwinter; every later block is under NU6.2.
+            assert_eq!(
+                branch_id,
+                (height > 0).then(|| Upgrade::Nu6_2.branch_id()),
+                "height {height}"
+            );
+        }
+    }
+}
+
+#[tokio::test]
+async fn get_transaction_status() {
+    let index = synced(MockchainMode::Static).await;
+    let nonfinalized_snapshot = index.reader.snapshot_nonfinalized_state();
+
+    for block in &index.blocks {
+        for (txid, _) in transactions(block) {
+            let (best_chain, non_best_chain) = index
+                .reader
+                .get_transaction_status(&nonfinalized_snapshot, &txid)
+                .await
+                .unwrap();
+            assert!(non_best_chain.is_empty());
+            assert_eq!(
+                best_chain,
+                Some(BestChainLocation::Block(
+                    local_hash(block.hash()),
+                    crate::Height(u32::from(block.height()))
+                ))
+            );
+        }
+    }
+}
+
+#[tokio::test]
+async fn sync_blocks_after_startup() {
+    let index = synced(MockchainMode::Active).await;
+    let index_reader = &index.reader;
 
     for _ in 0..20 {
-        mockchain.source().mine_blocks(1);
-        wait_for_indexer_tip(&index_reader, mockchain.source().active_height()).await;
+        index.source.source().mine(1);
+        wait_for_indexer_tip(index_reader, served_tip(&index.source)).await;
     }
 
-    let indexer_tip = u32::from(dbg!(index_reader.snapshot_nonfinalized_state().best_tip()).height);
-    let active_mockchain_tip = dbg!(mockchain.source().active_height());
-    assert_eq!(active_mockchain_tip, indexer_tip);
+    let indexer_tip = u32::from(index_reader.snapshot_nonfinalized_state().best_tip().height);
+    assert_eq!(served_tip(&index.source), indexer_tip);
 }
 
-#[tokio::test(flavor = "multi_thread")]
+#[tokio::test]
 async fn stale_snapshot_reports_mempool_transaction_as_unavailable_not_missing() {
     // A transaction the validator holds in its mempool, queried with a snapshot
     // the coherent view has moved past. Zaino cannot vouch for it against *that*
     // snapshot, but it certainly exists — reporting `Ok(None)` would tell a
     // wallet its transaction is gone. The caller gets a retryable error instead.
-    let (blocks, _indexer, index_reader, mockchain) =
-        load_test_vectors_and_sync_chain_index(MockchainMode::Active).await;
-    let block_data: Vec<zebra_chain::block::Block> = blocks
-        .iter()
-        .map(|TestVectorBlockData { zebra_block, .. }| zebra_block.clone())
-        .collect();
-
-    let initial_tip = mockchain.source().active_height();
-    wait_for_indexer_tip(&index_reader, initial_tip).await;
-    wait_for_mempool_coherent(&index_reader).await;
+    let index = synced(MockchainMode::Active).await;
+    let index_reader = &index.reader;
+    wait_for_mempool_coherent(index_reader).await;
 
     // Snapshot at the old tip, then move the chain on so the coherent view is
     // blessed for a *newer* epoch than this snapshot's.
     let stale_snapshot = index_reader.snapshot_nonfinalized_state();
 
-    mockchain.source().mine_blocks(1);
-    let new_tip = mockchain.source().active_height();
-    wait_for_indexer_tip(&index_reader, new_tip).await;
-    let new_mempool_txids = expected_mempool_txids(&block_data, new_tip);
-    wait_for_mempool_txids(&index_reader, &new_mempool_txids).await;
-    wait_for_mempool_coherent(&index_reader).await;
+    index.source.source().mine(1);
+    let new_tip = served_tip(&index.source);
+    wait_for_indexer_tip(index_reader, new_tip).await;
+    let new_mempool_txids = expected_mempool_txids(&index.blocks, new_tip);
+    wait_for_mempool_txids(index_reader, &new_mempool_txids).await;
+    wait_for_mempool_coherent(index_reader).await;
 
-    let Some(mempool_txid) = new_mempool_txids.into_iter().next() else {
-        // No mempool contents at this height; nothing to assert.
-        return;
-    };
-
+    let mempool_txid = new_mempool_txids
+        .into_iter()
+        .next()
+        .expect("every block past the tip holds spends");
     let error = index_reader
         .get_raw_transaction(&stale_snapshot, &mempool_txid)
         .await
@@ -294,27 +329,51 @@ async fn stale_snapshot_reports_mempool_transaction_as_unavailable_not_missing()
     );
 }
 
+#[tokio::test]
+async fn mined_transaction_is_served_while_the_mempool_still_lists_it() {
+    // The chain view can sync a block before the core mempool re-polls, so the
+    // core still lists a txid the caller's snapshot has mined. The chain
+    // answers; it must not be refused as "not coherent".
+    let index = synced(MockchainMode::Active).await;
+    let index_reader = &index.reader;
+
+    let pending = mempool_at(&index.blocks, served_tip(&index.source));
+    wait_for_mempool_txids(
+        index_reader,
+        &pending.iter().map(|(txid, _)| *txid).collect(),
+    )
+    .await;
+    let (mined_txid, expected) = pending
+        .first()
+        .expect("the block after the active tip has a non-coinbase transaction");
+
+    // The validator's mempool still serves the pre-mine tip and set.
+    index.source.source().mine_ahead_of_mempool(1);
+    wait_for_indexer_tip(index_reader, served_tip(&index.source)).await;
+    let snapshot = index_reader.snapshot_nonfinalized_state();
+
+    let (bytes, _branch_id) = index_reader
+        .get_raw_transaction(&snapshot, mined_txid)
+        .await
+        .expect("a mined transaction is served from the chain")
+        .expect("the snapshot holds the mined transaction");
+    assert_eq!(&bytes, expected);
+}
+
 /// `get_mempool_info` reports the set the ChainIndex is actually serving.
 ///
-/// The mempool subsystem's own totals arithmetic is covered by mocks in
-/// `zaino-mempool-service`, and the live suite checks it against the validator's
-/// `getmempoolinfo`. What is only checkable here is the passthrough: that the
-/// `MempoolInfo` the ChainIndex hands back describes the same transactions
-/// `get_mempool_transactions` returns, rather than a stale or unrelated set.
-#[tokio::test(flavor = "multi_thread")]
+/// The mempool subsystem's own totals arithmetic is covered in
+/// `zaino-mempool-service`, and the live suite checks it against the
+/// validator's `getmempoolinfo`. What is only checkable here is the
+/// passthrough: that the `MempoolInfo` describes the same transactions
+/// `get_mempool_transactions` returns.
+#[tokio::test]
 async fn get_mempool_info_agrees_with_the_served_set() {
-    let (blocks, _indexer, index_reader, mockchain) =
-        load_test_vectors_and_sync_chain_index(MockchainMode::Active).await;
-    let block_data: Vec<zebra_chain::block::Block> = blocks
-        .iter()
-        .map(|TestVectorBlockData { zebra_block, .. }| zebra_block.clone())
-        .collect();
-
-    let mockchain_tip = mockchain.source().active_height();
-    wait_for_indexer_tip(&index_reader, mockchain_tip).await;
+    let index = synced(MockchainMode::Active).await;
+    let index_reader = &index.reader;
     wait_for_mempool_txids(
-        &index_reader,
-        &expected_mempool_txids(&block_data, mockchain_tip),
+        index_reader,
+        &expected_mempool_txids(&index.blocks, served_tip(&index.source)),
     )
     .await;
 
@@ -334,411 +393,184 @@ async fn get_mempool_info_agrees_with_the_served_set() {
         served.iter().map(|entry| entry.raw_len).sum::<u64>(),
         "getmempoolinfo's byte total does not match the transactions served"
     );
-    // `usage` is the ZIP-401 cost total, which floors each transaction at the
-    // cost threshold — so it is at least `bytes`, never below it.
-    assert!(info.usage >= info.bytes);
+    // `usage` is the memory the set occupies: the serialized bytes plus each
+    // entry's allocation and the tables, so it is above `bytes` and, for
+    // these small transactions, far below the ZIP-401 cost floor.
+    assert!(info.usage > info.bytes);
+    let cost_floor = u64::try_from(served.len()).expect("fits") * 10_000;
+    assert!(
+        info.usage < cost_floor,
+        "{} is not the cost total",
+        info.usage
+    );
 }
 
-#[tokio::test(flavor = "multi_thread")]
-async fn get_mempool_transaction() {
-    let (blocks, _indexer, index_reader, mockchain) =
-        load_test_vectors_and_sync_chain_index(MockchainMode::Active).await;
-    let block_data: Vec<zebra_chain::block::Block> = blocks
-        .iter()
-        .map(|TestVectorBlockData { zebra_block, .. }| zebra_block.clone())
-        .collect();
-
-    let mockchain_tip = mockchain.source().active_height();
-    wait_for_indexer_tip(&index_reader, mockchain_tip).await;
+/// An index on the active chain whose mempool has converged and is coherent;
+/// returns the mempool it serves.
+async fn coherent_mempool(index: &super::Synced) -> Vec<(TransactionHash, Vec<u8>)> {
+    let mempool = mempool_at(&index.blocks, served_tip(&index.source));
     wait_for_mempool_txids(
-        &index_reader,
-        &expected_mempool_txids(&block_data, mockchain_tip),
+        &index.reader,
+        &mempool.iter().map(|(txid, _)| *txid).collect(),
     )
     .await;
-    wait_for_mempool_coherent(&index_reader).await;
+    wait_for_mempool_coherent(&index.reader).await;
+    mempool
+}
 
-    let mempool_height = (mockchain_tip as usize) + 1;
+#[tokio::test]
+async fn get_mempool_transaction() {
+    let index = synced(MockchainMode::Active).await;
+    let mempool = coherent_mempool(&index).await;
+    assert!(!mempool.is_empty());
 
-    let mempool_transactions: Vec<_> = block_data
-        .get(mempool_height)
-        .map(|b| {
-            b.transactions
-                .iter()
-                .filter(|tx| !tx.is_coinbase())
-                .cloned()
-                .collect::<Vec<_>>()
-        })
-        .unwrap_or_default();
-
-    let nonfinalized_snapshot = index_reader.snapshot_nonfinalized_state();
-    for expected_transaction in mempool_transactions.into_iter() {
-        let (transaction, branch_id) = index_reader
-            .get_raw_transaction(
-                &nonfinalized_snapshot,
-                &TransactionHash::from(expected_transaction.hash()),
-            )
+    let nonfinalized_snapshot = index.reader.snapshot_nonfinalized_state();
+    for (txid, expected) in mempool {
+        let (transaction, branch_id) = index
+            .reader
+            .get_raw_transaction(&nonfinalized_snapshot, &txid)
             .await
             .unwrap()
             .unwrap();
-        let zaino_transaction = transaction
-            .zcash_deserialize_into::<zebra_chain::transaction::Transaction>()
-            .unwrap();
-        assert_eq!(expected_transaction.as_ref(), &zaino_transaction);
-        assert_eq!(
-            branch_id,
-            zebra_chain::parameters::NetworkUpgrade::Nu6_2
-                .branch_id()
-                .map(u32::from)
-        );
+        assert_eq!(transaction, expected);
+        assert_eq!(branch_id, Some(Upgrade::Nu6_2.branch_id()));
     }
 }
 
-#[tokio::test(flavor = "multi_thread")]
+#[tokio::test]
 async fn get_mempool_transaction_status() {
-    let (blocks, _indexer, index_reader, mockchain) =
-        load_test_vectors_and_sync_chain_index(MockchainMode::Active).await;
-    let block_data: Vec<zebra_chain::block::Block> = blocks
-        .iter()
-        .map(|TestVectorBlockData { zebra_block, .. }| zebra_block.clone())
-        .collect();
+    let index = synced(MockchainMode::Active).await;
+    let mempool = coherent_mempool(&index).await;
+    assert!(!mempool.is_empty());
+    let mempool_height = served_tip(&index.source) + 1;
 
-    let mockchain_tip = mockchain.source().active_height();
-    wait_for_indexer_tip(&index_reader, mockchain_tip).await;
-    wait_for_mempool_txids(
-        &index_reader,
-        &expected_mempool_txids(&block_data, mockchain_tip),
-    )
-    .await;
-    wait_for_mempool_coherent(&index_reader).await;
-
-    let mempool_height = (mockchain_tip as usize) + 1;
-
-    let mempool_transactions: Vec<_> = block_data
-        .get(mempool_height)
-        .map(|b| {
-            b.transactions
-                .iter()
-                .filter(|tx| !tx.is_coinbase())
-                .cloned()
-                .collect::<Vec<_>>()
-        })
-        .unwrap_or_default();
-
-    let nonfinalized_snapshot = index_reader.snapshot_nonfinalized_state();
-    for expected_transaction in mempool_transactions.into_iter() {
-        let expected_txid = expected_transaction.hash();
-
-        let (transaction_status_best_chain, transaction_status_nonbest_chain) = index_reader
-            .get_transaction_status(
-                &nonfinalized_snapshot,
-                &TransactionHash::from(expected_txid),
-            )
+    let nonfinalized_snapshot = index.reader.snapshot_nonfinalized_state();
+    for (txid, _) in mempool {
+        let (best_chain, non_best_chain) = index
+            .reader
+            .get_transaction_status(&nonfinalized_snapshot, &txid)
             .await
             .unwrap();
         assert_eq!(
-            transaction_status_best_chain,
-            Some(BestChainLocation::Mempool(
-                crate::chain_index::types::Height(mempool_height as u32)
-            ))
+            best_chain,
+            Some(BestChainLocation::Mempool(crate::Height(mempool_height)))
         );
-        assert!(transaction_status_nonbest_chain.is_empty());
+        assert!(non_best_chain.is_empty());
     }
 }
 
-#[tokio::test(flavor = "multi_thread")]
-async fn get_mempool_transactions() {
-    let (blocks, _indexer, index_reader, mockchain) =
-        load_test_vectors_and_sync_chain_index(MockchainMode::Active).await;
-    let block_data: Vec<zebra_chain::block::Block> = blocks
-        .iter()
-        .map(|TestVectorBlockData { zebra_block, .. }| zebra_block.clone())
-        .collect();
-
-    let mockchain_tip = mockchain.source().active_height();
-    wait_for_indexer_tip(&index_reader, mockchain_tip).await;
-    wait_for_mempool_txids(
-        &index_reader,
-        &expected_mempool_txids(&block_data, mockchain_tip),
-    )
-    .await;
-    wait_for_mempool_coherent(&index_reader).await;
-
-    let mempool_height = (mockchain_tip as usize) + 1;
-    let mut mempool_transactions: Vec<_> = block_data
-        .get(mempool_height)
-        .map(|b| {
-            b.transactions
-                .iter()
-                .filter(|tx| !tx.is_coinbase())
-                .cloned()
-                .collect::<Vec<_>>()
-        })
-        .unwrap_or_default();
-    mempool_transactions.sort_by_key(|a| a.hash());
-
-    let mut found_mempool_transactions: Vec<zebra_chain::transaction::Transaction> = index_reader
-        .get_mempool_transactions(Vec::new())
+/// The served mempool's transactions, sorted by id.
+async fn served_mempool(
+    index_reader: &NodeBackedChainIndexSubscriber<MockChain>,
+    exclude: Vec<Vec<u8>>,
+) -> Vec<(TransactionHash, Vec<u8>)> {
+    let mut served: Vec<_> = index_reader
+        .get_mempool_transactions(exclude)
         .await
         .unwrap()
         .iter()
         .map(|entry| {
-            entry
-                .serialized_bytes()
+            let bytes = entry.serialized_bytes().to_vec();
+            let transaction = bytes
                 .zcash_deserialize_into::<zebra_chain::transaction::Transaction>()
-                .unwrap()
+                .expect("served bytes are a transaction");
+            (TransactionHash::from(transaction.hash()), bytes)
         })
         .collect();
-    found_mempool_transactions.sort_by_key(|a| a.hash());
-    assert_eq!(
-        mempool_transactions
-            .iter()
-            .map(|tx| tx.as_ref().clone())
-            .collect::<Vec<_>>(),
-        found_mempool_transactions,
-    );
+    served.sort();
+    served
 }
 
-#[tokio::test(flavor = "multi_thread")]
+#[tokio::test]
+async fn get_mempool_transactions() {
+    let index = synced(MockchainMode::Active).await;
+    let mempool = coherent_mempool(&index).await;
+
+    assert_eq!(served_mempool(&index.reader, Vec::new()).await, mempool);
+}
+
+#[tokio::test]
 async fn get_filtered_mempool_transactions() {
-    let (blocks, _indexer, index_reader, mockchain) =
-        load_test_vectors_and_sync_chain_index(MockchainMode::Active).await;
-    let block_data: Vec<zebra_chain::block::Block> = blocks
-        .iter()
-        .map(|TestVectorBlockData { zebra_block, .. }| zebra_block.clone())
-        .collect();
+    let index = synced(MockchainMode::Active).await;
+    let mut mempool = coherent_mempool(&index).await;
 
-    let mockchain_tip = mockchain.source().active_height();
-    wait_for_indexer_tip(&index_reader, mockchain_tip).await;
-    wait_for_mempool_txids(
-        &index_reader,
-        &expected_mempool_txids(&block_data, mockchain_tip),
-    )
-    .await;
-    wait_for_mempool_coherent(&index_reader).await;
-
-    let mempool_height = (mockchain_tip as usize) + 1;
-    let mut mempool_transactions: Vec<_> = block_data
-        .get(mempool_height)
-        .map(|b| {
-            b.transactions
-                .iter()
-                .filter(|tx| !tx.is_coinbase())
-                .cloned()
-                .collect::<Vec<_>>()
-        })
-        .unwrap_or_default();
-    let exclude_tx = mempool_transactions.pop().unwrap();
+    let (excluded, _) = mempool.pop().expect("the mempool holds spends");
     // The exclude list is client-endian (internal) txid bytes — here the full
     // 32, which uniquely matches the one transaction.
-    let exclude_suffix = exclude_tx.hash().0.to_vec();
-    mempool_transactions.sort_by_key(|a| a.hash());
+    let served = served_mempool(&index.reader, vec![excluded.0.to_vec()]).await;
+    assert_eq!(served, mempool);
+}
 
-    let mut found_mempool_transactions: Vec<zebra_chain::transaction::Transaction> = index_reader
-        .get_mempool_transactions(vec![exclude_suffix])
-        .await
-        .unwrap()
-        .iter()
-        .map(|entry| {
-            entry
-                .serialized_bytes()
+/// Collects a mempool stream opened on `snapshot` (or none) until it closes,
+/// after one `mine`; the stream must open before the mine, so a handshake
+/// orders them.
+async fn mempool_stream_across_a_mine(
+    index: &super::Synced,
+    expect_tip: bool,
+) -> Vec<(TransactionHash, Vec<u8>)> {
+    let (opened_tx, opened_rx) = tokio::sync::oneshot::channel();
+    let index_reader = index.reader.clone();
+    let collector = tokio::spawn(async move {
+        let snapshot = index_reader.snapshot_nonfinalized_state();
+        let stream = index_reader
+            .get_mempool_stream(expect_tip.then_some(&snapshot))
+            .expect("failed to create mempool stream");
+        opened_tx
+            .send(())
+            .expect("the main task awaits the handshake");
+        let mut stream = std::pin::pin!(stream);
+        let mut collected = Vec::new();
+        while let Some(bytes) = stream.next().await {
+            let bytes = bytes.expect("stream error").to_vec();
+            let transaction = bytes
                 .zcash_deserialize_into::<zebra_chain::transaction::Transaction>()
-                .unwrap()
-        })
-        .collect();
-    found_mempool_transactions.sort_by_key(|a| a.hash());
-    assert_eq!(mempool_transactions.len(), found_mempool_transactions.len());
-    assert_eq!(
-        mempool_transactions
-            .iter()
-            .map(|tx| tx.as_ref().clone())
-            .collect::<Vec<_>>(),
-        found_mempool_transactions,
-    );
+                .expect("streamed bytes are a transaction");
+            collected.push((TransactionHash::from(transaction.hash()), bytes));
+        }
+        collected.sort();
+        collected
+    });
+
+    opened_rx
+        .await
+        .expect("the collector task opens the stream");
+    index.source.source().mine(1);
+    collector.await.expect("collector task failed")
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+#[tokio::test]
 async fn get_mempool_stream_no_expected_chain_tip_snapshot() {
-    let (blocks, _indexer, index_reader, mockchain) =
-        load_test_vectors_and_sync_chain_index(MockchainMode::Active).await;
+    let index = synced(MockchainMode::Active).await;
+    let mempool = coherent_mempool(&index).await;
 
-    let block_data: Vec<zebra_chain::block::Block> = blocks
-        .iter()
-        .map(|TestVectorBlockData { zebra_block, .. }| zebra_block.clone())
-        .collect();
-
-    let mockchain_tip = mockchain.source().active_height();
-    wait_for_indexer_tip(&index_reader, mockchain_tip).await;
-    wait_for_mempool_txids(
-        &index_reader,
-        &expected_mempool_txids(&block_data, mockchain_tip),
-    )
-    .await;
-    wait_for_mempool_coherent(&index_reader).await;
-
-    let next_mempool_height_index = (mockchain_tip as usize) + 1;
-    let mut mempool_transactions: Vec<_> = block_data
-        .get(next_mempool_height_index)
-        .map(|b| {
-            b.transactions
-                .iter()
-                .filter(|tx| !tx.is_coinbase())
-                .cloned()
-                .collect::<Vec<_>>()
-        })
-        .unwrap_or_default();
-    mempool_transactions.sort_by_key(|transaction| transaction.hash());
-
-    // Same ordering constraint as the expected-tip variant below: the stream
-    // must open before the mine, or it observes the drained post-mine
-    // mempool and collects nothing. Without an expected tip there is no
-    // guard at open, so the lost race presents as an assertion failure
-    // rather than a hang. The handshake makes the ordering deterministic.
-    let (stream_opened_tx, stream_opened_rx) = tokio::sync::oneshot::channel();
-
-    let mempool_stream_task = tokio::spawn(async move {
-        let mempool_stream = index_reader
-            .get_mempool_stream(None)
-            .expect("failed to create mempool stream");
-        stream_opened_tx
-            .send(())
-            .expect("the main task awaits the handshake");
-        let mut mempool_stream = std::pin::pin!(mempool_stream);
-
-        let mut indexer_mempool_transactions: Vec<zebra_chain::transaction::Transaction> =
-            Vec::new();
-
-        while let Some(tx_bytes_res) = mempool_stream.next().await {
-            let tx_bytes = tx_bytes_res.expect("stream error");
-            let tx: zebra_chain::transaction::Transaction = tx_bytes
-                .as_ref()
-                .zcash_deserialize_into()
-                .expect("deserialize tx");
-            indexer_mempool_transactions.push(tx);
-        }
-
-        indexer_mempool_transactions.sort_by_key(|tx| tx.hash());
-        indexer_mempool_transactions
-    });
-
-    stream_opened_rx
-        .await
-        .expect("the collector task opens the stream");
-
-    mockchain.source().mine_blocks(1);
-
-    let indexer_mempool_stream_transactions =
-        mempool_stream_task.await.expect("collector task failed");
-
-    assert_eq!(
-        mempool_transactions
-            .iter()
-            .map(|tx| tx.as_ref().clone())
-            .collect::<Vec<_>>(),
-        indexer_mempool_stream_transactions,
-    );
+    // Without an expected tip there is no guard at open, so a lost race with
+    // the mine would collect the drained post-mine mempool.
+    assert_eq!(mempool_stream_across_a_mine(&index, false).await, mempool);
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+#[tokio::test]
 async fn get_mempool_stream_correct_expected_chain_tip_snapshot() {
-    let (blocks, _indexer, index_reader, mockchain) =
-        load_test_vectors_and_sync_chain_index(MockchainMode::Active).await;
+    let index = synced(MockchainMode::Active).await;
+    let mempool = coherent_mempool(&index).await;
 
-    let block_data: Vec<zebra_chain::block::Block> = blocks
-        .iter()
-        .map(|TestVectorBlockData { zebra_block, .. }| zebra_block.clone())
-        .collect();
-
-    let mockchain_tip = mockchain.source().active_height();
-    wait_for_indexer_tip(&index_reader, mockchain_tip).await;
-    wait_for_mempool_txids(
-        &index_reader,
-        &expected_mempool_txids(&block_data, mockchain_tip),
-    )
-    .await;
-    wait_for_mempool_coherent(&index_reader).await;
-
-    let next_mempool_height_index = (mockchain_tip as usize) + 1;
-    let mut mempool_transactions: Vec<_> = block_data
-        .get(next_mempool_height_index)
-        .map(|b| {
-            b.transactions
-                .iter()
-                .filter(|tx| !tx.is_coinbase())
-                .cloned()
-                .collect::<Vec<_>>()
-        })
-        .unwrap_or_default();
-    mempool_transactions.sort_by_key(|transaction| transaction.hash());
-
-    // The stream closes only when the chain tip moves away from the tip its
-    // snapshot recorded, and the mine below is that one move: the snapshot
-    // and stream-open must therefore happen strictly before the mine, or the
-    // stream arms itself against the post-mine tip and waits forever for a
-    // second mine that never comes. A handshake makes the ordering
-    // deterministic where a sleep only made it likely on an idle machine.
-    let (stream_opened_tx, stream_opened_rx) = tokio::sync::oneshot::channel();
-
-    let mempool_stream_task = tokio::spawn(async move {
-        let nonfinalized_snapshot = index_reader.snapshot_nonfinalized_state();
-        let mempool_stream = index_reader
-            .get_mempool_stream(Some(&nonfinalized_snapshot))
-            .expect("failed to create mempool stream");
-        stream_opened_tx
-            .send(())
-            .expect("the main task awaits the handshake");
-        let mut mempool_stream = std::pin::pin!(mempool_stream);
-
-        let mut indexer_mempool_transactions: Vec<zebra_chain::transaction::Transaction> =
-            Vec::new();
-
-        while let Some(tx_bytes_res) = mempool_stream.next().await {
-            let tx_bytes = tx_bytes_res.expect("stream error");
-            let tx: zebra_chain::transaction::Transaction = tx_bytes
-                .as_ref()
-                .zcash_deserialize_into()
-                .expect("deserialize tx");
-            indexer_mempool_transactions.push(tx);
-        }
-
-        indexer_mempool_transactions.sort_by_key(|tx| tx.hash());
-        indexer_mempool_transactions
-    });
-
-    stream_opened_rx
-        .await
-        .expect("the collector task opens the stream");
-
-    mockchain.source().mine_blocks(1);
-
-    let indexer_mempool_stream_transactions =
-        mempool_stream_task.await.expect("collector task failed");
-
-    assert_eq!(
-        mempool_transactions
-            .iter()
-            .map(|tx| tx.as_ref().clone())
-            .collect::<Vec<_>>(),
-        indexer_mempool_stream_transactions,
-    );
+    // The stream closes only when the tip moves from its snapshot's, and the
+    // mine is that one move.
+    assert_eq!(mempool_stream_across_a_mine(&index, true).await, mempool);
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+#[tokio::test]
 async fn get_mempool_stream_for_stale_snapshot() {
-    let (_blocks, _indexer, index_reader, mockchain) =
-        load_test_vectors_and_sync_chain_index(MockchainMode::Active).await;
-    wait_for_indexer_tip(&index_reader, mockchain.source().active_height()).await;
+    let index = synced(MockchainMode::Active).await;
+    let index_reader = &index.reader;
 
     let stale_nonfinalized_snapshot = index_reader.snapshot_nonfinalized_state();
 
-    mockchain.source().mine_blocks(1);
-    wait_for_indexer_tip(&index_reader, mockchain.source().active_height()).await;
+    index.source.source().mine(1);
+    wait_for_indexer_tip(index_reader, served_tip(&index.source)).await;
 
-    // `wait_for_indexer_tip` only confirms the chain-index NFS has caught
-    // up; the mempool serve loop polls `get_best_block_hash` on its own
-    // independent timer and may still hold the pre-mine chain tip for a
-    // tick or two. `get_mempool_stream(Some(stale))` returns `None` only
-    // once the mempool's tracked tip has moved past the stale snapshot's
-    // hash, so poll on that condition rather than asserting once.
+    // The mempool polls the tip on its own timer and may still hold the
+    // pre-mine tip for a tick or two; the stale snapshot is refused once it
+    // has moved past it.
     poll_until(
         "mempool to reject stale snapshot",
         Duration::from_secs(10),
@@ -753,73 +585,66 @@ async fn get_mempool_stream_for_stale_snapshot() {
     .await;
 }
 
-#[tokio::test(flavor = "multi_thread")]
+#[tokio::test]
 async fn get_block_height() {
-    let (blocks, _indexer, index_reader, _mockchain) =
-        load_test_vectors_and_sync_chain_index(MockchainMode::Static).await;
-    let nonfinalized_snapshot = index_reader.snapshot_nonfinalized_state();
+    let index = synced(MockchainMode::Static).await;
+    let nonfinalized_snapshot = index.reader.snapshot_nonfinalized_state();
 
-    // Positive cases: every known best-chain block returns its height
-    for TestVectorBlockData {
-        height,
-        zebra_block,
-        ..
-    } in blocks.iter()
-    {
-        let got = index_reader
-            .get_block_height(
-                &nonfinalized_snapshot,
-                crate::BlockHash(zebra_block.hash().0),
-            )
+    // Every best-chain block returns its height.
+    for block in &index.blocks {
+        let got = index
+            .reader
+            .get_block_height(&nonfinalized_snapshot, local_hash(block.hash()))
             .await
             .unwrap();
-        assert_eq!(got, Some(crate::Height(*height)));
+        assert_eq!(got, Some(crate::Height(u32::from(block.height()))));
     }
 
-    // Negative case: an unknown hash returns None
-    let unknown = crate::BlockHash([0u8; 32]);
-    let got = index_reader
-        .get_block_height(&nonfinalized_snapshot, unknown)
+    // An unknown hash returns None.
+    let got = index
+        .reader
+        .get_block_height(&nonfinalized_snapshot, crate::BlockHash([0u8; 32]))
         .await
         .unwrap();
     assert_eq!(got, None);
 }
 
-#[tokio::test(flavor = "multi_thread")]
+#[tokio::test]
 async fn get_treestate() {
-    let (blocks, _indexer, index_reader, _mockchain) =
-        load_test_vectors_and_sync_chain_index(MockchainMode::Static).await;
+    let index = synced(MockchainMode::Static).await;
 
-    for TestVectorBlockData {
-        zebra_block,
-        sapling_tree_state,
-        orchard_tree_state,
-        ..
-    } in blocks.into_iter()
-    {
-        let (sapling_bytes_opt, orchard_bytes_opt, _ironwood_bytes_opt) = index_reader
-            .get_treestate(&crate::BlockHash(zebra_block.hash().0))
+    for block in &index.blocks {
+        let (sapling, orchard, ironwood) = index
+            .reader
+            .get_treestate(&local_hash(block.hash()))
             .await
             .unwrap();
 
+        let height = block.height();
         assert_eq!(
-            sapling_bytes_opt.map(|pool| pool.final_state),
-            Some(sapling_tree_state)
+            sapling.map(|pool| pool.final_state),
+            block.trees.sapling.clone().map(|pool| pool.final_state),
+            "sapling at {height}"
         );
         assert_eq!(
-            orchard_bytes_opt.map(|pool| pool.final_state),
-            Some(orchard_tree_state)
+            orchard.map(|pool| pool.final_state),
+            block.trees.orchard.clone().map(|pool| pool.final_state),
+            "orchard at {height}"
+        );
+        assert_eq!(
+            ironwood.map(|pool| pool.final_state),
+            None,
+            "ironwood at {height}"
         );
     }
 
-    // Negative case: an unknown hash is rejected before proxying to the validator.
-    let unknown = crate::BlockHash([0u8; 32]);
-    let result = index_reader.get_treestate(&unknown).await;
-    assert!(result.is_err());
-    assert!(result
-        .expect_err("unknown hash should be rejected")
-        .message
-        .contains("not found in local chain index"));
+    // An unknown hash is rejected before proxying to the validator.
+    let error = index
+        .reader
+        .get_treestate(&crate::BlockHash([0u8; 32]))
+        .await
+        .expect_err("unknown hash should be rejected");
+    assert!(error.message.contains("not found in local chain index"));
 }
 
 /// A `getaddressdeltas` request over a height range, from plain address strings.
@@ -843,33 +668,34 @@ fn filtered_deltas_request(
     }
 }
 
-#[tokio::test(flavor = "multi_thread")]
+#[tokio::test]
 async fn get_address_deltas() {
-    let (_blocks, _indexer, index_reader, mockchain) =
-        load_test_vectors_and_sync_chain_index(MockchainMode::Static).await;
+    let index = synced(MockchainMode::Static).await;
+    let mockchain = &index.source;
 
-    let transparent_address = faucet_transparent_address();
-    let active_height = mockchain.source().active_height();
+    let transparent_address = miner_address();
+    let active_height = served_tip(mockchain);
 
-    let expected_response = mockchain
-        .get_address_deltas(filtered_deltas_request(
+    let request =
+        || filtered_deltas_request(vec![transparent_address.clone()], 0, active_height, true);
+    let chain = mockchain.source();
+    let bound = |height: u32| zaino_primitives::types::BlockRef {
+        hash: chain.block_at(height).expect("on the chain").hash(),
+        height: zaino_primitives::types::Height::try_from(height).expect("small"),
+    };
+    let expected_response = AddressDeltas::WithChainInfo {
+        deltas: zaino_source::OneShotGetAddressDeltas::get_address_deltas(
+            chain,
             vec![transparent_address.clone()],
-            0,
-            active_height,
-            true,
-        ))
+            bound(0).height,
+            bound(active_height).height,
+        )
         .await
-        .unwrap();
-
-    let indexer_response = index_reader
-        .get_address_deltas(filtered_deltas_request(
-            vec![transparent_address.clone()],
-            0,
-            active_height,
-            true,
-        ))
-        .await
-        .unwrap();
+        .expect("the validator's"),
+        start: bound(0),
+        end: bound(active_height),
+    };
+    let indexer_response = index.reader.get_address_deltas(request()).await.unwrap();
 
     assert_eq!(indexer_response, expected_response);
 
@@ -879,17 +705,13 @@ async fn get_address_deltas() {
             assert_eq!(u32::from(start.height), 0);
             assert_eq!(u32::from(end.height), active_height);
 
-            // the legacy full node reports each delta's `blockindex` and documents the
-            // ordering as `(height, blockindex, index)`. A source that knows the
-            // transaction's position in its block must report it: dropping it
-            // both omits a field the legacy full node sends and makes the documented order
-            // unverifiable.
+            // zcashd reports each delta's `blockindex` and orders deltas by
+            // `(height, blockindex, index)`.
             assert!(
                 deltas.iter().all(|delta| delta.block_index.is_some()),
                 "every delta from a source that indexes transaction locations \
                  must carry its blockindex: {deltas:?}"
             );
-
             let sort_key = |delta: &zaino_primitives::types::AddressDelta| {
                 (
                     u32::from(delta.height),
@@ -909,189 +731,175 @@ async fn get_address_deltas() {
         }
     }
 
-    // An invalid address is now rejected when the request is built — a
-    // `TransparentAddress` cannot hold a non-address — so a bogus filter string
-    // never reaches the index. The rejection this test used to observe at the
-    // query has moved down to the type's constructor, where it is asserted.
+    // A `TransparentAddress` cannot hold a non-address, so a bogus filter
+    // string never reaches the index.
     assert!(zaino_primitives::types::TransparentAddress::try_new(
         "not_a_valid_transparent_address"
     )
     .is_err());
 
-    assert!(
-        active_height > 0,
-        "test requires a chain height greater than zero"
-    );
-
-    let invalid_range_result = index_reader
+    let invalid_range_result = index
+        .reader
         .get_address_deltas(filtered_deltas_request(
-            vec![transparent_address],
+            vec![transparent_address.clone()],
             active_height,
             active_height - 1,
             false,
         ))
         .await;
-
     assert!(invalid_range_result.is_err());
 }
 
-#[tokio::test(flavor = "multi_thread")]
+#[tokio::test]
 async fn get_address_balance() {
-    let (_blocks, _indexer, index_reader, mockchain) =
-        load_test_vectors_and_sync_chain_index(MockchainMode::Static).await;
+    let index = synced(MockchainMode::Static).await;
+    let request = || GetAddressBalanceRequest::new(vec![miner_address()]);
 
-    let transparent_address = faucet_transparent_address();
-
-    let expected_balance = mockchain
-        .get_address_balance(GetAddressBalanceRequest::new(vec![
-            transparent_address.clone()
-        ]))
-        .await
-        .unwrap();
-
-    let indexer_balance = index_reader
-        .get_address_balance(GetAddressBalanceRequest::new(vec![transparent_address]))
-        .await
-        .unwrap();
-
+    let expected_balance = zaino_source::OneShotGetAddressBalance::get_address_balance(
+        index.source.source(),
+        vec![miner_address()],
+    )
+    .await
+    .expect("the validator answers");
+    let indexer_balance = index.reader.get_address_balance(request()).await.unwrap();
     assert_eq!(indexer_balance, expected_balance);
 
-    let invalid_address_result = index_reader
+    let invalid_address_result = index
+        .reader
         .get_address_balance(GetAddressBalanceRequest::new(vec![
             "not_a_valid_transparent_address".to_string(),
         ]))
         .await;
-
     assert!(invalid_address_result.is_err());
 }
 
-#[tokio::test(flavor = "multi_thread")]
+#[tokio::test]
 async fn get_address_txids() {
-    let (_blocks, _indexer, index_reader, mockchain) =
-        load_test_vectors_and_sync_chain_index(MockchainMode::Static).await;
+    let index = synced(MockchainMode::Static).await;
+    let active_height = served_tip(&index.source);
+    let request = |addresses: Vec<String>, start, end| {
+        GetAddressTxIdsRequest::new(addresses, Some(start), Some(end))
+    };
 
-    let transparent_address = faucet_transparent_address();
-    let active_height = mockchain.source().active_height();
-
-    let expected_txids = mockchain
-        .get_address_txids(GetAddressTxIdsRequest::new(
-            vec![transparent_address.clone()],
-            Some(0),
-            Some(active_height),
-        ))
+    let expected_txids: Vec<TransactionHash> =
+        zaino_source::OneShotGetAddressTxids::get_address_txids(
+            index.source.source(),
+            vec![miner_address()],
+            zaino_primitives::types::Height::GENESIS,
+            zaino_primitives::types::Height::try_from(active_height).expect("a valid height"),
+        )
+        .await
+        .expect("the validator answers")
+        .into_iter()
+        .map(local_txid)
+        .collect();
+    let indexer_txids = index
+        .reader
+        .get_address_txids(request(vec![miner_address()], 0, active_height))
         .await
         .unwrap();
-
-    let indexer_txids = index_reader
-        .get_address_txids(GetAddressTxIdsRequest::new(
-            vec![transparent_address],
-            Some(0),
-            Some(active_height),
-        ))
-        .await
-        .unwrap();
-
     assert!(!indexer_txids.is_empty());
     assert_eq!(indexer_txids, expected_txids);
 
-    let invalid_address_result = index_reader
-        .get_address_txids(GetAddressTxIdsRequest::new(
+    let invalid_address_result = index
+        .reader
+        .get_address_txids(request(
             vec!["not_a_valid_transparent_address".to_string()],
-            Some(0),
-            Some(active_height),
+            0,
+            active_height,
         ))
         .await;
-
     assert!(invalid_address_result.is_err());
 
-    let invalid_range_result = index_reader
-        .get_address_txids(GetAddressTxIdsRequest::new(
-            vec![faucet_transparent_address()],
-            Some(active_height),
-            Some(0),
-        ))
-        .await;
-
-    assert!(invalid_range_result.is_err());
+    // zebrad's range: an end of 0 is the tip; a start above the end is −32602
+    let to_tip = index
+        .reader
+        .get_address_txids(request(vec![miner_address()], 0, 0))
+        .await
+        .expect("an end of 0 reads to the tip");
+    assert_eq!(to_tip, expected_txids);
+    let inverted = index
+        .reader
+        .get_address_txids(request(vec![miner_address()], active_height, 1))
+        .await
+        .expect_err("a start above the end");
+    assert_eq!(legacy_code(&inverted), Some(-32602), "{inverted}");
 }
 
-#[tokio::test(flavor = "multi_thread")]
+#[tokio::test]
 async fn get_address_utxos() {
-    let (_blocks, _indexer, index_reader, mockchain) =
-        load_test_vectors_and_sync_chain_index(MockchainMode::Static).await;
+    let index = synced(MockchainMode::Static).await;
+    let request = || GetAddressBalanceRequest::new(vec![miner_address()]);
 
-    let transparent_address = faucet_transparent_address();
-
-    let expected_utxos = mockchain
-        .get_address_utxos(GetAddressBalanceRequest::new(vec![
-            transparent_address.clone()
-        ]))
-        .await
-        .unwrap();
-
-    let indexer_utxos = index_reader
-        .get_address_utxos(GetAddressBalanceRequest::new(vec![transparent_address]))
-        .await
-        .unwrap();
-
+    let expected_utxos = zaino_source::OneShotGetAddressUtxos::get_address_utxos(
+        index.source.source(),
+        vec![miner_address()],
+        zaino_source::UtxoPage::default(),
+    )
+    .await
+    .expect("the validator answers");
+    let indexer_utxos = index.reader.get_address_utxos(request()).await.unwrap();
     assert!(!indexer_utxos.is_empty());
     assert_eq!(indexer_utxos, expected_utxos);
 
-    let invalid_address_result = index_reader
+    let invalid_address_result = index
+        .reader
         .get_address_utxos(GetAddressBalanceRequest::new(vec![
             "not_a_valid_transparent_address".to_string(),
         ]))
         .await;
-
     assert!(invalid_address_result.is_err());
 }
 
-/// Walks zaino's own indexed view of the test-vector chain and derives, for every
-/// non-coinbase transparent input, the `(spend height, outpoint, spending txid)` it
-/// represents, plus every transparent outpoint created on the chain.
-///
-/// Ground truth is built from `CompactTxData` — the exact representation
-/// `get_outpoint_spenders` scans — so the assertions also confirm the outpoint byte order
-/// matches between an indexed input and the looked-up key.
+/// Every transparent spend on the chain as `(spend height, outpoint,
+/// spending txid)`, and every transparent outpoint created.
 fn outpoint_spend_ground_truth(
-    blocks: &[TestVectorBlockData],
+    blocks: &[MockBlock],
 ) -> (Vec<(u32, Outpoint, TransactionHash)>, Vec<Outpoint>) {
     let mut spends = Vec::new();
     let mut created = Vec::new();
-    for block in indexed_block_chain(blocks) {
+    for block in blocks {
         let height = u32::from(block.height());
-        for tx in block.transactions() {
-            let txid = *tx.txid();
-            let transparent = tx.transparent();
-            for output_index in 0..transparent.outputs().len() {
+        for (position, transaction) in block.block.transactions().iter().enumerate() {
+            let txid = local_txid(transaction.txid);
+            let transparent = &transaction.transparent;
+            for output_index in 0..transparent.outputs.len() {
                 created.push(Outpoint::new(txid.0, output_index as u32));
             }
-            // Spend-walking goes through the canonical `spent_outpoints` helper (#1332),
-            // whose null-prevout filtering and outpoint construction are pinned by its own
-            // unit tests; here we only pair each spent outpoint with its spending txid.
-            for outpoint in transparent.spent_outpoints() {
-                spends.push((height, outpoint, txid));
+            // The coinbase spends nothing.
+            if position == 0 {
+                continue;
+            }
+            for input in &transparent.inputs {
+                let prevout = local_txid(input.prev_txid);
+                spends.push((height, Outpoint::new(prevout.0, input.prev_index), txid));
             }
         }
     }
     (spends, created)
 }
 
-#[tokio::test(flavor = "multi_thread")]
-async fn get_outpoint_spenders() {
-    let (blocks, _indexer, index_reader, _mockchain) =
-        load_test_vectors_and_sync_chain_index(MockchainMode::Static).await;
-    let snapshot = index_reader.snapshot_nonfinalized_state();
+/// The created outpoints no transaction spends.
+fn unspent(spends: &[(u32, Outpoint, TransactionHash)], created: Vec<Outpoint>) -> Vec<Outpoint> {
+    let spent: HashSet<Outpoint> = spends.iter().map(|(_, outpoint, _)| *outpoint).collect();
+    created
+        .into_iter()
+        .filter(|outpoint| !spent.contains(outpoint))
+        .collect()
+}
 
-    let (spends, created) = outpoint_spend_ground_truth(&blocks);
-    assert!(
-        !spends.is_empty(),
-        "test vectors must contain transparent spends"
-    );
+#[tokio::test]
+async fn get_outpoint_spenders() {
+    let index = synced(MockchainMode::Static).await;
+    let snapshot = index.reader.snapshot_nonfinalized_state();
+
+    let (spends, created) = outpoint_spend_ground_truth(&index.blocks);
+    assert!(!spends.is_empty(), "the chain must hold transparent spends");
 
     // Every spent outpoint resolves to its spending txid, index-aligned with the input.
-    let outpoints: Vec<Outpoint> = spends.iter().map(|(_, op, _)| *op).collect();
-    let result = index_reader
+    let outpoints: Vec<Outpoint> = spends.iter().map(|(_, outpoint, _)| *outpoint).collect();
+    let result = index
+        .reader
         .get_outpoint_spenders(&snapshot, outpoints, ChainScope::FullChain)
         .await
         .unwrap();
@@ -1100,15 +908,11 @@ async fn get_outpoint_spenders() {
         assert_eq!(got, Some(*expected_txid), "wrong spender for {outpoint:?}");
     }
 
-    // Outpoints that were created but never spent must report `None`.
-    let spent_set: std::collections::HashSet<Outpoint> =
-        spends.iter().map(|(_, op, _)| *op).collect();
-    let unspent: Vec<Outpoint> = created
-        .into_iter()
-        .filter(|op| !spent_set.contains(op))
-        .collect();
+    // Outpoints that were created but never spent report `None`.
+    let unspent = unspent(&spends, created);
     assert!(!unspent.is_empty(), "expected some unspent outputs");
-    let unspent_result = index_reader
+    let unspent_result = index
+        .reader
         .get_outpoint_spenders(&snapshot, unspent.clone(), ChainScope::FullChain)
         .await
         .unwrap();
@@ -1116,40 +920,39 @@ async fn get_outpoint_spenders() {
     assert!(unspent_result.iter().all(Option::is_none));
 }
 
-/// `ChainScope` decides how deep a spend lookup reaches. Under
-/// [`MockchainMode::StaticDeepFinalised`] the finalised index holds the chain up to
-/// [`DEEP_FINALISED_SEED_TIP`] while the non-finalised state holds everything above the
-/// seam, so one spend sits in both stores and one in the non-finalised state alone —
-/// `Finalised` must see only the first. This is the only exercise of the finalised
+/// `ChainScope` decides how deep a spend lookup reaches: one spend sits in
+/// the finalised state, one in the chain head alone, and `Finalised` must
+/// see only the first. This is the only exercise of the finalised
 /// `TxLocation -> txid` resolution through the `ChainIndex`.
-#[tokio::test(flavor = "multi_thread")]
+#[tokio::test]
 async fn get_outpoint_spenders_chain_scope() {
-    let (blocks, _indexer, index_reader, _mockchain) =
-        load_test_vectors_and_sync_chain_index(MockchainMode::StaticDeepFinalised).await;
-    let snapshot = index_reader.snapshot_nonfinalized_state();
+    let index = synced(MockchainMode::Static).await;
+    let snapshot = index.reader.snapshot_nonfinalized_state();
+    let finalised_tip = index
+        .indexer
+        .finalised_tip()
+        .map(u32::from)
+        .expect("the finalised state holds the chain below the seam");
 
-    let (spends, created) = outpoint_spend_ground_truth(&blocks);
-    let (finalised_outpoint, finalised_spender) = spends
-        .iter()
-        .find(|(height, ..)| *height <= DEEP_FINALISED_SEED_TIP)
-        .map(|(_, outpoint, txid)| (*outpoint, *txid))
-        .expect("the corpus must spend a transparent output inside the finalised range");
-    let (nonfinalised_outpoint, nonfinalised_spender) = spends
-        .iter()
-        .find(|(height, ..)| *height > DEEP_FINALISED_SEED_TIP)
-        .map(|(_, outpoint, txid)| (*outpoint, *txid))
-        .expect("the corpus must spend a transparent output above the finalised range");
-    let spent: std::collections::HashSet<Outpoint> =
-        spends.iter().map(|(_, outpoint, _)| *outpoint).collect();
-    let unspent = created
-        .into_iter()
-        .find(|outpoint| !spent.contains(outpoint))
-        .expect("the corpus must leave a transparent output unspent");
+    let (spends, created) = outpoint_spend_ground_truth(&index.blocks);
+    let spend_where = |finalised: bool| {
+        spends
+            .iter()
+            .find(|(height, ..)| (*height <= finalised_tip) == finalised)
+            .map(|(_, outpoint, txid)| (*outpoint, *txid))
+            .expect("the chain spends on both sides of the seam")
+    };
+    let (finalised_outpoint, finalised_spender) = spend_where(true);
+    let (nonfinalised_outpoint, nonfinalised_spender) = spend_where(false);
+    let unspent = *unspent(&spends, created)
+        .first()
+        .expect("the chain leaves a transparent output unspent");
 
     let outpoints = vec![finalised_outpoint, nonfinalised_outpoint, unspent];
 
     assert_eq!(
-        index_reader
+        index
+            .reader
             .get_outpoint_spenders(&snapshot, outpoints.clone(), ChainScope::FullChain)
             .await
             .unwrap(),
@@ -1157,7 +960,8 @@ async fn get_outpoint_spenders_chain_scope() {
         "FullChain resolves both spends and leaves the unspent outpoint as None"
     );
     assert_eq!(
-        index_reader
+        index
+            .reader
             .get_outpoint_spenders(&snapshot, outpoints, ChainScope::Finalised)
             .await
             .unwrap(),
@@ -1166,40 +970,39 @@ async fn get_outpoint_spenders_chain_scope() {
     );
 }
 
-#[tokio::test(flavor = "multi_thread")]
+#[tokio::test]
 async fn get_outpoint_spenders_empty_and_single() {
-    let (blocks, _indexer, index_reader, _mockchain) =
-        load_test_vectors_and_sync_chain_index(MockchainMode::Static).await;
-    let snapshot = index_reader.snapshot_nonfinalized_state();
+    let index = synced(MockchainMode::Static).await;
+    let snapshot = index.reader.snapshot_nonfinalized_state();
 
     // Empty input -> empty output.
-    assert!(index_reader
+    assert!(index
+        .reader
         .get_outpoint_spenders(&snapshot, Vec::new(), ChainScope::FullChain)
         .await
         .unwrap()
         .is_empty());
 
-    let (spends, created) = outpoint_spend_ground_truth(&blocks);
+    let (spends, created) = outpoint_spend_ground_truth(&index.blocks);
 
-    // Length-1 query (the "single request" path) returns the expected spender.
-    let (_, op, txid) = spends.first().unwrap();
+    // A length-1 query (the "single request" path) returns the spender.
+    let (_, outpoint, txid) = spends.first().expect("the chain holds spends");
     assert_eq!(
-        index_reader
-            .get_outpoint_spenders(&snapshot, vec![*op], ChainScope::FullChain)
+        index
+            .reader
+            .get_outpoint_spenders(&snapshot, vec![*outpoint], ChainScope::FullChain)
             .await
             .unwrap(),
         vec![Some(*txid)],
     );
 
     // ...and a length-1 query for an unspent outpoint returns `None`.
-    let spent_set: std::collections::HashSet<Outpoint> =
-        spends.iter().map(|(_, op, _)| *op).collect();
-    let unspent = created
-        .into_iter()
-        .find(|op| !spent_set.contains(op))
-        .unwrap();
+    let unspent = *unspent(&spends, created)
+        .first()
+        .expect("the chain leaves a transparent output unspent");
     assert_eq!(
-        index_reader
+        index
+            .reader
             .get_outpoint_spenders(&snapshot, vec![unspent], ChainScope::FullChain)
             .await
             .unwrap(),
@@ -1207,122 +1010,206 @@ async fn get_outpoint_spenders_empty_and_single() {
     );
 }
 
-/// `z_get_block` served through the ChainIndex from the mock vectors: verbosity 0
-/// round-trips to the stored block, and verbosity 1 matches the source and reports the
-/// block's hash / height / txids.
-#[tokio::test(flavor = "multi_thread")]
+/// The validator's block at `height`, as zebra reads its bytes.
+async fn zebra_block(index: &super::Synced, height: u32) -> zebra_chain::block::Block {
+    let bytes = zaino_source::OneShotGetRawBlock::get_raw_block(
+        index.source.source(),
+        zaino_primitives::types::Height::try_from(height).expect("a valid height"),
+    )
+    .await
+    .expect("the validator holds the block");
+    bytes
+        .as_slice()
+        .zcash_deserialize_into()
+        .expect("consensus bytes")
+}
+
+/// `getblock` is the validator's answer at every verbosity: 0 its bytes, 2 the
+/// transaction objects zebrad builds, 3 with prevouts and fees, above 3 `-8`.
+#[tokio::test]
 async fn z_get_block() {
-    let (_blocks, _indexer, index_reader, mockchain) =
-        load_test_vectors_and_sync_chain_index(MockchainMode::Static).await;
-    let active_height = mockchain.source().active_height();
+    let index = synced(MockchainMode::Static).await;
+    let active_height = served_tip(&index.source);
+    let network = super::regtest();
 
     for height in [1u32, active_height / 2, active_height] {
-        let id = HashOrHeight::Height(zebra_chain::block::Height(height));
-        let expected_block = mockchain.get_block(id).await.unwrap().unwrap();
+        let expected = zebra_block(&index, height).await;
 
-        // Verbosity 0: the raw serialized block round-trips to the stored block.
-        let GetBlock::Raw(serialized) = index_reader
+        let GetBlock::Raw(serialized) = index
+            .reader
             .z_get_block(height.to_string(), Some(0))
             .await
-            .unwrap()
+            .expect("verbosity 0")
         else {
             panic!("expected a raw block at verbosity 0");
         };
-        let decoded: zebra_chain::block::Block =
-            serialized.as_ref().zcash_deserialize_into().unwrap();
-        assert_eq!(decoded, *expected_block);
+        let decoded: zebra_chain::block::Block = serialized
+            .as_ref()
+            .zcash_deserialize_into()
+            .expect("consensus bytes");
+        assert_eq!(decoded, expected);
 
-        // Verbosity 1: the ChainIndex delegates to the source and the object reports the
-        // block's hash, height, and every txid.
-        let via_index = index_reader
-            .z_get_block(height.to_string(), Some(1))
-            .await
-            .unwrap();
-        let via_source = mockchain.get_block_verbose(id, Some(1)).await.unwrap();
-        let value = serde_json::to_value(&via_index).unwrap();
-        assert_eq!(value, serde_json::to_value(&via_source).unwrap());
+        let ids = serde_json::to_value(
+            index
+                .reader
+                .z_get_block(height.to_string(), Some(1))
+                .await
+                .expect("verbosity 1"),
+        )
+        .expect("serializes");
+        assert_eq!(ids["hash"], expected.hash().to_string());
+        assert_eq!(ids["height"], height);
         assert_eq!(
-            value["hash"].as_str().unwrap(),
-            expected_block.hash().to_string()
+            ids["tx"],
+            serde_json::to_value(
+                expected
+                    .transactions
+                    .iter()
+                    .map(|tx| tx.hash().to_string())
+                    .collect::<Vec<_>>()
+            )
+            .expect("serializes")
         );
-        assert_eq!(value["height"].as_u64().unwrap(), u64::from(height));
-        assert_eq!(
-            value["tx"].as_array().unwrap().len(),
-            expected_block.transactions.len()
-        );
+
+        let objects = serde_json::to_value(
+            index
+                .reader
+                .z_get_block(height.to_string(), Some(2))
+                .await
+                .expect("verbosity 2"),
+        )
+        .expect("serializes");
+        let confirmations = i64::from(active_height - height + 1);
+        for (rendered, tx) in objects["tx"]
+            .as_array()
+            .expect("a transaction list")
+            .iter()
+            .zip(&expected.transactions)
+        {
+            let zebrad = zebra_rpc::client::TransactionObject::from_transaction(
+                tx.clone(),
+                expected.coinbase_height(),
+                Some(confirmations),
+                &network,
+                Some(expected.header.time),
+                Some(expected.hash()),
+                Some(true),
+                tx.hash(),
+            );
+            assert_eq!(
+                *rendered,
+                serde_json::to_value(&zebrad).expect("serializes"),
+                "transaction {} at {height}",
+                tx.hash()
+            );
+        }
+
+        let with_prevouts = serde_json::to_value(
+            index
+                .reader
+                .z_get_block(height.to_string(), Some(3))
+                .await
+                .expect("verbosity 3"),
+        )
+        .expect("serializes");
+        for (rendered, tx) in with_prevouts["tx"]
+            .as_array()
+            .expect("a transaction list")
+            .iter()
+            .zip(&expected.transactions)
+            .filter(|(_, tx)| !tx.is_coinbase() && !tx.inputs().is_empty())
+        {
+            assert!(
+                rendered["vin"]
+                    .as_array()
+                    .expect("inputs")
+                    .iter()
+                    .all(|input| input.get("prevout").is_some()),
+                "every prevout of {} on the best chain",
+                tx.hash()
+            );
+            assert!(rendered.get("fee").is_some(), "the fee of {}", tx.hash());
+        }
     }
+
+    let refused = index
+        .reader
+        .z_get_block(active_height.to_string(), Some(4))
+        .await
+        .expect_err("verbosity 4 is invalid");
+    assert_eq!(
+        legacy_code(&refused),
+        Some(zebra_rpc::server::error::LegacyCode::InvalidParameter as i64)
+    );
 }
 
-/// `get_block_header` served through the ChainIndex from the mock vectors: the compact
-/// (non-verbose) form round-trips to the stored header bytes, and the verbose form
-/// matches the source and reports the right hash / height.
-#[tokio::test(flavor = "multi_thread")]
+/// The display-order hex of a hash, as the RPC identifies blocks.
+fn display_hex(hash: impl Into<[u8; 32]>) -> String {
+    let mut bytes = hash.into();
+    bytes.reverse();
+    hex::encode(bytes)
+}
+
+/// `get_block_header` served through the ChainIndex: the compact form
+/// round-trips to the stored header bytes, and the verbose form matches the
+/// source and reports the right hash / height.
+#[tokio::test]
 async fn get_block_header() {
-    let (_blocks, _indexer, index_reader, mockchain) =
-        load_test_vectors_and_sync_chain_index(MockchainMode::Static).await;
-    let active_height = mockchain.source().active_height();
+    let index = synced(MockchainMode::Static).await;
+    let mockchain = &index.source;
+    let active_height = served_tip(mockchain);
 
     for height in [1u32, active_height / 2, active_height] {
-        let id = HashOrHeight::Height(zebra_chain::block::Height(height));
-        let block = mockchain.get_block(id).await.unwrap().unwrap();
+        let block = zebra_block(&index, height).await;
         let hash = block.hash().to_string();
 
-        // Non-verbose: the raw header bytes are the block header's serialization.
-        let raw = index_reader
+        let raw = index
+            .reader
             .get_raw_block_header(hash.clone())
             .await
             .unwrap();
         assert_eq!(raw, block.header.zcash_serialize_to_vec().unwrap());
 
-        // Verbose: the ChainIndex delegates to the source and reports hash / height.
-        let via_index = index_reader.get_block_header(hash.clone()).await.unwrap();
-        let via_source = mockchain.get_block_header(hash.clone()).await.unwrap();
+        let via_index = index.reader.get_block_header(hash.clone()).await.unwrap();
+        let via_source = zaino_source::OneShotGetBlockHeader::get_block_header(
+            mockchain.source(),
+            zaino_primitives::types::BlockHash::from(block.hash().0),
+        )
+        .await
+        .expect("the validator's");
         assert_eq!(via_index, via_source);
-        assert_eq!(
-            {
-                let mut bytes = <[u8; 32]>::from(via_index.hash);
-                bytes.reverse();
-                hex::encode(bytes)
-            },
-            hash
-        );
+        assert_eq!(display_hex(via_index.hash), hash);
         assert_eq!(u32::from(via_index.height), height);
     }
 }
 
-/// `get_block_deltas` served through the ChainIndex from the mock vectors: it matches the
-/// source, reports the right block hash / height, and surfaces transparent deltas.
-#[tokio::test(flavor = "multi_thread")]
+/// `get_block_deltas` served through the ChainIndex matches the source,
+/// reports the right block hash / height, and surfaces transparent deltas.
+#[tokio::test]
 async fn get_block_deltas() {
-    let (_blocks, _indexer, index_reader, mockchain) =
-        load_test_vectors_and_sync_chain_index(MockchainMode::Static).await;
-    let active_height = mockchain.source().active_height();
+    let index = synced(MockchainMode::Static).await;
+    let mockchain = &index.source;
+    let active_height = served_tip(mockchain);
 
     let mut saw_delta_entries = false;
     for height in [1u32, active_height / 2, active_height] {
-        let id = HashOrHeight::Height(zebra_chain::block::Height(height));
-        let block = mockchain.get_block(id).await.unwrap().unwrap();
+        let block = zebra_block(&index, height).await;
         let hash = block.hash().to_string();
 
-        let via_index = index_reader.get_block_deltas(hash.clone()).await.unwrap();
-        let via_source = mockchain.get_block_deltas(hash.clone()).await.unwrap();
+        let via_index = index.reader.get_block_deltas(hash.clone()).await.unwrap();
+        let via_source = zaino_source::OneShotGetBlockDeltas::get_block_deltas(
+            mockchain.source(),
+            zaino_primitives::types::BlockHash::from(block.hash().0),
+        )
+        .await
+        .expect("the validator's");
         assert_eq!(via_index, via_source);
-        assert_eq!(
-            {
-                let mut bytes = <[u8; 32]>::from(via_index.hash);
-                bytes.reverse();
-                hex::encode(bytes)
-            },
-            hash
-        );
+        assert_eq!(display_hex(via_index.hash), hash);
         assert_eq!(u32::from(via_index.height), height);
-        if via_index
+        saw_delta_entries |= via_index
             .deltas
             .iter()
-            .any(|delta| !delta.inputs.is_empty() || !delta.outputs.is_empty())
-        {
-            saw_delta_entries = true;
-        }
+            .any(|delta| !delta.inputs.is_empty() || !delta.outputs.is_empty());
     }
     assert!(
         saw_delta_entries,
@@ -1330,15 +1217,16 @@ async fn get_block_deltas() {
     );
 }
 
-/// `get_difficulty` served through the ChainIndex from the mock vectors matches the
-/// source and is a positive difficulty value.
-#[tokio::test(flavor = "multi_thread")]
+/// `get_difficulty` served through the ChainIndex matches the source and is
+/// positive.
+#[tokio::test]
 async fn get_difficulty() {
-    let (_blocks, _indexer, index_reader, mockchain) =
-        load_test_vectors_and_sync_chain_index(MockchainMode::Static).await;
+    let index = synced(MockchainMode::Static).await;
 
-    let via_index = index_reader.get_difficulty().await.unwrap();
-    let via_source = mockchain.get_difficulty().await.unwrap();
+    let via_index = index.reader.get_difficulty().await.unwrap();
+    let via_source = zaino_source::OneShotGetDifficulty::get_difficulty(index.source.source())
+        .await
+        .expect("the validator answers");
     assert_eq!(via_index, via_source);
     assert!(
         via_index > 0.0,
@@ -1346,45 +1234,79 @@ async fn get_difficulty() {
     );
 }
 
-/// Drives the merged [`NodeBackedIndexerServiceSubscriber`] RPC layer over a
-/// `MockSource`, confirming the service delegates to its chain index: the
-/// service's `get_latest_block` reports the same tip the mockchain was synced to.
-#[tokio::test(flavor = "multi_thread")]
+/// The merged [`NodeBackedIndexerServiceSubscriber`] RPC layer delegates to
+/// its chain index: `get_latest_block` reports the tip the index is synced to.
+#[tokio::test]
 async fn node_backed_indexer_service_serves_latest_block() {
     use crate::indexer::node_backed_indexer::NodeBackedIndexerServiceSubscriber;
     use crate::LightWalletIndexer as _;
-    use zaino_common::network::ActivationHeights;
 
-    let (blocks, _indexer, index_reader, _mockchain) =
-        load_test_vectors_and_sync_chain_index(MockchainMode::Static).await;
+    let index = synced(MockchainMode::Static).await;
 
-    let expected_tip = (blocks.len() as u32) - 1;
-    wait_for_indexer_tip(&index_reader, expected_tip).await;
-
-    let service = NodeBackedIndexerServiceSubscriber::new_for_test(
-        index_reader,
-        ActivationHeights::default().to_regtest_network(),
-    );
+    let service = NodeBackedIndexerServiceSubscriber::new_for_test(index.reader, regtest());
 
     let latest = service.get_latest_block().await.unwrap();
-    assert_eq!(latest.height, expected_tip as u64);
+    assert_eq!(latest.height, u64::from(CHAIN_TIP));
+}
+
+/// GetTransaction for a txid no one holds is `NotFound`, as lightwalletd
+/// answers (service.go:524-527).
+#[tokio::test]
+async fn get_transaction_of_an_unknown_txid_is_not_found() {
+    use crate::indexer::node_backed_indexer::NodeBackedIndexerServiceSubscriber;
+    use crate::LightWalletIndexer as _;
+
+    let index = synced(MockchainMode::Static).await;
+    let service = NodeBackedIndexerServiceSubscriber::new_for_test(index.reader, regtest());
+    let error = service
+        .get_transaction(zaino_proto::proto::service::TxFilter {
+            block: None,
+            index: 0,
+            hash: vec![7; 32],
+        })
+        .await
+        .expect_err("no such transaction");
+    assert_eq!(tonic::Status::from(error).code(), tonic::Code::NotFound);
+}
+
+/// GetBlock by a hash whose lookup fails keeps the failure's cause, not a
+/// fixed "Internal db error".
+#[tokio::test]
+async fn get_block_by_hash_keeps_the_lookup_failure() {
+    use crate::indexer::node_backed_indexer::NodeBackedIndexerServiceSubscriber;
+    use crate::LightWalletIndexer as _;
+
+    let index = synced(MockchainMode::Static).await;
+    let mockchain = index.source.clone();
+    let service = NodeBackedIndexerServiceSubscriber::new_for_test(index.reader, regtest());
+    mockchain
+        .source()
+        .fail_next(u32::MAX, zaino_source::FailureMode::Auth);
+    let error = service
+        .get_block(zaino_proto::proto::service::BlockId {
+            height: 0,
+            hash: vec![9; 32],
+        })
+        .await
+        .expect_err("the lookup fails");
+    let status = tonic::Status::from(error);
+    assert_eq!(status.code(), tonic::Code::Internal);
+    assert_ne!(status.message(), "Error: Internal db error.");
+    assert!(status.message().contains("backing node"), "{status:?}");
 }
 
 /// Dropping the chain index without an explicit `shutdown()` call must still
-/// release source-owned background work: `Drop` previously only cancelled the
-/// sync worker, and the async `shutdown()`'s `?` on the DB teardown skipped
-/// the source release when the DB shutdown errored — either way the Direct
-/// connection's Zebra syncer task could outlive its index.
-#[tokio::test(flavor = "multi_thread")]
+/// release source-owned background work.
+#[tokio::test]
 async fn dropping_the_chain_index_releases_the_source() {
-    let (_blocks, indexer, _index_reader, mockchain) =
-        load_test_vectors_and_sync_chain_index(MockchainMode::Static).await;
+    let index = synced(MockchainMode::Static).await;
+    let mockchain = index.source.clone();
 
     assert!(
         !mockchain.source().shutdown_called(),
         "the source must not be shut down while the index is live"
     );
-    drop(indexer);
+    drop(index.indexer);
     assert!(
         mockchain.source().shutdown_called(),
         "dropping the index must release source-owned background work"
@@ -1392,77 +1314,79 @@ async fn dropping_the_chain_index_releases_the_source() {
 }
 
 /// zebra's `getblock` resolves negative heights against the tip (`-1` is the
-/// tip block). The old Rpc backend forwarded the raw identifier string to the
-/// validator, so `getblock "-1"` worked; the merged pre-parse used
-/// `HashOrHeight::from_str`, which rejects negative heights.
-#[tokio::test(flavor = "multi_thread")]
+/// tip block).
+#[tokio::test]
 async fn z_get_block_resolves_negative_heights_against_the_tip() {
-    let (blocks, _indexer, index_reader, _mockchain) =
-        load_test_vectors_and_sync_chain_index(MockchainMode::Static).await;
-    let tip_height = (blocks.len() as u32) - 1;
-    wait_for_indexer_tip(&index_reader, tip_height).await;
+    let index = synced(MockchainMode::Static).await;
 
-    let by_negative_height = index_reader
+    let by_negative_height = index
+        .reader
         .z_get_block("-1".to_string(), Some(1))
         .await
         .expect("height -1 must resolve to the tip block");
-    let by_tip_height = index_reader
-        .z_get_block(tip_height.to_string(), Some(1))
+    let by_tip_height = index
+        .reader
+        .z_get_block(CHAIN_TIP.to_string(), Some(1))
         .await
         .expect("the tip height resolves");
     assert_eq!(by_negative_height, by_tip_height);
 }
 
-/// An unparsable `getblock` identifier must carry the legacy full node's legacy
-/// InvalidParameter code (-8) as a typed `RpcError` in the `source()` chain,
-/// not be flattened into an internal-error string: the serve layer recovers
-/// legacy codes by downcast-walking the chain.
-#[tokio::test(flavor = "multi_thread")]
-async fn z_get_block_invalid_identifier_keeps_legacy_error_code() {
-    let (blocks, _indexer, index_reader, _mockchain) =
-        load_test_vectors_and_sync_chain_index(MockchainMode::Static).await;
-    wait_for_indexer_tip(&index_reader, (blocks.len() as u32) - 1).await;
+/// The legacy code an error carries, recovered as the serve layer does: by
+/// downcast-walking the `source()` chain.
+fn legacy_code(error: &(dyn std::error::Error + 'static)) -> Option<i64> {
+    legacy_code_and_message(error).map(|(code, _)| code)
+}
 
-    let error = index_reader
+fn legacy_code_and_message(error: &(dyn std::error::Error + 'static)) -> Option<(i64, String)> {
+    std::iter::successors(Some(error), |error| error.source())
+        .find_map(|error| error.downcast_ref::<crate::error::LegacyRpcError>())
+        .map(|rejection| (rejection.code, rejection.message.clone()))
+}
+
+/// An unparsable `getblock` identifier carries the legacy InvalidParameter
+/// code (-8) as a typed `RpcError` in the `source()` chain.
+#[tokio::test]
+async fn z_get_block_invalid_identifier_keeps_legacy_error_code() {
+    let index = synced(MockchainMode::Static).await;
+
+    let error = index
+        .reader
         .z_get_block("notablockid".to_string(), Some(1))
         .await
         .expect_err("an unparsable identifier must be rejected");
 
-    let mut current: Option<&(dyn std::error::Error + 'static)> = Some(&error);
-    let mut rpc_error_code = None;
-    while let Some(source_error) = current {
-        if let Some(rpc_error) = source_error.downcast_ref::<crate::error::LegacyRpcError>() {
-            rpc_error_code = Some(rpc_error.code);
-            break;
-        }
-        current = source_error.source();
-    }
     assert_eq!(
-        rpc_error_code,
+        legacy_code(&error),
         Some(zebra_rpc::server::error::LegacyCode::InvalidParameter as i64),
         "the typed LegacyRpcError (legacy code -8) must stay reachable via the source() chain"
     );
 }
 
-/// Dropping the service must not panic on a thread with no Tokio runtime.
-/// `Drop` runs the blocking teardown, which previously called
-/// `Handle::current()` unconditionally; outside a runtime that panics, and a
-/// panic inside `Drop` during unwind aborts the process.
-///
-/// multi_thread required: the harness's finalised-state validation uses
-/// `block_in_place`. The drop under test happens on a separate plain thread.
+/// Dropping the service on a multi-thread runtime shuts the index down in
+/// place.
+// multi_thread required: the drop under test takes the `block_in_place`
+// branch, which only a multi-thread runtime has.
 #[tokio::test(flavor = "multi_thread")]
+async fn service_drop_shuts_down_in_place_on_a_multi_thread_runtime() {
+    use crate::indexer::node_backed_indexer::NodeBackedIndexerService;
+
+    let index = synced(MockchainMode::Static).await;
+    let mockchain = index.source.clone();
+    let service = NodeBackedIndexerService::new_for_test(index.indexer, regtest());
+
+    drop(service);
+    assert!(mockchain.source().shutdown_called());
+}
+
+/// Dropping the service must not panic on a thread with no Tokio runtime.
+/// The drop under test happens on a separate plain thread.
+#[tokio::test]
 async fn service_drop_survives_thread_without_runtime() {
     use crate::indexer::node_backed_indexer::NodeBackedIndexerService;
-    use zaino_common::network::ActivationHeights;
 
-    let (_blocks, indexer, _index_reader, _mockchain) =
-        load_test_vectors_and_sync_chain_index(MockchainMode::Static).await;
-
-    let service = NodeBackedIndexerService::new_for_test(
-        indexer,
-        ActivationHeights::default().to_regtest_network(),
-    );
+    let index = synced(MockchainMode::Static).await;
+    let service = NodeBackedIndexerService::new_for_test(index.indexer, regtest());
 
     std::thread::spawn(move || drop(service))
         .join()
@@ -1470,23 +1394,14 @@ async fn service_drop_survives_thread_without_runtime() {
 }
 
 /// Dropping the service must not panic on a current-thread Tokio runtime,
-/// where `block_in_place` (the old unconditional teardown entry) aborts.
-///
-/// multi_thread required: the harness's finalised-state validation uses
-/// `block_in_place`. The drop under test happens inside a current-thread
-/// runtime built on a separate thread.
-#[tokio::test(flavor = "multi_thread")]
+/// where `block_in_place` aborts. The drop under test happens inside a
+/// current-thread runtime built on a separate thread.
+#[tokio::test]
 async fn service_drop_survives_current_thread_runtime() {
     use crate::indexer::node_backed_indexer::NodeBackedIndexerService;
-    use zaino_common::network::ActivationHeights;
 
-    let (_blocks, indexer, _index_reader, _mockchain) =
-        load_test_vectors_and_sync_chain_index(MockchainMode::Static).await;
-
-    let service = NodeBackedIndexerService::new_for_test(
-        indexer,
-        ActivationHeights::default().to_regtest_network(),
-    );
+    let index = synced(MockchainMode::Static).await;
+    let service = NodeBackedIndexerService::new_for_test(index.indexer, regtest());
 
     std::thread::spawn(move || {
         tokio::runtime::Builder::new_current_thread()
@@ -1499,25 +1414,14 @@ async fn service_drop_survives_current_thread_runtime() {
     .expect("dropping the service on a current-thread runtime must not panic");
 }
 
-/// The `Rpc` connection has no local chain-tip-change stream, so requesting a
-/// chain-tip subscriber over such a source must yield `None` rather than
-/// panic. Before this method returned `Option`, it existed only in a
-/// panicking form (`.expect("chaintip_update_subscriber requires the Direct
-/// connection")`) reachable by any embedder configured with `backend = "rpc"`;
-/// pre-merge the misuse was a compile error because only the State-backed
-/// subscriber type had the method.
-#[tokio::test(flavor = "multi_thread")]
+/// A source with no local chain-tip-change stream (as over RPC) yields no
+/// chain-tip subscriber, rather than panicking.
+#[tokio::test]
 async fn chaintip_update_subscriber_absent_without_tip_stream() {
     use crate::indexer::node_backed_indexer::NodeBackedIndexerServiceSubscriber;
-    use zaino_common::network::ActivationHeights;
 
-    let (_blocks, _indexer, index_reader, _mockchain) =
-        load_test_vectors_and_sync_chain_index(MockchainMode::Static).await;
-
-    let service = NodeBackedIndexerServiceSubscriber::new_for_test(
-        index_reader,
-        ActivationHeights::default().to_regtest_network(),
-    );
+    let index = synced(MockchainMode::Static).await;
+    let service = NodeBackedIndexerServiceSubscriber::new_for_test(index.reader, regtest());
 
     assert!(
         service.chaintip_update_subscriber().is_none(),
@@ -1525,37 +1429,268 @@ async fn chaintip_update_subscriber_absent_without_tip_stream() {
     );
 }
 
-/// `sendrawtransaction` rejections must carry the legacy full node's legacy error code:
-/// zaino-serve forwards the code by downcast-walking the `source()` chain for
-/// the typed `RpcError` (`sendrawtransaction_error_object_from_indexer_error`),
-/// so stringifying it downgrades the legacy `-8` "invalid hex" rejection to a
-/// generic `-32603` internal error.
-///
-/// Invalid hex fails in local validation before the source is consulted, so
-/// this also pins that the rejection happens without a validator round-trip
-/// (the mock's `send_raw_transaction` would panic if reached).
-#[tokio::test(flavor = "multi_thread")]
+/// `sendrawtransaction` rejections carry the legacy error code: invalid hex
+/// is zebrad's `-22`, and is refused before the validator is asked.
+#[tokio::test]
 async fn send_raw_transaction_invalid_hex_keeps_legacy_error_code() {
-    let (_blocks, _indexer, index_reader, _mockchain) =
-        load_test_vectors_and_sync_chain_index(MockchainMode::Static).await;
+    let index = synced(MockchainMode::Static).await;
 
-    let error = index_reader
+    let error = index
+        .reader
         .send_raw_transaction("notahexstring".to_string())
         .await
         .expect_err("invalid hex must be rejected");
 
-    let mut current: Option<&(dyn std::error::Error + 'static)> = Some(&error);
-    let mut rpc_error_code = None;
-    while let Some(source_error) = current {
-        if let Some(rpc_error) = source_error.downcast_ref::<crate::error::LegacyRpcError>() {
-            rpc_error_code = Some(rpc_error.code);
-            break;
-        }
-        current = source_error.source();
-    }
     assert_eq!(
-        rpc_error_code,
-        Some(zebra_rpc::server::error::LegacyCode::InvalidParameter as i64),
-        "the typed LegacyRpcError (legacy code -8) must stay reachable via the source() chain"
+        legacy_code(&error),
+        Some(zebra_rpc::server::error::LegacyCode::Deserialization as i64),
+        "the typed LegacyRpcError (legacy code -22) must stay reachable via the source() chain"
     );
+    assert!(
+        index.source.source().sent().is_empty(),
+        "invalid hex never reaches the validator"
+    );
+}
+
+/// gettxoutsetinfo with no store is refused as not served, never answered
+/// empty; with the set built it answers at the tip.
+#[tokio::test]
+async fn tx_out_set_info_is_answered_or_refused() {
+    let activations = zaino_source_mock::Activations::default();
+    let dir = tempfile::tempdir().expect("a temp dir");
+    let config = crate::config::ChainIndexConfig {
+        ephemeral: true,
+        ..super::index_config(&dir, &activations)
+    };
+    #[allow(deprecated)]
+    let ephemeral = crate::chain_index::NodeBackedChainIndex::new(
+        super::mock_source(&activations, super::chain_blocks()),
+        config,
+    )
+    .await
+    .expect("the index starts");
+    let refused = ephemeral
+        .subscriber()
+        .get_tx_out_set_info()
+        .await
+        .expect_err("no store builds the set");
+    assert_eq!(
+        refused.kind(),
+        crate::error::ChainIndexErrorKind::Unimplemented
+    );
+
+    let index = synced(MockchainMode::Static).await;
+    let info = index
+        .reader
+        .get_tx_out_set_info()
+        .await
+        .expect("the set is built");
+    assert_eq!(u32::from(info.height), served_tip(&index.source));
+}
+
+/// A validator's rejection keeps its own code and message.
+#[tokio::test]
+async fn send_raw_transaction_keeps_the_validators_rejection_code() {
+    use zaino_source::SendRawTransactionError as Rejection;
+    let index = synced(MockchainMode::Static).await;
+    let cases = [
+        (vec![1u8], Rejection::Malformed("unparseable".into())),
+        (vec![2u8], Rejection::Rejected("bad proof".into())),
+        (vec![3u8], Rejection::RejectedByPolicy("low fee".into())),
+        (vec![4u8], Rejection::AlreadyInChain("known".into())),
+    ];
+    for (bytes, rejection) in cases {
+        index
+            .source
+            .source()
+            .script_send(bytes.clone(), Err(rejection.clone()));
+        let error = index
+            .reader
+            .send_raw_transaction(hex::encode(&bytes))
+            .await
+            .expect_err("rejected");
+        assert_eq!(
+            legacy_code_and_message(&error),
+            Some((rejection.legacy_code(), rejection.message().to_owned())),
+            "{rejection:?}"
+        );
+    }
+}
+
+/// GetLightdInfo reports Sapling's activation and the next pending upgrade
+/// (K-02), and none once every upgrade is active.
+#[tokio::test]
+async fn lightd_info_reports_the_schedule() {
+    use crate::indexer::node_backed_indexer::NodeBackedIndexerServiceSubscriber;
+    use crate::LightWalletIndexer as _;
+    use zaino_source_mock::{Activations, BlockSpec, ChainBuilder, NodeFacts};
+
+    const NU7_AT: u32 = CHAIN_TIP + 50;
+    let activations = Activations::default().at(Upgrade::Nu7, NU7_AT);
+    let blocks = (1..=CHAIN_TIP)
+        .fold(
+            ChainBuilder::with(NodeFacts::regtest(), activations.clone()),
+            |builder, _| builder.block(BlockSpec::spends(1)),
+        )
+        .into_blocks();
+    let index = super::synced_on(
+        &activations,
+        blocks,
+        None,
+        crate::chain_index::chain_head::config(),
+    )
+    .await;
+    let upgrades = activations.upgrades();
+    let sapling = upgrades
+        .iter()
+        .find(|upgrade| u32::from(upgrade.branch_id) == zaino_consensus::branch_id::SAPLING)
+        .expect("Sapling is scheduled");
+    let nu7 = upgrades
+        .iter()
+        .find(|upgrade| u32::from(upgrade.activation_height) == NU7_AT)
+        .expect("NU7 is scheduled");
+    let service = NodeBackedIndexerServiceSubscriber::new_for_test(index.reader.clone(), regtest());
+    let info = service.get_lightd_info().await.expect("answers");
+    assert_eq!(
+        info.sapling_activation_height,
+        u64::from(u32::from(sapling.activation_height))
+    );
+    assert_eq!(info.upgrade_name, nu7.name);
+    assert_eq!(info.upgrade_height, u64::from(NU7_AT));
+    assert_eq!(info.block_height, u64::from(CHAIN_TIP));
+
+    let index = synced(MockchainMode::Static).await;
+    let service = NodeBackedIndexerServiceSubscriber::new_for_test(index.reader, regtest());
+    let info = service.get_lightd_info().await.expect("answers");
+    assert_eq!((info.upgrade_name.as_str(), info.upgrade_height), ("", 0));
+}
+
+/// A legacy compact block reduced to nullifiers, as the RPCs served them
+/// before the nullifiers-only read: every transaction kept, Sapling outputs
+/// and transparent data emptied, actions to their nullifiers, tree sizes 0.
+fn legacy_nullifiers(
+    mut block: zaino_proto::proto::compact_formats::CompactBlock,
+) -> zaino_proto::proto::compact_formats::CompactBlock {
+    use zaino_proto::proto::compact_formats::{ChainMetadata, CompactOrchardAction};
+    let nullifier = |action: CompactOrchardAction| CompactOrchardAction {
+        nullifier: action.nullifier,
+        ..Default::default()
+    };
+    for tx in &mut block.vtx {
+        tx.outputs.clear();
+        tx.vin.clear();
+        tx.vout.clear();
+        tx.actions = std::mem::take(&mut tx.actions)
+            .into_iter()
+            .map(nullifier)
+            .collect();
+        tx.ironwood_actions = std::mem::take(&mut tx.ironwood_actions)
+            .into_iter()
+            .map(nullifier)
+            .collect();
+    }
+    block.chain_metadata = Some(ChainMetadata::default());
+    block
+}
+
+/// The shim's compact blocks carry every fee over the store and the window;
+/// the nullifier RPCs serve exactly what they served before.
+#[tokio::test]
+async fn compact_blocks_carry_fees_and_nullifier_blocks_keep_their_shape() {
+    use crate::indexer::node_backed_indexer::NodeBackedIndexerServiceSubscriber;
+    use crate::LightWalletIndexer as _;
+    use zaino_proto::proto::service::{BlockId, BlockRange};
+    use zaino_proto::proto::utils::PoolTypeFilter;
+
+    use zaino_primitives::types::ShieldedPool;
+    use zaino_source_mock::{Activations, BlockSpec, ChainBuilder};
+
+    // Sapling outputs alone every 10th block: transactions with no nullifier
+    let blocks = (1..=CHAIN_TIP)
+        .fold(ChainBuilder::new(), |builder, height| {
+            let spec = BlockSpec::spends(3);
+            builder.block(match height % 10 {
+                0 => spec.notes(ShieldedPool::Sapling, 2),
+                5 => spec
+                    .notes(ShieldedPool::Sapling, 1)
+                    .notes(ShieldedPool::Orchard, 2),
+                _ => spec,
+            })
+        })
+        .into_blocks();
+    let index = super::synced_on(
+        &Activations::default(),
+        blocks,
+        None,
+        crate::chain_index::chain_head::config(),
+    )
+    .await;
+    let chain = index.source.source().clone();
+    let snapshot = index.reader.snapshot_nonfinalized_state();
+    let service = NodeBackedIndexerServiceSubscriber::new_for_test(index.reader.clone(), regtest());
+    let read = |height: u32, filter: PoolTypeFilter| {
+        let (reader, snapshot) = (index.reader.clone(), snapshot.clone());
+        async move {
+            reader
+                .get_compact_block(&snapshot, crate::Height(height), filter)
+                .await
+                .expect("reads")
+                .expect("below the tip")
+        }
+    };
+    let mut expected = Vec::new();
+    let mut outputs_only = 0;
+    for height in 1..=CHAIN_TIP {
+        let full = read(height, PoolTypeFilter::includes_all()).await;
+        for tx in &full.vtx {
+            let fee = chain
+                .fee_at(height, usize::try_from(tx.index).expect("small"))
+                .expect("the mock knows every fee");
+            assert_eq!(
+                u64::from(tx.fee),
+                u64::from(fee),
+                "{height} tx {}",
+                tx.index
+            );
+        }
+        let legacy = legacy_nullifiers(read(height, PoolTypeFilter::default()).await);
+        outputs_only += legacy
+            .vtx
+            .iter()
+            .filter(|tx| {
+                tx.spends.is_empty() && tx.actions.is_empty() && tx.ironwood_actions.is_empty()
+            })
+            .count();
+        let id = BlockId {
+            height: u64::from(height),
+            hash: Vec::new(),
+        };
+        // one block is lightwalletd's whole block pruned: every transaction kept
+        assert_eq!(
+            service.get_block_nullifiers(id).await.expect("serves"),
+            legacy_nullifiers(full),
+            "{height}"
+        );
+        expected.push(legacy);
+    }
+    assert!(outputs_only > 0, "the chain has outputs-only transactions");
+    let range = BlockRange {
+        start: Some(BlockId {
+            height: 1,
+            hash: Vec::new(),
+        }),
+        end: Some(BlockId {
+            height: u64::from(CHAIN_TIP),
+            hash: Vec::new(),
+        }),
+        pool_types: Vec::new(),
+    };
+    let streamed: Vec<_> = service
+        .get_block_range_nullifiers(range)
+        .await
+        .expect("streams")
+        .map(|block| block.expect("serves"))
+        .collect()
+        .await;
+    assert_eq!(streamed, expected);
 }

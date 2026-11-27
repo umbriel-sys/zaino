@@ -1,0 +1,53 @@
+consumed_in = "zainod-0-11-0"
+[[changes]]
+crate = "zaino-service"
+kind = "feature"
+description = """
+`Service::snapshot` and `ServiceSnapshot`: ChainView's reads, plus \
+getblockheader and getblockdeltas composed locally, getspentinfo from the \
+spend index, gettxoutsetinfo refused without I-11, raw transactions pinned to \
+a block, paged address UTXOs with the tip, and the validator's controls by \
+the snapshot's hash."""
+
+[[changes]]
+crate = "zaino-source"
+kind = "breaking"
+description = """
+`get_address_utxos` takes a `UtxoPage` (zebrad's `startHeight` and \
+`maxEntries`); `UtxoPage::select` applies it the same way in every \
+implementor."""
+
+[[changes]]
+crate = "zaino-chain"
+kind = "breaking"
+description = """
+`AddressRead::address_utxos` takes a `UtxoPage`; the start height filter runs \
+before the cap."""
+
+[[changes]]
+crate = "zaino-consensus"
+kind = "feature"
+description = """
+`difficulty(bits, pow_limit_bits)` and the Mainnet, Testnet and Regtest \
+proof-of-work limits, checked against zebra."""
+
+[[changes]]
+crate = "zaino-primitives"
+kind = "feature"
+description = """
+`TransparentAddress::from_standard_script(script, network)`."""
+
+[[changes]]
+crate = "zaino-source-mock"
+kind = "fix"
+description = """
+Difficulty uses the public Testnet's own proof-of-work limit (it used \
+Mainnet's) and zcashd's computation."""
+
+[[changes]]
+crate = "zaino-source-zebra"
+kind = "fix"
+description = """
+The read-state `getblockdeltas` difficulty is zcashd's `GetDifficulty` (as \
+zebrad reports a header's), not the 128-bit ratio, which differed in the \
+eighth digit."""

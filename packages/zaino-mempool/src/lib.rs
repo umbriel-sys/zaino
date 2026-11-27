@@ -24,8 +24,27 @@
 //! this core; this core never names an adapter or a `zaino-state` type.
 //!
 //! It also names no node library. Entries hold the validator's bytes as
-//! [`Bytes`](bytes::Bytes) and never parse them, so nothing here depends on
-//! `zebra-chain` — the parse belongs to whichever layer needs a transaction.
+//! [`Bytes`](bytes::Bytes) and their compact form in the domain's own type;
+//! `zaino-mempool-service` decodes each transaction once, at ingest.
+
+// production code never panics: no indexing, unchecked arithmetic or panicking calls
+#![cfg_attr(
+    not(test),
+    deny(
+        clippy::unwrap_used,
+        clippy::expect_used,
+        clippy::panic,
+        clippy::unreachable,
+        clippy::todo,
+        clippy::unimplemented,
+        clippy::indexing_slicing,
+        clippy::arithmetic_side_effects,
+        clippy::string_slice,
+        clippy::get_unwrap,
+        clippy::let_underscore_must_use,
+        let_underscore_drop
+    )
+)]
 
 pub mod config;
 pub mod entry;

@@ -32,7 +32,7 @@ serving mempool data from V mixed with block data from an older NS is incoherent
 the coherence layer only blesses the set as coherent while **V and NS agree** (same
 tip hash), and freezes otherwise, serving the last coherent set until they agree
 again. Because the core tags each set with the V it was fetched at, this is a
-re-fetch-free comparison — see the ADR and the `tip` module.
+re-fetch-free comparison — see the `tip` module.
 
 In **validator-only** mode (`spawn_validator_only`) there is no NS; NS is
 synthesized from V, so coherence collapses to a single tip — freeze on V change.

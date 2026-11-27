@@ -2,17 +2,30 @@
 
 use std::future::Future;
 
-use zaino_primitives::types::{TransactionId, TransactionLocation};
+use zaino_primitives::types::{
+    rpc::{TransactionVerbose, TransactionVerbosity},
+    TransactionId,
+};
 
 use super::{QueryError, ValidatorSource};
 
-/// A fetched transaction: raw bytes and where it was found.
-#[derive(Debug, Clone)]
-pub struct TransactionResponse {
-    /// Raw serialized transaction bytes.
-    pub bytes: Vec<u8>,
-    /// Where the transaction was found.
-    pub location: TransactionLocation,
+/// The validator's `getrawtransaction` answer, as the verbosity asked.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum TransactionAnswer {
+    /// The serialized transaction (verbosity 0).
+    Raw(Vec<u8>),
+    /// The transaction object (verbosity 1).
+    Object(Box<TransactionVerbose>),
+}
+
+impl TransactionAnswer {
+    /// The serialized transaction, whichever form was asked.
+    pub fn into_bytes(self) -> Vec<u8> {
+        match self {
+            Self::Raw(bytes) => bytes,
+            Self::Object(object) => object.hex,
+        }
+    }
 }
 
 /// Domain error for [`GetTransaction`].
@@ -25,15 +38,16 @@ pub enum GetTransactionError {
 
 /// Fetch a transaction by its txid.
 ///
-/// Maps to `getrawtransaction(txid, 1)` over JSON-RPC, or the
+/// Maps to `getrawtransaction(txid, verbosity)` over JSON-RPC, or the
 /// equivalent ReadState query.
 #[zaino_source_macros::resilient_port]
 pub trait OneShotGetTransaction: ValidatorSource + Send + Sync {
-    /// Fetch transaction.
+    /// Fetch the transaction at `verbosity`.
     fn get_transaction(
         &self,
         txid: TransactionId,
+        verbosity: TransactionVerbosity,
     ) -> impl Future<
-        Output = Result<TransactionResponse, QueryError<GetTransactionError, Self::NonDomain>>,
+        Output = Result<TransactionAnswer, QueryError<GetTransactionError, Self::NonDomain>>,
     > + Send;
 }

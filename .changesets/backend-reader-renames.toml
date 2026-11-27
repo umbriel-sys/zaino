@@ -1,0 +1,7 @@
+consumed_in = "zainod-0-11-0"
+[[changes]]
+crate = "zaino-persistence"
+kind = "breaking"
+description = """
+`BackendReader::get_range` is now `get_bytes` and `get_many` is now \
+`get_batch`; behaviour is unchanged."""

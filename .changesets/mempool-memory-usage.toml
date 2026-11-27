@@ -1,0 +1,15 @@
+consumed_in = "zainod-0-11-0"
+[[changes]]
+crate = "zaino-mempool"
+kind = "feature"
+description = """
+`MempoolSnapshot::memory_bytes()` and `MempoolEntry::memory_bytes()`: the \
+memory the set occupies (each entry's allocation and serialized bytes, and \
+the tables indexing them), derived whenever the set is built or re-tagged (C3)."""
+
+[[changes]]
+crate = "zaino-mempool-service"
+kind = "fix"
+description = """
+`getmempoolinfo`'s `usage` is the memory zaino's mempool set occupies, not \
+the ZIP-401 cost total (C3)."""

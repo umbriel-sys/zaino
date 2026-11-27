@@ -1,3 +1,4 @@
+consumed_in = "zainod-0-11-0"
 [[changes]]
 crate = "zaino-chain-store"
 kind = "breaking"
@@ -15,20 +16,6 @@ one impl serves both ports. Callers reading a status through a bare \
 `.status()` may need `StatusSource::status(&x)` if an inherent method of the \
 same name still shadows the trait."""
 
-[[changes]]
-crate = "zaino-chain-store-zainodb"
-kind = "breaking"
-description = """
-The backend reports a `ComponentStatus`, and names itself: `FinalisedState` \
-carries a `ComponentName` set at construction, with `FinalisedState::COMPONENT` \
-as the default. The name belongs to the component because a deployment running \
-two stores wants two names, and a supervisor needs to know which one \
-escalated."""
-migration = """
-`ChainStoreService::status` and `ChainStoreReader::status` now come from \
-`StatusSource` and answer `ComponentStatus`. The fused `StatusType` is still \
-tracked internally and converted at the port; a caller matching on \
-`StatusType` reads `.lifecycle` and `.health` instead."""
 
 [[changes]]
 crate = "zaino-chain-head"

@@ -1,0 +1,186 @@
+//! I-03 `txid_location`: txid → the (height, index) it was mined at.
+
+use zaino_persistence::{BackendReader, Namespace, WriteOp};
+use zaino_primitives::types::{BlockRef, BlockTxPosition, TransactionId};
+
+use crate::block::FoldBlock;
+use crate::codec::{self, position_bytes};
+use crate::index::{check_extends, Fold, FoldError, Index};
+use crate::layout::{Declared, Field, Layout, LayoutError};
+use crate::schema::{NamespaceLayout, Schema};
+
+/// The index's name: its directory and the name dependants use.
+pub const NAME: &str = "txid_location";
+
+const LOCATIONS: Namespace = Namespace::new("txid_location");
+
+/// A txid as a map key.
+pub const TXID: Declared<Layout> = Layout::new("txid", 1, &[Field::fixed("txid", 32)]);
+/// Where a transaction was mined: height then index, big-endian.
+pub const POSITION: Declared<Layout> = Layout::new(
+    "tx_position",
+    1,
+    &[Field::fixed("height", 4), Field::fixed("tx_index", 2)],
+);
+/// Unique: txids are distinct (coinbases carry their height, BIP 34).
+const BY_TXID: Declared<NamespaceLayout> = NamespaceLayout::unique_map(LOCATIONS, &TXID, &POSITION);
+
+/// The schema: one map, txid → position.
+pub const SCHEMA: Schema = Schema::new(NAME, 1, &[BY_TXID]);
+
+/// I-03.
+pub struct TxidLocation;
+
+/// The last stored block.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct State {
+    /// The last stored block.
+    pub tip: BlockRef,
+}
+
+impl Index for TxidLocation {
+    const SCHEMA: Schema = SCHEMA;
+    const READS: &'static [&'static str] = &[crate::txids::NAME];
+    const BUILDS_FROM: &'static [&'static str] = &[];
+    type State = State;
+
+    fn resume<R: BackendReader>(backend: &R) -> Result<Option<State>, FoldError> {
+        Ok(backend.tip()?.map(|tip| State { tip }))
+    }
+
+    fn fold(state: Option<&State>, block: &FoldBlock) -> Result<Fold<State>, FoldError> {
+        check_extends(NAME, state.map(|state| state.tip), block)?;
+        let reference = block.reference();
+        let ops = (0u32..)
+            .zip(block.transactions())
+            .map(|(tx_index, tx)| {
+                let position = BlockTxPosition::new(reference.height, tx_index);
+                Ok(WriteOp::Put {
+                    namespace: LOCATIONS,
+                    key: <[u8; 32]>::from(tx.compact().txid).to_vec(),
+                    value: position_bytes(position)?.to_vec(),
+                })
+            })
+            .collect::<Result<_, LayoutError>>()?;
+        Ok(Fold {
+            ops,
+            next: State { tip: reference },
+        })
+    }
+}
+
+/// Typed reads over a backend holding this index.
+#[derive(Debug, Clone)]
+pub struct Reader<'a, R> {
+    backend: &'a R,
+}
+
+impl<'a, R: BackendReader> Reader<'a, R> {
+    /// Reads through `backend`.
+    pub fn new(backend: &'a R) -> Self {
+        Self { backend }
+    }
+
+    /// Where `txid` was mined; `None` if this index never folded it.
+    pub fn position(&self, txid: TransactionId) -> Result<Option<BlockTxPosition>, FoldError> {
+        self.backend
+            .with_value(LOCATIONS, &<[u8; 32]>::from(txid), |bytes| {
+                codec::position(NAME, bytes)
+            })?
+            .transpose()
+    }
+
+    /// [`position`](Self::position) for each txid, in order, one batch read.
+    pub fn positions(
+        &self,
+        txids: &[TransactionId],
+    ) -> Result<Vec<Option<BlockTxPosition>>, FoldError> {
+        let keys: Vec<[u8; 32]> = txids.iter().map(|txid| <[u8; 32]>::from(*txid)).collect();
+        let keys: Vec<&[u8]> = keys.iter().map(|key| key.as_slice()).collect();
+        self.backend
+            .get_batch(LOCATIONS, &keys)?
+            .into_iter()
+            .map(|value| value.map(|bytes| codec::position(NAME, &bytes)).transpose())
+            .collect()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use zaino_persistence::{Backend as _, SchemaDigest};
+    use zaino_primitives::types::Height;
+
+    use super::*;
+    use crate::codec::POSITION_BYTES;
+    use crate::testing::{backend, busy, fold_all};
+
+    /// Every folded txid reads back at its position, singly and batched;
+    /// an unknown txid is absent.
+    #[test]
+    fn txids_read_back_at_their_positions() {
+        let backend = backend(&SCHEMA);
+        let chain = [busy(0, 1), busy(1, 3)];
+        fold_all::<TxidLocation>(&backend, &chain).expect("two blocks");
+        let reader = backend.reader().expect("reader");
+        let reader = Reader::new(&reader);
+
+        let mut asked = Vec::new();
+        let mut expected = Vec::new();
+        for block in &chain {
+            for (index, tx) in (0u32..).zip(block.transactions()) {
+                let at = BlockTxPosition::new(block.header().height, index);
+                let txid = tx.compact().txid;
+                assert_eq!(reader.position(txid).expect("read"), Some(at));
+                asked.push(txid);
+                expected.push(Some(at));
+            }
+        }
+        let unknown = TransactionId::from([0xee; 32]);
+        asked.push(unknown);
+        expected.push(None);
+        assert_eq!(reader.position(unknown).expect("read"), None);
+        assert_eq!(reader.positions(&asked).expect("batch"), expected);
+        assert_eq!(
+            reader
+                .position(chain[1].transactions()[2].compact().txid)
+                .expect("read"),
+            Some(BlockTxPosition::new(Height::try_from(1).expect("1"), 2))
+        );
+    }
+
+    /// Reopening resumes at the stored tip; a block off the tip is refused.
+    #[test]
+    fn resume_and_continuity() {
+        let backend = backend(&SCHEMA);
+        let folded = fold_all::<TxidLocation>(&backend, &[busy(0, 1)]);
+        let resumed = TxidLocation::resume(&backend.reader().expect("reader")).expect("resume");
+        assert_eq!(resumed, folded);
+        assert!(TxidLocation::fold(resumed.as_ref(), &busy(2, 1)).is_err());
+    }
+
+    /// The schema digest every `txid_location_1` directory carries.
+    #[test]
+    fn the_schema_digest_is_golden() {
+        const GOLDEN: [u8; 32] = [
+            0xd1, 0x36, 0x74, 0x20, 0x6e, 0xb1, 0x3a, 0x9c, 0x69, 0x48, 0xac, 0xe7, 0x0a, 0x6e,
+            0x06, 0x7b, 0x17, 0xf0, 0x01, 0xb8, 0x4f, 0x5d, 0x31, 0xf9, 0x44, 0x4c, 0xe9, 0xe5,
+            0x3a, 0x69, 0x7b, 0x18,
+        ];
+        let digest = SCHEMA.digest().expect("declared");
+        assert_eq!(
+            digest,
+            SchemaDigest::new(GOLDEN),
+            "{:02x?}",
+            digest.as_bytes()
+        );
+        assert_eq!(SCHEMA.dir_name(), "txid_location_1");
+    }
+
+    /// Every declaration is valid, and the position is the codec's width.
+    #[test]
+    fn every_declaration_is_valid() {
+        assert_eq!(TXID.expect("declared").fixed_len(), 32);
+        assert_eq!(POSITION.expect("declared").fixed_len(), POSITION_BYTES);
+        BY_TXID.expect("declared");
+    }
+}

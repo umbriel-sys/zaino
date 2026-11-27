@@ -1,0 +1,219 @@
+consumed_in = "zainod-0-11-0"
+[[changes]]
+crate = "zaino-proto"
+kind = "breaking"
+description = """
+The crate names no zebra type: `blockid_to_hashorheight` is removed and the \
+`zebra-state` / `zebra-chain` dependencies are gone (the `heavy` feature \
+now only finds `protoc`)."""
+
+[[changes]]
+crate = "zaino-encoding"
+kind = "feature"
+description = """
+`encode_header`: a block header back to its consensus bytes, for serving \
+headers Zaino holds."""
+
+[[changes]]
+crate = "zaino-source-zebra"
+kind = "feature"
+description = """
+`ZebraValidator::connect` builds the source from plain settings (an RPC \
+client config, the network kind, `ReadStateSettings`), so a caller names no \
+zebra type. `adopt_network` and `AdoptError` (moved from zaino-state)."""
+
+[[changes]]
+crate = "zaino-rpc"
+kind = "breaking"
+description = """
+`auth_from_parts` sends no credentials when none are configured and refuses \
+a user without a password or the reverse (`ProbeError::IncompleteCredentials`); \
+the `"xxxxxx"` stand-in pair is gone."""
+
+[[changes]]
+crate = "zaino-state"
+kind = "breaking"
+description = """
+`CommonBackendConfig::{validator_rpc_user, validator_rpc_password}` are \
+`Option<String>`: no credentials are sent when none are configured. Network \
+adoption moved to `zaino-source-zebra`."""
+
+[[changes]]
+crate = "zainod"
+kind = "breaking"
+description = """
+**The daemon runs on `zaino-service`.** zainod no longer depends on \
+`zaino-state` and names no zebra crate or type itself; zebra's code is \
+linked only through the `zaino-source-zebra` adapter. It picks one \
+validator source from config \
+(`kind = "zebra"` with `[validator.read_state]`, or `kind = "zcash_rpc"`), \
+spawns the service over it, and serves it. `zainodlib::indexer::launch` \
+returns the task and a `ServiceHandle` (`wait_until_local`, `store_tip`, \
+`is_caught_up`) and takes optional pre-bound listeners; `start_indexer` / \
+`spawn_indexer` keep their roles."""
+
+[[changes]]
+crate = "zainod"
+kind = "breaking"
+description = """
+**New config layout.** Sections `[validator]` (+ `[validator.read_state]`), \
+`[indexes]`, `[persistence]`, `[mempool]`, `[serve]`, `[serve.grpc]`, \
+`[serve.jsonrpc]` and `[admin]`, with top-level `network` and \
+`donation_address`. A key from the old layout is refused with a typed error \
+naming its replacement. No validator credentials are sent when none are \
+configured. See `packages/zainod/usage.md`."""
+
+[[changes]]
+crate = "zainod"
+kind = "breaking"
+description = """
+The served handlers are zainod's own: `serve::grpc::lightwallet` (the \
+lightwalletd service and the indexed-tip service over `Backend<S>`) and \
+`serve::jsonrpc::methods` (`methods(backend) -> jsonrpsee::Methods`). \
+`JsonRpcServer::spawn` takes the method table. `GrpcClient`, \
+`JsonRpcClient`, `grpc_routes` and the zebra-typed wire modules are removed; \
+the JSON-RPC shapes are Zaino types pinned to JSON captured from zebra-rpc \
+v7. The cargo feature `test_dependencies` is removed (serving on pre-bound \
+listeners is part of the normal launch path); `fast-test-seam` stays and now \
+sets the chain head's depth in zainod itself (1,001 blocks, or 100 with the \
+feature)."""
+
+[[changes]]
+crate = "zainod"
+kind = "feature"
+description = """
+JSON-RPC: `getblockhash`, `getblockhashes`, `getnetworkinfo` and `ping` are \
+served; errors carry the legacy code per method instead of one collapsed \
+code; `getblockchaininfo.chainwork` is the real cumulative work (absent when \
+unknown, never `0`); parameters follow zebrad v7 (`getblockheader` by height, \
+optional `getblocksubsidy` height, `getrawtransaction` block hash, \
+`getaddressutxos` paging)."""
+
+[[changes]]
+crate = "zainod"
+kind = "feature"
+description = """
+gRPC: `GetBlockRange` and `GetBlockRangeNullifiers` are served from encoded \
+frames shared through the frame cache. Every stream ends at server shutdown, \
+and shutdown is bounded by `serve.grpc.limits.shutdown_timeout_secs` \
+(default 5) (AP-02)."""
+
+[[changes]]
+crate = "zainod"
+kind = "fix"
+description = """
+Verbose `getrawtransaction` is the validator's object for every transaction \
+Zaino's state knows: best chain, side chain (`height` −1, `confirmations` 0) \
+and mempool. `getaddressdeltas` checks its addresses as the other address \
+methods do."""
+
+[[changes]]
+crate = "zaino-source"
+kind = "breaking"
+description = """
+`get_transaction(txid, verbosity)` answers `TransactionAnswer` (`Raw` bytes \
+or the validator's `Object`); `TransactionResponse` is removed."""
+
+[[changes]]
+crate = "zaino-chain"
+kind = "breaking"
+description = """
+`raw_transaction(txid, verbosity)` answers `TransactionAnswer` only for a \
+transaction the view places; `RawTransaction` is removed."""
+
+[[changes]]
+crate = "zaino-service"
+kind = "breaking"
+description = """
+`ServiceSnapshot::transaction(txid, verbosity, block)` replaces \
+`transaction(txid)` and `raw_transaction(txid, block)`; `ServedTransaction` \
+is removed."""
+
+[[changes]]
+crate = "zaino-chain-store"
+kind = "breaking"
+description = """
+`ChainStoreSource` no longer requires `OneShotGetTransaction`."""
+
+[[changes]]
+crate = "zainod"
+kind = "feature"
+description = """
+Admin `/readyz`: `200` while the daemon answers requests (a store still \
+building does not make it unready), `503` otherwise; the JSON body lists \
+every component's lifecycle and health and how far every index serves."""
+
+[[changes]]
+crate = "zaino-service"
+kind = "feature"
+description = """
+`Service::index_states()`: how far each index of the store serves."""
+
+[[changes]]
+crate = "zainod"
+kind = "fix"
+description = """
+The validator's activation schedule is verified against the configured \
+`network` for the generic `zcash_rpc` source as it is for `zebra` \
+(`IndexerError::Network`). A panicked gRPC stream task ends its stream with \
+`INTERNAL` instead of as if it had finished. `getblockhash` past the tip \
+answers zebrad's invalid-params error."""
+
+[[changes]]
+crate = "zaino-proto"
+kind = "feature"
+description = """
+`proto/light_client.proto` (`zaino.lightclient.v1.LightClientService`): \
+`GetBlockHeaders(BlockRange) returns (stream BlockHeader)`, Zaino's own \
+service beside the lightwalletd protocol."""
+
+[[changes]]
+crate = "zainod"
+kind = "feature"
+description = """
+gRPC `GetBlockHeaders`: a range of full block headers under \
+`GetBlockRange`'s range rules, served from Zaino where it holds the header."""
+
+[[changes]]
+crate = "zaino-proto"
+kind = "feature"
+description = """
+`LightClientService::GetHistoryProof(HistoryProofRequest) returns \
+(HistoryProof)`, with `HistoryNode`."""
+
+[[changes]]
+crate = "zainod"
+kind = "feature"
+description = """
+gRPC `GetHistoryProof`: the ZIP 221 proof that a block is in the chain a \
+tip's header commits to, from the `history_tree` index."""
+
+[[changes]]
+crate = "zaino-service"
+kind = "feature"
+description = """
+`ServiceSnapshot::history_proof(block, tip)` with `HistoryProof` and \
+`HistoryNode`: the leaf, its inclusion path and the tree's peaks."""
+
+[[changes]]
+crate = "zaino-indexes"
+kind = "feature"
+description = """
+`history_tree::peaks(length)` and `history_tree::inclusion_path(leaf, \
+length)`: the MMR positions of a tree's peaks and of the siblings proving a \
+leaf."""
+
+[[changes]]
+crate = "zaino-chain"
+kind = "breaking"
+description = """
+`BlockRead::stream_headers(start, end)`: the headers of a range, the \
+store's from its headers index alone (a new required method of the port)."""
+
+[[changes]]
+crate = "zaino-service"
+kind = "breaking"
+description = """
+`ServiceSnapshot::raw_block_header` is served from the header Zaino holds, \
+encoded, instead of always asking the validator; `ServiceSource` no longer \
+requires `OneShotGetRawBlockHeader`."""

@@ -1,0 +1,2 @@
+[empty]
+reason = "Manifests only: internal dependencies inherit their version from [workspace.dependencies], so `relman bump` rewrites every requirement."

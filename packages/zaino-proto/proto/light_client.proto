@@ -1,0 +1,64 @@
+syntax = "proto3";
+
+package zaino.lightclient.v1;
+
+import "service.proto";
+
+// A block's header.
+message BlockHeader {
+  uint64 height = 1;
+  // The 32-byte block hash in Zcash protocol (internal) byte order.
+  bytes hash = 2;
+  // The full serialized header (1,487 bytes on mainnet).
+  bytes header = 3;
+}
+
+// A request for the proof that a block is in the chain a tip commits to.
+message HistoryProofRequest {
+  // The block to prove.
+  cash.z.wallet.sdk.rpc.BlockID block = 1;
+  // The tip to prove against; unset = the latest.
+  cash.z.wallet.sdk.rpc.BlockID tip = 2;
+}
+
+// One node of an epoch's ZIP 221 history tree.
+message HistoryNode {
+  // Its position in the epoch's tree.
+  uint32 position = 1;
+  // The encoded ZIP 221 node.
+  bytes node = 2;
+}
+
+// That a block is in the history tree the tip's header commits to
+// (`hashChainHistoryRoot`): the tree of the blocks before the tip.
+message HistoryProof {
+  // The epoch (network upgrade) of the tree.
+  uint32 consensusBranchId = 1;
+  uint64 tipHeight = 2;
+  // The 32-byte tip hash in Zcash protocol (internal) byte order.
+  bytes tipHash = 3;
+  // Entries in the epoch's tree at the tip.
+  uint32 treeLength = 4;
+  // The proved block's leaf.
+  HistoryNode leaf = 5;
+  // Siblings, leaf to peak.
+  repeated HistoryNode path = 6;
+  // The tree's peaks at the tip, left to right.
+  repeated HistoryNode peaks = 7;
+}
+
+// Light-client data Zaino serves beside the lightwalletd protocol, until
+// that protocol carries it.
+service LightClientService {
+  // The ZIP 221 proof that `block` is in the chain `tip`'s header commits
+  // to. `NOT_FOUND` if either is not on the best chain; `INVALID_ARGUMENT`
+  // if the block is not below the tip, is in an earlier epoch than the
+  // tip's tree, or the tip's header commits to no tree.
+  rpc GetHistoryProof(HistoryProofRequest) returns (HistoryProof);
+
+  // The headers of a block range, under `GetBlockRange`'s range rules: a
+  // start above the end is served descending, a range past the tip is served
+  // to the tip and then refused. `poolTypes` is checked as there and selects
+  // nothing.
+  rpc GetBlockHeaders(cash.z.wallet.sdk.rpc.BlockRange) returns (stream BlockHeader);
+}

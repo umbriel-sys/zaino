@@ -6,16 +6,46 @@ use zaino_primitives::types::TransactionId;
 
 use super::{QueryError, ValidatorSource};
 
-/// Domain error for [`SendRawTransaction`].
+/// Domain error for [`OneShotSendRawTransaction`].
 #[derive(Debug, thiserror::Error, Clone, PartialEq, Eq)]
 pub enum SendRawTransactionError {
-    /// The transaction could not be deserialised.
+    /// The transaction could not be deserialised (legacy code −22).
     #[error("malformed transaction: {0}")]
     Malformed(String),
 
-    /// The validator rejected the transaction — invalid, or it failed policy.
+    /// The validator found the transaction invalid (legacy code −25).
     #[error("rejected by validator: {0}")]
     Rejected(String),
+
+    /// The validator declined the transaction by policy (legacy code −26).
+    #[error("rejected by validator policy: {0}")]
+    RejectedByPolicy(String),
+
+    /// The transaction is already in the chain (legacy code −27).
+    #[error("already in the chain: {0}")]
+    AlreadyInChain(String),
+}
+
+impl SendRawTransactionError {
+    /// The legacy RPC code the validator answered with.
+    pub fn legacy_code(&self) -> i64 {
+        match self {
+            Self::Malformed(_) => -22,
+            Self::Rejected(_) => -25,
+            Self::RejectedByPolicy(_) => -26,
+            Self::AlreadyInChain(_) => -27,
+        }
+    }
+
+    /// The validator's message.
+    pub fn message(&self) -> &str {
+        match self {
+            Self::Malformed(message)
+            | Self::Rejected(message)
+            | Self::RejectedByPolicy(message)
+            | Self::AlreadyInChain(message) => message,
+        }
+    }
 }
 
 /// Submit a serialised transaction to the validator's mempool for relay.

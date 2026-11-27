@@ -5,8 +5,8 @@
 //! half of the chain that only ever grows.
 //!
 //! This crate is the domain half: vocabulary and ports, no runtime and no
-//! storage. An implementation is a separate crate — `zaino-chain-store-zainodb`
-//! is the LMDB one — so a consumer can name what a store answers without
+//! storage. An implementation is a separate crate — `zaino-chain-store-service`
+//! is the one in this workspace — so a consumer can name what a store answers without
 //! depending on the machinery that answers it, and so a second implementation
 //! is a matter of satisfying these traits rather than of replacing a crate
 //! everything else names.
@@ -19,7 +19,7 @@
 //! bound names exactly what it uses and a store that cannot serve something
 //! simply does not implement it. Absence is then a compile-time fact where it
 //! can be, and a runtime one ([`StoreCapabilities`]) where it cannot, because
-//! a store on an older schema genuinely lacks indexes until it has migrated.
+//! a store lacks an index until it has built it.
 //!
 //! # What ChainStore is not
 //!
@@ -31,54 +31,67 @@
 //! It does not hold blocks. What it stores is a projection: the fields an
 //! index reads, not the bytes a block hash commits to. Raw blocks and raw
 //! transactions come from the validator, and no port here offers them, so that
-//! a consumer cannot mistake the store for a source of consensus data.
+//! a consumer cannot mistake the store for a source of consensus data. Nor is
+//! there a whole-block read: headers, compact transactions and tree roots are
+//! each read from the index holding them, and a consumer joins them.
 //!
 //! It does not handle reorgs as a read concern. Its history is append-only in
 //! normal operation; [`ChainStoreIngest::rewind_to`] exists as a repair path,
-//! not as part of following the chain.
+//! not as part of following the chain. It is written only through
+//! [`ChainStoreIngest::build_to`]: the store fetches every block from its own
+//! validator, and no consumer hands it blocks.
 //!
-//! # One thing here is a contract, not a choice
-//!
-//! [`txout_set`] defines Zaino's UTXO-set commitment: a canonical entry
-//! encoding and a multiset hash over it. It lives in this crate rather than in
-//! an implementation because every finalised-state implementation must produce
-//! the same commitment for the same set — and because whatever merges
-//! finalised and recent answers extends that commitment across the seam, so it
-//! must compute the identical digest. Two implementations disagreeing about it
-//! would not fail; they would quietly mean different things by the same
-//! number.
+//! [`txout_set`] re-exports Zaino's UTXO-set commitment from
+//! `zaino_primitives::txout_commitment`, its one definition: every store and
+//! the chain head must compute the identical digest.
+
+// production code never panics: no indexing, unchecked arithmetic or panicking calls
+#![cfg_attr(
+    not(test),
+    deny(
+        clippy::unwrap_used,
+        clippy::expect_used,
+        clippy::panic,
+        clippy::unreachable,
+        clippy::todo,
+        clippy::unimplemented,
+        clippy::indexing_slicing,
+        clippy::arithmetic_side_effects,
+        clippy::string_slice,
+        clippy::get_unwrap,
+        clippy::let_underscore_must_use,
+        let_underscore_drop
+    )
+)]
 
 pub mod block;
 pub mod capability;
-pub mod config;
 pub mod error;
 pub mod output;
 pub mod ports;
-#[cfg(feature = "transparent_address_history_experimental")]
 pub mod transparent;
+pub mod tree;
 pub mod txout_set;
 
-pub use block::{FrozenBlock, PoolFilter, StoredBlock, StoredTx};
-pub use capability::{
-    MigrationState, Provenance, SchemaVersion, StoreCapabilities, StoreCapability, StoreSchema,
-    StoreWatermark,
-};
-pub use config::ChainStoreConfig;
+pub use block::{PoolFilter, StoredHeader};
+pub use capability::{Provenance, StoreCapabilities, StoreCapability, StoreWatermark};
 pub use error::{ChainStoreError, ChainStoreSourceError};
-pub use output::{SpenderRef, StoredTxOut};
+pub use output::SpenderRef;
 pub use ports::{
-    ChainStoreFreezeSink, ChainStoreIngest, ChainStoreReader, ChainStoreReaderCapability,
-    ChainStoreService, ChainStoreSource, CompactBlockRead, CompactBlockReadCapability,
-    SpentOutputIndex, SpentOutputIndexCapability, StoredBlockRead, StoredBlockReadCapability,
-    TransactionIndex, TransactionIndexCapability, TxOutSetIndex, TxOutSetIndexCapability,
+    ChainStoreIngest, ChainStoreReader, ChainStoreReaderCapability, ChainStoreService,
+    ChainStoreSource, CompactBlockRead, CompactBlockReadCapability, SpentOutputIndex,
+    SpentOutputIndexCapability, TransactionIndex, TransactionIndexCapability, TreeRootsIndex,
+    TreeRootsIndexCapability, TxOutSetIndex, TxOutSetIndexCapability,
 };
 pub use txout_set::{
-    canonical_entry, canonical_entry_parts, entry_digest, entry_digest_parts, is_unspendable,
-    script_type_tag, Delta, TxOutSetAccumulator, TxOutSetError, TXOUT_SET_DOMAIN_TAG,
-    TXOUT_SET_ENTRY_LEN,
+    canonical_entry, canonical_entry_parts, commitment_address, entry_digest, entry_digest_parts,
+    is_unspendable, script_type_tag, Delta, TxOutSetAccumulator, TxOutSetError, MAX_SCRIPT_SIZE,
+    TXOUT_SET_DOMAIN_TAG, TXOUT_SET_ENTRY_LEN,
 };
 
-#[cfg(feature = "transparent_address_history_experimental")]
-pub use ports::{TransparentHistoryIndex, TransparentHistoryIndexCapability};
-#[cfg(feature = "transparent_address_history_experimental")]
+pub use ports::{
+    HistoryTreeIndex, HistoryTreeIndexCapability, TransparentHistoryIndex,
+    TransparentHistoryIndexCapability, TreeStateIndex, TreeStateIndexCapability,
+};
 pub use transparent::{LocatedOutput, LocatedSpend, StoreAddressEffects, TransparentHistoryQuery};
+pub use tree::{HistoryEpoch, HistoryPeaks};

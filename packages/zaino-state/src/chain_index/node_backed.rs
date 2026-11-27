@@ -1,24 +1,25 @@
-//! The chain index: the chain view and the mempool, launched and held together.
+//! The chain index: the service (ChainView, the chain head, the store and
+//! the mempool), held under ChainIndex's legacy surface (D6-09).
 
-use std::str::FromStr as _;
 use std::sync::Arc;
 
-use tokio_util::sync::CancellationToken;
-use zaino_chain::{
-    BlockRead as _, ChainViewSnapshot as _, ChainViewSync, ForkReconcile as _, Locator,
+use crate::legacy::chain::FinalisedStateMode;
+use crate::legacy::status::{NamedAtomicStatus, Status, StatusType};
+use zaino_chain::{ForkReconcile as _, Locator};
+use zaino_chain_store_service::{
+    ChainStoreServiceConfig, IndexesConfig, IngestConfig, NamedSet, OnCorruption,
 };
-use zaino_chain_store::ChainStoreService as _;
-use zaino_chain_store_zainodb::store::{reader::DbReader, FinalisedState, FinalisedStateMode};
-use zaino_component::{ComponentStatus, Health, Lifecycle, StatusSource};
-use zaino_status::{NamedAtomicStatus, Status, StatusType};
-use zebra_state::HashOrHeight;
+use zaino_component::{ComponentStatus, Health, Lifecycle};
+use zaino_persistence_lsm_tree::{fs::RealFs, LsmConfig, LsmTreeStorage};
+use zaino_service::{DiskStore, Mode, Service, ServiceConfig, Store};
 
-use super::chain_head::{self, WithChainHeadSource};
-use super::chain_store::{self, WithChainStoreSource};
-use super::chain_view::{self, ChainIndexSnapshot, Composer, WithChainViewSource};
-use super::mempool::{self, ChainIndexCoherence, ChainIndexMempool};
-use super::source::BlockchainSource;
+use zaino_service::ServiceSource;
+
+use super::chain_head;
+use super::chain_view::ChainIndexSnapshot;
+use super::source_ports::ChainIndexSourcePorts;
 use super::types;
+use super::validator_source::ValidatorSource;
 use super::ZebraNetwork;
 use crate::error::ChainIndexError;
 
@@ -30,9 +31,45 @@ pub(crate) fn combine_component_statuses(
     own: StatusType,
     finalised: StatusType,
     mempool: StatusType,
+    coherence: StatusType,
     chain_head: StatusType,
 ) -> StatusType {
-    own.combine(finalised).combine(mempool).combine(chain_head)
+    own.combine(finalised)
+        .combine(mempool)
+        .combine(coherence)
+        .combine(chain_head)
+}
+
+/// The index's serving status: its own, folded with the service's
+/// components. A store still building serves through the validator, so its
+/// build shows in `finalised_state_mode`, the manifest and the metrics, not
+/// here.
+fn combined_status(
+    own: StatusType,
+    service: &Service<impl zaino_service::ServiceSource>,
+) -> StatusType {
+    let statuses = service.statuses();
+    let store = statuses
+        .sync
+        .into_iter()
+        .fold(serving(statuses.store), |store, sync| {
+            store.combine(serving(sync))
+        });
+    combine_component_statuses(
+        own,
+        store,
+        fused(statuses.mempool),
+        fused(statuses.coherence),
+        fused(statuses.head),
+    )
+}
+
+/// A store component's status as serving health: building is serving.
+fn serving(status: ComponentStatus) -> StatusType {
+    match (status.health, status.lifecycle) {
+        (Health::Healthy, Lifecycle::Spawning | Lifecycle::Syncing) => StatusType::Ready,
+        _ => fused(status),
+    }
 }
 
 /// A component's two axes, back as the one status this index folds.
@@ -53,33 +90,92 @@ fn fused(status: ComponentStatus) -> StatusType {
     }
 }
 
-/// The finalised store's status, with the health of the sync feeding it.
-fn store_status(store: ComponentStatus, sync: Option<&ChainViewSync>) -> StatusType {
-    let store = fused(store);
-    match sync.map(|sync| sync.status().health) {
-        Some(Health::Critical) => store.combine(StatusType::CriticalError),
-        Some(Health::Recoverable) => store.combine(StatusType::RecoverableError),
-        _ => store,
+/// The service's config from the legacy one (D6-13, D6-14): an ephemeral
+/// index is validator-backed; a persistent one builds every index but
+/// `history_tree` in `storage.database.path`. The legacy store's tuning knobs
+/// no longer apply, and setting one is warned.
+fn service_config(
+    config: &crate::config::ChainIndexConfig,
+    chain_head: zaino_chain_head::ChainHeadConfig,
+) -> ServiceConfig {
+    warn_legacy_knobs(config);
+    let network = zaino_primitives::types::Network::from_zebra(&config.network);
+    let store = match config.ephemeral {
+        true => Store::ValidatorBacked { network },
+        false => Store::DiskAccelerated(Box::new(DiskStore {
+            store: ChainStoreServiceConfig {
+                root: config.storage.database.path.clone(),
+                network,
+                indexes: IndexesConfig {
+                    set: Some(NamedSet::Full),
+                    disable: vec!["history_tree".to_owned()],
+                    delete_stale: config.storage.database.delete_stale,
+                    ..IndexesConfig::default()
+                },
+                on_corruption: OnCorruption::default(),
+                ingest: IngestConfig::default(),
+            },
+            storage: LsmTreeStorage {
+                fs: RealFs::shared(),
+                lsm: LsmConfig::default(),
+                write_buffer: zaino_persistence_lsm_tree::DEFAULT_WRITE_BUFFER,
+                threads: None,
+                strict_manifest_read: false,
+            },
+            mode: Mode::Primary,
+        })),
+    };
+    ServiceConfig {
+        store,
+        chain_view: zaino_chain::ChainViewConfig::default(),
+        chain_head,
+        mempool: config.mempool.clone(),
     }
 }
 
-/// The combined index. Contains a view of the mempool, and the full
-/// chain state, both finalized and non-finalized, to allow queries over
-/// the entire chain at once.
-///
-/// This is the primary implementation backing [`ChainIndex`](super::ChainIndex).
-/// It can be backed by either:
-/// - A zebra `ReadStateService` for direct database access (preferred for performance)
-/// - A JSON-RPC connection to any validator node (zebrad or another zainod)
-///
-/// To use the [`ChainIndex`](super::ChainIndex) trait methods, call
-/// [`subscriber()`](NodeBackedChainIndex::subscriber) to get a
-/// [`NodeBackedChainIndexSubscriber`] which implements the trait.
+/// Warns for each legacy store knob set away from its default.
+fn warn_legacy_knobs(config: &crate::config::ChainIndexConfig) {
+    for knob in legacy_knobs_set(config) {
+        tracing::warn!(knob, "deprecated: the store no longer reads this setting");
+    }
+}
+
+/// The legacy store knobs set away from their defaults.
+fn legacy_knobs_set(config: &crate::config::ChainIndexConfig) -> Vec<&'static str> {
+    let database = &config.storage.database;
+    let defaults = crate::legacy::config::DatabaseConfig::default();
+    let cache = crate::legacy::config::CacheConfig::default();
+    let set = [
+        ("storage.database.size", database.size != defaults.size),
+        (
+            "storage.database.sync_write_batch_size",
+            database.sync_write_batch_size != defaults.sync_write_batch_size,
+        ),
+        (
+            "storage.database.accumulator_rebuild_memory_size",
+            database.accumulator_rebuild_memory_size != defaults.accumulator_rebuild_memory_size,
+        ),
+        (
+            "storage.database.sync_checkpoint_interval",
+            database.sync_checkpoint_interval != defaults.sync_checkpoint_interval,
+        ),
+        (
+            "storage.cache",
+            config.storage.cache.capacity != cache.capacity
+                || config.storage.cache.shard_power != cache.shard_power,
+        ),
+    ];
+    set.into_iter()
+        .filter_map(|(knob, set)| set.then_some(knob))
+        .collect()
+}
+
+/// The chain index: the service, under ChainIndex's legacy surface.
 ///
 /// # Construction
 ///
 /// Use [`NodeBackedChainIndex::new()`] with:
-/// - A source implementing [`BlockchainSource`] — in production
+/// - A [`ValidatorSource`] over a `zaino-source` validator — in production
 ///   [`ZebraValidatorSource`](crate::chain_index::validator_source::ZebraValidatorSource),
 ///   built by `spawn_rpc` or `spawn_direct` from the backend config
 /// - A [`ChainIndexConfig`](crate::ChainIndexConfig) containing cache and database settings
@@ -88,85 +184,66 @@ fn store_status(store: ComponentStatus, sync: Option<&ChainViewSync>) -> StatusT
 /// [`NodeBackedIndexerService`](crate::NodeBackedIndexerService) does it from
 /// config, and additionally waits for the initial sync to complete.
 pub struct NodeBackedChainIndex<
-    Source: BlockchainSource + WithChainHeadSource + WithChainStoreSource + WithChainViewSource = crate::chain_index::validator_source::ZebraValidatorSource,
+    V: ChainIndexSourcePorts + ServiceSource = zaino_source_zebra::ZebraValidator,
 > {
-    composer: Arc<Composer<Source>>,
-    /// `None` for an ephemeral store, which has nothing to freeze into.
-    chain_view_sync: Option<Arc<ChainViewSync>>,
-    finalized_db: FinalisedState<Source::Store>,
-    chain_head: Arc<zaino_chain_head_service::ChainHeadService<Source::Head>>,
-    mempool: Arc<ChainIndexMempool<Source>>,
-    coherence: Arc<ChainIndexCoherence>,
+    service: Arc<Service<V>>,
+    ephemeral: bool,
     status: NamedAtomicStatus,
     network: ZebraNetwork,
-    source: Source,
-    /// Stops every task this index started.
-    cancel_token: CancellationToken,
+    source: ValidatorSource<V>,
 }
 
-impl<
-        Source: BlockchainSource + WithChainHeadSource + WithChainStoreSource + WithChainViewSource,
-    > NodeBackedChainIndex<Source>
-{
-    /// Creates a new chainindex from a connection to a validator.
-    ///
-    /// In production `Source` is
-    /// [`ZebraValidatorSource`](crate::chain_index::validator_source::ZebraValidatorSource),
-    /// which routes each query to Zebra's read-state service or its JSON-RPC
-    /// interface according to which can answer it.
+impl<V: ChainIndexSourcePorts + ServiceSource> NodeBackedChainIndex<V> {
+    /// Starts the index: the service, which serves at once and builds the
+    /// store in the background.
+    #[deprecated(note = "zaino-state is the legacy surface: build on `zaino_service::Service`")]
     pub async fn new(
-        source: Source,
+        source: ValidatorSource<V>,
         config: crate::config::ChainIndexConfig,
     ) -> Result<Self, crate::InitError> {
         Self::new_with_chain_head_config(source, config, chain_head::config()).await
     }
 
-    /// Like [`Self::new`] but with the chain head's timings overridden, for
-    /// tests that need a faster failure ladder.
     pub(crate) async fn new_with_chain_head_config(
-        source: Source,
+        source: ValidatorSource<V>,
         config: crate::config::ChainIndexConfig,
         chain_head_config: zaino_chain_head::ChainHeadConfig,
     ) -> Result<Self, crate::InitError> {
-        let finalized_db = chain_store::spawn(&config, &source).await?;
-        let cancel_token = CancellationToken::new();
-        let chain_head = chain_head::spawn(&source, chain_head_config, cancel_token.child_token())
-            .await
-            .map_err(crate::InitError::ChainHeadInitialisationError)?;
-        let (mempool, coherence) = mempool::spawn(
-            &source,
-            chain_head.subscriber(),
-            &config.mempool,
-            &cancel_token,
-        );
-        let composer = chain_view::compose(finalized_db.clone(), chain_head.subscriber(), &source);
-        let chain_view_sync =
-            (!config.ephemeral).then(|| composer.spawn_sync(cancel_token.child_token()));
-
+        let service = Service::spawn(
+            source.validator(),
+            service_config(&config, chain_head_config),
+        )
+        .await?;
         Ok(Self {
-            composer,
-            chain_view_sync,
-            finalized_db,
-            chain_head,
-            mempool,
-            coherence,
+            service: Arc::new(service),
+            ephemeral: config.ephemeral,
             status: NamedAtomicStatus::new("ChainIndex", StatusType::Ready),
             network: config.network.clone(),
             source,
-            cancel_token,
         })
+    }
+
+    /// The store's committed tip, for tests that watch the seam advance.
+    #[cfg(test)]
+    pub(crate) fn finalised_tip(&self) -> Option<zaino_primitives::types::Height> {
+        self.service.store_tip()
+    }
+
+    /// Whether every index the store builds answers locally, for tests.
+    #[cfg(test)]
+    pub(crate) fn all_local(&self) -> bool {
+        self.service.is_caught_up()
+            && !self.service.manifest().iter().any(|(_, provision)| {
+                matches!(provision, zaino_service::Provision::Building { .. })
+            })
     }
 
     /// Creates a [`NodeBackedChainIndexSubscriber`] from self,
     /// a clone-safe, drop-safe, read-only view onto the running indexer.
-    pub fn subscriber(&self) -> NodeBackedChainIndexSubscriber<Source> {
+    pub fn subscriber(&self) -> NodeBackedChainIndexSubscriber<V> {
         NodeBackedChainIndexSubscriber {
-            composer: Arc::clone(&self.composer),
-            chain_view_sync: self.chain_view_sync.clone(),
-            finalized_state: self.finalized_db.reader(),
-            chain_head: self.chain_head.subscriber(),
-            mempool: self.mempool.subscriber(),
-            coherence: self.coherence.subscriber(),
+            service: Arc::clone(&self.service),
+            ephemeral: self.ephemeral,
             status: self.status.clone(),
             network: self.network.clone(),
             source: self.source.clone(),
@@ -177,31 +254,26 @@ impl<
     /// An error indicates a failure to cleanly shutdown. Dropping the
     /// chain index should still stop everything.
     pub async fn shutdown(&self) -> Result<(), zaino_chain_store::ChainStoreError> {
-        // The synchronous teardown runs before the fallible store shutdown so a
-        // store error cannot skip it — the source's Zebra syncer task must not
-        // outlive the index.
-        self.shutdown_sync_best_effort();
-        zaino_chain_store::ChainStoreIngest::shutdown(&self.finalized_db).await
+        self.status.store(StatusType::Closing);
+        let stopped = self.service.shutdown().await;
+        zaino_source::SourceLifecycle::shutdown(self.source.source());
+        stopped
     }
 
-    /// Synchronous best-effort teardown for contexts that cannot run async
-    /// work (a `Drop` on a current-thread runtime, or on a thread with no
-    /// runtime at all). The store's async shutdown is skipped; its own `Drop`
-    /// releases its resources.
+    /// The synchronous teardown: every task stops; the store skips its flush.
     pub(crate) fn shutdown_sync_best_effort(&self) {
-        self.cancel_token.cancel();
         self.status.store(StatusType::Closing);
-        self.mempool.close();
-        self.chain_head.shutdown();
-        if let Some(sync) = &self.chain_view_sync {
-            sync.shutdown();
-        }
-        self.source.shutdown();
+        self.service.stop();
+        zaino_source::SourceLifecycle::shutdown(self.source.source());
     }
 
     /// How long tip-coherent mempool reads have been frozen, or `None` if live.
+    ///
+    /// A brief non-`None` value is the normal shape of a tip transition. A
+    /// sustained one means the validator tip and Zaino's have stopped agreeing,
+    /// and every tip-coherent read is failing.
     pub fn mempool_coherence_health(&self) -> Option<std::time::Duration> {
-        self.coherence.subscriber().frozen_for()
+        self.service.mempool_frozen_for()
     }
 
     /// Returns which backend is currently answering finalised-state reads.
@@ -209,39 +281,55 @@ impl<
     /// Companion to [`NodeBackedChainIndex::status`], which cannot express this: an ephemeral
     /// passthrough reports [`StatusType::Ready`] identically to a synced persistent database.
     pub fn finalised_state_mode(&self) -> FinalisedStateMode {
-        self.finalized_db.finalised_state_mode()
+        state_mode(self.ephemeral, &self.service)
     }
 
     /// Displays the status of the chain_index
     pub fn status(&self) -> StatusType {
-        combine_component_statuses(
-            self.status.load(),
-            store_status(
-                StatusSource::status(&self.finalized_db),
-                self.chain_view_sync.as_deref(),
-            ),
-            self.mempool.status(),
-            fused(self.chain_head.status()),
-        )
+        combined_status(self.status.load(), &self.service)
+    }
+
+    /// Waits until the chain head's window has reached the validator's tip
+    /// (its first advance). The store is not waited on: it builds in the
+    /// background and ChainView answers from the validator meanwhile.
+    pub(crate) async fn wait_for_head(&self) -> Result<(), ChainIndexError> {
+        loop {
+            let head = self.service.statuses().head;
+            match (head.lifecycle, head.health) {
+                (Lifecycle::Ready | Lifecycle::Closing, _) => return Ok(()),
+                (Lifecycle::Offline, _) | (_, Health::Critical | Health::Offline) => {
+                    return Err(ChainIndexError::internal(format!(
+                        "the chain head did not start: {head:?}"
+                    )))
+                }
+                _ => tokio::time::sleep(std::time::Duration::from_millis(100)).await,
+            }
+        }
     }
 }
 
-impl<
-        Source: BlockchainSource + WithChainHeadSource + WithChainStoreSource + WithChainViewSource,
-    > Drop for NodeBackedChainIndex<Source>
-{
-    /// The full synchronous teardown, so the source's syncer task does not
-    /// outlive an index dropped without an explicit `shutdown()`.
+/// Which backend answers finalised-state reads.
+fn state_mode(
+    ephemeral: bool,
+    service: &Service<impl zaino_service::ServiceSource>,
+) -> FinalisedStateMode {
+    match (ephemeral, service.is_caught_up()) {
+        (true, _) => FinalisedStateMode::EphemeralConfigured,
+        (false, true) => FinalisedStateMode::Persistent,
+        (false, false) => FinalisedStateMode::EphemeralSyncing,
+    }
+}
+
+impl<V: ChainIndexSourcePorts + ServiceSource> Drop for NodeBackedChainIndex<V> {
+    /// The full synchronous teardown: subscribers share the service, so its
+    /// own drop may come later.
     fn drop(&mut self) {
         self.shutdown_sync_best_effort();
     }
 }
 
 /// Formatted by hand: a derive would demand `Debug` of the validator types.
-impl<
-        Source: BlockchainSource + WithChainHeadSource + WithChainStoreSource + WithChainViewSource,
-    > std::fmt::Debug for NodeBackedChainIndex<Source>
-{
+impl<V: ChainIndexSourcePorts + ServiceSource> std::fmt::Debug for NodeBackedChainIndex<V> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("NodeBackedChainIndex")
             .field("network", &self.network)
@@ -253,38 +341,22 @@ impl<
 ///
 /// [`NodeBackedChainIndexSubscriber`] can safely be cloned and dropped freely.
 pub struct NodeBackedChainIndexSubscriber<
-    Source: BlockchainSource + WithChainHeadSource + WithChainStoreSource + WithChainViewSource = crate::chain_index::validator_source::ZebraValidatorSource,
+    V: ChainIndexSourcePorts + ServiceSource = zaino_source_zebra::ZebraValidator,
 > {
-    pub(super) composer: Arc<Composer<Source>>,
-    chain_view_sync: Option<Arc<ChainViewSync>>,
-    /// Held for its status only; reads go through the chain view.
-    finalized_state: DbReader<Source::Store>,
-    /// Held for its status only; reads go through the chain view.
-    chain_head: zaino_chain_head_service::ChainHeadSubscriber,
-    /// The live set: answers regardless of what the tip is doing.
-    pub(super) mempool: zaino_mempool_service::MempoolSubscriber,
-    /// The tip-coherent view over it, for the reads that place a transaction
-    /// relative to a tip.
-    pub(super) coherence: zaino_mempool_service::CoherentSubscriber,
+    pub(super) service: Arc<Service<V>>,
+    ephemeral: bool,
     status: NamedAtomicStatus,
     pub(super) network: ZebraNetwork,
-    source: Source,
+    source: ValidatorSource<V>,
 }
 
 /// Cloned by hand: a derive would demand `Clone` of the validator types, which
 /// are shared behind `Arc`s here.
-impl<
-        Source: BlockchainSource + WithChainHeadSource + WithChainStoreSource + WithChainViewSource,
-    > Clone for NodeBackedChainIndexSubscriber<Source>
-{
+impl<V: ChainIndexSourcePorts + ServiceSource> Clone for NodeBackedChainIndexSubscriber<V> {
     fn clone(&self) -> Self {
         Self {
-            composer: Arc::clone(&self.composer),
-            chain_view_sync: self.chain_view_sync.clone(),
-            finalized_state: self.finalized_state.clone(),
-            chain_head: self.chain_head.clone(),
-            mempool: self.mempool.clone(),
-            coherence: self.coherence.clone(),
+            service: Arc::clone(&self.service),
+            ephemeral: self.ephemeral,
             status: self.status.clone(),
             network: self.network.clone(),
             source: self.source.clone(),
@@ -292,9 +364,8 @@ impl<
     }
 }
 
-impl<
-        Source: BlockchainSource + WithChainHeadSource + WithChainStoreSource + WithChainViewSource,
-    > std::fmt::Debug for NodeBackedChainIndexSubscriber<Source>
+impl<V: ChainIndexSourcePorts + ServiceSource> std::fmt::Debug
+    for NodeBackedChainIndexSubscriber<V>
 {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("NodeBackedChainIndexSubscriber")
@@ -303,18 +374,21 @@ impl<
     }
 }
 
-impl<
-        Source: BlockchainSource + WithChainHeadSource + WithChainStoreSource + WithChainViewSource,
-    > NodeBackedChainIndexSubscriber<Source>
-{
+impl<V: ChainIndexSourcePorts + ServiceSource> NodeBackedChainIndexSubscriber<V> {
     pub(crate) fn indexed_tip_stream(&self) -> crate::IndexedTipStream {
-        crate::stream::indexed_tip_stream(zaino_chain::ChainView::subscribe_tip(
-            self.composer.as_ref(),
-        ))
+        crate::stream::indexed_tip_stream(self.service.subscribe_tip())
     }
 
-    pub(crate) fn source(&self) -> &Source {
+    pub(crate) fn source(&self) -> &ValidatorSource<V> {
         &self.source
+    }
+
+    /// The service's reads over `snapshot`.
+    pub(super) fn reads(
+        &self,
+        snapshot: &ChainIndexSnapshot<V>,
+    ) -> zaino_service::ServiceSnapshot<V> {
+        self.service.with_chain(snapshot.clone())
     }
 
     /// The indexer's mempool subscriber.
@@ -322,8 +396,8 @@ impl<
     /// Test-only escape hatch. Production code goes through the `ChainIndex`
     /// mempool API.
     #[cfg(feature = "test_dependencies")]
-    pub(crate) fn mempool_subscriber(&self) -> &zaino_mempool_service::MempoolSubscriber {
-        &self.mempool
+    pub(crate) fn mempool_subscriber(&self) -> zaino_mempool_service::MempoolSubscriber {
+        self.service.mempool_subscriber()
     }
 
     /// How long tip-coherent mempool reads have been frozen, or `None` if live.
@@ -332,34 +406,28 @@ impl<
     /// sustained one means the validator tip and Zaino's have stopped agreeing,
     /// and every tip-coherent read is failing.
     pub fn mempool_coherence_health(&self) -> Option<std::time::Duration> {
-        self.coherence.frozen_for()
+        self.service.mempool_frozen_for()
+    }
+
+    /// Height of the finalised store's committed tip; `None` while the store
+    /// is empty or absent (ephemeral mode).
+    pub fn finalised_tip_height(&self) -> Option<u32> {
+        self.service.store_tip().map(u32::from)
+    }
+
+    /// Which backend answers finalised-state reads.
+    pub fn finalised_state_mode(&self) -> FinalisedStateMode {
+        state_mode(self.ephemeral, &self.service)
     }
 
     /// Returns the combined status of all chain index components.
     pub fn combined_status(&self) -> StatusType {
-        combine_component_statuses(
-            self.status.load(),
-            store_status(
-                StatusSource::status(&self.finalized_state),
-                self.chain_view_sync.as_deref(),
-            ),
-            self.mempool.status(),
-            fused(self.chain_head.status()),
-        )
-    }
-
-    /// The epoch the mempool is coherent with, if it is the one `snapshot`
-    /// was taken at.
-    pub(super) fn coherent_epoch(
-        coherent: &zaino_mempool::CoherentSnapshot,
-        snapshot: &ChainIndexSnapshot<Source>,
-    ) -> Option<zaino_primitives::types::ChainStateEpoch> {
-        Some(snapshot.epoch()).filter(|epoch| coherent.is_valid_for_snapshot(*epoch))
+        combined_status(self.status.load(), &self.service)
     }
 
     /// Whether the chain head (on any branch) or the store holds `hash`.
     pub(super) async fn block_hash_known(
-        snapshot: &ChainIndexSnapshot<Source>,
+        snapshot: &ChainIndexSnapshot<V>,
         hash: types::BlockHash,
     ) -> Result<bool, ChainIndexError> {
         Ok(snapshot
@@ -367,32 +435,101 @@ impl<
             .await?
             .is_some())
     }
+}
 
-    /// Whether the hash-or-height string names a block this index knows.
-    pub(crate) async fn hash_or_height_known_for_treestate(
-        &self,
-        snapshot: &ChainIndexSnapshot<Source>,
-        hash_or_height: &str,
-    ) -> Result<bool, ChainIndexError> {
-        let hash_or_height = HashOrHeight::from_str(hash_or_height).map_err(|error| {
-            ChainIndexError::internal(format!("invalid hash or height: {error}"))
-        })?;
-        let known = match hash_or_height {
-            HashOrHeight::Hash(hash) => Self::block_hash_known(snapshot, hash.into()).await?,
-            HashOrHeight::Height(height) => match types::domain_height(height.into()) {
-                Some(height) => snapshot.block_hash(height).await?.is_some(),
-                None => false,
-            },
-        };
-        Ok(known)
+impl<V: ChainIndexSourcePorts + ServiceSource> Status for NodeBackedChainIndexSubscriber<V> {
+    fn status(&self) -> StatusType {
+        self.combined_status()
     }
 }
 
-impl<
-        Source: BlockchainSource + WithChainHeadSource + WithChainStoreSource + WithChainViewSource,
-    > Status for NodeBackedChainIndexSubscriber<Source>
-{
-    fn status(&self) -> StatusType {
-        self.combined_status()
+#[cfg(test)]
+mod tests {
+    use super::{legacy_knobs_set, service_config, serving};
+    use crate::config::ChainIndexConfig;
+    use crate::legacy::config::{CacheConfig, DatabaseConfig, StorageConfig};
+    use crate::legacy::status::StatusType;
+    use zaino_component::{ComponentName, ComponentStatus, Health, Lifecycle};
+    use zaino_service::Store;
+
+    /// A store still building serves (through the validator): its build is
+    /// not the index's health; a failing one is.
+    #[test]
+    fn a_building_store_is_serving() {
+        let store = |lifecycle, health| {
+            serving(ComponentStatus::new(
+                ComponentName("chain store"),
+                lifecycle,
+                health,
+            ))
+        };
+        assert_eq!(
+            store(Lifecycle::Syncing, Health::Healthy),
+            StatusType::Ready
+        );
+        assert_eq!(
+            store(Lifecycle::Spawning, Health::Healthy),
+            StatusType::Ready
+        );
+        assert_eq!(
+            store(Lifecycle::Syncing, Health::Recoverable),
+            StatusType::RecoverableError
+        );
+        assert_eq!(
+            store(Lifecycle::Closing, Health::Healthy),
+            StatusType::Closing
+        );
+    }
+
+    fn config(ephemeral: bool, storage: StorageConfig) -> ChainIndexConfig {
+        ChainIndexConfig {
+            storage,
+            network: zebra_chain::parameters::Network::new_regtest(Default::default()),
+            ephemeral,
+            mempool: Default::default(),
+        }
+    }
+
+    /// Only knobs set away from their defaults are warned (D6-14).
+    #[test]
+    fn only_changed_legacy_knobs_are_warned() {
+        assert!(legacy_knobs_set(&config(false, StorageConfig::default())).is_empty());
+        let mut storage = StorageConfig::default();
+        storage.database.size = crate::legacy::config::DatabaseSize(1);
+        storage.cache = CacheConfig {
+            capacity: CacheConfig::default().capacity + 1,
+            ..CacheConfig::default()
+        };
+        assert_eq!(
+            legacy_knobs_set(&config(false, storage)),
+            vec!["storage.database.size", "storage.cache"]
+        );
+    }
+
+    /// Ephemeral is validator-backed; persistent builds every index but
+    /// `history_tree` at the database path (D6-13).
+    #[test]
+    fn the_legacy_modes_map_onto_stores() {
+        let head = crate::chain_index::chain_head::config();
+        let ephemeral = service_config(&config(true, StorageConfig::default()), head.clone());
+        assert!(matches!(ephemeral.store, Store::ValidatorBacked { .. }));
+        let storage = StorageConfig {
+            database: DatabaseConfig {
+                path: "/somewhere".into(),
+                ..DatabaseConfig::default()
+            },
+            ..StorageConfig::default()
+        };
+        let Store::DiskAccelerated(disk) = service_config(&config(false, storage), head).store
+        else {
+            panic!("a persistent index has a store");
+        };
+        assert_eq!(disk.store.root, std::path::PathBuf::from("/somewhere"));
+        assert_eq!(
+            disk.store.indexes.set,
+            Some(zaino_chain_store_service::NamedSet::Full)
+        );
+        assert_eq!(disk.store.indexes.disable, vec!["history_tree".to_owned()]);
+        assert!(matches!(disk.mode, zaino_service::Mode::Primary));
     }
 }

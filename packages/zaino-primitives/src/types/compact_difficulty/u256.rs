@@ -31,7 +31,7 @@ impl U256 {
             hi: 0,
             lo: u128::from(mantissa),
         }
-        .shl(8 * exponent)
+        .shl(exponent.saturating_mul(8))
     }
 
     /// Whether this is zero.
@@ -107,12 +107,12 @@ impl U256 {
         match n {
             0 => self,
             1..=127 => Self {
-                hi: (self.hi << n) | (self.lo >> (128 - n)),
+                hi: (self.hi << n) | (self.lo >> 128u32.saturating_sub(n)),
                 lo: self.lo << n,
             },
             128 => Self { hi: self.lo, lo: 0 },
             129..=255 => Self {
-                hi: self.lo << (n - 128),
+                hi: self.lo << n.saturating_sub(128),
                 lo: 0,
             },
             _ => Self::ZERO,
@@ -124,7 +124,7 @@ impl U256 {
         if i < 128 {
             (self.lo >> i) & 1 == 1
         } else {
-            (self.hi >> (i - 128)) & 1 == 1
+            (self.hi >> i.saturating_sub(128)) & 1 == 1
         }
     }
 
@@ -133,7 +133,7 @@ impl U256 {
         if i < 128 {
             self.lo |= 1 << i;
         } else {
-            self.hi |= 1 << (i - 128);
+            self.hi |= 1 << i.saturating_sub(128);
         }
         self
     }

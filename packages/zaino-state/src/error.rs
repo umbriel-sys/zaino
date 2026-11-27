@@ -3,8 +3,6 @@
 
 // Needs to be module level due to the thiserror::Error macro
 
-use crate::BlockHash;
-
 use std::fmt::Display;
 
 use zaino_proto::proto::utils::GetBlockRangeError;
@@ -16,8 +14,7 @@ use zaino_proto::proto::utils::GetBlockRangeError;
 /// lightwalletd-family clients key on, rather than a generic internal error.
 /// Carried as a typed `source` through the error chain so the serving layer can
 /// downcast to it — `ChainIndexError::internal_from` is what preserves it on
-/// the way out, and `legacy_code_from_error_source` in
-/// `zaino-serve/src/rpc/jsonrpc/service.rs` is what recovers it.
+/// the way out.
 ///
 /// Distinct from [`NonDomainError`](zaino_source::NonDomainError), which carries a code
 /// the *validator* produced. This one is Zaino's.
@@ -31,6 +28,14 @@ pub struct LegacyRpcError {
 }
 
 impl LegacyRpcError {
+    /// The JSON-RPC envelope's "method not found": the backing validator does
+    /// not implement a method Zaino forwards to it.
+    pub(crate) const METHOD_NOT_FOUND: i64 = -32601;
+
+    /// The JSON-RPC envelope's "invalid params", as zebrad refuses an
+    /// inverted address height range.
+    pub(crate) const INVALID_PARAMS: i64 = -32602;
+
     /// Construct a rejection from zebra's `LegacyCode` enum.
     pub fn new(code: zebra_rpc::server::error::LegacyCode, message: impl Into<String>) -> Self {
         Self {
@@ -39,6 +44,14 @@ impl LegacyRpcError {
         }
     }
 }
+
+/// A request rejected as invalid, carrying the legacy code clients key on.
+///
+/// The marker [`ChainIndexError::backing_validator`] reads as `InvalidArgument`;
+/// its `source` is the [`LegacyRpcError`] the JSON-RPC layer recovers.
+#[derive(Debug, thiserror::Error)]
+#[error("{0}")]
+pub(crate) struct InvalidRequest(#[source] pub(crate) LegacyRpcError);
 
 /// Errors returned by the [`NodeBackedIndexerService`](crate::NodeBackedIndexerService)
 /// subscriber's `ZcashIndexer` / `LightWalletIndexer` methods.
@@ -67,14 +80,6 @@ pub enum NodeBackedIndexerServiceError {
     /// Chain index error.
     #[error("Chain index error: {0}")]
     ChainIndexError(#[from] ChainIndexError),
-
-    /// Error from the block cache.
-    #[error("Mempool error: {0}")]
-    BlockCacheError(#[from] BlockCacheError),
-
-    /// Error from the mempool.
-    #[error("Mempool error: {0}")]
-    MempoolError(#[from] MempoolError),
 
     /// Tonic gRPC error.
     #[error("Tonic status error: {0}")]
@@ -169,12 +174,6 @@ impl From<NodeBackedIndexerServiceError> for tonic::Status {
                 // one.
                 ChainIndexErrorKind::Unimplemented => tonic::Status::unimplemented(err.message),
             },
-            NodeBackedIndexerServiceError::BlockCacheError(err) => {
-                tonic::Status::internal(format!("BlockCache error: {err:?}"))
-            }
-            NodeBackedIndexerServiceError::MempoolError(err) => {
-                tonic::Status::internal(format!("Mempool error: {err:?}"))
-            }
             NodeBackedIndexerServiceError::TonicStatusError(err) => err,
             NodeBackedIndexerServiceError::SerializationError(err) => {
                 tonic::Status::internal(format!("Serialization error: {err}"))
@@ -200,76 +199,6 @@ impl From<NodeBackedIndexerServiceError> for tonic::Status {
         }
     }
 }
-
-/// Errors related to the `Mempool`.
-#[derive(Debug, thiserror::Error)]
-pub enum MempoolError {
-    /// Critical Errors, Restart Zaino.
-    #[error("Critical error: {0}")]
-    Critical(String),
-
-    /// Incorrect expected chain tip given from client.
-    #[error(
-        "Incorrect chain tip (expected {expected_chain_tip:?}, current {current_chain_tip:?})"
-    )]
-    IncorrectChainTip {
-        expected_chain_tip: BlockHash,
-        current_chain_tip: BlockHash,
-    },
-
-    /// Errors originating from the BlockchainSource in use.
-    #[error("blockchain source error: {0}")]
-    BlockchainSourceError(#[from] crate::chain_index::source::BlockchainSourceError),
-
-    /// Error from a Tokio Watch Receiver.
-    #[error("Join error: {0}")]
-    WatchRecvError(#[from] tokio::sync::watch::error::RecvError),
-
-    /// Unexpected status-related error.
-    #[error("Status error: {0:?}")]
-    StatusError(StatusError),
-}
-
-/// Errors related to the `BlockCache`.
-#[derive(Debug, thiserror::Error)]
-pub enum BlockCacheError {
-    /// Custom Errors. *Remove before production.
-    #[error("Custom error: {0}")]
-    Custom(String),
-
-    /// Critical Errors, Restart Zaino.
-    #[error("Critical error: {0}")]
-    Critical(String),
-
-    /// Errors from the FinalisedState.
-    #[error("FinalisedState Error: {0}")]
-    FinalisedStateError(#[from] FinalisedStateError),
-
-    /// Serialization error.
-    #[error("Serialization error: {0}")]
-    SerializationError(#[from] zebra_chain::serialization::SerializationError),
-
-    /// UTF-8 conversion error.
-    #[error("UTF-8 conversion error: {0}")]
-    Utf8Error(#[from] std::str::Utf8Error),
-
-    /// Integer parsing error.
-    #[error("Integer parsing error: {0}")]
-    ParseIntError(#[from] std::num::ParseIntError),
-
-    /// Integer conversion error.
-    #[error("Integer conversion error: {0}")]
-    TryFromIntError(#[from] std::num::TryFromIntError),
-}
-
-/// Errors from the finalised chain store.
-///
-/// Not defined here: it belongs to the backend that produces it, and is
-/// re-exported under its old name so this crate's callers do not have to be
-/// rewritten while they are being moved onto
-/// [`zaino_chain_store::ChainStoreError`], which is what the ports return and
-/// what a consumer should eventually see.
-pub use zaino_chain_store_zainodb::error::{StatusError, StoreError as FinalisedStateError};
 
 #[derive(Debug, thiserror::Error)]
 #[error("{kind}: {message}")]
@@ -347,12 +276,24 @@ impl ChainIndexError {
     }
 
     /// Constructs an `InternalServerError`-kind error from a typed error,
-    /// preserving it as `source` so zaino-serve's RPC-error-code recovery
+    /// preserving it as `source` so a serving layer's RPC-error-code recovery
     /// walks can downcast to it (e.g. the legacy `-8` code carried by an
     /// [`LegacyRpcError`]).
     pub(crate) fn internal_from(error: impl std::error::Error + Send + Sync + 'static) -> Self {
         Self {
             kind: ChainIndexErrorKind::InternalServerError,
+            message: error.to_string(),
+            source: Some(Box::new(error)),
+        }
+    }
+
+    /// An error of `kind` keeping `error` as its source.
+    pub(crate) fn with_source(
+        kind: ChainIndexErrorKind,
+        error: impl std::error::Error + Send + Sync + 'static,
+    ) -> Self {
+        Self {
+            kind,
             message: error.to_string(),
             source: Some(Box::new(error)),
         }
@@ -381,29 +322,53 @@ impl ChainIndexError {
     /// The validator's own message is carried into `message`, not just `source`:
     /// only `message` crosses the gRPC boundary, so dropping it leaves a caller
     /// unable to tell a rejected transaction from an unreachable node.
+    ///
+    /// A validator that lacks the method is `Unimplemented`, and a rejected
+    /// request ([`InvalidRequest`]) is `InvalidArgument`; neither is broken.
     pub(crate) fn backing_validator(value: impl std::error::Error + Send + Sync + 'static) -> Self {
         let message =
             format!("InternalServerError: error receiving data from backing node: {value}");
+        let kind = std::iter::successors(
+            Some(&value as &(dyn std::error::Error + 'static)),
+            |error| error.source(),
+        )
+        .find_map(|error| {
+            if error.downcast_ref::<InvalidRequest>().is_some() {
+                Some(ChainIndexErrorKind::InvalidArgument)
+            } else {
+                error
+                    .downcast_ref::<LegacyRpcError>()
+                    .filter(|error| error.code == LegacyRpcError::METHOD_NOT_FOUND)
+                    .map(|_| ChainIndexErrorKind::Unimplemented)
+            }
+        })
+        .unwrap_or(ChainIndexErrorKind::InternalServerError);
         Self {
-            kind: ChainIndexErrorKind::InternalServerError,
+            kind,
             message,
             source: Some(Box::new(value)),
         }
+    }
+
+    /// A request rejected as invalid, served as `InvalidArgument` over gRPC and
+    /// as `rejection`'s legacy code over JSON-RPC.
+    pub(crate) fn invalid_request(rejection: LegacyRpcError) -> Self {
+        Self::backing_validator(
+            crate::chain_index::source::BlockchainSourceError::unrecoverable_context(
+                "validator rejected the query",
+                InvalidRequest(rejection),
+            ),
+        )
     }
 
     /// A request the validator rejected as invalid, in the shape the legacy
     /// source reported it: carrying the legacy `InvalidParameter` code the
     /// serving layer recovers from the error chain.
     pub(crate) fn validator_rejected(message: impl Display) -> Self {
-        Self::backing_validator(
-            crate::chain_index::source::BlockchainSourceError::unrecoverable_context(
-                "validator rejected the query",
-                LegacyRpcError::new(
-                    zebra_rpc::server::error::LegacyCode::InvalidParameter,
-                    message.to_string(),
-                ),
-            ),
-        )
+        Self::invalid_request(LegacyRpcError::new(
+            zebra_rpc::server::error::LegacyCode::InvalidParameter,
+            message.to_string(),
+        ))
     }
 
     pub(crate) fn database_hole(
@@ -427,67 +392,12 @@ impl From<zaino_chain_head::ChainHeadError> for ChainIndexError {
     }
 }
 
-/// An error occurred during a ChainIndex sync iteration.
-///
-/// One variant, because the loop now drives one thing: the finalised state.
-/// Whatever goes wrong — an unreachable validator, a database that will not
-/// advance — the worker's answer is the same, to back off and retry, and to
-/// escalate only after a run of them.
-#[derive(Debug, thiserror::Error)]
-pub enum SyncError {
-    /// The sync iteration failed. Retryable.
-    #[error("sync iteration failed: {0}")]
-    ErrorFromSource(Box<dyn std::error::Error + Send>),
-}
-
 /// An error occurred while constructing a ChainIndex.
 #[derive(Debug, thiserror::Error)]
 pub enum InitError {
-    /// The connected node returned data that could not be used.
-    #[error("validator returned invalid data: {0}")]
-    InvalidNodeData(Box<dyn std::error::Error + Send + Sync + 'static>),
-    /// The mempool failed to initialise.
+    /// The service did not start.
     #[error(transparent)]
-    MempoolInitialzationError(#[from] crate::error::MempoolError),
-    /// The finalised state failed to initialise.
-    #[error(transparent)]
-    FinalisedStateInitialzationError(#[from] FinalisedStateError),
-    /// The chain head could not build its first window.
-    ///
-    /// Fatal by design: a chain head with no window has nothing to serve, and
-    /// it holds no persistent state to fall back on.
-    #[error(transparent)]
-    ChainHeadInitialisationError(#[from] zaino_chain_head_service::ChainHeadInitError),
-}
-
-impl From<FinalisedStateError> for ChainIndexError {
-    fn from(value: FinalisedStateError) -> Self {
-        let message = match &value {
-            FinalisedStateError::DataUnavailable(err) => format!("unhandled missing data: {err}"),
-            FinalisedStateError::FeatureUnavailable(err) => {
-                format!("unhandled missing feature: {err}")
-            }
-            FinalisedStateError::V1BackendUnavailable(handle) => {
-                format!("v1 backend unavailable: {handle}")
-            }
-            FinalisedStateError::InvalidBlock {
-                height,
-                hash: _,
-                reason,
-            } => format!("invalid block at height {height}: {reason}"),
-            FinalisedStateError::Custom(err) | FinalisedStateError::Critical(err) => err.clone(),
-            FinalisedStateError::LmdbError(error) => error.to_string(),
-            FinalisedStateError::SerdeJsonError(error) => error.to_string(),
-            FinalisedStateError::StatusError(status_error) => status_error.to_string(),
-            FinalisedStateError::IoError(error) => error.to_string(),
-            FinalisedStateError::Source(source_error) => source_error.to_string(),
-        };
-        ChainIndexError {
-            kind: ChainIndexErrorKind::InternalServerError,
-            message,
-            source: Some(Box::new(value)),
-        }
-    }
+    ServiceInitialisationError(#[from] zaino_service::SpawnError),
 }
 
 /// A chain-store query that could not be answered.
@@ -519,18 +429,16 @@ impl From<zaino_chain_store::ChainStoreError> for ChainIndexError {
             // broken and retrying it unchanged fails identically.
             Error::InvalidRange { .. } => ChainIndexErrorKind::InvalidArgument,
 
+            // The query is too broad; a narrower one is answered.
+            Error::TooManyRows { .. } => ChainIndexErrorKind::InvalidArgument,
+
             // The store is healthy and the request well-formed; this
             // deployment does not build that index. Not a fault, and not
             // something a later attempt fixes.
-            Error::Unavailable(_) => ChainIndexErrorKind::Unimplemented,
+            Error::Unavailable(_) | Error::Unsupported(_) => ChainIndexErrorKind::Unimplemented,
 
             // ChainIndex's own routing mistake, as the note above explains.
             Error::AboveWatermark { .. } => ChainIndexErrorKind::InternalServerError,
-
-            // A freeze outcome, on a path that only ever reads. It is the
-            // composer's to repair — build to `first_frozen - 1` and freeze
-            // again — so a caller seeing it means the repair did not happen.
-            Error::FreezeGap { .. } => ChainIndexErrorKind::InternalServerError,
 
             // A broken store. Neither is the caller's to fix.
             Error::MissingRow(_) | Error::CorruptRow { .. } | Error::Backend { .. } => {
@@ -545,6 +453,50 @@ impl From<zaino_chain_store::ChainStoreError> for ChainIndexError {
             // needs, and the kind above says nothing about which LMDB failure
             // produced it.
             source: Some(Box::new(value)),
+        }
+    }
+}
+
+/// A service read that could not be answered, in the legacy shapes: a
+/// validator's refusal or unreachability as the legacy source reported it.
+impl From<zaino_service::ServiceError> for ChainIndexError {
+    fn from(value: zaino_service::ServiceError) -> Self {
+        use crate::chain_index::validator_source::err;
+        use zaino_service::ServiceError as Error;
+        match value {
+            Error::InvalidParameter(message) => ChainIndexError::invalid_argument(message),
+            Error::Chain(error) => error.into(),
+            Error::ValidatorUnreachable(error) => {
+                ChainIndexError::backing_validator(err(zaino_source::QueryError::<
+                    std::convert::Infallible,
+                    _,
+                >::NonDomain(error)))
+            }
+            Error::ValidatorRejected(error) => ChainIndexError::backing_validator(
+                crate::chain_index::validator_source::rejected_err(error),
+            ),
+            error @ Error::NotServed { .. } => {
+                ChainIndexError::with_source(ChainIndexErrorKind::Unimplemented, error)
+            }
+            error @ Error::InvalidRange { .. } => ChainIndexError::with_source(
+                ChainIndexErrorKind::InvalidArgument,
+                LegacyRpcError {
+                    code: LegacyRpcError::INVALID_PARAMS,
+                    message: error.to_string(),
+                },
+            ),
+            error @ (Error::MempoolIncoherent
+            | Error::MempoolStreamLagged
+            | Error::SyncStopped
+            | Error::ComponentFailed(_)) => {
+                ChainIndexError::with_source(ChainIndexErrorKind::Unavailable, error)
+            }
+            error @ (Error::MissingBlock(_)
+            | Error::MissingPrevout { .. }
+            | Error::AmountOutOfRange { .. }
+            | Error::HeightOverflow(_)
+            | Error::SpendCountMismatch { .. }
+            | Error::MinedAndInMempool(_)) => ChainIndexError::internal_from(error),
         }
     }
 }
@@ -567,7 +519,12 @@ impl From<zaino_chain::ChainViewError> for ChainIndexError {
                     ),
                 )
             }
-            Error::NotServiceable(_) | Error::Transient(_) => ChainIndexErrorKind::Unavailable,
+            // the request's own range: the code the validator path serves
+            Error::InvalidRange { .. } => return ChainIndexError::validator_rejected(&value),
+            Error::NotServed(_) | Error::NotBuilt(_) | Error::ValidatorDisabled(_) => {
+                ChainIndexErrorKind::Unimplemented
+            }
+            Error::Building { .. } | Error::Transient(_) => ChainIndexErrorKind::Unavailable,
             Error::Fatal(_) => ChainIndexErrorKind::InternalServerError,
             ref other => {
                 return ChainIndexError::internal(format!("chain view read failed: {other}"))
@@ -577,36 +534,6 @@ impl From<zaino_chain::ChainViewError> for ChainIndexError {
         ChainIndexError {
             kind,
             message: value.to_string(),
-            source: Some(Box::new(value)),
-        }
-    }
-}
-
-impl From<MempoolError> for ChainIndexError {
-    fn from(value: MempoolError) -> Self {
-        // Construct a user-facing message depending on the variant
-        let message = match &value {
-            MempoolError::Critical(msg) => format!("critical mempool error: {msg}"),
-            MempoolError::IncorrectChainTip {
-                expected_chain_tip,
-                current_chain_tip,
-            } => {
-                format!(
-                    "incorrect chain tip (expected {expected_chain_tip:?}, current {current_chain_tip:?})"
-                )
-            }
-            MempoolError::BlockchainSourceError(err) => {
-                format!("mempool blockchain source error: {err}")
-            }
-            MempoolError::WatchRecvError(err) => format!("mempool watch receiver error: {err}"),
-            MempoolError::StatusError(status_err) => {
-                format!("mempool status error: {status_err:?}")
-            }
-        };
-
-        ChainIndexError {
-            kind: ChainIndexErrorKind::InternalServerError,
-            message,
             source: Some(Box::new(value)),
         }
     }
@@ -719,7 +646,8 @@ mod tests {
         );
     }
 
-    /// Not serviceable and transient reads are retryable; a fatal one is a
+    /// Building and transient reads are retryable; a capability not served,
+    /// not built or without its validator is unimplemented; a fatal one is a
     /// server fault that keeps its cause.
     #[test]
     fn chain_view_failures_map_to_their_kinds() {
@@ -727,7 +655,10 @@ mod tests {
         use zaino_chain::ChainViewError;
 
         for error in [
-            ChainViewError::NotServiceable("hole"),
+            ChainViewError::Building {
+                what: "spends",
+                store_tip: Some(h(5)),
+            },
             ChainViewError::Transient("between states".into()),
         ] {
             assert_eq!(
@@ -735,10 +666,90 @@ mod tests {
                 ChainIndexErrorKind::Unavailable
             );
         }
+        for error in [
+            ChainViewError::NotServed(zaino_chain::ChainCapability::TxOutSet),
+            ChainViewError::NotBuilt("the txout set"),
+            ChainViewError::ValidatorDisabled("raw blocks"),
+        ] {
+            assert_eq!(
+                ChainIndexError::from(error).kind(),
+                ChainIndexErrorKind::Unimplemented
+            );
+        }
+        let range = ChainIndexError::from(ChainViewError::InvalidRange {
+            start: h(9),
+            end: h(2),
+        });
+        assert_eq!(range.kind(), ChainIndexErrorKind::InvalidArgument);
+        assert_eq!(
+            legacy_code(&range),
+            Some(zebra_rpc::server::error::LegacyCode::InvalidParameter as i64)
+        );
 
         let fatal = ChainIndexError::from(ChainViewError::Fatal("backend".into()));
         assert_eq!(fatal.kind(), ChainIndexErrorKind::InternalServerError);
         assert!(fatal.source().is_some());
+    }
+
+    /// A capability not served is unimplemented, a stopped component or an
+    /// incoherent mempool retryable, an inconsistency internal; each keeps
+    /// the service error as its cause.
+    #[test]
+    fn service_failures_map_to_their_kinds_and_keep_their_cause() {
+        use std::error::Error as _;
+        use zaino_service::ServiceError;
+
+        let cases = [
+            (
+                ServiceError::NotServed {
+                    capability: zaino_service::Capability::Chain(
+                        zaino_chain::ChainCapability::TxOutSet,
+                    ),
+                    index: None,
+                },
+                ChainIndexErrorKind::Unimplemented,
+            ),
+            (
+                ServiceError::MempoolIncoherent,
+                ChainIndexErrorKind::Unavailable,
+            ),
+            (ServiceError::SyncStopped, ChainIndexErrorKind::Unavailable),
+            (
+                ServiceError::MissingBlock(h(3)),
+                ChainIndexErrorKind::InternalServerError,
+            ),
+            (
+                ServiceError::HeightOverflow(h(3)),
+                ChainIndexErrorKind::InternalServerError,
+            ),
+        ];
+        for (error, kind) in cases {
+            let mapped = ChainIndexError::from(error);
+            assert_eq!(mapped.kind(), kind, "{mapped}");
+            assert!(
+                mapped
+                    .source()
+                    .is_some_and(|source| source.is::<ServiceError>()),
+                "{mapped} lost its cause"
+            );
+        }
+        // an inverted range is zebrad's −32602 and message (S-11)
+        let inverted = ChainIndexError::from(ServiceError::InvalidRange {
+            start: h(9),
+            end: h(2),
+        });
+        assert_eq!(inverted.kind(), ChainIndexErrorKind::InvalidArgument);
+        let legacy = inverted
+            .source()
+            .and_then(|source| source.downcast_ref::<crate::LegacyRpcError>())
+            .expect("a legacy code");
+        assert_eq!(
+            (legacy.code, legacy.message.as_str()),
+            (
+                -32602,
+                "start Height(9) must be less than or equal to end Height(2)"
+            )
+        );
     }
 
     /// An unreachable validator keeps its transport error in the chain.

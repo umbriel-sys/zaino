@@ -1,0 +1,179 @@
+
+# The chain served: "Mainnet" | "PubTestnet" | "Regtest".
+# It must match the validator's network, or zainod refuses to start.
+network = "Mainnet"
+
+# A donation address reported to wallets by GetLightdInfo. Optional.
+# donation_address = "u1..."
+
+
+# ---------------------------------------------------------------------------
+# The validator Zaino reads from
+# ---------------------------------------------------------------------------
+[validator]
+
+# How the validator is read:
+#   "zebra"      zebrad on this host. Reads zebrad's state directory directly
+#                as well as its JSON-RPC. The faster choice. Requires the
+#                [validator.read_state] table below.
+#   "zcash_rpc"  any validator serving the zcash JSON-RPC interface, on this
+#                host or another. Remove [validator.read_state] to use it.
+kind = "zebra"
+
+# The validator's JSON-RPC address (zebrad: [rpc] listen_addr).
+# Must be a loopback or private address.
+rpc_address = "127.0.0.1:8232"
+
+# Credentials. zebrad turns cookie authentication on by default: point
+# cookie_path at its cookie file (<zebrad's cookie_dir>/.cookie), or turn
+# zebrad's enable_cookie_auth off and set none here; none are then sent.
+# The cookie file wins over user and password; set user and password together.
+# cookie_path = "/path/to/zebra/.cookie"
+# user = "..."
+# password = "..."
+
+# Direct state access: kind = "zebra" only, and both keys are required.
+[validator.read_state]
+# zebrad's cache directory (zebrad: [state] cache_dir).
+state_path = {state_path}
+# zebrad's indexer gRPC address (zebrad: [rpc] indexer_listen_addr).
+grpc_address = "127.0.0.1:8230"
+
+
+# ---------------------------------------------------------------------------
+# What Zaino stores
+# ---------------------------------------------------------------------------
+# A read whose index is not built is passed to the validator, never refused,
+# except where noted. More indexes = more served locally, more disk, longer sync.
+[indexes]
+
+# The base set:
+#   "lightclient"  what lightwallet gRPC clients need: compact blocks,
+#                  headers, treestates, subtree roots. The default.
+#   "zcash_rpc"    what the JSON-RPC server answers locally: spends, address
+#                  history, the UTXO set, treestates. No compact blocks.
+#   "full"         every index. Use this to serve JSON-RPC and gRPC both.
+#   "empty"        nothing stored: every read goes to the validator.
+set = "lightclient"
+
+# Single indexes added to, or removed from, the set, by name:
+#   headers, txids, txid_location, transparent, compact_block,
+#   chain_metadata, tree_state     (the lightclient set)
+#   spent                          who spent each outpoint (getspentinfo)
+#   address_history                transparent address balances, txids, utxos
+#   tx_out_set                     the UTXO set (gettxoutsetinfo; refused without it)
+#   history_tree                   ZIP 221 (GetHistoryProof; refused without it)
+# An index's dependencies are enabled with it. An index that an enabled index
+# needs cannot be disabled: Zaino refuses to start and names both. To drop
+# one, disable every index that needs it too.
+#   compact_block needs headers, txids, txid_location, transparent, chain_metadata
+#   address_history needs txids, txid_location, transparent
+#   tx_out_set needs txids, txid_location, transparent
+#   txid_location needs txids
+#   spent needs txids
+enable = []
+# enable = ["history_tree"]
+disable = []
+
+# Delete from disk any index the set above no longer names.
+# WARNING: narrowing the set (for example "full" to "lightclient") deletes the
+# dropped indexes at the next start. Set false to keep them.
+delete_stale = true
+
+# Put single indexes on other disks: index name = directory.
+# Default: <persistence.path>/<network>/indexes
+[indexes.paths]
+# compact_block = "/mnt/fast/zaino"
+
+
+# ---------------------------------------------------------------------------
+# Where the indexes are stored
+# ---------------------------------------------------------------------------
+[persistence]
+# The data directory; the store is <path>/<network>/.
+path = {persistence_path}
+# MiB of writes buffered before they are flushed to disk.
+write_buffer_mib = 64
+# Threads per index. Absent: the machine's cores, shared out.
+# threads = 4
+
+
+# ---------------------------------------------------------------------------
+# How fast the store is built
+# ---------------------------------------------------------------------------
+# The build runs in stages, all at once; the slowest sets the pace. Raise a
+# stage's setting only if that stage is the one holding the build back.
+[ingest]
+# Blocks fetched from the validator at once.
+fetch_concurrency = 16
+# Blocks whose spent outputs are read from the store at once.
+resolve_concurrency = 16
+# Bytes of blocks queued ahead of each index's writer; a full queue holds the
+# fetch back, so this bounds the build's memory.
+queue_bytes = 67108864
+# Index writers working at once. Absent: the store's share of the cores.
+# writers = 4
+
+
+# ---------------------------------------------------------------------------
+# The mempool mirror
+# ---------------------------------------------------------------------------
+# Every key is optional; the values shown are the built-in defaults.
+[mempool]
+# Most memory held, as total ZIP 401 cost in bytes.
+# max_cost_bytes = 134217728
+# How often the validator's mempool is polled.
+# poll_interval_ms = 500
+# Least time between whole-mempool listings. Absent: the poll interval.
+# metadata_min_interval_ms = 500
+# Most txids a GetMempoolTx exclude list may hold.
+# max_exclude_count = 1024
+
+
+# ---------------------------------------------------------------------------
+# What Zaino serves
+# ---------------------------------------------------------------------------
+[serve]
+# Seconds a stream waits on a client that is not reading.
+stream_timeout_secs = 30
+# Items a stream buffers ahead of its client.
+stream_channel_size = 32
+
+# The lightwallet gRPC server. Always on.
+[serve.grpc]
+listen_address = "127.0.0.1:8137"
+
+# TLS. Required when listen_address is public.
+# [serve.grpc.tls]
+# cert_path = "/path/to/cert.pem"
+# key_path = "/path/to/key.pem"
+
+# Bounds on one client connection.
+[serve.grpc.limits]
+# Requests served at once; the rest wait.
+concurrency_limit_per_connection = 32
+# HTTP/2 streams open at once.
+max_concurrent_streams = 64
+# How often an idle connection is pinged.
+keepalive_interval_secs = 60
+# An unanswered ping closes the connection after this long.
+keepalive_timeout_secs = 20
+# How long shutdown waits for open requests.
+shutdown_timeout_secs = 5
+
+# The zcash JSON-RPC server. Off unless this table is present.
+# It has no transport encryption: loopback or private addresses only.
+# Pair it with set = "full" (or "zcash_rpc") above so its reads are local.
+# [serve.jsonrpc]
+# listen_address = "127.0.0.1:8237"
+# Enables cookie authentication: the directory the cookie file is written to.
+# cookie_dir = "/run/zaino"
+
+
+# ---------------------------------------------------------------------------
+# Health and metrics
+# ---------------------------------------------------------------------------
+# /livez, /readyz and /metrics. Off unless this table is present; needs a
+# build with the `prometheus` feature. Unauthenticated: keep it on loopback.
+# [admin]
+# listen_address = "127.0.0.1:9998"

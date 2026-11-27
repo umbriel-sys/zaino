@@ -1,9 +1,9 @@
 //! Transparent Zcash address.
 
-use zcash_address::{ConversionError, TryFromAddress, ZcashAddress};
+use zcash_address::{ConversionError, ToAddress as _, TryFromAddress, ZcashAddress};
 use zcash_protocol::consensus::NetworkType;
 
-use crate::types::ScriptType;
+use crate::types::{ScriptType, TransparentAddressKey};
 
 /// A transparent Zcash address.
 ///
@@ -36,17 +36,16 @@ use crate::types::ScriptType;
 ///
 /// # Stored metadata
 ///
-/// The network and script form are parsed once at construction and stored
-/// alongside the string, so [`network`](TransparentAddress::network) and
-/// [`script_type`](TransparentAddress::script_type) are field reads rather than
-/// a re-parse on every call. The two extra machine words are cheaper than
-/// re-running base58 decoding at each accessor, and both are `Copy` so the
-/// struct stays cheap to clone.
+/// The network and key (hash and script form) are parsed once at construction
+/// and stored alongside the string, so [`network`](TransparentAddress::network),
+/// [`script_type`](TransparentAddress::script_type) and
+/// [`key`](TransparentAddress::key) are field reads rather than a re-parse on
+/// every call; all are `Copy`, so the struct stays cheap to clone.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct TransparentAddress {
     encoded: String,
     network: NetworkType,
-    script_type: ScriptType,
+    key: TransparentAddressKey,
 }
 
 impl TransparentAddress {
@@ -69,15 +68,20 @@ impl TransparentAddress {
         // it can produce for a successfully decoded address is `Unsupported`,
         // raised by the defaulted non-transparent arms of `ScriptType`'s impl
         // below — hence any error here means "decoded, but not transparent".
-        let (network, script_type) = parsed
-            .convert::<(NetworkType, ScriptType)>()
+        let (network, key) = parsed
+            .convert::<(NetworkType, TransparentAddressKey)>()
             .map_err(|e| TransparentAddressError::NotTransparent(e.to_string()))?;
 
         Ok(Self {
             encoded,
             network,
-            script_type,
+            key,
         })
+    }
+
+    /// The key an index holds this address under: its hash and script form.
+    pub fn key(&self) -> TransparentAddressKey {
+        self.key
     }
 
     /// The network this address encodes for.
@@ -89,15 +93,46 @@ impl TransparentAddress {
         self.network
     }
 
+    /// Whether a node on `network` accepts this address, as zcashd decodes
+    /// it: mainnet addresses on mainnet, testnet-encoded ones on testnet and
+    /// regtest (which share the encoding).
+    pub fn is_for(&self, network: crate::types::Network) -> bool {
+        use crate::types::Network;
+        match network {
+            Network::Mainnet => self.network == NetworkType::Main,
+            Network::PubTestnet | Network::Regtest => self.network != NetworkType::Main,
+        }
+    }
+
     /// The transparent script form this address pays to — [`ScriptType::P2PKH`]
     /// or [`ScriptType::P2SH`].
     pub fn script_type(&self) -> ScriptType {
-        self.script_type
+        self.key.script_type
     }
 
     /// The canonical encoded address string.
     pub fn as_str(&self) -> &str {
         &self.encoded
+    }
+
+    /// The address a standard (P2PKH or P2SH) script pays, encoded for
+    /// `network`; `None` for any other script.
+    pub fn from_standard_script(script: &[u8], network: crate::types::Network) -> Option<Self> {
+        use crate::types::Network;
+        let key = TransparentAddressKey::from_standard_script(script)?;
+        let network = match network {
+            Network::Mainnet => NetworkType::Main,
+            Network::PubTestnet => NetworkType::Test,
+            Network::Regtest => NetworkType::Regtest,
+        };
+        let address = match key.script_type {
+            ScriptType::P2PKH => ZcashAddress::from_transparent_p2pkh(network, key.hash),
+            ScriptType::P2SH => ZcashAddress::from_transparent_p2sh(network, key.hash),
+            ScriptType::NonStandard => return None,
+        };
+        // parsed back, so the network is the one the encoding names (Regtest
+        // and Testnet share it), as for any parsed address
+        Self::try_new(address.encode()).ok()
     }
 }
 
@@ -113,29 +148,29 @@ impl From<TransparentAddress> for String {
     }
 }
 
-/// Reads the script form off a parsed address.
+/// Reads the hash and script form off a parsed address.
 ///
 /// Only the two transparent arms are implemented; the defaulted arms reject
 /// every other kind (shielded, unified, Sprout, TEX) as `Unsupported`, which
 /// [`TransparentAddress::try_new`] reports as
 /// [`TransparentAddressError::NotTransparent`].
-impl TryFromAddress for ScriptType {
+impl TryFromAddress for TransparentAddressKey {
     // No transparent arm produces a user error, so the user-error channel is
     // uninhabited.
     type Error = core::convert::Infallible;
 
     fn try_from_transparent_p2pkh(
         _net: NetworkType,
-        _data: [u8; 20],
+        data: [u8; 20],
     ) -> Result<Self, ConversionError<Self::Error>> {
-        Ok(ScriptType::P2PKH)
+        Ok(TransparentAddressKey::new(data, ScriptType::P2PKH))
     }
 
     fn try_from_transparent_p2sh(
         _net: NetworkType,
-        _data: [u8; 20],
+        data: [u8; 20],
     ) -> Result<Self, ConversionError<Self::Error>> {
-        Ok(ScriptType::P2SH)
+        Ok(TransparentAddressKey::new(data, ScriptType::P2SH))
     }
 }
 
@@ -166,6 +201,43 @@ mod tests {
     const UNIFIED: &str = "uregtest1njwg60x0jarhyuuxrcdvw854p68cgdfe85822lmclc7z9vy9xqr7t49n3d97k2dwlee82skwwe0ens0rc06p4vr04tvd3j9ckl3qry83ckay4l4ngdq9atg7vuj9z58tfjs0mnsgyrnprtqfv8almu564z498zy6tp2aa569tk8fyhdazyhytel2m32awe4kuy6qq996um3ljaajj36";
     const SPROUT: &str = "ztfhKyLouqi8sSwjRm4YMQdWPjTmrJ4QgtziVQ1Kd1e9EsRHYKofjoJdF438FwcUQnix8yrbSrzPpJJNABewgNffs5d4YZJ";
     const TEX: &str = "textest1qyqszqgpqyqszqgpqyqszqgpqyqszqgpfcjgfy";
+
+    /// A node accepts its own network's addresses; testnet and regtest share
+    /// theirs.
+    #[test]
+    fn an_address_is_for_its_network() {
+        use crate::types::Network;
+        let main = TransparentAddress::try_new(MAINNET_P2PKH).expect("valid");
+        let test = TransparentAddress::try_new(TESTNET_P2SH).expect("valid");
+        assert!(main.is_for(Network::Mainnet));
+        assert!(!main.is_for(Network::PubTestnet) && !main.is_for(Network::Regtest));
+        assert!(test.is_for(Network::PubTestnet) && test.is_for(Network::Regtest));
+        assert!(!test.is_for(Network::Mainnet));
+    }
+
+    #[test]
+    fn the_key_is_the_paid_scripts_key() {
+        use zcash_address::ToAddress as _;
+        let hash = [0x11; 20];
+        let p2pkh = [&[0x76, 0xa9, 0x14][..], &hash, &[0x88, 0xac]].concat();
+        let p2sh = [&[0xa9, 0x14][..], &hash, &[0x87]].concat();
+        for (encoded, script) in [
+            (
+                ZcashAddress::from_transparent_p2pkh(NetworkType::Test, hash).encode(),
+                p2pkh,
+            ),
+            (
+                ZcashAddress::from_transparent_p2sh(NetworkType::Test, hash).encode(),
+                p2sh,
+            ),
+        ] {
+            let address = TransparentAddress::try_new(encoded).expect("valid");
+            assert_eq!(
+                Some(address.key()),
+                TransparentAddressKey::from_standard_script(&script)
+            );
+        }
+    }
 
     #[test]
     fn mainnet_p2pkh_accepted() {

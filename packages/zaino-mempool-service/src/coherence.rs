@@ -24,7 +24,9 @@ use std::time::Instant;
 use arc_swap::ArcSwap;
 use tokio::sync::broadcast;
 use tokio_util::sync::CancellationToken;
-use zaino_status::{NamedAtomicStatus, StatusType};
+use zaino_component::{
+    ComponentName, ComponentStatus, Health, Lifecycle, StatusCell, StatusSource as _,
+};
 
 use zaino_mempool::config::MempoolConfig;
 use zaino_mempool::event::MempoolEvent;
@@ -49,7 +51,7 @@ struct SynthesizedEpochState {
 fn frozen_for(frozen_since: &std::sync::Mutex<Option<Instant>>) -> Option<std::time::Duration> {
     frozen_since
         .lock()
-        .expect("frozen_since poisoned")
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
         .map(|since| since.elapsed())
 }
 
@@ -67,7 +69,7 @@ pub struct CoherenceService<M: Mempool, N: NfsEpochObserver> {
     coherent: Arc<ArcSwap<CoherentSnapshot>>,
     events: broadcast::Sender<Arc<MempoolEvent>>,
     config: MempoolConfig,
-    status: NamedAtomicStatus,
+    status: StatusCell,
     /// When the current continuous freeze began, or `None` when the view is
     /// live/serving. Shared with every [`CoherentSubscriber`] so an operator can
     /// escalate a freeze that outlasts normal block-driven thaw (see
@@ -81,7 +83,7 @@ pub struct CoherenceService<M: Mempool, N: NfsEpochObserver> {
 impl<M: Mempool, N: NfsEpochObserver> std::fmt::Debug for CoherenceService<M, N> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("CoherenceService")
-            .field("status", &self.status.load())
+            .field("status", &self.status.status())
             .finish_non_exhaustive()
     }
 }
@@ -125,18 +127,28 @@ impl<M: Mempool, N: NfsEpochObserver> CoherenceService<M, N> {
             coherent: Arc::new(ArcSwap::from_pointee(CoherentSnapshot::empty_not_ready())),
             events,
             config,
-            status: NamedAtomicStatus::new("MempoolCoherence", StatusType::Spawning),
+            status: StatusCell::new(
+                ComponentName("MempoolCoherence"),
+                Lifecycle::Spawning,
+                Health::Healthy,
+            ),
             frozen_since: Arc::new(std::sync::Mutex::new(None)),
             cancel,
             task: std::sync::Mutex::new(None),
         });
 
         let task_service = Arc::clone(&service);
-        let handle = tokio::spawn(async move {
-            task_service.run().await;
-        });
+        let status = service.status.clone();
+        let handle = tokio::spawn(zaino_component::supervised(
+            service.cancel.clone(),
+            async move { task_service.run().await },
+            move |reason| status.fail_unless_closing(reason),
+        ));
 
-        *service.task.lock().expect("coherence task lock poisoned") = Some(handle);
+        *service
+            .task
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(handle);
 
         service
     }
@@ -152,8 +164,8 @@ impl<M: Mempool, N: NfsEpochObserver> CoherenceService<M, N> {
     }
 
     /// Current coherence-layer status.
-    pub fn status(&self) -> StatusType {
-        self.status.load()
+    pub fn status(&self) -> ComponentStatus {
+        self.status.status()
     }
 
     /// Signal shutdown: publish `Closing`, then stop the task.
@@ -163,7 +175,7 @@ impl<M: Mempool, N: NfsEpochObserver> CoherenceService<M, N> {
         if let Some(handle) = self
             .task
             .lock()
-            .expect("coherence task lock poisoned")
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .take()
         {
             handle.abort();
@@ -176,14 +188,14 @@ impl<M: Mempool, N: NfsEpochObserver> CoherenceService<M, N> {
 pub struct CoherentSubscriber {
     coherent: Arc<ArcSwap<CoherentSnapshot>>,
     events: broadcast::Sender<Arc<MempoolEvent>>,
-    status: NamedAtomicStatus,
+    status: StatusCell,
     frozen_since: Arc<std::sync::Mutex<Option<Instant>>>,
 }
 
 impl std::fmt::Debug for CoherentSubscriber {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("CoherentSubscriber")
-            .field("status", &self.status.load())
+            .field("status", &self.status.status())
             .finish_non_exhaustive()
     }
 }
@@ -195,8 +207,8 @@ impl CoherentSubscriber {
     }
 
     /// The coherence-layer status.
-    pub fn status(&self) -> StatusType {
-        self.status.load()
+    pub fn status(&self) -> ComponentStatus {
+        self.status.status()
     }
 
     /// How long the coherent view has been *continuously* frozen, or `None` when

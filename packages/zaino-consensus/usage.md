@@ -21,13 +21,13 @@ So each value is stated here with its provenance in the protocol specification.
 ## What makes that safe: the agreement tests
 
 Independence is only safe if the two readings are checked against each other
-somewhere. That somewhere is `zaino-convert-zebra`, which already owns our
-relationship to zebra's types, and takes `zaino-consensus` as a
-**dev-dependency** so the check costs nothing at build time. See its
-`consensus_agreement` module: it asserts the constants match. (The difficulty
-pipeline — nBits validation and work expansion — lives in `zaino-primitives`
-as `CompactDifficulty`, with its own agreement sweep in the sibling
-`difficulty_agreement` module.)
+somewhere. That somewhere is `zaino-primitives`' `zebra` module (feature
+`zebra`), which owns our relationship to zebra's types, and takes
+`zaino-consensus` as a **dev-dependency** so the check costs nothing at build
+time. See its `consensus_agreement` module: it asserts the constants match.
+(The difficulty pipeline — nBits validation and work expansion — is
+`CompactDifficulty` in the same crate, with its own agreement sweep in the
+sibling `difficulty_agreement` module.)
 
 A failure there does not say which side is wrong. It says the protocol moved or
 one of us misread it, and that the answer needs looking up in the specification
@@ -35,6 +35,9 @@ rather than copied across. **Do not fix it by changing our value to match
 zebra's** without reading the spec — that turns the test into a mirror.
 
 If you add a constant here, add its agreement test there in the same change.
+The one exception is `MEDIAN_TIME_SPAN`: zebra-state keeps its
+`POW_MEDIAN_BLOCK_SPAN` `pub(crate)`, so there is nothing public to compare;
+the getblockdeltas source contract checks `mediantime` end to end instead.
 
 ## Use
 
@@ -52,6 +55,14 @@ use zaino_consensus::{
   never a production value: in `zaino-state` the choice between the two is
   `cfg(test)` / the `fast-test-seam` feature, and both arms derive from the
   protocol constant so neither is a literal.
+- `median_time_past(times)` is protocol §7.7.3's `MedianTime` over the last
+  `MEDIAN_TIME_SPAN` (11) of `times`, oldest first. A block's `mediantime`
+  is it over the block's time and its ten predecessors'. Every median-time
+  answer in zaino takes it from here.
+- `difficulty(bits, pow_limit_bits)` is a block's difficulty as zcashd's
+  `GetDifficulty` and zebrad's headers report it, against `POW_LIMIT_BITS`
+  (Mainnet), `TESTNET_POW_LIMIT_BITS` or `REGTEST_POW_LIMIT_BITS`. All of these
+  are checked against zebra in `zaino-primitives`' agreement tests.
 - `validate_raw_transaction_hex` runs before the validator round trip, so a
   malformed or oversized submission is rejected locally. It distinguishes bad
   hex from an oversized transaction — a client that sent a truncated string
@@ -65,6 +76,4 @@ extracted from.
 
 ## Related
 
-- `zaino-status` — the other leaf extracted from `zaino-common` for the same
-  reason.
-- `packages/zaino-convert-zebra/src/lib.rs` — the `consensus_agreement` tests.
+- `packages/zaino-primitives/src/zebra.rs` — the `consensus_agreement` tests.

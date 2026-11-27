@@ -1,59 +1,118 @@
-//! Chain-state facts about a block that are not in the block itself.
+//! A verbose `getblock` answer, as the validator gives it.
 
 use super::{
-    AbsoluteChainWork, BlockConfirmations, BlockHash, Difficulty, TreeSize, ValuePoolBalance,
+    rpc::TransactionVerbose, AbsoluteChainWork, BlockCommitments, BlockConfirmations, BlockHash,
+    BlockTime, CompactDifficulty, Difficulty, EquihashNonce, Height, MerkleRoot, TransactionId,
+    TreeRoot, TreeSize, ValuePoolBalance,
 };
 
-/// What a verbose block query adds to the block's own bytes.
-///
-/// # Why this is small
-///
-/// A verbose `getblock` response is mostly *derived*: hash, size, version,
-/// merkle root, commitments, transaction list, time, nonce, solution, bits and
-/// the previous hash all come from the serialized block, which the caller
-/// already has from a raw block query. Repeating them here would give one fact
-/// two sources.
-///
-/// What cannot be derived is this block's position in the current chain, and
-/// the cumulative state as of it. That is what this carries, and it is why the
-/// type is a handful of fields rather than a mirror of the RPC response. A
-/// caller assembling a verbose response combines the raw block with this.
+/// How much a verbose `getblock` returns.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum BlockVerbosity {
+    /// Transaction ids (verbosity 1).
+    TransactionIds,
+    /// Transaction objects (verbosity 2).
+    Transactions,
+    /// Transaction objects with each input's prevout and the fee (verbosity 3).
+    TransactionsWithPrevouts,
+}
+
+impl BlockVerbosity {
+    /// The RPC verbosity level.
+    pub fn level(self) -> u8 {
+        match self {
+            Self::TransactionIds => 1,
+            Self::Transactions => 2,
+            Self::TransactionsWithPrevouts => 3,
+        }
+    }
+
+    /// The verbosity at an RPC level; `None` for a level that is not verbose.
+    pub fn from_level(level: u8) -> Option<Self> {
+        match level {
+            1 => Some(Self::TransactionIds),
+            2 => Some(Self::Transactions),
+            3 => Some(Self::TransactionsWithPrevouts),
+            _ => None,
+        }
+    }
+}
+
+/// A block's transactions, as the asked verbosity lists them.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum BlockTransactions {
+    /// Their ids (verbosity 1).
+    Ids(Vec<TransactionId>),
+    /// Their objects (verbosity 2 and 3).
+    Objects(Vec<TransactionVerbose>),
+}
+
+/// The validator's verbose `getblock` answer.
 #[derive(Debug, Clone, PartialEq)]
 pub struct BlockVerbose {
+    /// The block's hash.
+    pub hash: BlockHash,
+
     /// This block's confirmation state against the current best chain.
     pub confirmations: BlockConfirmations,
+
+    /// Serialized size in bytes, when the validator reports it.
+    pub size: Option<u64>,
+
+    /// The block's height.
+    pub height: Height,
+
+    /// Header version.
+    pub version: u32,
+
+    /// Merkle root of the block's transactions.
+    pub merkle_root: MerkleRoot,
+
+    /// The header's block commitments, when the validator reports them.
+    pub block_commitments: Option<BlockCommitments>,
+
+    /// Sapling root after this block, when the validator reports it.
+    pub final_sapling_root: Option<TreeRoot>,
+
+    /// Orchard root after this block, when the validator reports it.
+    pub final_orchard_root: Option<TreeRoot>,
+
+    /// The block's transactions.
+    pub transactions: BlockTransactions,
+
+    /// Block time, in seconds since the Unix epoch.
+    pub time: BlockTime,
+
+    /// Header nonce.
+    pub nonce: EquihashNonce,
+
+    /// Equihash solution.
+    pub solution: Vec<u8>,
+
+    /// Difficulty threshold in compact form.
+    pub bits: CompactDifficulty,
 
     /// Difficulty at this block, as a multiple of the network minimum.
     pub difficulty: Difficulty,
 
-    /// Cumulative chainwork at this block.
-    ///
-    /// `None` from Zebra, which does not report chainwork over RPC. Modelled
-    /// because a caller that has it can order competing branches without
-    /// recomputing work from headers; callers must handle its absence rather
-    /// than assume it.
+    /// Cumulative chainwork at this block; `None` when the validator omits it
+    /// (zebrad does).
     pub chainwork: Option<AbsoluteChainWork>,
 
-    /// Total chain value as of this block.
-    ///
-    /// `None` when the validator does not report per-block supply. Not
-    /// derivable from the block: it is the running total of every block before
-    /// it.
+    /// Total chain value as of this block, when the validator reports it.
     pub chain_supply: Option<ValuePoolBalance>,
 
-    /// Per-pool value balances as of this block.
-    ///
-    /// Empty when the validator reports none. Cumulative, so likewise not
-    /// derivable from this block alone.
+    /// Per-pool value balances as of this block; empty when the validator
+    /// reports none.
     pub value_pools: Vec<ValuePoolBalance>,
 
     /// Cumulative note commitment tree sizes after this block.
     pub tree_sizes: BlockTreeSizes,
 
-    /// Hash of the next block on the best chain.
-    ///
-    /// `None` when this block is the tip, or is not on the best chain — a fact
-    /// about the chain rather than about the block.
+    /// Hash of the previous block; `None` at genesis.
+    pub previous_block_hash: Option<BlockHash>,
+
+    /// Hash of the next block on the best chain; `None` at the tip or off it.
     pub next_block_hash: Option<BlockHash>,
 }
 

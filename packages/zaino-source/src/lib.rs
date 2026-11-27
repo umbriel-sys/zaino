@@ -2,12 +2,37 @@
 //!
 //! One trait per question a consumer can ask about the chain.
 //! Implementations (adapters) bridge to a specific transport
-//! (JSON-RPC, Zebra ReadState, mock).
+//! (JSON-RPC, Zebra ReadState).
 //!
 //! Consumers compose traits via bounds:
 //! ```ignore
 //! fn sync<V: GetBlock + GetChainTip>(validator: &V) { ... }
 //! ```
+
+// production code never panics: no indexing, unchecked arithmetic or panicking calls
+#![cfg_attr(
+    not(test),
+    deny(
+        clippy::unwrap_used,
+        clippy::expect_used,
+        clippy::panic,
+        clippy::unreachable,
+        clippy::todo,
+        clippy::unimplemented,
+        clippy::indexing_slicing,
+        clippy::arithmetic_side_effects,
+        clippy::string_slice,
+        clippy::get_unwrap,
+        clippy::let_underscore_must_use,
+        let_underscore_drop
+    )
+)]
+
+/// Most rows an address query answers before it is rejected as too broad.
+///
+/// zebrad 7's cap on `getaddresstxids` / `getaddressutxos`; adapters that read
+/// the address index directly enforce the same bound.
+pub const MAX_ADDRESS_QUERY_RESULTS: usize = 100_000;
 
 mod error;
 mod get_address_balance;
@@ -32,6 +57,7 @@ mod get_mempool_metadata;
 mod get_mempool_source_tip;
 mod get_mempool_txids;
 mod get_mining_info;
+mod get_network_info;
 mod get_network_sol_ps;
 mod get_node_info;
 mod get_peer_info;
@@ -39,12 +65,14 @@ mod get_raw_block;
 mod get_raw_block_header;
 mod get_raw_mempool_transaction;
 mod get_spent_info;
+mod get_standard_fee;
 mod get_subtree_roots;
 mod get_transaction;
 mod get_treestate;
 mod get_treestate_by_hash;
 mod get_tx_out;
 mod lifecycle;
+mod ping;
 mod polled_chain_tip;
 mod send_raw_transaction;
 mod subscribe_blocks;
@@ -56,7 +84,9 @@ pub use error::{FailureMode, NonDomainError, QueryError, SourceError, Unavailabl
 pub use get_address_balance::{GetAddressBalanceError, OneShotGetAddressBalance};
 pub use get_address_deltas::{GetAddressDeltasError, OneShotGetAddressDeltas};
 pub use get_address_txids::{GetAddressTxidsError, OneShotGetAddressTxids};
-pub use get_address_utxos::{GetAddressUtxosError, OneShotGetAddressUtxos};
+pub use get_address_utxos::{
+    GetAddressUtxosError, OneShotGetAddressUtxos, UtxoPage, UtxoPageError,
+};
 pub use get_best_block_height::{GetBestBlockHeightError, OneShotGetBestBlockHeight};
 pub use get_block::{GetBlock, GetBlockError, OneShotGetBlock};
 pub use get_block_by_hash::{GetBlockByHashError, OneShotGetBlockByHash};
@@ -67,19 +97,20 @@ pub use get_block_verbose::{
     GetBlockVerboseError, OneShotGetBlockVerbose, OneShotGetBlockVerboseByHash,
 };
 pub use get_blockchain_info::{GetBlockchainInfoError, OneShotGetBlockchainInfo};
-pub use get_chain_tip::{GetChainTip, GetChainTipError, OneShotGetChainTip};
+pub use get_chain_tip::{first_chain_tip, GetChainTip, GetChainTipError, OneShotGetChainTip};
 pub use get_chain_tips::{GetChainTipsError, OneShotGetChainTips};
 pub use get_commitment_tree_roots::{GetCommitmentTreeRootsError, OneShotGetCommitmentTreeRoots};
 pub use get_commitment_tree_roots_by_height::{
     GetCommitmentTreeRootsByHeightError, OneShotGetCommitmentTreeRootsByHeight,
 };
-pub use get_compact_block::OneShotGetPreIndexCompactBlock;
+pub use get_compact_block::OneShotGetCompactBlock;
 pub use get_difficulty::{GetDifficultyError, OneShotGetDifficulty};
 pub use get_mempool_metadata::{GetMempoolMetadataError, MempoolTxMeta, OneShotGetMempoolMetadata};
 pub use get_mempool_source_tip::OneShotGetMempoolSourceTip;
 pub use get_mempool_txids::{GetMempoolTxidsError, OneShotGetMempoolTxids};
 pub use get_mining_info::{GetMiningInfoError, OneShotGetMiningInfo};
-pub use get_network_sol_ps::{GetNetworkSolPsError, OneShotGetNetworkSolPs};
+pub use get_network_info::OneShotGetNetworkInfo;
+pub use get_network_sol_ps::{GetNetworkSolPsError, OneShotGetNetworkSolPs, SolutionRateWindow};
 pub use get_node_info::{GetNodeInfoError, OneShotGetNodeInfo};
 pub use get_peer_info::{GetPeerInfoError, OneShotGetPeerInfo};
 pub use get_raw_block::{OneShotGetRawBlock, OneShotGetRawBlockByHash};
@@ -88,12 +119,14 @@ pub use get_raw_mempool_transaction::{
     GetRawMempoolTransactionError, OneShotGetRawMempoolTransaction,
 };
 pub use get_spent_info::{GetSpentInfoError, OneShotGetSpentInfo};
+pub use get_standard_fee::{GetStandardFeeError, OneShotGetStandardFee};
 pub use get_subtree_roots::{GetSubtreeRootsError, OneShotGetSubtreeRoots};
-pub use get_transaction::{GetTransactionError, OneShotGetTransaction, TransactionResponse};
+pub use get_transaction::{GetTransactionError, OneShotGetTransaction, TransactionAnswer};
 pub use get_treestate::{GetTreestate, GetTreestateError, OneShotGetTreestate};
 pub use get_treestate_by_hash::{GetTreestateByHashError, OneShotGetTreestateByHash};
 pub use get_tx_out::{GetTxOutError, OneShotGetTxOut};
 pub use lifecycle::SourceLifecycle;
+pub use ping::OneShotPing;
 pub use polled_chain_tip::PolledChainTip;
 pub use send_raw_transaction::{OneShotSendRawTransaction, SendRawTransactionError};
 pub use subscribe_blocks::SubscribeBlocks;
@@ -117,12 +150,13 @@ pub use get_blockchain_info::GetBlockchainInfo;
 pub use get_chain_tips::GetChainTips;
 pub use get_commitment_tree_roots::GetCommitmentTreeRoots;
 pub use get_commitment_tree_roots_by_height::GetCommitmentTreeRootsByHeight;
-pub use get_compact_block::GetPreIndexCompactBlock;
+pub use get_compact_block::GetCompactBlock;
 pub use get_difficulty::GetDifficulty;
 pub use get_mempool_metadata::GetMempoolMetadata;
 pub use get_mempool_source_tip::GetMempoolSourceTip;
 pub use get_mempool_txids::GetMempoolTxids;
 pub use get_mining_info::GetMiningInfo;
+pub use get_network_info::GetNetworkInfo;
 pub use get_network_sol_ps::GetNetworkSolPs;
 pub use get_node_info::GetNodeInfo;
 pub use get_peer_info::GetPeerInfo;
@@ -130,10 +164,12 @@ pub use get_raw_block::{GetRawBlock, GetRawBlockByHash};
 pub use get_raw_block_header::GetRawBlockHeader;
 pub use get_raw_mempool_transaction::GetRawMempoolTransaction;
 pub use get_spent_info::GetSpentInfo;
+pub use get_standard_fee::GetStandardFee;
 pub use get_subtree_roots::GetSubtreeRoots;
 pub use get_transaction::GetTransaction;
 pub use get_treestate_by_hash::GetTreestateByHash;
 pub use get_tx_out::GetTxOut;
+pub use ping::Ping;
 
 /// The contract every single-attempt source adapter satisfies.
 ///
@@ -156,11 +192,5 @@ pub trait ValidatorSource: Send + Sync {
     type NonDomain: std::error::Error + Send + Sync + 'static + Into<NonDomainError>;
 }
 
-// `cfg(test)` as well as the feature: without it this crate's own tests never
-// compile the mock, so neither its tests nor `ValidatorClient`'s integration tests
-// run in a bare `cargo test` — nothing in the workspace enables `testing`, and
-// the gap is invisible because a module that is not compiled reports no
-// failures. The feature stays so downstream crates can opt in; `cfg(test)`
-// makes the mock's own coverage unconditional.
-#[cfg(any(test, feature = "testing"))]
-pub mod mock;
+#[cfg(test)]
+mod scripted;

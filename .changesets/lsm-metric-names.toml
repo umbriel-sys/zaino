@@ -1,0 +1,17 @@
+consumed_in = "zainod-0-11-0"
+[[changes]]
+crate = "zaino-persistence-lsm-tree"
+kind = "breaking"
+description = """
+The engine's `zaino.store.*` metrics (`commit_seconds`, `commit_bytes_total`, \
+`snapshots_live`, `snapshot_heap_bytes`, `manifest_read_cached`) are renamed \
+`zaino.lsm.*`: `zaino.store.*` belongs to the chain-store service, whose \
+per-block `commit_seconds` collided with the engine's per-flush one."""
+
+[[changes]]
+crate = "zaino-persistence-lsm-tree"
+kind = "feature"
+description = """
+`zaino.lsm.commit_check_seconds` and `commit_buffer_seconds` time each \
+buffered commit's checks (shapes, insert-once key lookups) and buffer \
+insertion, by index."""

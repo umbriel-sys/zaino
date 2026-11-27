@@ -1,0 +1,77 @@
+consumed_in = "zainod-0-11-0"
+[[changes]]
+crate = "zaino-source"
+kind = "breaking"
+description = """
+`GetNetworkSolPs` takes a `SolutionRateWindow` (`Default`, \
+`DifficultyAveraging`, `Blocks`) in place of `Option<u32>`: a non-positive \
+`getnetworksolps` count is the difficulty averaging window, not the default \
+(Q-34)."""
+
+[[changes]]
+crate = "zaino-primitives"
+kind = "breaking"
+description = """
+`rpc::PeerInfo` carries zebrad's entry (services, last received, ban score, \
+user agent, version, connection state, ping time and wait) and is no longer \
+`Eq` (#35). `rpc::TxOut` gains `version` (#36). `rpc::NodeInfo::errors_timestamp` \
+is the validator's value whenever sent (#30)."""
+
+[[changes]]
+crate = "zaino-source-zcash-rpc"
+kind = "breaking"
+description = """
+`getinfo` carries `errorstimestamp` with a healthy reply (#30); `getpeerinfo` \
+and `gettxout` read zebrad's full shapes (#35, #36); `getnetworksolps` sends \
+−1 for the difficulty averaging window (Q-34). New \
+`parse_script_pub_key_object`."""
+
+[[changes]]
+crate = "zaino-source-zebra"
+kind = "fix"
+description = """
+The read-state `getblockchaininfo` reports `verificationprogress` 1.0 on \
+regtest and asks the tip difficulty as zebrad's own does (#54)."""
+
+[[changes]]
+crate = "zainod"
+kind = "breaking"
+description = """
+JSON-RPC shapes follow zebrad 7. `getmininginfo` serves zebrad's key set: no \
+null keys, no difficulty, errors or miner fields (#33). `getpeerinfo` serves \
+zebrad's full entry (#35). `gettxout` gains `version` (#36). \
+`z_validateaddress` is `isvalid`, `address`, `address_type` and `ismine: \
+false`: the legacy `type` key and the Sapling `diversifier` and \
+`diversifiedtransmissionkey` are gone (#41). A `getblocksubsidy` funding \
+stream with no address omits the key (#56)."""
+
+[[changes]]
+crate = "zaino-address"
+kind = "fix"
+description = """
+A TEX address (ZIP 320) is valid: a transparent key hash to `validateaddress` \
+and `z_validateaddress`, as zebrad classifies it (#41)."""
+
+[[changes]]
+crate = "zaino-state"
+kind = "fix"
+description = """
+`getnetworksolps` passes a non-positive count as the difficulty averaging \
+window (Q-34). Verbose `getrawtransaction` omits `confirmations` for a mempool \
+transaction and names the block of one mined only on a side chain, both \
+`in_active_chain: false` (#39)."""
+
+[[changes]]
+crate = "zaino-service"
+kind = "breaking"
+description = "`network_sol_ps` takes a `SolutionRateWindow`."
+
+[[changes]]
+crate = "zaino-source-mock"
+kind = "breaking"
+description = """
+`NodeFacts::network_sol_ps` is removed: `get_network_sol_ps` computes zebrad's \
+solution rate for the window and height asked, and `get_mining_info` answers \
+as zebrad (the last block's size and count, no difficulty, `blocks` 0 with no \
+tip). `get_node_info` always carries `errors_timestamp`; `get_tx_out` carries \
+the transaction's version and zebra-rpc's `scriptPubKey`."""

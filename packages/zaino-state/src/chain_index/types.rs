@@ -1,23 +1,30 @@
 //! The chain index's legacy type vocabulary, and its conversions to and from
 //! the domain types ChainView and the mempool speak.
 //!
-//! The legacy shapes live in `zaino-chain-store-zainodb` and are re-exported
-//! because the public `ChainIndex` traits are written against them. Every
-//! conversion between them and the domain is here, so both services convert
-//! the same way.
+//! The legacy shapes live in [`crate::legacy::chain`]; every conversion
+//! between them and the domain is here.
 //!
 //! The wire conversions stay in [`super::wire_types`].
 
 use std::collections::HashSet;
-use std::num::NonZeroU128;
 
-use zaino_chain::{ChainBlock, ChainTxPosition, SpendStatus, TransactionLocations};
+use zaino_chain::{ChainTxPosition, SpendStatus};
 use zaino_primitives::types as domain;
+use zaino_service::Placement;
 
-use crate::chain_index::source::BlockchainSourceError;
 use crate::error::ChainIndexError;
 
-pub use zaino_chain_store_zainodb::types::*;
+pub use crate::legacy::chain::{
+    BestChainLocation, BlockHash, BlockIndex, ChainScope, Height, NonBestChainLocation, Outpoint,
+    TransactionHash,
+};
+
+pub(crate) fn domain_outpoint(outpoint: &Outpoint) -> domain::Outpoint {
+    domain::Outpoint {
+        txid: domain::TransactionId::from(*outpoint.prev_txid()),
+        index: outpoint.prev_index(),
+    }
+}
 
 pub(crate) fn domain_hash(hash: BlockHash) -> domain::BlockHash {
     domain::BlockHash::from(hash.0)
@@ -65,56 +72,50 @@ pub(crate) fn block_index(block: domain::BlockRef) -> BlockIndex {
 pub(crate) fn spender(status: SpendStatus) -> Result<Option<TransactionHash>, ChainIndexError> {
     match status {
         SpendStatus::Unspent => Ok(None),
-        SpendStatus::SpentBy(txid) => Ok(Some(local_txid(txid))),
+        SpendStatus::SpentBy { txid, .. } => Ok(Some(local_txid(txid))),
         other => Err(ChainIndexError::internal(format!(
             "outpoint is spent but its spender cannot be named: {other:?}"
         ))),
     }
 }
 
-/// Where a transaction was mined, in the legacy location shapes.
+/// Where a transaction is, in the legacy location shapes.
 pub(crate) fn chain_locations(
-    locations: TransactionLocations,
-) -> (Option<BestChainLocation>, HashSet<NonBestChainLocation>) {
+    status: zaino_service::TransactionStatus,
+) -> Result<(Option<BestChainLocation>, HashSet<NonBestChainLocation>), ChainIndexError> {
     let at = |position: ChainTxPosition| {
         (
             local_hash(position.block.hash),
             local_height(position.block.height),
         )
     };
-    (
-        locations.best_chain.map(|position| {
+    let best = match status.best {
+        None => None,
+        Some(Placement::Block(position)) => {
             let (hash, height) = at(position);
-            BestChainLocation::Block(hash, height)
-        }),
-        locations
-            .non_best_chain
-            .into_iter()
-            .map(|position| {
+            Some(BestChainLocation::Block(hash, height))
+        }
+        Some(Placement::Mempool(Some(height))) => {
+            Some(BestChainLocation::Mempool(local_height(height)))
+        }
+        Some(Placement::Mempool(None)) => {
+            return Err(ChainIndexError::internal(
+                "a coherent mempool placement without a height",
+            ))
+        }
+    };
+    let elsewhere = status
+        .elsewhere
+        .into_iter()
+        .map(|placement| match placement {
+            Placement::Block(position) => {
                 let (hash, height) = at(position);
                 NonBestChainLocation::Block(hash, height)
-            })
-            .collect(),
-    )
-}
-
-/// A ChainView block, in the legacy shape.
-///
-/// The store's conversion takes a chainwork, so a placeholder stands in for it
-/// and is replaced by the view's own: the real value, or `None` where the view
-/// cannot know it.
-pub(crate) fn indexed_block(block: ChainBlock) -> Result<IndexedBlock, ChainIndexError> {
-    let chainwork = block.chainwork;
-    let stored = zaino_chain_store::StoredBlock {
-        header: block.header,
-        transactions: block.transactions,
-        tree_roots: block.tree_roots,
-        chainwork: chainwork.unwrap_or(domain::AbsoluteChainWork::new(NonZeroU128::MIN)),
-    };
-    Ok(
-        zaino_chain_store_zainodb::adapter::indexed_block_from_stored(&stored)?
-            .map_chainwork(|_| chainwork),
-    )
+            }
+            Placement::Mempool(height) => NonBestChainLocation::Mempool(height.map(local_height)),
+        })
+        .collect();
+    Ok((best, elsewhere))
 }
 
 /// The consensus branch a transaction at `height` is validated under.
@@ -129,38 +130,25 @@ pub(crate) fn branch_id(
     .map(u32::from)
 }
 
-/// The addresses of a balance or UTXO request, rejected as the legacy source
-/// rejected them.
-pub(crate) fn balance_request_addresses(
-    request: &zebra_rpc::client::GetAddressBalanceRequest,
+/// The addresses of an address-index request, checked as zebrad 7 checks them
+/// whichever backend answers: at most 10,000, and no TEX or malformed address.
+///
+/// A rejection keeps zebrad's code and message (`-5` for an address, `-8` for
+/// the count) and is served as an invalid argument.
+pub(crate) fn checked_addresses(
+    request: &impl zebra_rpc::methods::ValidateAddresses,
 ) -> Result<Vec<domain::TransparentAddress>, ChainIndexError> {
-    use zebra_rpc::methods::ValidateAddresses as _;
-
-    let invalid = |error: &dyn std::fmt::Display| {
-        ChainIndexError::backing_validator(BlockchainSourceError::Unrecoverable(format!(
-            "invalid address: {error}"
-        )))
-    };
     request
         .valid_addresses()
-        .map_err(|error| invalid(&error))?
+        .map_err(|error| {
+            ChainIndexError::invalid_request(crate::error::LegacyRpcError {
+                code: i64::from(error.code()),
+                message: error.message().to_string(),
+            })
+        })?
         .into_iter()
         .map(|address| {
             domain::TransparentAddress::try_new(address.to_string())
-                .map_err(|error| invalid(&error))
-        })
-        .collect()
-}
-
-/// Encoded addresses the validator is asked about directly, rejected as it
-/// rejects them.
-pub(crate) fn encoded_addresses(
-    addresses: impl IntoIterator<Item = String>,
-) -> Result<Vec<domain::TransparentAddress>, ChainIndexError> {
-    addresses
-        .into_iter()
-        .map(|address| {
-            domain::TransparentAddress::try_new(address)
                 .map_err(ChainIndexError::validator_rejected)
         })
         .collect()
@@ -198,6 +186,26 @@ mod tests {
         assert_eq!(domain_height(Height(u32::MAX)), None);
     }
 
+    /// The branch a transaction is validated under flips from NU6.3 to NU7 at
+    /// exactly the public Testnet activation height (ZIP 259), which is what
+    /// `getblockchaininfo.consensus` and `GetLightdInfo` report at the boundary.
+    #[test]
+    fn branch_id_flips_to_nu7_at_the_testnet_activation_height() {
+        const NU6_3: u32 = 0x37a5_165b;
+        const NU7: u32 = 0x7719_0ad9;
+        let testnet = zebra_chain::parameters::Network::new_default_testnet();
+        let at = |height: u32| {
+            branch_id(
+                &testnet,
+                domain::Height::try_from(height).expect("test height is in range"),
+            )
+        };
+
+        assert_eq!(at(4_465_025), Some(NU6_3));
+        assert_eq!(at(4_465_026), Some(NU7));
+        assert_eq!(at(4_465_027), Some(NU7));
+    }
+
     #[test]
     fn a_block_ref_becomes_a_block_index() {
         let index = block_index(domain_ref(5, 3));
@@ -209,121 +217,103 @@ mod tests {
     fn a_spend_with_no_nameable_spender_is_an_error_not_unspent() {
         assert_eq!(spender(SpendStatus::Unspent).expect("unspent"), None);
         assert_eq!(
-            spender(SpendStatus::SpentBy(domain::TransactionId::from([4; 32]))).expect("spent"),
+            spender(SpendStatus::SpentBy {
+                txid: domain::TransactionId::from([4; 32]),
+                input_index: 0,
+                height: domain::Height::GENESIS,
+            })
+            .expect("spent"),
             Some(TransactionHash([4; 32]))
         );
         assert!(spender(SpendStatus::SpentSpenderUnknown).is_err());
     }
 
     #[test]
-    fn locations_keep_best_and_competing_blocks_apart() {
-        let mut locations = TransactionLocations::default();
-        locations.best_chain = Some(ChainTxPosition {
-            block: domain_ref(10, 1),
-            tx_index: 0,
-        });
-        locations.non_best_chain = vec![ChainTxPosition {
-            block: domain_ref(10, 2),
-            tx_index: 1,
-        }];
+    fn locations_keep_best_and_competing_placements_apart() {
+        let status = zaino_service::TransactionStatus {
+            best: Some(Placement::Block(ChainTxPosition {
+                block: domain_ref(10, 1),
+                tx_index: 0,
+            })),
+            elsewhere: vec![
+                Placement::Block(ChainTxPosition {
+                    block: domain_ref(10, 2),
+                    tx_index: 1,
+                }),
+                Placement::Mempool(None),
+            ],
+        };
 
-        let (best, others) = chain_locations(locations);
+        let (best, others) = chain_locations(status).expect("convertible");
         assert_eq!(
             best,
             Some(BestChainLocation::Block(BlockHash([1; 32]), Height(10)))
         );
         assert_eq!(
             others,
-            HashSet::from([NonBestChainLocation::Block(BlockHash([2; 32]), Height(10))])
+            HashSet::from([
+                NonBestChainLocation::Block(BlockHash([2; 32]), Height(10)),
+                NonBestChainLocation::Mempool(None),
+            ])
         );
     }
 
     #[test]
-    fn an_unparseable_address_is_rejected() {
-        let error = encoded_addresses(["not an address".to_string()])
-            .expect_err("an unparseable address is invalid");
-        assert!(error.to_string().contains("validator rejected the query"));
+    fn a_coherent_mempool_placement_keeps_its_height() {
+        let height = zaino_primitives::types::Height::try_from(11).expect("small");
+        let status = zaino_service::TransactionStatus {
+            best: Some(Placement::Mempool(Some(height))),
+            elsewhere: Vec::new(),
+        };
+        let (best, _) = chain_locations(status).expect("convertible");
+        assert_eq!(best, Some(BestChainLocation::Mempool(Height(11))));
+        let heightless = zaino_service::TransactionStatus {
+            best: Some(Placement::Mempool(None)),
+            elsewhere: Vec::new(),
+        };
+        assert!(chain_locations(heightless).is_err());
     }
 
-    /// A vector's `u64` tree size, as the domain carries it.
-    fn vector_tree_size(size: u64) -> domain::TreeSize {
-        domain::TreeSize::try_from(size).expect("vector tree sizes fit u32")
+    /// The legacy code a rejection carries, as the JSON-RPC layer recovers it.
+    fn legacy_code(error: &ChainIndexError) -> Option<i64> {
+        std::iter::successors(Some(error as &(dyn std::error::Error + 'static)), |error| {
+            error.source()
+        })
+        .find_map(|error| error.downcast_ref::<crate::error::LegacyRpcError>())
+        .map(|rejection| rejection.code)
     }
 
-    /// The store's domain-block conversion agrees with the `zebra_chain` path
-    /// the golden vectors pin, except for chain work, which it is not given.
+    fn checked(addresses: Vec<String>) -> ChainIndexError {
+        checked_addresses(&zebra_rpc::client::GetAddressBalanceRequest::new(addresses))
+            .expect_err("the request must be refused")
+    }
+
+    /// A malformed address and a TEX address are both zebrad's `-5`, served as
+    /// an invalid argument.
     #[test]
-    fn domain_block_conversion_agrees_with_the_zebra_path() {
-        use crate::chain_index::tests::vectors::{indexed_block_chain, load_test_vectors};
-
-        let vectors = load_test_vectors().expect("test vectors load");
-        for (vector, expected) in vectors
-            .blocks
-            .iter()
-            .zip(indexed_block_chain(&vectors.blocks))
-        {
-            let block = zaino_convert_zebra::block_from_zebra(
-                &vector.zebra_block,
-                domain::ChainMetadata::new(
-                    vector_tree_size(vector.sapling_tree_size),
-                    vector_tree_size(vector.orchard_tree_size),
-                    domain::TreeSize::ZERO,
-                ),
-            )
-            .expect("vector block converts to the domain shape");
-            let tree_roots = domain::TreeRoots {
-                sapling: Some(domain::TreeRootInfo {
-                    root: <[u8; 32]>::from(vector.sapling_root).into(),
-                    size: vector_tree_size(vector.sapling_tree_size),
-                }),
-                orchard: Some(domain::TreeRootInfo {
-                    root: <[u8; 32]>::from(vector.orchard_root).into(),
-                    size: vector_tree_size(vector.orchard_tree_size),
-                }),
-                ironwood: None,
-            };
-
-            let actual: IndexedBlock =
-                zaino_chain_store_zainodb::conversion::indexed_block(&block, &tree_roots, None)
-                    .expect("conversion succeeds");
-
-            assert_eq!(actual.context.index, expected.context.index, "block index");
-            assert_eq!(actual.context.parent_hash, expected.context.parent_hash);
-            assert_eq!(actual.context.chainwork, None);
-            assert_eq!(actual.data, expected.data, "block header data");
-            assert_eq!(actual.commitment_tree_data, expected.commitment_tree_data);
-            assert_eq!(actual.transactions.len(), expected.transactions.len());
-            for (actual_tx, expected_tx) in actual.transactions.iter().zip(expected.transactions())
-            {
-                assert_eq!(actual_tx.transparent(), expected_tx.transparent());
-                assert_eq!(actual_tx.index(), expected_tx.index(), "transaction index");
-                assert_eq!(actual_tx.txid(), expected_tx.txid(), "txid");
-                assert_eq!(
-                    actual_tx.balances(),
-                    expected_tx.balances(),
-                    "pool balances"
-                );
-            }
+    fn malformed_and_tex_addresses_are_refused_with_minus_five() {
+        for address in [
+            "not an address",
+            "textest1qyqszqgpqyqszqgpqyqszqgpqyqszqgpfcjgfy",
+        ] {
+            let error = checked(vec![address.to_string()]);
+            assert_eq!(legacy_code(&error), Some(-5), "{address}");
+            assert_eq!(
+                error.kind(),
+                crate::error::ChainIndexErrorKind::InvalidArgument
+            );
         }
     }
 
-    /// Every coinbase carries the null prevout the stored form keeps, exactly
-    /// once, and no other transaction carries one.
+    /// More than 10,000 addresses is zebrad's `-8`, before any is parsed.
     #[test]
-    fn the_coinbase_null_prevout_is_present_exactly_once() {
-        use crate::chain_index::tests::vectors::{indexed_block_chain, load_test_vectors};
-
-        let vectors = load_test_vectors().expect("test vectors load");
-        for expected in indexed_block_chain(&vectors.blocks) {
-            for transaction in expected.transactions() {
-                let nulls = transaction
-                    .transparent()
-                    .inputs()
-                    .iter()
-                    .filter(|input| **input == TxInCompact::null_prevout())
-                    .count();
-                assert_eq!(nulls, usize::from(transaction.index() == 0));
-            }
-        }
+    fn too_many_addresses_are_refused_with_minus_eight() {
+        let error = checked(vec!["not an address".to_string(); 10_001]);
+        assert_eq!(legacy_code(&error), Some(-8));
+        assert!(error.to_string().contains("too many addresses"), "{error}");
+        assert_eq!(
+            error.kind(),
+            crate::error::ChainIndexErrorKind::InvalidArgument
+        );
     }
 }

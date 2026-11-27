@@ -26,7 +26,9 @@ use std::sync::Arc;
 use arc_swap::ArcSwap;
 use tokio::sync::broadcast;
 use tokio_util::sync::CancellationToken;
-use zaino_status::{NamedAtomicStatus, StatusType};
+use zaino_component::{
+    ComponentName, ComponentStatus, Health, Lifecycle, StatusCell, StatusSource as _,
+};
 
 use crate::subscriber::MempoolSubscriber;
 use zaino_mempool::config::MempoolConfig;
@@ -47,7 +49,7 @@ pub struct MempoolService<S: MempoolSource> {
     current: Arc<ArcSwap<MempoolSnapshot>>,
     updates: broadcast::Sender<MempoolUpdate>,
     config: MempoolConfig,
-    status: NamedAtomicStatus,
+    status: StatusCell,
     cancel: CancellationToken,
     task: std::sync::Mutex<Option<tokio::task::JoinHandle<()>>>,
     /// Per-process salt for the admission tiebreak (see
@@ -58,7 +60,7 @@ pub struct MempoolService<S: MempoolSource> {
 impl<S: MempoolSource> std::fmt::Debug for MempoolService<S> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("MempoolService")
-            .field("status", &self.status.load())
+            .field("status", &self.status.status())
             .finish_non_exhaustive()
     }
 }
@@ -95,18 +97,28 @@ impl<S: MempoolSource> MempoolService<S> {
             current: Arc::new(ArcSwap::from_pointee(MempoolSnapshot::empty())),
             updates,
             config,
-            status: NamedAtomicStatus::new("Mempool", StatusType::Spawning),
+            status: StatusCell::new(
+                ComponentName("Mempool"),
+                Lifecycle::Spawning,
+                Health::Healthy,
+            ),
             cancel,
             task: std::sync::Mutex::new(None),
             admission_salt,
         });
 
         let task_service = Arc::clone(&service);
-        let handle = tokio::spawn(async move {
-            task_service.run().await;
-        });
+        let status = service.status.clone();
+        let handle = tokio::spawn(zaino_component::supervised(
+            service.cancel.clone(),
+            async move { task_service.run().await },
+            move |reason| status.fail_unless_closing(reason),
+        ));
 
-        *service.task.lock().expect("mempool task lock poisoned") = Some(handle);
+        *service
+            .task
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(handle);
 
         service
     }
@@ -122,8 +134,14 @@ impl<S: MempoolSource> MempoolService<S> {
     }
 
     /// Current service status.
-    pub fn status(&self) -> StatusType {
-        self.status.load()
+    pub fn status(&self) -> ComponentStatus {
+        self.status.status()
+    }
+
+    /// A poll's source failure, as an in-flight poll reports it.
+    #[cfg(test)]
+    pub(crate) fn report_source_error(&self, cause: &'static str) {
+        self.publish_source_error(cause, None);
     }
 
     /// The current mempool memory bound (max total ZIP-401 cost), in bytes.
@@ -151,7 +169,12 @@ impl<S: MempoolSource> MempoolService<S> {
     pub fn close(&self) {
         self.publish_closing();
         self.cancel.cancel();
-        if let Some(handle) = self.task.lock().expect("mempool task lock poisoned").take() {
+        if let Some(handle) = self
+            .task
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .take()
+        {
             handle.abort();
         }
     }

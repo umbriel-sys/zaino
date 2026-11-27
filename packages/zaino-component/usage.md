@@ -35,6 +35,15 @@ exactly what it uses.
 samples every component without awaiting. A component that publishes
 [`StatusWatch`] lets a supervisor react to transitions instead of polling.
 
+A runtime that sets its own status holds a [`StatusCell`]: cloned into every
+handle, it is both a `StatusSource` and a `StatusWatch`. `set` moves it;
+`set_unless_closing` leaves a closing component closing, for a loop whose last
+iteration may race its shutdown; `degraded_unless_closing` does the same for
+a `Recoverable` health with its reason. For a supervisor's verdict,
+`ComponentStatus::is_live` (health neither `Critical` nor `Offline`) and
+`is_ready` (`Ready` and `Healthy`) read the two axes together; nothing else
+should collapse them.
+
 ```rust
 use zaino_component::{ComponentName, ComponentStatus, Health, Lifecycle, StatusSource};
 
@@ -50,13 +59,15 @@ impl StatusSource for Validator {
 
 ## Two altitudes: tasks and components
 
-A [`Task`] is the low primitive — one supervised async task, with a name,
-cooperative cancellation, a hard abort, and panic capture on join. A component
-is the subsystem above it, owning one or more tasks. A task failing is the event
-that flips its component's health.
+`zaino_async::Task` is the low primitive — one named async task with cooperative
+cancellation, a hard abort, and panic capture on join. It lives one layer below,
+in [`zaino-async`], because it is domain-free concurrency plumbing that
+non-component code (e.g. the source provisioner's fetch pump) also spawns. A
+component is the subsystem *above* it, owning one or more tasks; a task failing
+is the event that flips its component's health.
 
 ```rust
-use zaino_component::{Task, TaskName};
+use zaino_async::{Task, TaskName};
 
 # async fn example() {
 let task = Task::spawn(TaskName("prune"), |cancel| async move {
@@ -67,11 +78,56 @@ let _ = task.join().await;
 # }
 ```
 
+## A component's task never dies silently
+
+Every long-lived task runs under `supervised`. A panic, or a return before
+its cancellation, is handed to the closure with the cause, which fails the
+component's status:
+
+```rust
+use zaino_component::{supervised, CancellationToken, ComponentName, Health, Lifecycle, StatusCell};
+
+# async fn example() {
+let status = StatusCell::new(ComponentName("pruner"), Lifecycle::Ready, Health::Healthy);
+let cancel = CancellationToken::new();
+let failed = status.clone();
+tokio::spawn(supervised(cancel.clone(), async { /* the run loop */ }, move |reason| {
+    failed.fail_unless_closing(reason)
+}));
+# }
+```
+
+A failed status is `Offline` and `Critical` with a `reason`, and keeps its
+first cause. Two ways to fail it:
+
+| Call | When | `retryable` |
+| --- | --- | --- |
+| `fail_unless_closing` | a fault of Zaino's own (a panic, bad data, a local write) | `false` |
+| `exhausted_unless_closing` | bounded retries of something outside Zaino (the validator) ran out | `true` |
+
+A supervisor restarts only when every failed component is `retryable`, and
+exits with the causes otherwise. A retry loop is always bounded: it ends in
+one of these two calls, never in waiting forever.
+
 ## Names are typed
 
-[`ComponentName`] and [`TaskName`] are distinct newtypes. A component and the
-tasks it runs are different subjects, so passing one where the other belongs is
-a compile error rather than a mislabelled log line.
+[`ComponentName`] and `zaino_async::TaskName` are distinct newtypes. A component
+and the tasks it runs are different subjects, so passing one where the other
+belongs is a compile error rather than a mislabelled log line.
+
+[`zaino-async`]: https://docs.rs/zaino-async
+
+## One CPU budget, split by share
+
+Components that fan work out — the store's build, the chain head's window
+prefetch, mempool polling, chain-view passthrough reads — take their
+concurrency from one [`CpuBudget`] rather than each reading the core count.
+[`CpuBudget::detect`] reads the host once; [`CpuBudget::concurrency`] hands a
+[`Share`] its slice (chain store 8/16, chain head 4/16, mempool 2/16, chain
+view 2/16), rounded up, never below the share's floor (the chain head keeps
+four, its reads being round trips rather than CPU) and never above sixteen.
+A process that wants to pin the cores builds the budget with
+[`CpuBudget::with_cores`] and passes the shares into each component's config.
 
 ## Related
 

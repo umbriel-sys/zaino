@@ -1,8 +1,10 @@
 //! Holds config data for Zaino-State services.
 
 use std::path::PathBuf;
-use zaino_common::{Network, ServiceConfig, StorageConfig};
+use zaino_primitives::types::Network;
 use zcash_address::ZcashAddress;
+
+use crate::legacy::config::{ServiceConfig, StorageConfig};
 
 /// A validated Zcash donation address (transparent, sapling, orchard, or unified).
 ///
@@ -85,10 +87,10 @@ pub struct CommonBackendConfig {
     pub validator_rpc_address: String,
     /// Enable validator rpc cookie authentication with Some: path to the validator cookie file.
     pub validator_cookie_path: Option<PathBuf>,
-    /// Validator JsonRPC user.
-    pub validator_rpc_user: String,
+    /// Validator JsonRPC user; `None` with no password sends no credentials.
+    pub validator_rpc_user: Option<String>,
     /// Validator JsonRPC password.
-    pub validator_rpc_password: String,
+    pub validator_rpc_password: Option<String>,
     /// Service-level configuration (timeout, channel size)
     pub service: ServiceConfig,
     /// Storage configuration (cache and database)
@@ -124,9 +126,8 @@ pub struct CommonBackendConfig {
 }
 
 impl CommonBackendConfig {
-    /// Builds a [`CommonBackendConfig`], applying the default RPC user/password
-    /// placeholder (`"xxxxxx"`) and this crate's `CARGO_PKG_VERSION` as the
-    /// indexer version. Shared by the [`NodeBackedIndexerServiceConfig`] constructors.
+    /// Builds a [`CommonBackendConfig`] with this crate's `CARGO_PKG_VERSION`
+    /// as the indexer version. Shared by the [`NodeBackedIndexerServiceConfig`] constructors.
     #[allow(clippy::too_many_arguments)]
     pub fn new(
         validator_rpc_address: String,
@@ -142,8 +143,8 @@ impl CommonBackendConfig {
         CommonBackendConfig {
             validator_rpc_address,
             validator_cookie_path,
-            validator_rpc_user: validator_rpc_user.unwrap_or_else(|| "xxxxxx".to_string()),
-            validator_rpc_password: validator_rpc_password.unwrap_or_else(|| "xxxxxx".to_string()),
+            validator_rpc_user,
+            validator_rpc_password,
             service,
             storage,
             ephemeral_finalised_state,
@@ -248,8 +249,6 @@ impl NodeBackedIndexerServiceConfig {
 pub struct ChainIndexConfig {
     /// Storage configuration (cache and database)
     pub storage: StorageConfig,
-    /// Database version selected to be run.
-    pub db_version: u32,
     /// The runtime network, carrying the activation schedule adopted from
     /// the validator (zaino#1076) — or, in fixtures that are their own
     /// chain, the fixture's schedule.
@@ -278,49 +277,10 @@ impl ChainIndexConfig {
     ) -> Self {
         Self {
             storage: common.storage.clone(),
-            // TODO: update zaino configs to include db version.
-            db_version: 1,
             network,
             ephemeral: common.ephemeral_finalised_state,
             mempool: common.mempool.clone(),
         }
-    }
-
-    /// What every chain store is configured from.
-    ///
-    /// A projection rather than the whole config: the store has no business
-    /// knowing the mempool's bounds, and `zaino-chain-store` does not depend on
-    /// `zaino-mempool`. The two travel together here only because one service
-    /// config is the source of both.
-    ///
-    /// `ephemeral` and the configured path collapse into one `Option<PathBuf>`
-    /// here, which is where the contradiction between them stops being
-    /// expressible: below this point there is no flag to disagree with a path.
-    pub fn chain_store_config(&self) -> zaino_chain_store::ChainStoreConfig {
-        let mut config = if self.ephemeral {
-            zaino_chain_store::ChainStoreConfig::default()
-        } else {
-            zaino_chain_store::ChainStoreConfig::at_path(self.storage.database.path.clone())
-        };
-
-        // The service config's `db_version` is a plain `u32` read from TOML, so
-        // zero is expressible here even though it names no schema. Falling back
-        // to the default rather than failing keeps this a projection: an
-        // unusable version is `spawn`'s to reject, with the message that names
-        // the versions it does support.
-        if let Some(major) = std::num::NonZeroU32::new(self.db_version) {
-            config.set_target_schema_major(major);
-        }
-        config
-    }
-
-    /// What ZainoDB is configured from beyond [`Self::chain_store_config`].
-    ///
-    /// Separate because it is a different crate's type, and because these are
-    /// the two things a domain crate cannot name: an LMDB budget and a
-    /// `zebra-chain` network.
-    pub fn zainodb_config(&self) -> zaino_chain_store_zainodb::ZainoDbConfig {
-        zaino_chain_store_zainodb::ZainoDbConfig::from_storage(&self.storage, self.network.clone())
     }
 }
 
@@ -357,7 +317,7 @@ mod tests {
 
         #[test]
         fn valid_unified_orchard() {
-            let (_network, ua) = zcash_address::unified::Address::decode(
+            let (_network, _revision, ua) = zcash_address::unified::Address::decode(
             "u1pg2aaph7jp8rpf6yhsza25722sg5fcn3vaca6ze27hqjw7jvvhhuxkpcg0ge9xh6drsgdkda8qjq5chpehkcpxf87rnjryjqwymdheptpvnljqqrjqzjwkc2ma6hcq666kgwfytxwac8eyex6ndgr6ezte66706e3vaqrd25dzvzkc69kw0jgywtd0cmq52q5lkw6uh7hyvzjse8ksx"
         ).unwrap();
             let encoded = ZcashAddress::from_unified(NetworkType::Main, ua).encode();
@@ -408,7 +368,7 @@ mod tests {
 
         #[test]
         fn round_trip_unified() {
-            let (_network, ua) = zcash_address::unified::Address::decode(
+            let (_network, _revision, ua) = zcash_address::unified::Address::decode(
             "u1pg2aaph7jp8rpf6yhsza25722sg5fcn3vaca6ze27hqjw7jvvhhuxkpcg0ge9xh6drsgdkda8qjq5chpehkcpxf87rnjryjqwymdheptpvnljqqrjqzjwkc2ma6hcq666kgwfytxwac8eyex6ndgr6ezte66706e3vaqrd25dzvzkc69kw0jgywtd0cmq52q5lkw6uh7hyvzjse8ksx"
         ).unwrap();
 

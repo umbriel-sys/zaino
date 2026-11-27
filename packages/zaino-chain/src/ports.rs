@@ -30,19 +30,19 @@ use core::future::Future;
 
 use futures::Stream;
 use tokio::sync::watch;
-use zaino_chain_store::{PoolFilter, TxOutSetAccumulator};
+use zaino_chain_store::{HistoryEpoch, PoolFilter, TxOutSetAccumulator};
 use zaino_primitives::types::{
-    rpc::ChainTip, AddressBalance, AddressDelta, BlockHash, BlockHeader, BlockRef, ChainStateEpoch,
-    CompactBlock, Height, Outpoint, ShieldedPool, SubtreeIndex, SubtreeRoot, TransactionId,
-    TransparentAddress, Treestate, Utxo,
+    rpc::{ChainTip, TransactionVerbosity},
+    AddressBalance, AddressDelta, BlockHash, BlockHeader, BlockRef, ChainStateEpoch, CompactBlock,
+    Height, Outpoint, ShieldedPool, SubtreeIndex, SubtreeRoot, TransactionId, TransparentAddress,
+    TransparentOutput, Treestate, Utxo,
 };
+use zaino_source::{TransactionAnswer, UtxoPage};
 
 use crate::block::ChainBlock;
 use crate::capability::{ServiceabilityManifest, ServiceableRange};
 use crate::error::Result;
-use crate::types::{
-    BlockId, ChainScope, Locator, RawTransaction, SpendStatus, TransactionLocations,
-};
+use crate::types::{BlockId, ChainScope, Locator, SpendStatus, TransactionLocations};
 
 /// A live chain view.
 pub trait ChainView: Send + Sync {
@@ -117,6 +117,15 @@ pub trait BlockRead: Send + Sync {
     fn block_header(&self, at: BlockId)
         -> impl Future<Output = Result<Option<BlockHeader>>> + Send;
 
+    /// The headers from `start` to `end`, in either direction, as a stream of
+    /// chunks: the store's from its headers index alone, the rest from the
+    /// block each provider holds. Truncated at the chain tip.
+    fn stream_headers(
+        &self,
+        start: Height,
+        end: Height,
+    ) -> impl Stream<Item = Result<Vec<BlockHeader>>> + Send + use<Self>;
+
     /// The consensus bytes of the block at `at`.
     ///
     /// Pinned to the snapshot: a height a local provider covers is fetched by
@@ -176,13 +185,41 @@ pub trait CompactBlockRead: Send + Sync {
     ) -> impl Stream<Item = Result<Vec<CompactBlock>>> + Send + use<Self>;
 }
 
+/// Compact blocks as encoded `CompactBlock` messages, for serving: the same
+/// blocks as [`CompactBlockRead`], each written once and shared by every
+/// client through the view's frame cache. Under a nullifiers-only filter the
+/// tree sizes are zero, as the protocol's nullifier responses carry.
+#[cfg(feature = "frames")]
+pub trait CompactFrameRead: Send + Sync {
+    /// The encoded compact block at `height`.
+    fn compact_frame(
+        &self,
+        height: Height,
+        pools: PoolFilter,
+    ) -> impl Future<Output = Result<Option<bytes::Bytes>>> + Send;
+
+    /// The encoded compact blocks from `start` to `end`, in either direction,
+    /// as a stream of chunks sized by their exact bytes.
+    fn stream_compact_frames(
+        &self,
+        start: Height,
+        end: Height,
+        pools: PoolFilter,
+    ) -> impl Stream<Item = Result<Vec<bytes::Bytes>>> + Send + use<Self>;
+}
+
 /// Transactions, and where they were mined.
 pub trait TransactionRead: Send + Sync {
-    /// The consensus bytes of `txid`.
+    /// The validator's `getrawtransaction` answer for `txid` at `verbosity`,
+    /// where this view places the transaction: in a block the chain head or
+    /// the store holds, or mined by the validator in a hole between them.
+    /// `None` for a transaction it places nowhere, the validator's mempool
+    /// included.
     fn raw_transaction(
         &self,
         txid: TransactionId,
-    ) -> impl Future<Output = Result<Option<RawTransaction>>> + Send;
+        verbosity: TransactionVerbosity,
+    ) -> impl Future<Output = Result<Option<TransactionAnswer>>> + Send;
 
     /// Everywhere this view knows `txid` to have been mined.
     ///
@@ -250,10 +287,12 @@ pub trait AddressRead: Send + Sync {
         addresses: &[TransparentAddress],
     ) -> impl Future<Output = Result<AddressBalance>> + Send;
 
-    /// Every unspent transparent output of these addresses.
+    /// The `page` of these addresses' unspent transparent outputs, in chain
+    /// order.
     fn address_utxos(
         &self,
         addresses: &[TransparentAddress],
+        page: UtxoPage,
     ) -> impl Future<Output = Result<Vec<Utxo>>> + Send;
 
     /// The transactions touching these addresses within `start..=end`.
@@ -289,13 +328,51 @@ pub trait SpendRead: Send + Sync {
     ) -> impl Future<Output = Result<Vec<SpendStatus>>> + Send;
 }
 
+/// The outputs transparent inputs spend.
+pub trait PrevoutRead: Send + Sync {
+    /// The output each outpoint names on the snapshot's best chain, in the
+    /// order asked: value and script. `None` where no best-chain transaction
+    /// creates it.
+    ///
+    /// Local only: the store below the seam, the window above it. A hole
+    /// between them is refused, as the validator runs no such index.
+    fn previous_outputs(
+        &self,
+        outpoints: &[Outpoint],
+    ) -> impl Future<Output = Result<Vec<Option<TransparentOutput>>>> + Send;
+}
+
 /// The unspent transparent output set's running totals.
 pub trait TxOutSetRead: Send + Sync {
     /// The accumulator at the snapshot's tip, over the whole chain.
     ///
-    /// The answer `gettxoutsetinfo` serves. A composition extends the store's
-    /// accumulator with what the recent window created and spent, so it refuses
-    /// while a hole separates the two: the validator keeps no such set, and an
-    /// answer spanning a hole would be silently wrong.
+    /// The answer `gettxoutsetinfo` serves: the chain head's set, which starts
+    /// from the store's accumulator at the store's tip and folds the window
+    /// above it. Refused while the head has not built it: the validator keeps
+    /// no such set.
     fn txout_set(&self) -> impl Future<Output = Result<TxOutSetAccumulator>> + Send;
+}
+
+/// The ZIP 221 chain history tree (C6): the store's to its tip, the chain
+/// head's above it. No validator answers it, so it is refused where the two
+/// do not cover the chain together.
+pub trait HistoryTreeRead: Send + Sync {
+    /// The `hashChainHistoryRoot` committed by the block after `height`;
+    /// `None` before Heartwood or above the tip.
+    fn history_root(&self, height: Height)
+        -> impl Future<Output = Result<Option<[u8; 32]>>> + Send;
+
+    /// The epoch (one per network upgrade) the tree is in after `height`.
+    fn history_epoch(
+        &self,
+        height: Height,
+    ) -> impl Future<Output = Result<Option<HistoryEpoch>>> + Send;
+
+    /// The encoded MMR entries at `positions` of that epoch, in the order
+    /// asked; `None` for a position the epoch does not hold.
+    fn history_entries(
+        &self,
+        height: Height,
+        positions: &[u32],
+    ) -> impl Future<Output = Result<Vec<Option<Vec<u8>>>>> + Send;
 }

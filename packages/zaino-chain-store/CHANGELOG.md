@@ -13,6 +13,40 @@ and this library adheres to Rust's notion of
 ### Removed
 ### Fixed
 
+## [0.2.0] - 2026-11-21
+### Added
+- `HistoryTreeIndex::history_peaks(height)`: the epoch's MMR peaks, which a fold continuing the history tree above the store appends onto.
+- `StoredTxOut::from_output` reduces a domain transparent output to what the store indexes, so every consumer classifies a script the same way.
+- `ChainStoreReader::network()`: the network the store indexes.
+- `SpentOutputIndex::outputs_by_outpoint(outpoints)`: the outputs as the chain holds them (value and script), for folds above the store resolving inputs that spend below it. `TxOutSetIndex::remaining_outputs(txids)`: each transaction's counted outputs still unspent at the watermark (D-69), so a fold extending the set knows when a transaction leaves it.
+### Changed
+- `StoredHeader` gains `size`, the block's serialized size.
+- New ports `TreeStateIndex` (pool frontiers, subtree roots) and `HistoryTreeIndex` (ZIP 221 roots, epochs, MMR entries), with capabilities `TreeState` and `HistoryTree`. `StoreCapabilities` widens to `u16`. `ChainStoreError::Unsupported` names an operation a store never performs. `TransparentHistoryIndex` is no longer behind `transparent_address_history_experimental`, which is removed.
+- `ChainStoreSource` also requires `OneShotGetTreestate` and `OneShotGetSubtreeRoots`: the note frontiers and completed subtrees an index fold takes beside each block.
+- `ChainStoreService` and `ChainStoreReader` report health through `zaino_component::StatusSource` rather than a `status` method of their own, so a store is a component a supervisor can observe alongside every other subsystem without knowing it is a store. Two axes rather than one: a lifecycle phase the runtime moves, and a health condition that never overwrites it.
+  _Migration:_ Remove `fn status(&self) -> StatusType` from both impls and add a single `impl StatusSource`, returning a `ComponentStatus` built from a `ComponentName`, a `Lifecycle` and a `Health`. Where a type is its own reader, one impl serves both ports. Callers reading a status through a bare `.status()` may need `StatusSource::status(&x)` if an inherent method of the same name still shadows the trait.
+- The store serves no whole blocks and takes none (D-72, D-81): `StoredBlock`, `StoredTx`, `StoredBlockRead`, `StoredBlocks`, `FrozenBlock`, `ChainStoreFreezeSink` and `ChainStoreError::FreezeGap` are removed. `ChainStoreReader` gains `headers_chunk` (each header with its absolute chainwork, `StoredHeader`) and `chainwork(height)`. New port `TreeRootsIndex::tree_roots_chunk` with capability `TreeRoots`, over the chain-metadata index alone. An indexed block is composed from the three. `build_to` is the only write path.
+- `StoredAddress` is gone: transparent outputs are keyed by `zaino_primitives::types::TransparentAddressKey`, the same key the chain head reports its half of an address's history under, so a consumer merging the two joins them without translating.
+  _Migration:_ Replace `StoredAddress` with `zaino_primitives::types::TransparentAddressKey`, which has the same `hash` and `script_type` fields and the same `new` and `is_standard` methods, plus `from_script`. `StoredTxOut::address` and `TransparentHistoryQuery::addresses` now hold the new type; neither struct is `#[non_exhaustive]`, so literal construction sites need the rename too.
+- `ChainStoreFreezeSink::freeze` now takes `FrozenBlock`, a stored block without its chainwork. Cumulative work needs an unbroken chain below a block, so the store derives its own rather than trusting a value measured elsewhere — a field a caller could fill is a field a caller could fill wrongly.
+  _Migration:_ Drop the `chainwork` field when building the batch: a `StoredBlock` becomes a `FrozenBlock` by carrying `header`, `transactions` and `tree_roots` across. Any value a caller was computing for it can go — the store derives its own, and a caller's was measured from somewhere else.
+- `ChainStoreError::FreezeGap` — a frozen batch starting above `tip + 1` is refused rather than written into a hole, and carries both the store's tip and the first height it could not take so a caller can repair it. Previously the store stopped silently and returned `Ok(())`, which left it never advancing again while every subsequent freeze also succeeded.
+  _Migration:_ `ChainStoreError` is not `#[non_exhaustive]`, so a downstream `match` over it must add a `FreezeGap` arm. Handle it by building to `first_frozen - 1` through `ChainStoreIngest::build_to` and freezing the batch again; it is a routine handover state, not a failure, so classifying it as an internal error is only right on a path that cannot repair it.
+- `TransparentHistoryQuery` gains `limit`, the most rows `address_effects` reads; past it the read is refused with the new `ChainStoreError::TooManyRows`.
+- `SpenderRef` carries the spending `input_index` (I-09 stores it, D-62).
+- `ChainStoreSource` no longer requires `OneShotGetTransaction`.
+- `StoredTxOut` retired (D-51), with `SpentOutputIndex::previous_outputs`, `unspent_output` and `transparent_outputs`; `outputs_by_outpoint` answers outputs as the chain holds them. `LocatedOutput` carries the queried `address` and the full `TransparentOutput`; `LocatedSpend` carries the `address`, the `value` it removed and the spending `input_index`.
+- `txout_set` re-exports the commitment from `zaino_primitives::txout_commitment`. `is_unspendable`, `canonical_entry`, `entry_digest` and `TxOutSetAccumulator::apply_{added,removed}_output` take an output's value and address rather than a `StoredTxOut`.
+- Re-exports the new rule; `is_legacy_unspendable(address)` keeps the P2PKH/P2SH-only rule for the address-key-only zainodb path until Stage 6.
+- Removed with zainodb: `ChainStoreConfig`, `ChainStoreReader::schema` with `SchemaVersion`, `MigrationState` and `StoreSchema`, and `is_legacy_unspendable`.
+- dependency `zaino-component` 0.1.0→0.2.0 crossed the requirement `^0.1.0`
+- dependency `zaino-primitives` 0.3.0→0.4.0 crossed the requirement `^0.3.0`
+- dependency `zaino-source` 0.2.2→0.3.0 crossed the requirement `^0.2.2`
+### Internal
+- Denies panicking code in production.
+- `PoolFilter` is re-exported from `zaino-primitives`.
+- Documentation only: rustdoc builds without warnings.
+
 ## [0.1.1] - 2026-09-26
 ### Changed
 - dependency `zaino-primitives` 0.2.1→0.3.0 crossed the requirement `^0.2.1`

@@ -1,0 +1,43 @@
+consumed_in = "zainod-0-11-0"
+[[changes]]
+crate = "zaino-indexes"
+kind = "breaking"
+description = """
+Layout declarations are `Declared<T>` consts (`Result<T, LayoutError>`), \
+applied with `?` where used; the panicking `declared!` macro is gone \
+(D6-15). `NamespaceLayout` constructors take `&Declared<Layout>` (`sequence` \
+is now fallible), `fixed_range(&LAYOUT, field)` gives a declared layout's \
+range, `Schema` holds declared namespaces, and `Schema::specs`, \
+`Schema::digest` and the new `Schema::layouts` return the first invalid \
+declaration. Every index tests its declarations; digests are unchanged."""
+
+[[changes]]
+crate = "zaino-chain-store-service"
+kind = "fix"
+description = """
+An index whose layouts this build cannot declare fails its open \
+(`OpenError::Unavailable`) instead of panicking."""
+
+[[changes]]
+crate = "zaino-chain-head-service"
+kind = "fix"
+description = """
+An extension whose layouts cannot be declared fails to seed (`Failure`) \
+instead of panicking."""
+
+[[changes]]
+crate = "zaino-persistence"
+kind = "internal"
+description = "The in-memory backend's footprint sums saturate; its lint allowances are gone."
+
+[[changes]]
+crate = "zaino-state"
+kind = "breaking"
+description = """
+`NodeBackedIndexerServiceSubscriber::read_state_service` (test_dependencies) \
+returns `Option`, `None` over an RPC connection, instead of panicking."""
+
+[[changes]]
+crate = "zaino-service"
+kind = "internal"
+description = "Engine tests cover the `zcash_rpc` and `empty` index sets' manifests."

@@ -16,7 +16,8 @@
 //! [`ChainHeadSnapshot`] is a trait. Nothing here says how the block graph is
 //! stored — that is the publishing runtime's decision, and replacing hash maps
 //! with persistent structures must be invisible to every consumer. What is
-//! concrete here is vocabulary: a [`ChainHeadBlock`], a [`ChainStateEpoch`], a
+//! concrete here is vocabulary: a [`ChainHeadBlock`], a
+//! [`ChainStateEpoch`](zaino_primitives::types::ChainStateEpoch), a
 //! position, a location. What is abstract is anything that could reasonably be
 //! built more than one way.
 //!
@@ -38,28 +39,49 @@
 //!   a raw transaction or raw block from ChainHead is not yet possible; those
 //!   queries stay on their existing path.
 
+// production code never panics: no indexing, unchecked arithmetic or panicking calls
+#![cfg_attr(
+    not(test),
+    deny(
+        clippy::unwrap_used,
+        clippy::expect_used,
+        clippy::panic,
+        clippy::unreachable,
+        clippy::todo,
+        clippy::unimplemented,
+        clippy::indexing_slicing,
+        clippy::arithmetic_side_effects,
+        clippy::string_slice,
+        clippy::get_unwrap,
+        clippy::let_underscore_must_use,
+        let_underscore_drop
+    )
+)]
+
 pub mod block;
+pub mod capability;
 pub mod config;
 pub mod error;
+pub mod extension;
 pub mod ports;
 pub mod snapshot;
-#[cfg(feature = "transparent_address_history_experimental")]
 pub mod transparent;
-pub mod txout;
 
 pub use block::ChainHeadBlock;
+pub use capability::{HeadCapabilities, HeadCapability};
 pub use config::ChainHeadConfig;
 pub use error::ChainHeadError;
-pub use ports::{ChainHeadBlockService, ChainHeadBlockSource, ChainHeadFreezeEvents};
-pub use snapshot::{
-    ChainHeadBlockIter, ChainHeadSnapshot, ChainHeadTransactionLocations,
-    ChainHeadTransactionService, ChainHeadTxOutSetService, ChainHeadTxPosition, SpenderLocation,
+pub use extension::{
+    HistoryEpochSeed, HistoryTreeSeed, PrevoutSource, RemainingOutputs, SeedError, StoreTip,
+    TreeStateSeed, TxOutSetSeed,
 };
-pub use txout::{ChainHeadTxOutDelta, CreatedTxOut};
-
-#[cfg(feature = "transparent_address_history_experimental")]
-pub use snapshot::ChainHeadTransparentHistoryService;
-#[cfg(feature = "transparent_address_history_experimental")]
+pub use ports::{ChainHeadBlockService, ChainHeadBlockSource};
+pub use snapshot::{
+    ChainHeadBlockIter, ChainHeadCompactBlockService, ChainHeadHistoryTreeService,
+    ChainHeadSnapshot, ChainHeadTransactionLocations, ChainHeadTransactionService,
+    ChainHeadTransparentHistoryService, ChainHeadTreeStateService, ChainHeadTxOutSetService,
+    ChainHeadTxPosition, HistoryEpochAt, SpenderLocation,
+};
 pub use transparent::{
     ChainHeadAddressEffects, LocatedTransparentOutput, LocatedTransparentSpend,
     TransparentHistoryQuery,

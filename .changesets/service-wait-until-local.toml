@@ -1,0 +1,8 @@
+consumed_in = "zainod-0-11-0"
+[[changes]]
+crate = "zaino-service"
+kind = "feature"
+description = """
+`Service::wait_until_local()` resolves once nothing is still building (the \
+store built and the chain head's extensions folded over it); `is_local()` asks \
+now. `spawn` never waits for either."""

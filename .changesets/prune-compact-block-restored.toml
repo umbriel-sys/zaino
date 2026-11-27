@@ -1,0 +1,7 @@
+consumed_in = "zainod-0-11-0"
+[[changes]]
+crate = "zaino-proto"
+kind = "fix"
+description = """
+`proto::utils::prune_compact_block` is restored unchanged (R-1): it was \
+removed with zainodb but is part of the released public API."""

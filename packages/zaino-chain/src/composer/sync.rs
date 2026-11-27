@@ -1,4 +1,4 @@
-//! Driving the finalised store from the chain head's freeze stream.
+//! Driving the finalised store toward the chain head's floor (D-72).
 //!
 //! The one place in this crate that *writes*. Everything else composes reads
 //! from providers someone else advances; this advances one of them.
@@ -15,47 +15,29 @@
 //! knows where the seam between them is, and is the thing that suffers if they
 //! drift apart. So the store stays caller-driven and this is the caller.
 //!
-//! # Build, then follow
+//! # The floor is the target
 //!
-//! On launch the loop builds the store up to the chain head's floor, then
-//! follows the freeze stream. The build is what brings a store up on a chain
-//! that is not moving, where no freeze would ever come.
-//!
-//! The chain head emits a block once it falls below the consensus seam; the
-//! store accepts one only at `tip + 1`. A block that does not follow the store
-//! answers [`FreezeGap`](zaino_chain_store::ChainStoreError::FreezeGap), which
-//! carries the height to build to, so a chain head that re-anchored after an
-//! outage is repaired the same way.
-//!
-//! # What this is allowed to lose
-//!
-//! The freeze stream is best-effort by contract: it is a `broadcast`, so a slow
-//! consumer is told it lagged rather than blocking the chain head, and a chain
-//! head that re-anchors simply never emits what it skipped. Neither is handled
-//! specially here, because neither needs to be — a missed block becomes a gap
-//! on the next freeze, and the gap repairs itself. Losing blocks costs a fetch,
-//! not correctness.
+//! The chain head's floor is its lowest retained canonical block, below the
+//! consensus seam, so everything up to it is settled. On launch and on every
+//! chain-head update the loop asks the store to build to the floor; the store
+//! fetches those blocks from its own validator through `build_to`, the store's
+//! only write path. A floor the store already holds costs a call that finds
+//! nothing to do.
 
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, PoisonError};
+use std::time::Duration;
 
-use tokio::sync::broadcast::error::{RecvError, TryRecvError};
 use tokio::sync::watch;
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
-use tracing::{debug, info, warn};
-use zaino_chain_head::{
-    ChainHeadBlock, ChainHeadBlockService, ChainHeadFreezeEvents, ChainHeadSnapshot as _,
-};
-use zaino_chain_store::{
-    ChainStoreError, ChainStoreFreezeSink, ChainStoreIngest, ChainStoreService, FrozenBlock,
-    StoreWatermark,
-};
+use tracing::warn;
+use zaino_chain_head::{ChainHeadBlockService, ChainHeadSnapshot as _};
+use zaino_chain_store::{ChainStoreIngest, ChainStoreService, ChainStoreSourceError};
 use zaino_component::{
     ComponentName, ComponentStatus, Health, Lifecycle, StatusSource, StatusWatch,
 };
-use zaino_primitives::types::Height;
+use zaino_primitives::types::{ChainStateEpoch, Height};
 
-use crate::block::frozen_block;
 use crate::composer::ChainViewComposer;
 use crate::source::ChainViewSource;
 
@@ -64,23 +46,11 @@ const COMPONENT: ComponentName = ComponentName("chain-view-sync");
 
 /// This loop's status, as the two axes a component reports.
 ///
-/// Both tracked natively rather than folded into one value and split again:
-/// this is new code, so there is no fused form to be compatible with, and the
-/// distinction is one the loop genuinely makes. A gap it cannot close leaves it
-/// `Syncing` and `Recoverable` — still doing its job, not yet succeeding —
-/// which one axis cannot say.
+/// A build it cannot complete leaves it `Syncing` and `Recoverable` — still
+/// doing its job, not yet succeeding — which one axis cannot say.
 fn report(lifecycle: Lifecycle, health: Health) -> ComponentStatus {
     ComponentStatus::new(COMPONENT, lifecycle, health)
 }
-
-/// The most blocks handed to one `freeze`.
-///
-/// A freeze is one write transaction and one durability barrier, so batching
-/// amortises both — but an unbounded batch would hold the whole retention
-/// window in memory during a catch-up, and the window is the one thing here
-/// sized by a config this loop cannot see. A cap keeps the memory bounded
-/// without needing to know it.
-const MAX_BATCH: usize = 64;
 
 /// A running sync loop.
 ///
@@ -98,36 +68,32 @@ pub struct ChainViewSync {
 impl ChainViewSync {
     /// How the loop is faring.
     ///
-    /// `Syncing` until the store holds the floor and while a gap is being
-    /// repaired, `Ready` once it holds the floor or freezes are landing,
-    /// `Offline` once the loop has stopped. The store's own status is
-    /// separate and says whether the *database* is healthy; this says whether
-    /// anything is still feeding it.
+    /// `Syncing` until the store holds the floor, `Ready` once it does,
+    /// `Recoverable` while a build fails, `Offline` once the loop has stopped.
+    /// The store's own status is separate and says whether the *database* is
+    /// healthy; this says whether anything is still feeding it.
     pub fn status(&self) -> ComponentStatus {
-        *self.status.borrow()
+        self.status.borrow().clone()
     }
 
     /// Stops the loop.
     ///
-    /// The token passed to
-    /// [`spawn_sync`](ChainViewComposer::spawn_sync) also stops it; this
-    /// additionally publishes `Closing` and releases the handle, so shutdown is
-    /// observable rather than merely effective. The same shape as
-    /// `ChainHeadService::shutdown`, deliberately: a deployment shutting both
-    /// down should not have to remember which one behaves differently.
+    /// The token passed to [`spawn_sync`](ChainViewComposer::spawn_sync) also
+    /// stops it; this additionally publishes `Closing` and releases the
+    /// handle, so shutdown is observable rather than merely effective.
     ///
-    /// Synchronous, and does not wait: it cancels, then aborts. Safe rather
-    /// than merely expedient — a batch is written by `freeze`, which is atomic
-    /// at the store, so a task killed part-way leaves the store at a block
-    /// boundary either way.
+    /// Synchronous, and does not wait: it cancels, then aborts. A build cut
+    /// short leaves the store at a block boundary, since the store commits per
+    /// block.
     pub fn shutdown(&self) {
         self.status
             .send_replace(report(Lifecycle::Closing, Health::Healthy));
         self.cancel.cancel();
+        // a poisoned lock still holds the handle: abort it all the same
         if let Some(handle) = self
             .task
             .lock()
-            .expect("chain view sync task mutex poisoned")
+            .unwrap_or_else(PoisonError::into_inner)
             .take()
         {
             handle.abort();
@@ -158,50 +124,31 @@ impl Drop for ChainViewSync {
 
 impl<Store, Head, Source> ChainViewComposer<Store, Head, Source>
 where
-    Store: ChainStoreService + ChainStoreIngest + ChainStoreFreezeSink + 'static,
-    Head: ChainHeadBlockService + ChainHeadFreezeEvents,
+    Store: ChainStoreService + ChainStoreIngest + 'static,
+    Head: ChainHeadBlockService,
     Source: ChainViewSource,
 {
-    /// Starts feeding this view's finalised store from its chain head.
+    /// Starts building this view's finalised store to its chain head's floor,
+    /// and keeps it there as the floor rises.
     ///
-    /// # Why this is a method and not the default
-    ///
-    /// A deployment that drives its own store — building it from a validator on
-    /// its own schedule — must not also get this, or two writers contend on one
-    /// database. So the loop is asked for rather than assumed, and the ask is
-    /// this call.
-    ///
-    /// # Why it is not a feature flag
-    ///
-    /// The bounds already do the work a flag would, and do it per deployment
-    /// rather than per build: a composer whose store cannot ingest or whose
-    /// chain head publishes no freeze events does not have this method at all.
-    /// A cargo feature would be worse on both counts — features are additive
-    /// across a workspace, so one crate enabling it turns it on for every other
-    /// consumer of this crate, and it would decide at compile time a question
-    /// that belongs to the deployment.
-    ///
-    /// # Shutdown
+    /// Asked for, never assumed: a deployment that drives its own store on its
+    /// own schedule must not also get this, or two writers contend on one
+    /// database. The method exists only where `Store: ChainStoreIngest`, so a
+    /// composer over a store that cannot be built (a linked, read-only one)
+    /// does not have it.
     ///
     /// Cancelling `cancel` stops the loop, as does dropping the returned
     /// handle. Both are the same mechanism; the handle also makes the stop
     /// observable through [`ChainViewSync::status`].
     pub fn spawn_sync(self: &Arc<Self>, cancel: CancellationToken) -> Arc<ChainViewSync> {
         let status = watch::Sender::new(report(Lifecycle::Syncing, Health::Healthy));
-
-        // Subscribed before the task starts. A `broadcast` delivers only what
-        // is sent after a receiver exists, so subscribing inside the task would
-        // drop every block frozen between this call returning and the task
-        // first being polled — a window that is short, unbounded, and invisible.
-        let frozen = self.head.subscribe_frozen();
-
-        let task = tokio::spawn(run(
-            Arc::clone(self),
-            frozen,
-            status.clone(),
+        let updates = self.head.subscribe_updates();
+        let failed = status.clone();
+        let task = tokio::spawn(zaino_component::supervised(
             cancel.clone(),
+            run(Arc::clone(self), updates, status.clone(), cancel.clone()),
+            move |reason| fail(&failed, reason),
         ));
-
         Arc::new(ChainViewSync {
             status,
             cancel,
@@ -209,176 +156,134 @@ where
         })
     }
 
-    /// Writes one batch, repairing a gap once if the store reports one.
-    ///
-    /// Once, not until it succeeds: a second gap means the chain moved while
-    /// the build was running, which the next batch will report again with a
-    /// nearer target. Looping here would block the loop on a chain that is
-    /// still moving, and lose the cancellation check while doing it.
-    async fn freeze_batch(&self, batch: &[FrozenBlock], status: &watch::Sender<ComponentStatus>) {
-        let Err(error) = self.store.freeze(batch).await else {
-            status.send_replace(report(Lifecycle::Ready, Health::Healthy));
-            return;
-        };
+    /// The chain head's floor: its lowest retained canonical block.
+    fn floor(&self) -> Option<Height> {
+        self.head
+            .current()
+            .best_chain()
+            .next()
+            .map(|block| block.height())
+    }
 
-        let ChainStoreError::FreezeGap {
-            store_tip,
-            first_frozen,
-        } = error
-        else {
-            // Not a gap, so not this loop's to repair. The store's own status
-            // reports a broken database; the loop keeps running because the
-            // next batch may well land.
-            warn!(%error, "freezing a batch failed");
-            // Read first: a borrow held across the send deadlocks the channel.
-            let lifecycle = status.borrow().lifecycle;
-            status.send_replace(report(lifecycle, Health::Recoverable));
-            return;
-        };
+    /// The store's tip height.
+    fn store_tip(&self) -> Option<Height> {
+        self.store
+            .subscribe_watermark()
+            .borrow()
+            .tip
+            .map(|tip| tip.height)
+    }
+}
 
-        let Some(target) = first_frozen.checked_sub(1) else {
-            // `first_frozen` is genesis and the store is below it, which means
-            // the store is empty and there is nothing below to build. Writing
-            // genesis itself is the next freeze's job.
-            return;
-        };
+/// The wait before a failed build's first retry; doubled each failure.
+const RETRY_FIRST: Duration = Duration::from_secs(1);
+/// The longest wait between retries.
+const RETRY_MAX: Duration = Duration::from_secs(30);
+/// Failed builds in a row, the store not advancing, before the loop fails.
+const MAX_FAILURES: u32 = 20;
 
-        info!(
-            ?store_tip,
-            %first_frozen,
-            %target,
-            "chain head is ahead of the store; building to close the gap",
-        );
-        status.send_replace(report(Lifecycle::Syncing, Health::Healthy));
+/// The loop has failed for good, for a fault of Zaino's own.
+fn fail(status: &watch::Sender<ComponentStatus>, reason: String) {
+    status.send_if_modified(|current| current.fail(reason, false));
+}
 
-        if let Err(error) = self.store.build_to(target).await {
-            warn!(%error, %target, "building to close a freeze gap failed");
-            status.send_replace(report(Lifecycle::Syncing, Health::Recoverable));
-            return;
-        }
+/// The loop has failed for good: the validator did not answer its retries.
+fn exhausted(status: &watch::Sender<ComponentStatus>, reason: String) {
+    status.send_if_modified(|current| current.fail(reason, true));
+}
 
-        match self.store.freeze(batch).await {
-            Ok(()) => {
-                status.send_replace(report(Lifecycle::Ready, Health::Healthy));
-            }
-            // The chain moved while the build ran. Reported at debug because it
-            // is the expected outcome of catching up to a live chain, not a
-            // fault: the next batch carries a nearer target.
-            Err(ChainStoreError::FreezeGap { first_frozen, .. }) => {
-                debug!(%first_frozen, "the gap moved while it was being closed");
-            }
-            Err(error) => warn!(%error, "freezing a batch after closing a gap failed"),
+/// Whether a later attempt can succeed: the validator did not answer.
+fn transient(error: &ChainStoreSourceError) -> bool {
+    match error {
+        ChainStoreSourceError::Unavailable { .. } | ChainStoreSourceError::NotReady { .. } => true,
+        ChainStoreSourceError::InconsistentData { .. } | ChainStoreSourceError::Commit { .. } => {
+            false
         }
     }
 }
 
-/// The loop.
+/// The loop: build to the floor, then again whenever the chain head moves
+/// it. A build the validator did not answer is retried, each wait longer, up
+/// to [`MAX_FAILURES`] times in a row without the store advancing; then, as
+/// at once for any other failure, the loop fails with the cause.
 async fn run<Store, Head, Source>(
     composer: Arc<ChainViewComposer<Store, Head, Source>>,
-    mut frozen: tokio::sync::broadcast::Receiver<ChainHeadBlock>,
+    mut updates: watch::Receiver<ChainStateEpoch>,
     status: watch::Sender<ComponentStatus>,
     cancel: CancellationToken,
 ) where
-    Store: ChainStoreService + ChainStoreIngest + ChainStoreFreezeSink + 'static,
-    Head: ChainHeadBlockService + ChainHeadFreezeEvents,
+    Store: ChainStoreService + ChainStoreIngest + 'static,
+    Head: ChainHeadBlockService,
     Source: ChainViewSource,
 {
-    let mut watermark = composer.store.subscribe_watermark();
-    let floor = composer
-        .head
-        .current()
-        .best_chain()
-        .next()
-        .map(|block| block.height());
-
-    if let Some(floor) = floor {
+    let mut built_to: Option<Height> = None;
+    let mut failures = 0u32;
+    let mut backoff = RETRY_FIRST;
+    // set while a failed build waits for its retry
+    let mut retry: Option<Duration> = None;
+    loop {
+        if let Some(floor) = composer.floor() {
+            // a floor already built to is not asked for again; a failed build is
+            if built_to.is_none_or(|built| built < floor) {
+                let before = composer.store_tip();
+                let built = tokio::select! {
+                    biased;
+                    () = cancel.cancelled() => break,
+                    built = composer.store.build_to(floor) => built,
+                };
+                match built {
+                    Ok(()) => {
+                        status.send_replace(report(Lifecycle::Ready, Health::Healthy));
+                        built_to = Some(floor);
+                        failures = 0;
+                        backoff = RETRY_FIRST;
+                        retry = None;
+                    }
+                    Err(error) => {
+                        // a build that moved the store is progress, not a repeat
+                        if composer.store_tip() > before {
+                            failures = 0;
+                            backoff = RETRY_FIRST;
+                        }
+                        failures = failures.saturating_add(1);
+                        if !transient(&error) || failures >= MAX_FAILURES {
+                            warn!(%error, %floor, attempts = failures, "building the store failed; the sync has stopped");
+                            let reason = format!(
+                                "building the store to {floor} failed after {failures} attempts: {error}"
+                            );
+                            match transient(&error) {
+                                true => exhausted(&status, reason),
+                                false => fail(&status, reason),
+                            }
+                            return;
+                        }
+                        warn!(%error, %floor, attempt = failures, retry_in = ?backoff, "building the store to the chain head's floor failed; retrying");
+                        let mut retrying = report(Lifecycle::Syncing, Health::Recoverable);
+                        retrying.reason = Some(error.to_string());
+                        status.send_replace(retrying);
+                        retry = Some(backoff);
+                        backoff = backoff.saturating_mul(2).min(RETRY_MAX);
+                    }
+                }
+            }
+        }
         tokio::select! {
             biased;
-            () = cancel.cancelled() => {}
-            built = composer.store.build_to(floor) => if let Err(error) = built {
-                warn!(%error, %floor, "building to the chain head's floor failed");
-                status.send_replace(report(Lifecycle::Syncing, Health::Recoverable));
-            },
-        }
-    }
-    let mut launching = floor.is_some_and(|floor| !launched(&watermark, floor, &status));
-
-    loop {
-        let first = tokio::select! {
-            biased;
             () = cancel.cancelled() => break,
-            changed = watermark.changed(), if launching => {
-                launching = changed.is_ok()
-                    && floor.is_some_and(|floor| !launched(&watermark, floor, &status));
-                continue;
+            changed = updates.changed() => {
+                if changed.is_err() {
+                    // nothing will move the floor again
+                    fail(&status, "the chain head stopped publishing".to_owned());
+                    return;
+                }
             }
-            received = frozen.recv() => received,
-        };
-
-        let first = match first {
-            Ok(block) => block,
-            // Told exactly how many were missed, which is worth recording —
-            // but not worth acting on. The next block will not sit at
-            // `tip + 1`, so the store reports a gap and the repair path runs.
-            Err(RecvError::Lagged(missed)) => {
-                warn!(
-                    missed,
-                    "fell behind the freeze stream; the gap will be rebuilt"
-                );
-                continue;
-            }
-            // The chain head is gone. Nothing will ever be frozen again, so
-            // the loop has no reason to stay up.
-            Err(RecvError::Closed) => {
-                info!("the chain head closed its freeze stream");
-                break;
-            }
-        };
-
-        composer
-            .freeze_batch(&drain(&mut frozen, first), &status)
-            .await;
-    }
-
-    status.send_replace(report(Lifecycle::Offline, Health::Offline));
-}
-
-/// Whether the store holds `floor`, reporting `Ready` once it does.
-fn launched(
-    watermark: &watch::Receiver<StoreWatermark>,
-    floor: Height,
-    status: &watch::Sender<ComponentStatus>,
-) -> bool {
-    let held = watermark
-        .borrow()
-        .tip
-        .is_some_and(|tip| tip.height >= floor);
-    if held {
-        status.send_replace(report(Lifecycle::Ready, Health::Healthy));
-    }
-    held
-}
-
-/// `first`, plus whatever else is already waiting, up to [`MAX_BATCH`].
-///
-/// Non-blocking after the first: a batch is worth forming only from blocks
-/// already in hand, because waiting to fill one would delay the write that is
-/// ready in order to amortise a write that has not happened.
-fn drain(
-    frozen: &mut tokio::sync::broadcast::Receiver<ChainHeadBlock>,
-    first: ChainHeadBlock,
-) -> Vec<FrozenBlock> {
-    let mut batch = vec![frozen_block(&first.block, first.tree_roots)];
-
-    while batch.len() < MAX_BATCH {
-        match frozen.try_recv() {
-            Ok(block) => batch.push(frozen_block(&block.block, block.tree_roots)),
-            // Empty, closed, or lagged: all three mean "no more contiguous
-            // blocks to add right now". Closed and lagged are the outer loop's
-            // to report, and it will see them on its next `recv`.
-            Err(TryRecvError::Empty | TryRecvError::Closed | TryRecvError::Lagged(_)) => break,
+            () = async {
+                match retry {
+                    Some(wait) => tokio::time::sleep(wait).await,
+                    None => std::future::pending().await,
+                }
+            } => {}
         }
     }
-
-    batch
+    status.send_replace(report(Lifecycle::Offline, Health::Offline));
 }

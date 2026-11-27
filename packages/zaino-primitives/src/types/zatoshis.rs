@@ -16,7 +16,7 @@
 //!   `-supply ..= supply`.
 //!
 //! Summing amounts as flow and subtracting one flow total from another are
-//! relations between these types and live on them. See ADR-0013.
+//! relations between these types and live on them.
 
 mod amount;
 mod flow_sum;

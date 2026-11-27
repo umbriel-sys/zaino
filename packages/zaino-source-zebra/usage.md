@@ -1,21 +1,28 @@
 # `zaino-source-zebra` — usage
 
-The composite. Holds both Zebra adapters and implements every `zaino-source`
-port by routing each question to whichever transport can answer it.
+Everything zebra-specific below the ports: the read-state adapter over
+`zebra-state`, the quirk table that reads what zebrad answers differently from
+the zcash RPC spec, and the composite that holds both adapters and implements
+every `zaino-source` port by routing each question to whichever transport can
+answer it.
 
 ```rust
-use zaino_source_zebra::ZebraValidator;
+use zaino_source_zebra::{rpc_adapter, ZebraReadStateAdapter, ZebraValidator};
 
-// RPC only — Zaino and Zebra on different hosts
-let validator = ZebraValidator::rpc_only(addr, auth, network)?;
+// The JSON-RPC adapter, reading replies as zebrad sends them.
+let rpc = rpc_adapter(rpc_client);
 
-// RPC + read-state — same host, sharing the database
-let validator = ZebraValidator::spawn_direct(config).await?;
+// RPC only — Zaino and Zebra on different hosts.
+let validator = ZebraValidator::rpc_only(rpc);
+
+// RPC + read-state — same host, sharing the database.
+let readstate = ZebraReadStateAdapter::open(cache_dir, &network)?;
+let validator = ZebraValidator::with_read_state(rpc, readstate);
 ```
 
 ```rust
 pub struct ZebraValidator {
-    rpc: ZebraRpcAdapter,                        // always present
+    rpc: ZcashRpcAdapter,                        // always present
     readstate: Option<ZebraReadStateAdapter>,    // optional accelerator
 }
 ```
@@ -24,10 +31,53 @@ The shape is the design. The old `Fetch` / `State` enum treated the two as
 alternatives and matched on them in every method to answer two unrelated
 questions at once — *can* this transport serve the query, and *should* it. Here
 capability is structural (an adapter that cannot answer a question does not
-implement its port) and preference is a routing table (this file).
+implement its port) and preference is a routing table (`routing.rs`).
 
 `Fetch`-only and `State` are now **configurations of one type**, not variants.
 The read-state path is never the only path.
+
+Opening zebra's state read-only makes zebra create a
+`zebra-secondary_state-…` directory under the system temp directory; zebra
+removes it when the database drops.
+
+## Connecting from plain settings
+
+`ZebraValidator::connect(rpc, network, read_state)` builds the whole source
+from an RPC client config, Zaino's network kind and `ReadStateSettings`
+(zebra's state directory and its indexer gRPC address); the caller names no
+zebra type. It waits for zebra to serve a tip, adopts the network from
+zebra's own upgrade schedule (`adopt_network`: verified against the compiled
+parameters on mainnet and testnet, adopted wholesale on regtest, refused on
+a consensus branch this build does not know), launches the read-state
+syncer and waits until it holds zebra's tip, by hash.
+
+Neither wait is open-ended. `connect` fails with the cause when zebra serves
+no tip within five minutes, or when the state sits behind zebra's tip for
+five minutes without advancing (the usual cause is an unreachable indexer
+gRPC address).
+
+zebra's syncer is a task of zebra's own, and it can end (it panics on some
+faults). `connect` watches it. If it ends before the state is synced,
+`connect` opens the state and starts a syncer again, waiting 5 seconds and
+doubling to 60 between tries, for five minutes from the first time; then it
+fails with `ConnectError::SyncerKeepsEnding`, which says how often it ended,
+why the last time (the panic message), and what to check. Once connected, an
+ended syncer is reported through `SourceLifecycle::failure()` with why it
+ended: the state would no longer follow zebra, so its tip must not be served
+as current. Connecting again starts a new one. The syncer is stopped when the
+adapter shuts down or drops, and when a `connect` fails.
+`ZebraReadStateAdapter::from_service` takes the syncer's `JoinHandle` itself
+so that it can be watched. Every read of the
+state is bounded by a 120-second timeout and fails as `FailureMode::Timeout`.
+
+## The quirk table
+
+`zaino-source-zcash-rpc` reads every reply as the spec defines it and names
+no validator. What the spec leaves to the node lives here, in `quirks.rs`:
+`rpc_adapter` builds the adapter with zebrad's table, today one reading
+(zebrad 7's `-8 more than {cap} … match` result cap on the address-keyed
+methods, read as the port's `TooManyResults`). A new zebrad departure from the
+spec is a new entry here, with its test, never a branch in the adapter.
 
 ## The three routing rules
 
@@ -42,8 +92,33 @@ self.rpc.method(args)                // RPC only — the state service cannot an
   *incomplete* rather than wrong. `GetBlockByHash` is the canonical case: a
   side-chain block is not in the finalised state, and the RPC path can still
   find it. This preserves a behaviour the old connector had as an undocumented
-  per-variant difference.
-- **RPC only** for the mempool and the passthrough RPCs.
+  per-variant difference. `GetBlock` and `GetRawBlock` by height use it too:
+  the read-only state answers "no block" until it has replayed a new block's
+  whole body, while zebrad already serves it. The verbose header uses it for
+  the same reason.
+- **RPC only** for what the state service does not hold: the mempool,
+  transaction submission, node, peer and network info, and the passthrough
+  RPCs zebrad answers from elsewhere.
+
+The verbose block (`get_block_verbose`, `get_block_verbose_by_hash`) and
+`get_blockchain_info` are RPC only although zebrad's handlers build them from
+state requests. Both report the chain's value pools, and the read-only state
+does not hold them for non-finalised blocks: zebra's syncer commits those
+blocks without their deferred (lockbox) amounts, so the lockbox pool and the
+chain supply come out short, and nothing public says which blocks are
+finalised. The `getblock_parity` and `check_info` live tests catch it.
+
+### What the read-state adapter builds itself
+
+- **The compact block** (`get_compact_block`): the block from state and its
+  three tree counts, read by that block's own hash, so both are one block's;
+  the pool filter is applied as the block is projected.
+- **The verbose header** (`get_block_header`): the state requests and the
+  rules of zebrad's own `getblockheader` handler, assembled as zebrad's
+  response object and read back exactly as the JSON-RPC adapter reads
+  zebrad's reply, so both transports answer alike. Best-chain blocks only, as
+  zebrad's handler; any other block is a domain miss, which falls back to
+  RPC.
 
 ## Two places the usual preference inverts
 
@@ -66,9 +141,117 @@ cannot serve them.
 2. Pick a rule above. If none fits, say why in a comment on the impl rather
    than inventing a fourth macro.
 3. If the routing choice is not obvious from the rule, write the reason at the
-   call site. Every inverted preference in this file has one.
+   call site. Every inverted preference in `routing.rs` has one.
+
+## The read-state adapter
+
+`ZebraReadStateAdapter` (`read_state.rs`) implements the ports by reading
+Zebra's state database directly, with no RPC round trip. It requires Zaino and
+Zebra on the same host, sharing the database directory. Deployments without
+that run RPC-only, and everything still works — it is an **accelerator, not an
+alternative**.
+
+### What it implements, and what it deliberately does not
+
+It implements 23 ports: block and header reads, chain tip, address queries
+(including `GetAddressDeltas`, which zebrad has no RPC for), treestate and
+commitment trees, subtree roots, transactions, block deltas, blockchain info,
+and the block/tip subscriptions.
+
+`get_transaction` answers both verbosities for a best-chain transaction,
+building the object with zebra-rpc's own `TransactionObject`; any other (a
+mempool or side-chain transaction) falls through to the RPC client, which
+looks in the mempool first, as zebrad does.
+
+It does **not** implement the mempool ports, the passthrough ports
+(`getpeerinfo`, `getmininginfo`, `getnetworksolps`, …) or `SubscribeChainTip`.
+That is the capability model working, not a gap to fill: a state service
+**has no mempool**. An implementation here could not see unconfirmed
+transactions, so it would silently answer a different question than the one
+asked. Capability is structural: an adapter implements only the ports it can
+answer, so routing a mempool query here is a compile error rather than a
+wrong answer.
+
+Two contracts the adapter keeps so that both transports answer alike:
+
+- `GetAddressDeltas` reports receives *and* spends, as zcashd documents: a
+  spend is the consumed output's value negated, under the spending input's
+  index. Zebra's address index lists spenders, and each input's outpoint
+  names the funding transaction, which is read once per funder.
+- `GetTreestate` answers `None` for a pool whose upgrade is not active at the
+  block (Sapling, NU5 for Orchard, NU6.3 for Ironwood), the gate zebra's own
+  `z_gettreestate` applies. Zebra's state seeds every tree at genesis, so an
+  ungated read would serve an encoded empty tree where the RPC omits the pool.
+
+**Do not add a partial implementation of a port to "cover more cases".** A port
+that answers 90% of the question is worse than one that does not exist, because
+the composite can no longer tell that it needs the other transport.
+
+### `GetBlockDeltas` is the exception worth knowing about
+
+`getblockdeltas` was once on the not-implemented list, on the reasoning that it
+avoided "a second copy of logic the validator already has, for no capability
+gain". That reasoning was **false**: zebrad does not implement `getblockdeltas`
+at all. The derivation here is the only implementation a zebrad-backed
+deployment has, and the composite routes to it *first* for exactly that reason.
+
+The lesson generalises. Before declining to implement a port here on the grounds
+that the validator already does it, check that the validator actually does.
+
+### Derivations live here, and are tested here
+
+Some answers are computed rather than read: `median_time_past` over an
+11-block window, difficulty as a ratio against the network's target limit,
+prevout resolution for block deltas. These have unit tests in the adapter
+because they are the parts that can be silently wrong — a difficulty off by a
+shift produces a plausible number.
+
+### Network upgrade names
+
+Take the wire name from serde, not from `Debug`:
+
+```rust
+serde_json::to_value(upgrade)   // "Nu5"  — the wire name
+format!("{upgrade:?}")          // "NU5"  — not the wire name
+```
+
+Zebra's `Display` is its `Debug`, and neither matches what the RPC surface
+emits; the names come from the enum's serde renames. This produced a live-suite
+failure where the RPC path (which takes the name from the validator's reply) and
+this path disagreed on the same upgrade.
+
+### Zebra database version
+
+The adapter opens the state database format its `zebra-state` crate was
+built for — format **29** (`state/v29/<network>`) with zebra-state 17, the
+zebrad 7.1.0 crates. It is a read-only secondary: it never creates or
+migrates a database, it only follows the primary zebrad owns. So zebrad must
+be at least the matching release **and must already have run once** to
+migrate its state (zebrad 7 moves a compatible v28 state into `state/v29`
+automatically). Pointed at a directory holding only an older format, the
+adapter fails at open rather than serving stale data. Keep a copy of the
+previous format directory if a zebrad rollback may be needed; a newer format
+cannot be read by an older zebrad.
+
+### Address queries match zebrad 7's limits
+
+zebrad 7 caps `getaddresstxids` / `getaddressutxos` at
+`zaino_source::MAX_ADDRESS_QUERY_RESULTS` (100,000) rows. The adapter reads
+the same index directly, so it enforces the same cap — it asks for one row past
+it and answers `TooManyResults { limit }` — on address txids, utxos and deltas.
+TEX addresses are refused rather than answered empty (the index never keys on
+them). The 10,000-address and TEX checks run above the adapters, in
+`zaino-state`, so both transports see them identically.
+
+## Features
+
+- `tracing`: instruments the read-state adapter's reads.
+- `test_dependencies`: exposes the raw state handle (`ZebraValidator::read_state`,
+  `ZebraReadStateAdapter::read_state_service`) for live tests that recompute
+  expected chain data directly. Never enabled in production builds.
 
 ## Related
 
-- ADR-0008 — capability vs preference, and why the enum went.
-- `zaino-source-zebra-readstate` — what the fast path can and cannot answer.
+- [`zaino-source`](../zaino-source/usage.md) — the ports, and why capability
+  is structural and partial ports are not allowed.
+- `zaino-source-zcash-rpc` — the JSON-RPC adapter and its error classification.

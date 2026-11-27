@@ -1,0 +1,25 @@
+consumed_in = "zainod-0-11-0"
+[[changes]]
+crate = "zaino-persistence"
+kind = "feature"
+description = """
+`Storage::shared_by(backends)`: the opener announces how many backends it \
+opens in the process, before any open, so a storage with per-backend \
+resources can share them out (nothing by default)."""
+
+[[changes]]
+crate = "zaino-persistence-lsm-tree"
+kind = "fix"
+description = """
+`LsmTreeStorage { threads: None }` shares the machine's parallelism over the \
+backends `shared_by` announced, at least `MIN_SHARED_THREADS` (2) each, \
+instead of a full-size pool per backend. Measured on a 100 000-block mainnet \
+build: the pool size does not move the build rate; 2 threads per index cut \
+the process's CPU time 31 %."""
+
+[[changes]]
+crate = "zaino-chain-store-service"
+kind = "internal"
+description = """
+`ChainStore::boot` announces the resolved set's size to the storage \
+(`Storage::shared_by`) before opening the indexes."""

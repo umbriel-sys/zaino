@@ -1,0 +1,60 @@
+consumed_in = "zainod-0-11-0"
+[[changes]]
+crate = "zaino-chain"
+kind = "breaking"
+description = """
+`ChainViewError::NotServiceable` is split: `NotServed(ChainCapability)`, \
+`NotBuilt`, `Building { what, store_tip }` (retryable) and \
+`ValidatorDisabled`. Address reads refuse a range as \
+`ChainViewError::InvalidRange { start, end }` on the local and the validator \
+path alike; block ranges still run descending when inverted. A failed head \
+extension is `Fatal`; the txout set is `Building` while the store has not \
+reached the window."""
+
+[[changes]]
+crate = "zaino-chain-head"
+kind = "feature"
+description = """
+`ChainHeadError::Failed { capability, reason }`: an extension that failed and \
+is not yet rebuilt; `NotBuilt` now means not enabled."""
+
+[[changes]]
+crate = "zaino-service"
+kind = "breaking"
+description = """
+`ServiceError::Inconsistent` and `Stale` are replaced by one variant per \
+cause: `InvalidRange`, `MissingBlock`, `MissingPrevout`, `AmountOutOfRange`, \
+`HeightOverflow`, `SpendCountMismatch`, `MinedAndInMempool`, \
+`MempoolIncoherent`, `MempoolStreamLagged`, `SyncStopped`. \
+`getspentinfo` refuses a spend answer of the wrong shape instead of asking \
+the validator."""
+
+[[changes]]
+crate = "zaino-source"
+kind = "breaking"
+description = """
+`SendRawTransactionError` gains `RejectedByPolicy` (−26) and \
+`AlreadyInChain` (−27) beside `Malformed` (−22) and `Rejected` (−25), with \
+`legacy_code()` and `message()`; the zcash RPC adapter maps each code to its \
+variant."""
+
+[[changes]]
+crate = "zaino-state"
+kind = "breaking"
+description = """
+`ChainIndexRpcExt::get_tx_out_set_info` and `ZcashIndexer::get_tx_out_set_info` \
+return `TxOutSetInfo`, not `Option`: a set not built is `Unimplemented`, one \
+building `Unavailable`. Service errors keep their cause as `source`; a \
+capability not served is `Unimplemented`. `sendrawtransaction` keeps the \
+validator's rejection code and message, and refuses invalid hex with −22. \
+`GetTransaction` for an unknown txid is `NotFound`; GetBlock by hash keeps a \
+failed lookup's cause; verbose `getrawtransaction` reports a transaction it \
+cannot parse as a serialization error, not as missing."""
+
+[[changes]]
+crate = "zainod"
+kind = "breaking"
+description = """
+`TxOutSetInfoWire::Empty` and `EmptyTxOutSetInfo` are removed: \
+`gettxoutsetinfo` answers the set or an error, never `{}`. \
+`TxOutSetInfoWire::from_domain` takes a `TxOutSetInfo`."""

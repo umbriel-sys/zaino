@@ -1,31 +1,67 @@
 //! Pre-index and serving compact block types.
 //!
-//! A [`PreIndexCompactBlock`] is what the source adapter provides: block data
-//! with proofs/sigs stripped, suitable for feeding the sync engine. It does NOT
-//! contain indexed state like commitment tree sizes.
+//! A [`PreIndexCompactBlock`] is a block's own data with proofs/sigs
+//! stripped. It does NOT contain indexed state like commitment tree sizes.
 //!
 //! A [`CompactBlock`] is the serving-ready format (proto-adherent) that includes
-//! [`ChainMetadata`]. It's the OUTPUT of indexing — constructed by reading from
-//! the indexed DB, not from the source directly.
+//! [`ChainMetadata`]: read from the store, or from the validator, which
+//! answers a block and its tree sizes together.
 //!
-//! Transaction sub-types (`TransparentInput`, `SaplingOutput`, `OrchardAction`,
-//! etc.) are reused from [`super::transaction`] — no duplication.
+//! Transaction sub-types (`TransparentInput`, `SaplingOutput`, etc.) are
+//! reused from [`super::transaction`] — no duplication. An action is the one
+//! exception: a compact read may take its nullifier alone (the
+//! nullifiers-only [`PoolFilter`](super::PoolFilter)), so its compact form,
+//! [`CompactAction`], carries the output part as an `Option`.
 
 use super::{
-    BlockHash, BlockTime, ChainMetadata, CompactDifficulty, Nullifier, OrchardAction,
-    SaplingOutput, TransactionId, TransparentInput, TransparentOutput,
+    BlockHash, BlockTime, ChainMetadata, CompactCiphertext, CompactDifficulty, EphemeralKey,
+    NoteCommitment, Nullifier, OrchardAction, SaplingOutput, TransactionId, TransparentInput,
+    TransparentOutput, Zatoshis,
 };
+
+/// An Orchard-shaped action (Orchard or Ironwood) as a compact transaction
+/// carries it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CompactAction {
+    /// The note the action spends.
+    pub nullifier: Nullifier,
+    /// The note the action creates; `None` where the read took nullifiers only.
+    pub output: Option<ActionOutput>,
+}
+
+/// The output half of an action: what a wallet trial-decrypts.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ActionOutput {
+    /// The note commitment.
+    pub cmx: NoteCommitment,
+    /// The ephemeral public key.
+    pub ephemeral_key: EphemeralKey,
+    /// The first 52 bytes of the note ciphertext.
+    pub enc_ciphertext: CompactCiphertext,
+}
+
+impl From<&OrchardAction> for CompactAction {
+    fn from(action: &OrchardAction) -> Self {
+        Self {
+            nullifier: action.nullifier,
+            output: Some(ActionOutput {
+                cmx: action.cmx,
+                ephemeral_key: action.ephemeral_key,
+                enc_ciphertext: action.enc_ciphertext,
+            }),
+        }
+    }
+}
 
 // ---------------------------------------------------------------------------
 // Pre-index compact block — source adapter output
 // ---------------------------------------------------------------------------
 
-/// A compact block as received from the source, before indexing.
+/// A block's own compact data, without cumulative indexed state (tree
+/// sizes).
 ///
-/// Contains all per-block data needed to build indexes, but no cumulative
-/// indexed state (tree sizes, etc.). The sync engine consumes this type.
-///
-/// Becomes a [`CompactBlock`] after indexing adds [`ChainMetadata`].
+/// Becomes a [`CompactBlock`] once its [`ChainMetadata`] is known
+/// ([`into_compact`](Self::into_compact)).
 #[derive(Debug, Clone)]
 pub struct PreIndexCompactBlock {
     /// Block hash.
@@ -45,7 +81,7 @@ pub struct PreIndexCompactBlock {
 /// A compact transaction in the pre-index representation.
 ///
 /// Reuses existing primitives types for sub-components.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PreIndexCompactTx {
     /// Transaction hash.
     pub txid: TransactionId,
@@ -57,10 +93,90 @@ pub struct PreIndexCompactTx {
     pub sapling_nullifiers: Vec<Nullifier>,
     /// Sapling outputs — cmu + epk + enc_ciphertext head.
     pub sapling_outputs: Vec<SaplingOutput>,
-    /// Orchard actions — nullifier + cmx + epk + enc_ciphertext head.
-    pub orchard_actions: Vec<OrchardAction>,
+    /// Orchard actions — nullifier, and cmx + epk + enc_ciphertext head.
+    pub orchard_actions: Vec<CompactAction>,
     /// Ironwood actions (NU6.3) — same shape as Orchard, separate pool.
-    pub ironwood_actions: Vec<OrchardAction>,
+    pub ironwood_actions: Vec<CompactAction>,
+    /// The fee: zero for the coinbase; `None` where the provider cannot know
+    /// it (a block parsed without the outputs its inputs spend).
+    pub fee: Option<Zatoshis>,
+    /// Sapling outputs a nullifiers-only read of an included pool left out;
+    /// zero when outputs are read.
+    pub sapling_outputs_unread: u16,
+}
+
+impl PreIndexCompactTx {
+    /// With the pools `pools` leaves out cleared; under a nullifiers-only
+    /// filter the shielded outputs too, their count kept.
+    pub fn filtered(mut self, pools: super::PoolFilter) -> Self {
+        use super::ShieldedPool;
+        if !pools.includes_transparent() {
+            self.transparent_inputs.clear();
+            self.transparent_outputs.clear();
+        }
+        if !pools.includes(ShieldedPool::Sapling) {
+            self.sapling_nullifiers.clear();
+            self.sapling_outputs.clear();
+        }
+        if !pools.includes(ShieldedPool::Orchard) {
+            self.orchard_actions.clear();
+        }
+        if !pools.includes(ShieldedPool::Ironwood) {
+            self.ironwood_actions.clear();
+        }
+        if !pools.includes_outputs() {
+            // a transaction's outputs fit its size cap many times over in a u16
+            self.sapling_outputs_unread =
+                u16::try_from(self.sapling_outputs.len()).unwrap_or(u16::MAX);
+            self.sapling_outputs.clear();
+            for action in self
+                .orchard_actions
+                .iter_mut()
+                .chain(self.ironwood_actions.iter_mut())
+            {
+                action.output = None;
+            }
+        }
+        self
+    }
+
+    /// Whether anything is left in a pool the transaction was read for,
+    /// outputs a nullifiers-only read left out included (lightwalletd
+    /// serves such a transaction empty, and drops one with nothing).
+    pub fn has_pool_data(&self) -> bool {
+        self.sapling_outputs_unread > 0
+            || !self.transparent_inputs.is_empty()
+            || !self.transparent_outputs.is_empty()
+            || !self.sapling_nullifiers.is_empty()
+            || !self.sapling_outputs.is_empty()
+            || !self.orchard_actions.is_empty()
+            || !self.ironwood_actions.is_empty()
+    }
+}
+
+impl PreIndexCompactBlock {
+    /// The complete compact block: this one with its tree sizes, and each
+    /// transaction with the pools `pools` leaves out cleared. Every
+    /// transaction is kept, since position is the index.
+    pub fn into_compact(
+        self,
+        chain_metadata: ChainMetadata,
+        pools: super::PoolFilter,
+    ) -> CompactBlock {
+        CompactBlock {
+            hash: self.hash,
+            prev_hash: self.prev_hash,
+            height: self.height,
+            time: self.time,
+            bits: self.bits,
+            transactions: self
+                .transactions
+                .into_iter()
+                .map(|tx| tx.filtered(pools))
+                .collect(),
+            chain_metadata,
+        }
+    }
 }
 
 impl From<&super::Block> for PreIndexCompactBlock {
@@ -88,8 +204,16 @@ impl From<&super::transaction::Transaction> for PreIndexCompactTx {
             transparent_outputs: tx.transparent.outputs.clone(),
             sapling_nullifiers: tx.sapling.spends.iter().map(|s| s.nullifier).collect(),
             sapling_outputs: tx.sapling.outputs.clone(),
-            orchard_actions: tx.orchard.actions.clone(),
-            ironwood_actions: tx.ironwood.actions.clone(),
+            orchard_actions: tx.orchard.actions.iter().map(CompactAction::from).collect(),
+            ironwood_actions: tx
+                .ironwood
+                .actions
+                .iter()
+                .map(CompactAction::from)
+                .collect(),
+            // a parsed transaction does not hold the outputs its inputs spend
+            fee: None,
+            sapling_outputs_unread: 0,
         }
     }
 }
@@ -103,9 +227,7 @@ impl From<&super::transaction::Transaction> for PreIndexCompactTx {
 /// This is the proto-adherent `CompactBlock` format. It includes
 /// [`ChainMetadata`] (commitment tree sizes) which is cumulative indexed
 /// state — not available from the raw block data.
-///
-/// Constructed by reading from the indexed DB after sync completes.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CompactBlock {
     /// Block hash.
     pub hash: BlockHash,
@@ -127,7 +249,6 @@ pub struct CompactBlock {
 mod tests {
     use super::*;
     use crate::types::transaction::{OrchardData, Transaction};
-    use crate::types::CompactCiphertext;
 
     fn action(tag: u8) -> OrchardAction {
         OrchardAction {
@@ -145,6 +266,7 @@ mod tests {
         let tx = Transaction {
             txid: [0; 32].into(),
             transparent: Default::default(),
+            sprout: Default::default(),
             sapling: Default::default(),
             orchard: OrchardData {
                 actions: vec![action(1)],
@@ -158,7 +280,26 @@ mod tests {
 
         let compact = PreIndexCompactTx::from(&tx);
 
-        assert_eq!(compact.orchard_actions, vec![action(1)]);
-        assert_eq!(compact.ironwood_actions, vec![action(2), action(3)]);
+        let compact_action = |tag| CompactAction::from(&action(tag));
+        assert_eq!(compact.orchard_actions, vec![compact_action(1)]);
+        assert_eq!(
+            compact.ironwood_actions,
+            vec![compact_action(2), compact_action(3)]
+        );
+    }
+
+    /// A parsed action's compact form keeps every byte, output included.
+    #[test]
+    fn a_parsed_action_keeps_its_output() {
+        let compact = CompactAction::from(&action(7));
+        assert_eq!(compact.nullifier, action(7).nullifier);
+        assert_eq!(
+            compact.output,
+            Some(ActionOutput {
+                cmx: action(7).cmx,
+                ephemeral_key: action(7).ephemeral_key,
+                enc_ciphertext: action(7).enc_ciphertext,
+            })
+        );
     }
 }

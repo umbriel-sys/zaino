@@ -28,7 +28,9 @@ let mempool = core.subscriber(); // cheap, cloneable read handle
 ```
 
 `core.close()` publishes a final `Closing` update and stops the task;
-`core.status()` reports health.
+`core.status()` reports health: `Recoverable`, with the cause, while the
+source fails and the last set is served incomplete. Closing holds against a
+poll still in flight.
 
 ### Capacity control
 
@@ -61,8 +63,15 @@ let suffixes = mempool.validate_exclude_suffixes(&client_endian_suffixes)?;
 let entries = mempool.get_filtered_entries(&suffixes);
 ```
 
-Derive wire/compact forms from `entry.serialized_bytes()` / `entry.wire_bytes()`
-at your boundary — the entry holds no RPC types.
+Each entry carries its compact form (`entry.compact`), decoded once at ingest
+with `zaino-encoding` and shared by every reader: filter and encode it at your
+boundary, never re-parse the bytes. `snap.spender(&outpoint)` names the
+transaction in the set spending a transparent output, and which input does.
+
+A transaction whose bytes do not decode to its txid is not admitted: it is
+logged, listed in `snap.unadmitted()`, and the set reports
+`IncompleteUndecodable` (short, not wrong) until it leaves the validator's
+mempool.
 
 ## Consume the change feed
 

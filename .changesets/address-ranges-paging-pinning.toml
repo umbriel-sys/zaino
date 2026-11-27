@@ -1,0 +1,38 @@
+consumed_in = "zainod-0-11-0"
+[[changes]]
+crate = "zaino-service"
+kind = "breaking"
+description = """
+New `ServiceSnapshot::address_txids(addresses, start, end)`. It and \
+`address_deltas` read the height range as zebrad's `build_height_range` \
+(S-11): an absent start is genesis, an absent or zero end the tip, both clamp \
+to the tip; a start above the end is `ServiceError::InvalidRange`, which now \
+carries zebrad's message."""
+
+[[changes]]
+crate = "zaino-chain"
+kind = "fix"
+description = """
+`address_txids` reads its range as zebrad does on the local path too (#42): \
+bounds clamp to the tip and an end of 0 is the tip, where it refused a bound \
+past the tip."""
+
+[[changes]]
+crate = "zaino-state"
+kind = "breaking"
+description = """
+`getaddresstxids` and `getaddressdeltas` use zebrad's range rule; a start \
+above the end is −32602 with zebrad's message (S-11). gRPC \
+`GetTaddressTransactions` requires a start, reads an absent or zero end as the \
+tip and refuses an inverted range instead of swapping it (#42); it and \
+`GetSubtreeRoots` read one snapshot per request (#49). `GetAddressUtxos` and \
+its stream page by the request's `startHeight` and `maxEntries` (#46). \
+`GetTaddressBalanceStream` counts each address once, in one query over one \
+snapshot, and refuses more than 10,000 addresses (Q-45)."""
+
+[[changes]]
+crate = "zaino-source-mock"
+kind = "fix"
+description = """
+`get_address_txids` reads its range as zebrad does (clamped to the tip, an end \
+of 0 the tip) instead of refusing a bound past the tip (#42)."""

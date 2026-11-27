@@ -9,8 +9,8 @@ use std::sync::Arc;
 
 use arc_swap::ArcSwap;
 use tokio::sync::broadcast;
+use zaino_component::{ComponentStatus, StatusCell, StatusSource as _};
 use zaino_primitives::types::TransactionId;
-use zaino_status::{NamedAtomicStatus, StatusType};
 
 use zaino_mempool::config::MempoolConfig;
 use zaino_mempool::entry::MempoolEntry;
@@ -29,7 +29,8 @@ pub struct MempoolInfo {
     pub size: u64,
     /// Sum of serialized transaction sizes, in bytes.
     pub bytes: u64,
-    /// Approximate memory usage, in bytes (the ZIP-401 cost total).
+    /// The memory the set occupies, in bytes: each entry's allocation and
+    /// serialized bytes and the tables indexing them (C3).
     pub usage: u64,
 }
 
@@ -39,13 +40,13 @@ pub struct MempoolSubscriber {
     current: Arc<ArcSwap<MempoolSnapshot>>,
     updates: broadcast::Sender<MempoolUpdate>,
     config: MempoolConfig,
-    status: NamedAtomicStatus,
+    status: StatusCell,
 }
 
 impl std::fmt::Debug for MempoolSubscriber {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("MempoolSubscriber")
-            .field("status", &self.status.load())
+            .field("status", &self.status.status())
             .finish_non_exhaustive()
     }
 }
@@ -55,7 +56,7 @@ impl MempoolSubscriber {
         current: Arc<ArcSwap<MempoolSnapshot>>,
         updates: broadcast::Sender<MempoolUpdate>,
         config: MempoolConfig,
-        status: NamedAtomicStatus,
+        status: StatusCell,
     ) -> Self {
         Self {
             current,
@@ -71,8 +72,8 @@ impl MempoolSubscriber {
     }
 
     /// The mempool service status.
-    pub fn status(&self) -> StatusType {
-        self.status.load()
+    pub fn status(&self) -> ComponentStatus {
+        self.status.status()
     }
 
     /// The current mempool memory bound (max total ZIP-401 cost), in bytes.
@@ -94,7 +95,7 @@ impl MempoolSubscriber {
         MempoolInfo {
             size: snapshot.tx_count() as u64,
             bytes: snapshot.raw_bytes(),
-            usage: snapshot.cost_bytes(),
+            usage: snapshot.memory_bytes(),
         }
     }
 

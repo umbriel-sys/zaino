@@ -13,6 +13,11 @@ and this library adheres to Rust's notion of
 ### Removed
 ### Fixed
 
+## [0.1.2] - 2026-11-21
+### Internal
+- Denies panicking code in production.
+- A usage guide (`usage.md`); doc links that rustdoc could not resolve are plain names.
+
 ## [0.1.1] - 2026-09-26
 ### Internal
 - The published package carries a README, keywords and categories.

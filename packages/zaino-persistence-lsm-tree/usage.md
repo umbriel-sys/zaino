@@ -1,0 +1,281 @@
+# zaino-persistence-lsm-tree
+
+The on-disk backend for the `zaino-persistence` port: positional files for
+sequence namespaces, an LSM tree for map namespaces, and one checksummed
+manifest per index directory as the atomic commit point. Everything goes
+through the port; this guide covers what is specific to this backend. The
+design is in `docs/`:
+[persistence-engine.md](./docs/persistence-engine.md) (the port over the
+engine), [durability.md](./docs/durability.md) (commit point, checksums,
+recovery, failure policy), [lsm-deletes.md](./docs/lsm-deletes.md) and
+[index-data-structures.md](./docs/index-data-structures.md) (filters).
+
+## Opening a backend
+
+[`LsmTreeBackend::open`] takes an [`fs::Fs`] (use
+[`LsmTreeBackend::open_real`] for the real filesystem), the index directory
+(created if absent) and an [`LsmTreeConfig`]:
+
+- `name`, `chain`, `format` and `schema`: the index's name, the chain its
+  data belongs to (both at most 255 bytes; `chain` is opaque here, the index
+  layer names the network, its genesis hash and, on regtest, its activation
+  heights), the layout version and the index layer's `SchemaDigest` of every
+  namespace's layout (opaque here too). All four are written into the
+  manifest and checked at every open, so a directory is never read as
+  another index's, chain's, format's or layout's.
+- `namespaces`: the port's `NamespaceSpec`s. The directory remembers the ones
+  it was committed with, and an open declaring others is refused.
+- `tuning`: per-namespace [`Tuning`], how a namespace is stored, never what it
+  answers. `scope` (maps only) is the number of leading key bytes every range
+  read shares, so the map's filter skips segments without that prefix (0 =
+  point lookups over whole keys). `cache_writes` keeps written pages in the
+  page cache (by default they are dropped once synced, so bulk writes never
+  evict what readers use).
+- `lsm`: the maps' [`LsmConfig`]:
+  - `fanout`: same-tier segments merged into one (default 16, at least 2);
+  - `merge_slots`: merges doing I/O at once (default 4);
+  - `merge_mib_per_sec`: their shared bandwidth, every byte a merge reads or
+    writes included (default 200);
+  - `max_retries` (default 3, at most 6) and `cleanup_alert_bytes` (default
+    1 GiB): removing merged-away files (below);
+  - `max_merge_failures`: merges of one map that may fail in a row and be
+    retried before writes stop (default 3, at least 1; below);
+  - `spill_bytes`: segment index bytes (fences, filter fingerprints) a write
+    or merge holds in memory before spilling them to a scratch file: memory
+    against scratch I/O (default 1 MiB, at most 1 GiB);
+  - `verify_writes` (default on): every sealed segment is read back whole
+    (keys ascending, filter, decode, row digest) before its commit, O(rows)
+    CPU on the commit path (paced for merges), measured by
+    `zaino.lsm.readback_seconds`. It catches a writer bug before it is
+    committed, never a device fault (the rows come from the page cache).
+    `benches/readback.rs` pins the per-row cost.
+
+  A setting out of range refuses the open.
+- `write_buffer`: the buffered heap at which a commit writes the buffer to
+  disk. Commits below it are visible to readers at once and durable after the
+  next `flush` or the write that crosses it. `DEFAULT_WRITE_BUFFER` (64 MiB,
+  `DEFAULT_WRITE_BUFFER_MIB`) is the measured default every consumer uses.
+
+- `threads`: the size of the thread pool each backend builds at open for its
+  writes and commit checks. `None` = the machine's parallelism shared out over
+  the backends the opener announced through `Storage::shared_by` (a store:
+  its index count), at least [`MIN_SHARED_THREADS`] (2) each; the whole
+  machine when nothing was announced. Measured (5a step 6): the pool size does
+  not move the build rate, and idle pools burn CPU, so a process opening many
+  indexes should let the store share them. Merges run on their own threads.
+  An open whose pool cannot start is refused.
+- `strict_manifest_read`: the manifest is read past the page cache at open
+  (`O_DIRECT`), so a page the device never received after an unreported
+  writeback failure cannot pass as committed. A filesystem that refuses direct
+  I/O (FUSE, virtiofs, some ZFS settings) is read through the cache instead,
+  with a warning naming that one guard as lost (torn and partial manifests are
+  still detected), reported by [`LsmTreeBackend::manifest_read`]
+  ([`ManifestRead::Cached`]) and `zaino.lsm.manifest_read_cached`; tmpfs,
+  whose cache is its storage, counts as direct. With `strict_manifest_read`
+  the open is refused instead.
+
+Namespace names are `/`-separated parts of `[A-Za-z0-9_-]`, unique ignoring
+case. A map owns its directory, so no namespace may sit inside a map's path.
+`MANIFEST`, `LOCK`, `MANIFEST.creating`, `TAILS` and `REMOVING` are reserved, as are the
+Windows device names (`CON`, `PRN`, `AUX`, `NUL`, `COM0`–`COM9`, `LPT0`–`LPT9`), all ignoring
+case.
+
+[`LsmTreeStorage`] implements the port's `Storage` on an [`fs::Fs`]: index directories opened
+with one engine configuration (default tuning), the store `LOCK`, and store files written to
+`<name>.tmp`, synced and renamed in (every new directory level durable in its parent).
+
+## Removing a directory
+
+[`remove_dir_all`] deletes an index directory, refused (`WouldBlock`) while a backend holds its
+`LOCK`. It first makes a `REMOVING` marker durable, then removes and syncs every other entry,
+then the marker and the directory. A crash before the marker leaves the directory whole; after
+it, the next `remove_dir_all` or open finishes the removal, so a half-deleted directory is never
+opened as an index. Every crash point is checked in the simulated filesystem.
+
+## Opening read-only
+
+[`LsmTreeReadOnly`] (or `LsmTreeStorage::open_read_only`) reads a directory another process
+writes, taking no lock. Each refresh reads the manifest slots through the page cache, up to their
+end, and maps the files of the slot whose tip is the announced one. Files already mapped are
+shared, and checked pages are carried over where their checksums match. It never truncates or
+removes anything. A listed file missing once mapped was retired by a newer commit's merge
+(`Superseded`), unless that slot is still the newest (lost: an error).
+
+The store root holds the primary's record and running marker:
+
+```text
+<root>/
+  LOCK                the primary's exclusive lock
+  PRIMARY.lock        held by the primary alone; probed with a shared lock that is released at once
+  PRIMARY             two 64 KiB slots, rewritten in place, never synced: the primary's record
+```
+
+## On disk
+
+```text
+<dir>/
+  LOCK                exclusive lock for the backend's life
+  MANIFEST            two 1 MiB slots: the commit point
+  TAILS               two slots: each sequence file's committed tail page, restored if torn
+  <sequence>.dat      records back to back (+ <sequence>.idx end offsets if Variable)
+  <map>/<id>.seg      immutable sorted segments, one per write or merge
+  *.crc               page checksums beside every data file
+```
+
+## Limits
+
+- Final data only: nothing is ever updated or rewound. A map key is inserted
+  once and, with `deletes`, removed at most once.
+- Map keys should lead with 8 uniform bytes (a hash, a txid): the filter
+  shards on them, which keeps filter-build memory bounded.
+- The manifest slot holds about 32,000 map segments across all maps (32 bytes
+  each). Merges keep the count logarithmic; a write that would outgrow the slot
+  fails with `CommitError::ManifestFull`.
+- One backend per directory at a time (the `LOCK`).
+
+## Verifying
+
+`Backend::verify` scrubs every committed byte against its page checksums.
+[`verify_dir`] does the same offline, with no lock, so it is safe beside a live
+backend; it takes the name, chain, format and namespaces the directory was
+opened with, and a path holding no index (no `MANIFEST`) or holding another
+chain's is an error. Either covers the files committed when it started: a file
+a merge retires meanwhile is skipped, not reported lost. Either returns the
+port's `Verification` with the checked commit's tip and bytes; anything but a
+clean report means stop, verify the disk, and resync.
+
+## Metrics
+
+Call [`describe_metrics`] once after installing a recorder, and use
+[`METRIC_BUCKETS`] and [`LSM_METRIC_BUCKETS`] for the histograms' buckets.
+Every metric is labelled `index` (the index name); `zaino.lsm.*` metrics also
+carry `set` (the map namespace), and the per-tier ones (`segments`, `merging`,
+`merge_duration_seconds`) `tier`:
+
+- `zaino.lsm.commit_seconds`, `commit_bytes_total`: durable writes (a full
+  buffer written and synced).
+- `zaino.lsm.commit_check_seconds`, `commit_buffer_seconds`: each buffered
+  commit's two phases, the checks (shapes, then every new key of a checked map
+  looked up on disk; a `unique` map's puts are checked against the buffer
+  only) and the rows entered into the buffer; what a build's per-row cost is
+  made of.
+- `zaino.lsm.snapshots_live`, `snapshot_heap_bytes`: memory held by
+  snapshots (below).
+- `zaino.lsm.manifest_read_cached`: 1 where the manifest could only be read
+  through the page cache at open (above).
+- `zaino.lsm.segments`, `merging`, `stall_at`, `live_rows`: each map's size
+  tiers, the segment count at which a write waits on a merge, and the keys it
+  holds (rows less twice the tombstones).
+- `zaino.lsm.batch_rows_total`, `merge_rows_total`, `merge_bytes_total`,
+  `merge_cancelled_total`, `merge_duration_seconds`,
+  `stall_duration_seconds`, `readback_seconds`: write amplification, merge
+  cost and the sealed-segment read-back.
+- `zaino.lsm.leftover_bytes`, `merge_launch_failed_total`,
+  `unlinked_mapped_bytes`: cleanup and disk space (below).
+
+[`disk_bytes`] sums every file under a directory, for comparison with the
+footprint the port reports.
+
+## Memory held by snapshots
+
+Every reader and open `scan_range` holds the state published when it was taken.
+Commits since then copy the buffer nodes they change, and the old copies stay
+allocated until the last reader of that state is gone. This memory is outside
+`write_buffer`, which bounds only the current buffer. It grows with the number
+of distinct states held at once and the commits between them, and is freed as
+long-lived readers and scans finish.
+
+Two gauges, labelled by index, show it:
+
+- `zaino.lsm.snapshots_live`: published states alive (the current one plus
+  those still held)
+- `zaino.lsm.snapshot_heap_bytes`: their buffers' estimated heap, an upper
+  bound (states share most nodes)
+
+## Disk space held by readers
+
+A merge's input segments are deleted once the merged segment is committed, but
+a reader still holding an older state keeps them mapped, so their disk space is
+freed only when the last such reader is gone.
+`zaino.lsm.unlinked_mapped_bytes`, labelled by namespace, shows those bytes.
+
+## Failed writes and merges
+
+A write that fails refuses every later write (`CommitError::Poisoned`) until
+the backend is reopened; readers keep reading the last published state. A
+failed write may still have reached the disk: after reopening, the tip is the
+last acknowledged commit or the one that failed.
+
+A background merge that fails, or fails to start, fails the next write before
+that write touches anything: nothing of it is applied, and the merge's partial
+files are removed. What follows depends on why it failed:
+
+- an I/O error a retry can clear (a create, write or read failing, a full disk,
+  a thread that could not start): `CommitError::MergeFailed`, writes stay open
+  and the merge runs again later;
+- a corrupt or contract-breaking input, which no retry can merge:
+  `CommitError::Corrupted`, writes refused until the directory is verified and
+  resynced;
+- a failed `fsync` of its output, a failed read-back of what it wrote, or a
+  bug: `CommitError::WriteFailed`, writes refused.
+
+After `max_merge_failures` retryable failures in a row on one tier of a map
+(a merge that lands on that tier resets its count; other tiers' merges never
+do), the next one refuses writes as
+`CommitError::OutOfSpace` if the disk or quota is full, else as
+`CommitError::WriteFailed`.
+
+Corruption found while checking a commit's keys fails it with
+`CommitError::Corrupted` and refuses later writes.
+
+Files a merge replaced are removed after the commit that replaced them, as are
+scratch files a write or merge spilled to and could not remove. A removal that
+fails never fails the commit: every failing file is retried
+together, up to `max_retries` rounds (10, 20, 40 ms … apart, so a write pauses
+at most their sum), then once at every later write, with
+`zaino.lsm.leftover_bytes` showing what is left. Each such write logs a
+warning, or an error once the leftovers across all maps reach
+`cleanup_alert_bytes` (default 1 GiB), since the disk may be failing. An open
+that cannot remove them is refused.
+
+## Memory-mapped reads and SIGBUS
+
+Committed files are read through read-only memory maps: zero-copy, no system
+call per read, and no locks, which is what lets many concurrent readers scale.
+The cost is one failure mode that cannot be turned into an error:
+
+- **SIGBUS kills the process** if a mapped page cannot be read. That happens
+  when a committed file is truncated by something outside this crate, or when
+  the disk returns a read error while the kernel faults a page in.
+- This crate never truncates a committed file, sealed segments are made
+  read-only (`0o444`), and the directory's `LOCK` keeps other Zaino processes
+  out. A process running as root, or one that changes the permissions back, can
+  still truncate them.
+
+A read-only backend in another process maps only bytes a durable manifest
+seals, and the writer never truncates below those. The writer may unlink a
+retired segment, or a whole directory it rebuilds, while a reader maps it:
+Linux and macOS keep an unlinked file's pages mapped. Both processes must
+share one machine, because mappings of one file stay coherent only through
+one page cache. Network filesystems and VM file sharing are not supported.
+
+Operate accordingly: keep the data directory on a dedicated, healthy disk, and
+never modify, copy over or truncate its files while a backend has it open.
+After a SIGBUS, check the disk, verify the directory, and resync if it reports
+damage.
+
+## Reopening after a failed write
+
+When the kernel fails to flush a write, it may keep the unflushed bytes in the
+page cache as if they were written. Open therefore reads the `MANIFEST` (the
+commit point) from the device itself, bypassing the cache: every file the
+on-disk manifest lists was flushed successfully before it was written. This is
+guaranteed on Linux (`O_DIRECT`). On tmpfs, which has no device behind its
+cache, the manifest is read plainly; on any other Linux filesystem that refuses
+`O_DIRECT` the open is refused. On macOS it is best effort (`F_NOCACHE` leaves
+pages already cached in place), so restart the process after a failed write
+there.
+
+An open refused because the directory belongs to another name, format or
+namespaces is `OpenError::Mismatch`; one that finds committed data lost or
+corrupt is `OpenError::Corrupted`.

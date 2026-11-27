@@ -1,6 +1,6 @@
 [package]
 name = "zaino-source-zebra"
-version = "0.2.2"
+version = "0.3.0"
 edition.workspace = true
 authors.workspace = true
 repository.workspace = true
@@ -12,15 +12,40 @@ categories.workspace = true
 description = "Composite Zebra source: routes each query to the transport that can answer it."
 
 [dependencies]
-zaino-primitives.workspace = true
+zaino-primitives = { workspace = true, features = ["zebra"] }
 zaino-source.workspace = true
-zaino-source-zebra-rpc.workspace = true
-zaino-source-zebra-readstate.workspace = true
-tokio = { workspace = true, features = ["sync"] }
+zaino-source-zcash-rpc.workspace = true
+zaino-rpc.workspace = true
+zebra-chain = { workspace = true }
+zebra-state = { workspace = true }
+zebra-rpc.workspace = true
+tokio = { workspace = true, features = ["rt", "sync", "time"] }
+tower = { workspace = true, features = ["util"] }
+tracing = { workspace = true, optional = true }
+chrono.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+zaino-consensus.workspace = true
+# Not used by this crate's code: it fixes a feature-unification bug that
+# breaks every cold build reaching `zebra-state`. `libzcash_script` builds
+# with bindgen 0.73, whose `runtime` feature makes clang-sys' stubs
+# dynamic-loading for the whole graph; `rocksdb` builds with bindgen 0.72
+# without it, so nothing loads libclang and the first stub panics. Naming
+# the feature here puts it back. Remove once `rocksdb` enables a
+# `bindgen-*` feature itself or the two bindgen versions converge.
+librocksdb-sys = { version = "0.17.3", features = ["bindgen-runtime"] }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["test-util", "macros", "rt"] }
+zcash_address.workspace = true
+zcash_protocol.workspace = true
 
 [features]
-# Forwards the state-handle escape hatch used by live tests.
-test_dependencies = ["zaino-source-zebra-readstate/test_dependencies"]
+tracing = ["dep:tracing"]
+
+# Exposes the raw state handle for live tests that recompute expected chain
+# data directly. Never enabled in production builds.
+test_dependencies = []
 
 [lints.rust]
 unsafe_code = "forbid"

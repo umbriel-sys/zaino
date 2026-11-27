@@ -1,0 +1,25 @@
+consumed_in = "zainod-0-11-0"
+[[changes]]
+crate = "zaino-chain-head-service"
+kind = "internal"
+description = """
+The internal `_extensions` feature is removed: `transactions`, `tree_state` \
+and `history_tree` each pull in `zaino-indexes` and `zaino-persistence` \
+themselves, so no feature combination builds the shared extension code with \
+nothing to run. Each port wrapper and graph accessor is compiled only with \
+the extensions that use it. A built extension that fails to read answers \
+`ReadFailed`, not `NotBuilt`."""
+
+[[changes]]
+crate = "zaino-chain-head"
+kind = "breaking"
+description = """
+`ChainHeadAddressEffects::local_spends` is renamed `spends` (every spend \
+inside the window, as the store's half names it). `ChainHeadError::ReadFailed` \
+for a built capability whose read failed."""
+
+[[changes]]
+crate = "zaino-chain"
+kind = "fix"
+description = """
+A chain-head `ReadFailed` is `ChainViewError::Fatal`."""

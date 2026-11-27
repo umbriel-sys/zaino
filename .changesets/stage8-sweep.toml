@@ -1,0 +1,136 @@
+consumed_in = "zainod-0-11-0"
+# Stage 8: the repository sweep. Ownership moves to Umbriel Systems Ltd
+# (https://github.com/umbriel-sys/zaino); docs, CI and tooling are rebuilt
+# around the v2 tree.
+
+[[changes]]
+crate = "zainod"
+kind = "breaking"
+description = """
+`GetLightdInfo.vendor` is "Umbriel Systems ZainoD". The startup banner no \
+longer names a donation address. The container image is built from \
+`docker/Dockerfile`; its entrypoint reads `ZAINO_PERSISTENCE__PATH` and \
+`ZAINO_SERVE__JSONRPC__COOKIE_DIR`, and the build takes \
+`ZAINO_GIT_COMMIT_ID` / `ZAINO_GIT_BRANCH` as build arguments."""
+migration = """
+A client that matched the old vendor string matches the new one. Build the \
+image with `-f docker/Dockerfile` from the repository root; replace the old \
+`ZAINO_STORAGE__DATABASE__PATH` and `ZAINO_JSON_SERVER_SETTINGS__COOKIE_DIR` \
+variables with the new ones."""
+
+[[changes]]
+crate = "zaino-state"
+kind = "breaking"
+description = """
+`GetLightdInfo.vendor` is "Umbriel Systems ZainoD". `ChainIndexSourcePorts` \
+and `FinalisedSourceCaps` no longer require `OneShotGetTransaction`, which \
+nothing behind them called. `z_validate_address`'s deprecation note names \
+`zaino_address::DEPRECATION_NOTICE`."""
+migration = """
+Code that relied on either bound to imply `OneShotGetTransaction` names that \
+port itself."""
+
+[[changes]]
+crate = "zainod"
+kind = "fix"
+description = """
+`GetLightdInfo` refuses (`INTERNAL`) a validator whose upgrade schedule has \
+no Sapling activation instead of reporting activation height 0."""
+
+[[changes]]
+crate = "zaino-state"
+kind = "fix"
+description = """
+`get_lightd_info` returns an error for a validator whose upgrade schedule \
+has no Sapling activation instead of reporting activation height 0."""
+
+[[changes]]
+crate = "zaino-source-macros"
+kind = "internal"
+description = """
+A usage guide (`usage.md`); doc links that rustdoc could not resolve are \
+plain names."""
+
+[[changes]]
+crate = "zaino-logging"
+kind = "internal"
+description = """
+The guide states the default filter, where each format writes, and that \
+`init` returns an error when a subscriber is already set."""
+
+[[changes]]
+crate = "zaino-proto"
+kind = "internal"
+description = """
+The crate README is folded into the guide: the vendored protocol, how to \
+adopt an upstream release, when the generated code is rebuilt."""
+
+[[changes]]
+crate = "zaino-source"
+kind = "internal"
+description = "Documentation and comments only: rustdoc builds without warnings."
+
+[[changes]]
+crate = "zaino-source-zcash-rpc"
+kind = "internal"
+description = "Documentation and comments only; the examples name the right package."
+
+[[changes]]
+crate = "zaino-source-zebra"
+kind = "internal"
+description = "Documentation only."
+
+[[changes]]
+crate = "zaino-rpc"
+kind = "internal"
+description = "Documentation and comments only."
+
+[[changes]]
+crate = "zaino-primitives"
+kind = "internal"
+description = "Documentation and comments only: rustdoc builds without warnings."
+
+[[changes]]
+crate = "zaino-address"
+kind = "internal"
+description = "Documentation and comments only."
+
+[[changes]]
+crate = "zaino-persistence"
+kind = "internal"
+description = "A manifest comment only."
+
+[[changes]]
+crate = "zaino-indexes"
+kind = "internal"
+description = "The guide names `frontier_from_legacy_tree` where it lives, in `zaino-primitives`."
+
+[[changes]]
+crate = "zaino-mempool"
+kind = "internal"
+description = "Documentation only: a broken link fixed, a stale design note removed."
+
+[[changes]]
+crate = "zaino-chain"
+kind = "internal"
+description = "A manifest comment only."
+
+[[changes]]
+crate = "zaino-chain-store"
+kind = "internal"
+description = "Documentation only: rustdoc builds without warnings."
+
+[[changes]]
+crate = "zaino-chain-head"
+kind = "internal"
+description = "Documentation only: rustdoc builds without warnings."
+
+[[changes]]
+crate = "zaino-chain-head-service"
+kind = "internal"
+description = "Documentation only: rustdoc builds without warnings."
+
+[[changes]]
+crate = "zaino-service"
+kind = "internal"
+description = "Documentation only: rustdoc builds without warnings."

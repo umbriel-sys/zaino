@@ -51,6 +51,25 @@
 //! lifecycle are likewise above this layer, and reach the validator through
 //! `zaino-source` directly rather than through here.
 
+// production code never panics: no indexing, unchecked arithmetic or panicking calls
+#![cfg_attr(
+    not(test),
+    deny(
+        clippy::unwrap_used,
+        clippy::expect_used,
+        clippy::panic,
+        clippy::unreachable,
+        clippy::todo,
+        clippy::unimplemented,
+        clippy::indexing_slicing,
+        clippy::arithmetic_side_effects,
+        clippy::string_slice,
+        clippy::get_unwrap,
+        clippy::let_underscore_must_use,
+        let_underscore_drop
+    )
+)]
+
 pub mod block;
 pub mod capability;
 pub mod error;
@@ -63,21 +82,27 @@ pub use capability::{
     Answerable, ChainCapability, ServedCapabilities, ServiceabilityManifest, ServiceableRange,
 };
 pub use error::{ChainViewError, Result};
+#[cfg(feature = "frames")]
+pub use ports::CompactFrameRead;
 pub use ports::{
     AddressRead, BlockRead, ChainView, ChainViewSnapshot, CompactBlockRead, ForkReconcile,
-    SpendRead, TransactionRead, TreestateRead, TxOutSetRead,
+    HistoryTreeRead, PrevoutRead, SpendRead, TransactionRead, TreestateRead, TxOutSetRead,
 };
 pub use source::ChainViewSource;
-pub use types::{
-    BlockId, ChainScope, ChainTxPosition, Locator, RawTransaction, SpendStatus,
-    TransactionLocations,
-};
+pub use types::{BlockId, ChainScope, ChainTxPosition, Locator, SpendStatus, TransactionLocations};
 
 pub mod composer;
+pub mod store_indexes;
 
 pub use composer::{
     ChainViewComposer, ChainViewComposerBuilder, ChainViewConfig, ChainViewSync, ComposerSnapshot,
 };
+pub use store_indexes::StoreIndexes;
 
-#[cfg(feature = "testing")]
-pub mod testing;
+// The integration suites' rig, for the unit tests that need the real services
+// (the read-order hook is test-only, so its test lives inside the crate).
+#[cfg(test)]
+extern crate self as zaino_chain;
+#[cfg(test)]
+#[path = "../tests/common/mod.rs"]
+mod common;

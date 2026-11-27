@@ -6,19 +6,23 @@ own terms, independent of how any of it is transported or stored.
 ## The one rule
 
 **This crate depends only on `thiserror` and the librustzcash
-protocol-specification crates (`zcash_address`, `zcash_protocol`).** Keeping the
+protocol-specification crates (`zcash_address`, `zcash_protocol`)**, plus
+optional features a consumer opts into (`zebra`, `serde`,
+`txout-commitment`). Keeping the
 list this short is not an accident of the current implementation — it is the
 property that makes every other crate able to depend on it. Adding a dependency
-here adds it to `zaino-source`, both adapters, `zaino-state`, `zaino-serve` and
-`zainod` at once, so each addition has to earn its place.
+here adds it to `zaino-source`, both adapters, `zaino-state` and `zainod` at
+once, so each addition has to earn its place.
 
 The rule is about *what a dependency lets in*, not a fixed name list. Two things
 must never enter through it, because both would let some other layer's decisions
 leak into the domain vocabulary:
 
-- **No serialization framework.** In particular there is **no serde**. A serde
-  derive in this crate would let the wire format and the domain model start
-  deciding each other, which is exactly what ADR-0009 exists to prevent.
+- **No serialization framework on the domain types.** A serde derive on a
+  chain type would let the wire format and the domain model start deciding
+  each other: the served schema lives in the serving layer. The optional
+  `serde` feature covers only the configuration vocabulary (`Network`,
+  `ActivationHeights`).
 - **No node, transport, or storage implementation.** A validator client, a gRPC
   or JSON-RPC stack, a database — these belong at the boundaries that own them,
   never in the vocabulary every boundary shares.
@@ -30,7 +34,9 @@ A plain protocol enum may appear where it names the protocol concept directly:
 `TransparentAddress::network()` returns `zcash_protocol`'s `NetworkType` rather
 than a Zaino copy of it. `zcash_address` is the first such dependency, used by
 [`TransparentAddress`](src/types/transparent_address.rs) to decide whether a
-string is a valid transparent address. The alternative was to hand-roll
+string is a valid transparent address, and by
+`TransparentAddress::from_standard_script` to encode the address a P2PKH or
+P2SH script pays. The alternative was to hand-roll
 Base58Check and SHA-256 here, which buys risk, not ownership: the address
 encoding *is* the protocol, and the spec-steward's parser is the spec artifact,
 so re-implementing it would mean maintaining a second, drift-prone copy of a
@@ -42,8 +48,8 @@ Serialization, by contrast, lives at the boundary that owns the format:
 
 | direction | who owns the format |
 |---|---|
-| validator reply → domain | `zaino-source-zebra-rpc/src/parse.rs` |
-| domain → served JSON | `zaino-serve/src/rpc/jsonrpc/wire/` |
+| validator reply → domain | `zaino-source-zcash-rpc/src/parse.rs` |
+| domain → served JSON | `zainod/src/serve/jsonrpc/wire/` |
 | domain → disk | `zaino-state`'s `Persistent*` types |
 | domain → gRPC | `zaino-proto`, generated from `.proto` |
 
@@ -60,11 +66,34 @@ use zaino_primitives::types::rpc::{BlockDeltas, MiningInfo, NodeInfo, PeerInfo};
   quantity family `SingleBlockWork` / `AbsoluteChainWork`, the zatoshi quantity
   family `Zatoshis` / `ZatoshisFlowSum` / `SignedZatoshis`, and the
   transparent-script family `Script` / `ScriptType` / `classify_script` /
-  `TransparentAddressKey` / `TransparentAddress` (all four families below).
+  `TransparentAddressKey` / `TransparentAddress` (all four families below);
+  `Transaction::pool_balances` gives each shielded pool's value balance as a
+  `PoolBalances`. `MerkleRoot::of(txids)` is the transaction merkle root
+  (SHA-256d pairs, an odd level's last node paired with itself), and
+  `Block::merkle_root_matches` checks a block's header against its
+  transactions: the one check a fetched block gets whatever its source.
+- `types` — compact blocks: `CompactBlock` / `PreIndexCompactTx`, whose
+  actions are `CompactAction { nullifier, output: Option<ActionOutput> }`
+  (`None` where a nullifiers-only read left the output unread; a parsed
+  action converts with `Some`); each compact transaction's `fee` (zero for the
+  coinbase, `None` from a parsed block, which lacks the outputs its inputs
+  spend); its `sapling_outputs_unread`, the Sapling outputs a nullifiers-only
+  read of an included pool left out (0 otherwise); and `PoolFilter`, which
+  pools a compact read
+  includes and whether it reads outputs or only nullifiers.
+  `PreIndexCompactTx::filtered(pools)` clears what a filter leaves out and
+  `has_pool_data` says whether anything is left to serve.
+  `PreIndexCompactBlock::into_compact(chain_metadata, pools)` makes the
+  complete `CompactBlock` from a block's own data, its tree sizes and a
+  filter; `ChainMetadata` converts from a verbose block's `BlockTreeSizes`.
 - `types::rpc` — the response shapes for passthrough RPCs, in domain
   vocabulary rather than any interface's: `BlockDeltas`, `BlockchainInfo`,
   `ChainTip`, `MiningInfo`, `NodeInfo`, `PeerInfo`, `SpentInfo`, `TxOut`,
-  `BlockSubsidy`.
+  `BlockSubsidy`, `StandardFee`, and `TransactionVerbose`, a verbose
+  `getblock`'s transaction object.
+- `types::BlockVerbose` — the validator's verbose `getblock` answer, every
+  field, its transactions as ids or `TransactionVerbose` objects per the
+  asked `BlockVerbosity` (1, 2, or 3 with prevouts and fees).
 
 ### Bytes are allowed; JSON is not
 
@@ -76,6 +105,12 @@ because they *are* domain facts, not because they are a convenient blob.
 A `serde_json::Value` is a different thing entirely and does not belong here.
 If a type needs one, the type belongs at a boundary.
 
+A serialized commitment tree is zcashd's legacy `CommitmentTree` encoding
+(`z_gettreestate`'s `finalState`). `frontier_from_legacy_tree` reads it into a
+`NoteFrontier` and `legacy_tree_from_frontier` writes one back exactly as
+zebrad does (all 31 parent slots), so a treestate built from an index's
+frontier is byte-equal to the validator's.
+
 ## Invariants live in constructors
 
 Types enforce what they claim:
@@ -83,7 +118,7 @@ Types enforce what they claim:
 ```rust
 let h = Height::try_from(800_000u32)?;   // rejects above 2^31 - 1
 let z = Zatoshis::new(21_000_000)?;      // rejects out-of-range amounts
-let b = Block::try_new(header, txs, chain_metadata)?; // rejects an empty tx list
+let b = Block::try_new(header, txs, size)?; // rejects an empty tx list; size = parsed bytes' length
 let c = CompactCiphertext::try_new(&bytes)?; // rejects anything but exactly 52 bytes
 let a = TransparentAddress::try_new(s)?; // rejects non-transparent / undecodable
 ```
@@ -114,8 +149,7 @@ already done the work.
 ## The zatoshi quantity family
 
 Three types share the zatoshi unit but carry different invariants, so summing
-and differencing amounts is done through them rather than a bare integer. See
-ADR-0013 for the doctrine.
+and differencing amounts is done through them rather than a bare integer.
 
 | type | range | is |
 |---|---|---|
@@ -181,7 +215,7 @@ rule and they have to apply the same one.
 | `Script` | the raw locking bytes, as they appear in the output |
 | `ScriptType` | which standard form those bytes take — `P2PKH`, `P2SH`, or `NonStandard` |
 | `TransparentAddressKey` | the pair an index keys by: 20 bytes plus the form they came from |
-| `TransparentAddress` | the encoded, network-specific string a user sees |
+| `TransparentAddress` | the encoded, network-specific string a user sees; `key()` is the key an index holds it under |
 
 `classify_script` is the rule itself, and `TransparentAddressKey::from_script`
 is the door producers should use:
@@ -200,11 +234,12 @@ if key.is_standard() { /* reconstructible as an address, given a network */ }
 ```
 
 The rule is **total**: every script gets a key, including scripts with no
-address at all. An index that refused non-standard outputs would answer "no
-history" for an address that has some, so `NonStandard` is a real answer rather
-than a failure. What an index then *does* with it is the index's business —
-Zaino's transparent-address history keys them, while its UTXO-set accumulator
-excludes them, mirroring zcashd's `IsUnspendable`.
+address at all, so classification never fails. What an index does with a
+`NonStandard` key is its own business: Zaino's address history (I-10) skips
+them, since no address names such a script (as zcashd's address index does),
+while the UTXO-set commitment counts them, as zcashd's `gettxoutsetinfo`
+does. New code keys raw scripts with `TransparentAddressKey::from_standard_script`,
+which has no legacy 21-byte arm.
 
 ### Why the key is not the address
 
@@ -254,8 +289,8 @@ and why the three are distinct.
 
 `to_be_bytes` renders the 32 big-endian byte form and `from_be_bytes` reads it
 back, refusing an over-width or all-zero value with `ChainWorkBytesError`; the
-store's row is that form. Nothing reads chainwork off the wire, since Zebra does
-not report it. For an integer you already hold, use
+store's row is that form, and so is zcashd's `chainwork` (Zebra reports none).
+For an integer you already hold, use
 `AbsoluteChainWork::new(NonZeroU128)` or `SingleBlockWork::new(NonZeroU128)`.
 
 The `types::work` module documentation states the full algebra, including what
@@ -267,7 +302,7 @@ anchor-relative work, which is a third quantity.
 The nBits encoding from the block header is its own validated type,
 `CompactDifficulty`, and the whole bits → target → work conversion is native
 to this crate — the domain owns its arithmetic, and consensus implementations
-serve as *differential-test oracles* (`zaino-convert-zebra` sweeps the
+serve as *differential-test oracles* (the `zebra` module's tests sweep the
 pipeline against zebra across the encoding space) rather than as dependencies.
 
 Construction is only through checked doors — `try_from_bits(u32)` for a value
@@ -334,11 +369,57 @@ presents:
 let displayed = { let mut b = <[u8; 32]>::from(hash); b.reverse(); hex::encode(b) };
 ```
 
-Tree roots and nonces are **not** reversed for display. If you are unsure which
-a field is, check the wire module that serves it — `wire/treestate.rs` and
-`wire/subtrees.rs` each state their choice and pin it with a test.
+Treestate and subtree roots are **not** reversed for display. A block header's
+`blockcommitments`, `finalsaplingroot` and nonce are, by zebrad's rules:
+`rpc::HeaderDisplay::new` renders the three for `getblockheader` and
+`getblock`. If you are unsure which a field is, check the wire module that
+serves it — each states its choice and pins it with a test.
+
+## The network kind and a regtest schedule
+
+`Network` is the kind alone (`Mainnet`, `PubTestnet`, `Regtest`): activation
+heights are the validator's facts, adopted at spawn, so a configured value
+cannot carry them. `ActivationHeights` is the schedule a regtest is launched
+with, or that a fixture chain is its own. Both derive `Serialize` /
+`Deserialize` under the `serde` feature (off by default), and under `zebra`
+gain the named conversions `Network::from_zebra`, `ActivationHeights::to_zebra`
+and `to_regtest_network`.
+
+## UTXO-set commitment: feature `txout-commitment`
+
+Off by default; it adds `blake2`. `zaino_primitives::txout_commitment` is the
+one definition of `gettxoutsetinfo`'s set and `hash_serialized`. The set is
+zcashd's: every unspent transparent output except those `is_unspendable`
+names (`OP_RETURN` first, or a script past `MAX_SCRIPT_SIZE`), so `txouts`,
+`transactions` and `total_amount` match zcashd. The hash is Zaino's own: the
+XOR of `BLAKE2b-256(TXOUT_SET_DOMAIN_TAG || canonical_entry)` per output,
+keyed by `commitment_address(script)`. `TxOutSetAccumulator` keeps it and the
+totals incrementally. Every store and the chain head compute it through this
+module; `zaino-chain-store` re-exports it.
+
+```rust,ignore
+let mut set = TxOutSetAccumulator::empty();
+if !is_unspendable(script) {
+    set.apply_added_output(&outpoint, value, &commitment_address(script))?; // and apply_removed_output
+}
+```
+
+## Zebra conversions: feature `zebra`
+
+Off by default, so the crate stays dependency-free for everyone else. With it,
+`zaino_primitives::zebra` holds the `zebra_chain` → domain conversions:
+`block_from_zebra`, `header_from_zebra`, `transaction_from_zebra`, each a
+named function returning `Result<_, ConvertError>` and never a `From`, because
+the zebra → domain step is where a foreign value is validated (a height past
+the maximum, an amount out of range, a block with no coinbase). Turn the
+feature on only in a crate that holds zebra types itself: the source adapters
+and the test code that builds blocks from zebra fixtures.
+
+The module also holds the differential tests that keep this crate independent
+of any node implementation: `consensus_agreement` checks `zaino-consensus`'s
+constants against zebra's, and `difficulty_agreement` sweeps the
+`CompactDifficulty` pipeline against zebra's across the encoding space.
 
 ## Related
 
-- ADR-0008 — validator access is a set of single-question ports over these types.
 - `zaino-source` — the ports themselves.

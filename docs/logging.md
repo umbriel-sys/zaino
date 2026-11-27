@@ -1,90 +1,44 @@
-# Logging Configuration
+# Logging
 
-Zaino provides flexible logging with three output formats and configurable verbosity levels.
+For operators. Logging is configured from the environment when `zainod`
+starts; the developer side is in
+[`zaino-logging`'s guide](../packages/zaino-logging/usage.md).
 
-## Environment Variables
+## Environment variables
 
-| Variable | Values | Default | Description |
-|----------|--------|---------|-------------|
-| `RUST_LOG` | Filter string | `zaino=info,zainod=info` | Log level filter |
-| `ZAINOLOG_FORMAT` | `stream`, `tree`, `json` | `stream` | Output format |
-| `ZAINOLOG_COLOR` | `true`, `false`, `auto` | `true` | ANSI color output |
+| Variable | Values | Default | Effect |
+| --- | --- | --- | --- |
+| `RUST_LOG` | a tracing filter | `zaino=info,zainod=info,zainodlib=info` | which targets log, at which level |
+| `ZAINOLOG_FORMAT` | `stream`, `tree`, `json` | `stream` | output format |
+| `ZAINOLOG_COLOR` | `true`, `false`, `auto` | `true` | ANSI colour; `auto` detects a terminal |
+| `ZAINOLOG_LOCATION` | `true` | off | adds each event's source `file:line` |
 
-## Log Formats
+Unset, `RUST_LOG` shows Zaino's own crates only. `RUST_LOG=info` includes
+every crate, zebra's among them. A panic is always logged, as an error event
+at its origin, whatever the filter.
 
-### Stream (default)
-Flat chronological output with timestamps. Best for general use and piping to files.
-```
-14:32:01.234  INFO zaino_state::indexer: Starting indexer
-14:32:01.456  INFO zaino_state::indexer: Connected to validator
-```
+## Formats
 
-### Tree
-Hierarchical span-based output showing call structure. Best for debugging complex flows.
-```
-indexer
-├─ INFO Starting indexer
-└─ validator_connection
-   └─ INFO Connected to validator
-```
+| Format | Shape | Written to |
+| --- | --- | --- |
+| `stream` | events in time order, each with its time, level, target and fields | standard output |
+| `tree` | events nested under their spans, for following one request or one sync step | standard error |
+| `json` | one JSON object per line with an RFC 3339 timestamp, for log aggregation | standard output |
 
-### JSON
-Machine-parseable output. Best for log aggregation systems (ELK, Loki, etc).
-```json
-{"timestamp":"2024-01-15T14:32:01.234Z","level":"INFO","target":"zaino_state::indexer","message":"Starting indexer"}
-```
+## Examples
 
-## Usage Examples
-
-### Local Development
-
-```bash
-# Default logging (stream format, zaino crates only at INFO level)
-zainod start
-
-# Tree format for debugging span hierarchies
+```sh
+zainod start                                              # stream, Zaino's crates at INFO
+RUST_LOG=zaino=debug,zainod=debug,zainodlib=debug zainod start
+RUST_LOG=info zainod start                                # every crate, zebra included
+RUST_LOG="zaino_service=debug,zebra_state=warn" zainod start
+ZAINOLOG_FORMAT=json zainod start >> /var/log/zainod.json
 ZAINOLOG_FORMAT=tree zainod start
-
-# Debug level for zaino crates
-RUST_LOG=zaino=debug,zainod=debug zainod start
-
-# Include zebra logs
-RUST_LOG=info zainod start
-
-# Fine-grained control
-RUST_LOG="zaino_state=debug,zaino_serve=info,zebra_state=warn" zainod start
-
-# Disable colors (for file output)
-ZAINOLOG_COLOR=false zainod start 2>&1 | tee zainod.log
-```
-
-### Tests
-
-The test environment passes logging variables through:
-
-```bash
-# Default (stream format)
-cargo nextest run
-
-# Tree format in tests
-ZAINOLOG_FORMAT=tree cargo nextest run
-
-# Debug logging in tests
-RUST_LOG=debug ZAINOLOG_FORMAT=tree cargo nextest run
-
-# JSON output for parsing test logs
-ZAINOLOG_FORMAT=json cargo nextest run 2>&1 | jq .
-```
-
-### Production
-
-```bash
-# JSON for log aggregation
-ZAINOLOG_FORMAT=json ZAINOLOG_COLOR=false zainod start
-
-# Structured logging to file
-ZAINOLOG_FORMAT=json ZAINOLOG_COLOR=false zainod start 2>> /var/log/zainod.json
-
-# Minimal logging
 RUST_LOG=warn zainod start
+```
+
+The same variables apply to the tests:
+
+```sh
+RUST_LOG=debug ZAINOLOG_FORMAT=tree cargo nextest run
 ```

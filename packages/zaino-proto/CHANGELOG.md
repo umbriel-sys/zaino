@@ -13,6 +13,26 @@ and this library adheres to Rust's notion of
 ### Removed
 ### Fixed
 
+## [0.7.0] - 2026-11-21
+### Added
+- Feature `zaino-primitives`: `compact::{compact_block_to_wire, compact_tx_to_wire, pool_filter_from_wire}`, and `write_compact_block` / `compact_block_len`, a direct writer byte-equal to prost's encoding. Fees are served (saturated to `u32`, unset where unknown); tree sizes are zero only for nullifiers-only reads.
+- `proto/light_client.proto` (`zaino.lightclient.v1.LightClientService`): `GetBlockHeaders(BlockRange) returns (stream BlockHeader)`, Zaino's own service beside the lightwalletd protocol.
+- `LightClientService::GetHistoryProof(HistoryProofRequest) returns (HistoryProof)`, with `HistoryNode`.
+### Changed
+- A compact fee over `u32` is sent unset (0), no longer saturated (C5, D-60 (c)). New `compact::whole_compact_block_to_wire`: the block with every transaction kept, as a single-block read serves it.
+- The vendored lightwallet-protocol is pulled to upstream v0.6.0 (`299805c1`), adding `CompactTxStreamer.GetStandardFee` and `StandardFee`. The directory is re-added as a proper `git subtree`, so `git subtree pull` works again.
+  _Migration:_ Implementations of the generated `compact_tx_streamer_server::CompactTxStreamer` trait must add `get_standard_fee`.
+- The crate names no zebra type: `blockid_to_hashorheight` is removed and the `zebra-state` / `zebra-chain` dependencies are gone (the `heavy` feature now only finds `protoc`).
+- `compact_block_to_nullifiers` is removed: nullifier responses are read under `PoolFilter::nullifiers_only`. A transaction whose only data is unread Sapling outputs is served empty at its index.
+- `prune_compact_block` is removed: compact blocks are filtered as they are read (`PoolFilter`, `compact_block_to_wire`).
+- dependency `zaino-primitives` 0.3.0→0.4.0 crossed the requirement `^0.3.0`
+### Fixed
+- `proto::utils::prune_compact_block` is restored unchanged (R-1): it was removed with zainodb but is part of the released public API.
+### Internal
+- Declares `librocksdb-sys` with `bindgen-runtime`, which fixes a cold build of the workspace. Two bindgen major versions share one `clang-sys`: the newer enables its `runtime` feature for the whole graph, while rocksdb's older one re-enables neither of librocksdb-sys' `bindgen-*` features, so its `ensure_libclang_is_loaded` compiles to a no-op and the first stub reached panics. Remove once rocksdb enables one itself, or the two bindgen versions converge.
+- Denies panicking code in production.
+- The crate README is folded into the guide: the vendored protocol, how to adopt an upstream release, when the generated code is rebuilt.
+
 ## [0.6.1] - 2026-09-26
 ### Added
 - Add the `zaino.index.v1.IndexedTipService` protocol with the `SubscribeIndexedTips` server-streaming call.

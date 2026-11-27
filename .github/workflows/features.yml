@@ -1,0 +1,28 @@
+name: Each feature compiles
+
+# Started by hand (about 77 checks): before a release, or after a change to features.
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  features:
+    name: Each feature compiles
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: Swatinem/rust-cache@v2
+
+      - uses: taiki-e/install-action@cargo-hack
+
+      - run: cargo hack check --locked --workspace --each-feature --lib --bins --tests
+        env:
+          RUSTFLAGS: -D warnings
+
+      # Recorder, admin listener & metric registration contracts compile only under `prometheus`
+      - uses: taiki-e/install-action@nextest
+
+      - run: cargo nextest run --locked -p zainod --features prometheus --no-fail-fast

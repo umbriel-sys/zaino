@@ -1,0 +1,53 @@
+consumed_in = "zainod-0-11-0"
+[[changes]]
+crate = "zaino-chain"
+kind = "feature"
+description = """
+`PrevoutRead::previous_outputs`: the output each outpoint names, from the \
+window's blocks else the store's I-03 + I-04; local only, refused across a \
+hole. Reported by the new `ChainCapability::Prevouts` and offered by \
+`ChainViewComposerBuilder::serving_prevouts`."""
+
+[[changes]]
+crate = "zaino-chain"
+kind = "fix"
+description = """
+K-01: the local address reads bound their scan. The store and the window \
+share one budget of `ChainViewConfig::max_address_scan_rows` rows (default \
+400,000, `with_max_address_scan_rows`); past it the query is `Rejected` \
+before more is held, where it was materialised whole and counted after."""
+
+[[changes]]
+crate = "zaino-chain-store"
+kind = "breaking"
+description = """
+`TransparentHistoryQuery` gains `limit`, the most rows `address_effects` \
+reads; past it the read is refused with the new \
+`ChainStoreError::TooManyRows`."""
+
+[[changes]]
+crate = "zaino-chain-store-service"
+kind = "fix"
+description = """
+`address_effects` stops at the query's row limit instead of reading every \
+row."""
+
+[[changes]]
+crate = "zaino-chain-head"
+kind = "breaking"
+description = """
+`TransparentHistoryQuery` gains `limit`; past it `address_effects` refuses \
+with the new `ChainHeadError::TooManyRows`."""
+
+[[changes]]
+crate = "zaino-chain-head-service"
+kind = "fix"
+description = """
+The window's `address_effects` stops at the query's row limit, reported as \
+`TooManyRows` rather than a read failure."""
+
+[[changes]]
+crate = "zaino-state"
+kind = "internal"
+description = """
+A store `TooManyRows` maps to an invalid argument."""

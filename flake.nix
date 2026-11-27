@@ -17,10 +17,6 @@
   # nix build .#zainod — build the binary (output at `./result/bin/zainod`)
   # nix develop — enter a dev shell with the pinned Rust toolchain and build deps
 
-
-  # TODO: nixConfig (extra-substituters + extra-trusted-public-keys)
-  #       set once build-cache is setup
-
   outputs = { self, nixpkgs, flake-utils, crane, fenix }:
     let
       mkCraneLib = pkgs:
@@ -81,11 +77,6 @@
             cargo-make
             shellcheck
             rust-analyzer
-
-            # Integration tests
-            kind
-            kubectl
-            openshift
           ];
 
           env = commonArgs.env // {
@@ -94,6 +85,6 @@
           };
         };
 
-        formatter = pkgs.nixfmt-rfc-style;
+        formatter = pkgs.nixfmt;
       });
 }

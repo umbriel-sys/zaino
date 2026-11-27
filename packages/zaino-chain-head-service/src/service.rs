@@ -20,8 +20,9 @@
 //!
 //! # Who picks the tip
 //!
-//! The source does. Retained work only checks the source's answer; see
-//! [`TipSelection`] and the crate's `usage.md`.
+//! The heaviest retained chain; on equal work, the validator's tip. A
+//! validator tip lighter than a retained branch is reported in the status and
+//! counted; see the crate's `usage.md`.
 //!
 //! # Advancing is not an operation
 //!
@@ -34,30 +35,29 @@
 
 use std::{
     fmt,
-    sync::{Arc, Mutex},
+    sync::{Arc, Mutex, PoisonError},
     time::Duration,
 };
 
 use arc_swap::ArcSwap;
-use tokio::{
-    sync::{broadcast, watch},
-    task::JoinHandle,
-};
+use futures::StreamExt as _;
+use tokio::{sync::watch, task::JoinHandle};
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, info, instrument, warn};
 use zaino_chain_head::{
     ChainHeadBlock, ChainHeadBlockSource, ChainHeadConfig, ChainHeadSnapshot as _,
 };
-use zaino_component::{ComponentName, ComponentStatus, Health, Lifecycle, StatusSource};
+use zaino_component::{
+    ComponentName, ComponentStatus, Health, Lifecycle, StatusCell, StatusSource,
+};
 use zaino_primitives::types::{
     BlockHash, BlockRef, ChainStateEpoch, Height, RelativeChainWork, TreeRoots,
 };
-use zaino_status::{NamedAtomicStatus, StatusType};
 
 use crate::{
     error::{ChainHeadAdvanceError, ChainHeadInitError},
     graph::{ChainGraph as _, NotChildOfTip, NotOnBestChain},
-    snapshot::MapBackedSnapshot,
+    snapshot::PersistentSnapshot,
     subscriber::ChainHeadSubscriber,
 };
 
@@ -78,32 +78,12 @@ const COMPONENT: &str = "ChainHead";
 /// reorg it is sized for without this.
 const RETENTION_MARGIN: u32 = 10;
 
-/// What decides the best chain when the source's tip and retained work disagree.
-///
-/// A policy, not a capability: both arms run the same comparison after every
-/// advance, and differ only in what they do when a retained block outweighs the
-/// tip.
+/// The validator's tip and the heavier retained branch the head follows.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum TipSelection {
-    /// The source's tip is the best chain. A heavier retained block is logged
-    /// and left where it is.
-    Source,
-    /// The heaviest retained block is the best chain, even when the source has
-    /// moved its tip elsewhere.
-    #[cfg_attr(
-        not(test),
-        expect(dead_code, reason = "a selectable policy; only tests select it")
-    )]
-    HeaviestRetained,
+struct TipDisagreement {
+    validator: BlockRef,
+    heavier: BlockRef,
 }
-
-/// How many frozen blocks the handoff channel buffers before a slow consumer
-/// starts missing them.
-///
-/// A consumer keeping up needs one slot; this leaves room for a store that
-/// pauses briefly without it having to rebuild the gap. Beyond that it learns
-/// it lagged and rebuilds, which it can always do.
-const FROZEN_CHANNEL_CAPACITY: usize = 256;
 
 /// The bounded non-finalised head of the chain, kept current with a validator.
 ///
@@ -116,20 +96,35 @@ pub struct ChainHeadService<S: ChainHeadBlockSource> {
     /// This lock should not be exposed to consumers. Rather, clone the Arc and
     /// offer that. This means we can overwrite the arc without interfering with
     /// readers, who will hold a stale copy.
-    current: Arc<ArcSwap<MapBackedSnapshot>>,
+    current: Arc<ArcSwap<PersistentSnapshot>>,
     updates: watch::Sender<ChainStateEpoch>,
-    frozen: broadcast::Sender<ChainHeadBlock>,
-    status: NamedAtomicStatus,
+    status: StatusCell,
     cancel: CancellationToken,
     task: Mutex<Option<JoinHandle<()>>>,
     config: ChainHeadConfig,
-    tip_selection: TipSelection,
+    /// Whether the validator's side-chain tips have been laid down (HEAD-2).
+    seeded: std::sync::atomic::AtomicBool,
+    /// The extensions the builder enabled (D-50), with their ports.
+    #[cfg(any(
+        feature = "transactions",
+        feature = "tree_state",
+        feature = "history_tree"
+    ))]
+    extensions: Option<crate::extension::Enabled>,
+    /// Whether the extensions' first fold has been started: the blocks are
+    /// published, and `Ready`, before it.
+    #[cfg(any(
+        feature = "transactions",
+        feature = "tree_state",
+        feature = "history_tree"
+    ))]
+    folding: std::sync::atomic::AtomicBool,
 }
 
 impl<S: ChainHeadBlockSource> std::fmt::Debug for ChainHeadService<S> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("ChainHeadService")
-            .field("status", &self.status.load())
+            .field("status", &self.status.status())
             .field("best_tip", &self.current.load().best_tip())
             .finish_non_exhaustive()
     }
@@ -164,11 +159,41 @@ impl<S: ChainHeadBlockSource> ChainHeadService<S> {
         config: ChainHeadConfig,
         cancel: CancellationToken,
     ) -> Result<Arc<Self>, ChainHeadInitError> {
-        let service = Self::anchored(source, config, TipSelection::Source, cancel).await?;
+        Self::builder(source, config, cancel).spawn().await
+    }
+
+    /// A service built step by step: the extensions it folds (D-50), then
+    /// [`spawn`](ChainHeadBuilder::spawn).
+    pub fn builder(
+        source: Arc<S>,
+        config: ChainHeadConfig,
+        cancel: CancellationToken,
+    ) -> ChainHeadBuilder<S> {
+        ChainHeadBuilder {
+            source,
+            config,
+            cancel,
+            #[cfg(any(
+                feature = "transactions",
+                feature = "tree_state",
+                feature = "history_tree"
+            ))]
+            extensions: None,
+        }
+    }
+
+    /// Anchors, then starts the writer task.
+    async fn started(builder: ChainHeadBuilder<S>) -> Result<Arc<Self>, ChainHeadInitError> {
+        let service = Self::anchored(builder).await?;
 
         let worker = Arc::clone(&service);
-        let handle = tokio::spawn(async move { worker.run().await });
-        *service.task.lock().expect("chain head task mutex poisoned") = Some(handle);
+        let status = service.status.clone();
+        let handle = tokio::spawn(zaino_component::supervised(
+            service.cancel.clone(),
+            async move { worker.run().await },
+            move |reason| status.fail_unless_closing(reason),
+        ));
+        *service.task.lock().unwrap_or_else(PoisonError::into_inner) = Some(handle);
 
         Ok(service)
     }
@@ -189,19 +214,9 @@ impl<S: ChainHeadBlockSource> ChainHeadService<S> {
         config: ChainHeadConfig,
         cancel: CancellationToken,
     ) -> Result<Arc<Self>, ChainHeadInitError> {
-        Self::anchored(source, config, TipSelection::Source, cancel).await
-    }
-
-    /// [`spawn_without_writer`](Self::spawn_without_writer) under a chosen
-    /// [`TipSelection`].
-    #[cfg(test)]
-    pub(crate) async fn spawn_without_writer_selecting(
-        source: Arc<S>,
-        config: ChainHeadConfig,
-        tip_selection: TipSelection,
-        cancel: CancellationToken,
-    ) -> Result<Arc<Self>, ChainHeadInitError> {
-        Self::anchored(source, config, tip_selection, cancel).await
+        Self::builder(source, config, cancel)
+            .spawn_without_writer()
+            .await
     }
 
     /// Advances the graph by one iteration and publishes the result.
@@ -215,13 +230,23 @@ impl<S: ChainHeadBlockSource> ChainHeadService<S> {
     }
 
     /// Everything [`spawn`](Self::spawn) does except start the task.
-    async fn anchored(
-        source: Arc<S>,
-        config: ChainHeadConfig,
-        tip_selection: TipSelection,
-        cancel: CancellationToken,
-    ) -> Result<Arc<Self>, ChainHeadInitError> {
-        let status = NamedAtomicStatus::new(COMPONENT, StatusType::Syncing);
+    async fn anchored(builder: ChainHeadBuilder<S>) -> Result<Arc<Self>, ChainHeadInitError> {
+        let ChainHeadBuilder {
+            source,
+            config,
+            cancel,
+            #[cfg(any(
+                feature = "transactions",
+                feature = "tree_state",
+                feature = "history_tree"
+            ))]
+            extensions,
+        } = builder;
+        let status = StatusCell::new(
+            ComponentName(COMPONENT),
+            Lifecycle::Syncing,
+            Health::Healthy,
+        );
 
         let snapshot = anchor_with_retry(&source, &config, &cancel).await?;
         info!(
@@ -234,18 +259,27 @@ impl<S: ChainHeadBlockSource> ChainHeadService<S> {
             generation: 0,
             best_tip: snapshot.best_tip(),
         });
-        let (frozen, _) = broadcast::channel(FROZEN_CHANNEL_CAPACITY);
-
         let service = Arc::new(Self {
             source,
             current: Arc::new(ArcSwap::from_pointee(snapshot)),
             updates,
-            frozen,
             status,
             cancel,
             task: Mutex::new(None),
             config,
-            tip_selection,
+            seeded: std::sync::atomic::AtomicBool::new(false),
+            #[cfg(any(
+                feature = "transactions",
+                feature = "tree_state",
+                feature = "history_tree"
+            ))]
+            extensions,
+            #[cfg(any(
+                feature = "transactions",
+                feature = "tree_state",
+                feature = "history_tree"
+            ))]
+            folding: std::sync::atomic::AtomicBool::new(false),
         });
         // Still `Syncing`: the anchor is the window's floor, not its tip, so a
         // reader served now would see a head up to `max_depth` below the
@@ -263,14 +297,13 @@ impl<S: ChainHeadBlockSource> ChainHeadService<S> {
         ChainHeadSubscriber::new(
             Arc::clone(&self.current),
             self.updates.subscribe(),
-            self.frozen.clone(),
             self.status.clone(),
         )
     }
 
     /// The runtime's current status.
     pub fn status(&self) -> ComponentStatus {
-        component_status(&self.status)
+        self.status.status()
     }
 
     /// Stops the writer task.
@@ -287,12 +320,13 @@ impl<S: ChainHeadBlockSource> ChainHeadService<S> {
     /// abort so `Closing` is observable on every handle regardless of when the
     /// task dies.
     pub fn shutdown(&self) {
-        self.status.store(StatusType::Closing);
+        self.status.set(Lifecycle::Closing, Health::Healthy);
         self.cancel.cancel();
+        // a poisoned lock still holds the handle: abort it all the same
         if let Some(handle) = self
             .task
             .lock()
-            .expect("chain head task mutex poisoned")
+            .unwrap_or_else(PoisonError::into_inner)
             .take()
         {
             handle.abort();
@@ -332,7 +366,7 @@ impl<S: ChainHeadBlockSource> ChainHeadService<S> {
                     }
                 }
                 Err(error) => {
-                    consecutive_failures += 1;
+                    consecutive_failures = consecutive_failures.saturating_add(1);
                     record_sync_failures(consecutive_failures, backoff);
                     if consecutive_failures >= self.config.max_consecutive_failures() {
                         warn!(
@@ -340,15 +374,26 @@ impl<S: ChainHeadBlockSource> ChainHeadService<S> {
                             attempts = consecutive_failures,
                             "ChainHead giving up on the validator; last published snapshot is now stale",
                         );
-                        self.status.apply(|s| next_status(s, TickOutcome::GaveUp));
+                        let reason = format!(
+                            "gave up on the validator after {consecutive_failures} attempts: {error}"
+                        );
+                        match error {
+                            ChainHeadAdvanceError::SourceUnavailable(_) => {
+                                self.status.exhausted_unless_closing(reason);
+                            }
+                            ChainHeadAdvanceError::InconsistentSource(_)
+                            | ChainHeadAdvanceError::ReorgFailure(_) => {
+                                self.status.fail_unless_closing(reason);
+                            }
+                        }
                         break;
                     }
                     warn!(%error, attempts = consecutive_failures, "ChainHead failed to advance; retrying");
-                    self.status.apply(|s| next_status(s, TickOutcome::Retrying));
+                    record(&self.status, TickOutcome::Retrying);
                     if sleep_or_cancel(backoff, &self.cancel).await.is_break() {
                         break;
                     }
-                    backoff = (backoff * 2).min(self.config.max_backoff());
+                    backoff = backoff.saturating_mul(2).min(self.config.max_backoff());
                 }
             }
         }
@@ -404,20 +449,98 @@ impl<S: ChainHeadBlockSource> ChainHeadService<S> {
         // for a same-height reorg, which costs a round trip per poll for an
         // answer that cannot have changed.
         if tip == previous.best_tip() {
+            if !self.seeded.load(std::sync::atomic::Ordering::Acquire) {
+                let next = self.seed_side_tips((*previous).clone()).await?;
+                self.mark_fresh();
+                self.publish_snapshot(&previous, next);
+                return Ok(());
+            }
+            // the store moved under an unchanged head: the extensions catch up
+            #[cfg(any(
+                feature = "transactions",
+                feature = "tree_state",
+                feature = "history_tree"
+            ))]
+            if let Some(enabled) = &self.extensions {
+                if crate::extension::store_moved(enabled, previous.extensions()) {
+                    let mut next = (*previous).clone();
+                    let slots =
+                        crate::extension::advance(enabled, previous.extensions(), &next).await;
+                    next.set_extensions(slots);
+                    self.mark_fresh();
+                    self.publish_snapshot(&previous, next);
+                    return Ok(());
+                }
+            }
             self.mark_fresh();
             return Ok(());
         }
 
-        let next = self.next_graph(&previous, tip.height).await?;
-        self.mark_fresh();
+        let (next, disagreement) = self.next_graph(&previous, tip.height).await?;
+        let next = self.seed_side_tips(next).await?;
+        #[cfg(any(
+            feature = "transactions",
+            feature = "tree_state",
+            feature = "history_tree"
+        ))]
+        let (previous, next, disagreement) = match &self.extensions {
+            Some(enabled) => {
+                let first = !self.folding.swap(true, std::sync::atomic::Ordering::AcqRel);
+                let (previous, mut next, disagreement) = if first {
+                    // the blocks are served, and `Ready`, before the first
+                    // fold: starting up never waits on the extensions
+                    self.mark(disagreement);
+                    self.publish_snapshot(&previous, next);
+                    let published = self.current.load_full();
+                    let next = (*published).clone();
+                    (published, next, None)
+                } else {
+                    (previous, next, disagreement)
+                };
+                let slots = crate::extension::advance(enabled, previous.extensions(), &next).await;
+                next.set_extensions(slots);
+                if first {
+                    self.publish_snapshot(&previous, next);
+                    return Ok(());
+                }
+                (previous, next, disagreement)
+            }
+            None => (previous, next, disagreement),
+        };
+        self.mark(disagreement);
         self.publish_snapshot(&previous, next);
         Ok(())
+    }
+
+    /// The status of an advance: fresh, or diverged from the validator's tip.
+    fn mark(&self, disagreement: Option<TipDisagreement>) {
+        match disagreement {
+            Some(disagreement) => self.mark_diverged(disagreement),
+            None => self.mark_fresh(),
+        }
     }
 
     /// Publishes the [`TickOutcome::Advanced`] transition before the snapshot
     /// swap, so no reader can observe a fresh snapshot under a stale `Syncing`.
     fn mark_fresh(&self) {
-        self.status.apply(|s| next_status(s, TickOutcome::Advanced));
+        record(&self.status, TickOutcome::Advanced);
+    }
+
+    /// Advanced onto a branch heavier than the validator's tip: `Ready` but
+    /// `Recoverable`, naming both tips, and counted.
+    fn mark_diverged(&self, disagreement: TipDisagreement) {
+        metrics::counter!(crate::metric_names::CHAIN_HEAD_TIP_DISAGREEMENTS_TOTAL).increment(1);
+        self.status.degraded_unless_closing(
+            Lifecycle::Ready,
+            format!(
+                "the validator's tip {} at {} is lighter than the retained branch at {} \
+                 ({}); following the heavier",
+                disagreement.validator.hash,
+                disagreement.validator.height,
+                disagreement.heavier.height,
+                disagreement.heavier.hash,
+            ),
+        );
     }
 
     /// Builds the graph as it should be at `chain_height`.
@@ -428,9 +551,9 @@ impl<S: ChainHeadBlockSource> ChainHeadService<S> {
     /// intermediates.
     async fn next_graph(
         &self,
-        previous: &MapBackedSnapshot,
+        previous: &PersistentSnapshot,
         chain_height: Height,
-    ) -> Result<MapBackedSnapshot, ChainHeadAdvanceError> {
+    ) -> Result<(PersistentSnapshot, Option<TipDisagreement>), ChainHeadAdvanceError> {
         // Anchor floor: the chain head must never start more than the
         // configured depth below the chain tip. Previously this took the
         // greater of the finalised database's height and this floor; with the
@@ -441,7 +564,7 @@ impl<S: ChainHeadBlockSource> ChainHeadService<S> {
         let mut graph = if previous.best_tip().height < anchor_height {
             // The chain moved further than the window covers. Re-anchor rather
             // than walking the gap one block at a time.
-            MapBackedSnapshot::from_initial_block(
+            PersistentSnapshot::from_initial_block(
                 anchor_block(self.source.as_ref(), anchor_height).await?,
             )
         } else {
@@ -453,44 +576,59 @@ impl<S: ChainHeadBlockSource> ChainHeadService<S> {
         // must be rewritten to match
         //
         // see https://github.com/ZcashFoundation/zebra/issues/9541
-        while u32::from(graph.best_tip().height) < u32::from(chain_height) {
-            let next = next_height(graph.best_tip().height);
-            // Both reads address the best-chain block at `next`, so they are
-            // independent and run concurrently; the hash check below closes
-            // the reorg race the concurrency opens.
-            let (block, roots) = tokio::join!(
-                self.block_at_height(next),
-                self.source.get_commitment_tree_roots_by_height(next),
-            );
-            let Some(block) = block? else {
-                // Past the tip; the roots result is dropped unexamined, since
-                // its `HeightNotFound` there is expected, not a failure.
-                break;
-            };
+        //
+        // Reads run `fetch_concurrency` heights ahead of the link and arrive
+        // in order; each height's block and roots are independent reads. The
+        // link stays sequential, and a reorg drops everything in flight: those
+        // reads were addressed by height on a chain that just changed.
+        'build: while u32::from(graph.best_tip().height) < u32::from(chain_height) {
+            let first = next_height(graph.best_tip().height);
+            let heights = std::iter::successors(Some(first), |height| Some(next_height(*height)))
+                .take_while(|height| *height <= chain_height);
+            let mut fetched = futures::stream::iter(heights)
+                .map(|height| async move {
+                    tokio::join!(
+                        self.block_at_height(height),
+                        self.source.get_commitment_tree_roots_by_height(height),
+                    )
+                })
+                .buffered(self.config.fetch_concurrency().get());
 
-            let parent_hash = block.header.prev_hash;
-            if parent_hash == graph.best_tip().hash {
-                // Normal chain progression
-                let roots = match roots {
-                    Ok((roots_hash, roots)) if roots_hash == block.header.hash => roots,
-                    // A reorg swapped the best-chain block between the two
-                    // reads, or the height-addressed read failed; the hash we
-                    // hold is authoritative, so refetch by it.
-                    _ => tree_roots(self.source.as_ref(), block.header.hash).await?,
+            while let Some((block, roots)) = fetched.next().await {
+                let Some(block) = block? else {
+                    // Past the tip; the roots result is dropped unexamined, since
+                    // its `HeightNotFound` there is expected, not a failure.
+                    break 'build;
                 };
-                let chainblock =
-                    chain_head_block(block, roots, ParentWork::Retained(graph.tip_block().work))?;
-                info!(
-                    height = u32::from(chainblock.height()),
-                    hash = %chainblock.hash(),
-                    "Syncing block"
-                );
-                extend(&mut graph, chainblock)?;
-            } else {
-                // There's been a reorg. The fresh block is the new chaintip; we
-                // work backwards from it and update heights_to_hashes with it
-                // and all its parents.
-                self.handle_reorg(&mut graph, &block).await?;
+
+                let parent_hash = block.header.prev_hash;
+                if parent_hash == graph.best_tip().hash {
+                    // Normal chain progression
+                    let roots = match roots {
+                        Ok((roots_hash, roots)) if roots_hash == block.header.hash => roots,
+                        // A reorg swapped the best-chain block between the two
+                        // reads, or the height-addressed read failed; the hash we
+                        // hold is authoritative, so refetch by it.
+                        _ => tree_roots(self.source.as_ref(), block.header.hash).await?,
+                    };
+                    let chainblock = chain_head_block(
+                        block,
+                        roots,
+                        ParentWork::Retained(graph.tip_block().work),
+                    )?;
+                    info!(
+                        height = u32::from(chainblock.height()),
+                        hash = %chainblock.hash(),
+                        "Syncing block"
+                    );
+                    extend(&mut graph, chainblock)?;
+                } else {
+                    // There's been a reorg. The fresh block is the new chaintip; we
+                    // walk back from it to the fork, rewind the trunk there (the
+                    // displaced blocks become a branch), then fetch afresh.
+                    self.handle_reorg(&mut graph, &block).await?;
+                    continue 'build;
+                }
             }
         }
 
@@ -504,23 +642,78 @@ impl<S: ChainHeadBlockSource> ChainHeadService<S> {
         // the blocks that crossed the seam this iteration. Trimming first would
         // remove them before they could be handed off.
 
-        // Check the source's tip against retained work; `tip_selection`
-        // decides what a disagreement does.
-        let heaviest = graph.heaviest_block();
-        if heaviest.hash() != graph.best_tip().hash {
-            match self.tip_selection {
-                TipSelection::Source => warn!(
-                    tip = ?graph.best_tip(),
-                    heavier = ?heaviest.reference,
-                    "a retained block outweighs the source's tip; following the source"
-                ),
-                TipSelection::HeaviestRetained => {
-                    let heaviest = heaviest.clone();
-                    self.handle_reorg(&mut graph, &heaviest).await?;
-                }
-            }
+        // The heaviest retained chain is the best chain; on equal work the
+        // validator's tip stays (the trunk wins ties).
+        let validator_tip = graph.best_tip();
+        let heaviest = graph.heaviest_block().clone();
+        if heaviest.hash() == validator_tip.hash {
+            return Ok((graph, None));
         }
+        warn!(
+            validator = ?validator_tip,
+            heavier = ?heaviest.reference,
+            "a retained branch outweighs the validator's tip; following the heavier"
+        );
+        self.handle_reorg(&mut graph, &heaviest).await?;
+        Ok((
+            graph,
+            Some(TipDisagreement {
+                validator: validator_tip,
+                heavier: heaviest.reference,
+            }),
+        ))
+    }
 
+    /// Once, after the first advance: lays down each fully validated
+    /// side-chain tip the validator lists that forks inside the window, as a
+    /// retained branch. A validator that does not list tips (zebrad) is not
+    /// asked again; a transport failure retries with the next advance.
+    async fn seed_side_tips(
+        &self,
+        mut graph: PersistentSnapshot,
+    ) -> Result<PersistentSnapshot, ChainHeadAdvanceError> {
+        use std::sync::atomic::Ordering;
+        use zaino_primitives::types::rpc::ChainTipStatus;
+
+        if self.seeded.load(Ordering::Acquire) {
+            return Ok(graph);
+        }
+        let tips = match self.source.get_chain_tips().await {
+            Ok(tips) => tips,
+            Err(zaino_source::QueryError::Domain(zaino_source::GetChainTipsError::Unsupported)) => {
+                self.seeded.store(true, Ordering::Release);
+                return Ok(graph);
+            }
+            Err(error) => return Err(advance_error(error, "chain_tips")),
+        };
+        let floor = u32::from(graph.lowest_retained_height());
+        let best = graph
+            .block_by_hash(&graph.best_tip().hash)
+            .cloned()
+            .ok_or_else(|| {
+                ChainHeadAdvanceError::ReorgFailure("the best tip is not retained".to_string())
+            })?;
+        for tip in tips {
+            let forks_in_window = u32::from(tip.height)
+                .checked_sub(tip.branch_len)
+                .is_some_and(|fork| fork >= floor);
+            if tip.status != ChainTipStatus::ValidFork
+                || !forks_in_window
+                || graph.block_by_hash(&tip.hash).is_some()
+            {
+                continue;
+            }
+            let block = self.block_at_hash(tip.hash).await?.ok_or_else(|| {
+                ChainHeadAdvanceError::InconsistentSource(format!(
+                    "validator lists the tip {} but does not serve it",
+                    tip.hash
+                ))
+            })?;
+            // onto the side branch, then back: it stays as a retained branch
+            self.handle_reorg(&mut graph, &block).await?;
+            self.handle_reorg(&mut graph, &best).await?;
+        }
+        self.seeded.store(true, Ordering::Release);
         Ok(graph)
     }
 
@@ -532,7 +725,7 @@ impl<S: ChainHeadBlockSource> ChainHeadService<S> {
     /// rather than in call frames, so its depth costs heap and not stack.
     async fn handle_reorg(
         &self,
-        graph: &mut MapBackedSnapshot,
+        graph: &mut PersistentSnapshot,
         block: &impl Block,
     ) -> Result<ChainHeadBlock, ChainHeadAdvanceError> {
         let mut branch: Vec<BranchBlock> = Vec::new();
@@ -593,7 +786,7 @@ impl<S: ChainHeadBlockSource> ChainHeadService<S> {
     /// rollback, produces no such block — this is what sees those.
     async fn check_for_nonhigher_reorgs(
         &self,
-        graph: &mut MapBackedSnapshot,
+        graph: &mut PersistentSnapshot,
     ) -> Result<(), ChainHeadAdvanceError> {
         let tip = graph.best_tip();
         let mut target_height = tip.height;
@@ -613,7 +806,9 @@ impl<S: ChainHeadBlockSource> ChainHeadService<S> {
                 return Ok(());
             }
             target_height = height_below(target_height, 1);
-            if u32::from(target_height) + self.max_retained_depth() < u32::from(tip.height) {
+            if u32::from(target_height).saturating_add(self.max_retained_depth())
+                < u32::from(tip.height)
+            {
                 return Err(ChainHeadAdvanceError::ReorgFailure(
                     "reorg detection stepped below the retained window".to_string(),
                 ));
@@ -626,26 +821,9 @@ impl<S: ChainHeadBlockSource> ChainHeadService<S> {
     /// A plain `store`: the writer task is the only writer, so there is nothing
     /// to lose a compare-and-swap race against. One store per iteration is what
     /// makes a published snapshot always whole.
-    fn publish_snapshot(&self, previous: &MapBackedSnapshot, mut next: MapBackedSnapshot) {
+    fn publish_snapshot(&self, previous: &PersistentSnapshot, mut next: PersistentSnapshot) {
         let (stale_tip, new_tip) = (previous.best_tip(), next.best_tip());
         let tip_changed = new_tip != stale_tip;
-
-        // Blocks that crossed the consensus seam during this iteration are now
-        // beyond the reach of any reorg, so they can be handed to a store. The
-        // seam sits at the configured depth; the retention floor is lower, so
-        // a frozen block is still retained for a while after it is emitted.
-        let frozen: Vec<ChainHeadBlock> = if self.frozen.receiver_count() > 0 {
-            let was_frozen_below = height_below(stale_tip.height, self.config.max_depth());
-            let now_frozen_below = height_below(new_tip.height, self.config.max_depth());
-            next.best_chain()
-                .filter(|block| {
-                    block.height() > was_frozen_below && block.height() <= now_frozen_below
-                })
-                .cloned()
-                .collect()
-        } else {
-            Vec::new()
-        };
 
         // Read from the snapshot being installed: the fork point is the first
         // ancestor of the old tip that the *new* chain still calls canonical.
@@ -656,11 +834,8 @@ impl<S: ChainHeadBlockSource> ChainHeadService<S> {
         // Read beside the fork point, so both describe the same pre-trim graph
         let retained_floor = next.lowest_retained_height();
 
-        // Trim only now. The handoff above reads the blocks it emits out of the
-        // graph, so a block has to still be there to be handed off: trimming
-        // first bounds one iteration's handoff by the gap between the seam and
-        // the retention floor, and silently settles the rest without emitting
-        // them. The order is the guarantee, not the size of that gap.
+        // Trim after the fork point and floor are read: both describe the
+        // pre-trim graph.
         next.remove_finalized_blocks(height_below(
             next.best_tip().height,
             self.max_retained_depth(),
@@ -690,12 +865,6 @@ impl<S: ChainHeadBlockSource> ChainHeadService<S> {
                 generation,
                 best_tip: new_tip,
             });
-        }
-
-        for block in frozen {
-            // A full channel drops the oldest; the consumer sees `Lagged` and
-            // rebuilds the gap from its own source, which it can always do.
-            let _ = self.frozen.send(block);
         }
     }
 
@@ -772,30 +941,8 @@ where
 
 impl<S: ChainHeadBlockSource> StatusSource for ChainHeadService<S> {
     fn status(&self) -> ComponentStatus {
-        component_status(&self.status)
+        self.status.status()
     }
-}
-
-/// A status cell's fused value, as the two axes a component reports.
-///
-/// Transitional, and the only place the two vocabularies meet here. The
-/// runtime tracks the fused [`StatusType`] throughout — `next_status` still
-/// folds a tick outcome into one value — and this re-splits it at the reporting
-/// boundary. It goes when the runtime holds a phase and a condition separately.
-pub(crate) fn component_status(status: &NamedAtomicStatus) -> ComponentStatus {
-    let (lifecycle, health) = match status.load() {
-        StatusType::Spawning => (Lifecycle::Spawning, Health::Healthy),
-        StatusType::Syncing => (Lifecycle::Syncing, Health::Healthy),
-        StatusType::Ready => (Lifecycle::Ready, Health::Healthy),
-        StatusType::Closing => (Lifecycle::Closing, Health::Healthy),
-        StatusType::Offline => (Lifecycle::Offline, Health::Offline),
-        StatusType::Busy | StatusType::RecoverableError => {
-            (Lifecycle::Syncing, Health::Recoverable)
-        }
-        StatusType::CriticalError => (Lifecycle::Offline, Health::Critical),
-    };
-
-    ComponentStatus::new(ComponentName(status.name()), lifecycle, health)
 }
 
 impl<S: ChainHeadBlockSource> Drop for ChainHeadService<S> {
@@ -804,7 +951,7 @@ impl<S: ChainHeadBlockSource> Drop for ChainHeadService<S> {
         if let Some(handle) = self
             .task
             .lock()
-            .expect("chain head task mutex poisoned")
+            .unwrap_or_else(PoisonError::into_inner)
             .take()
         {
             handle.abort();
@@ -819,21 +966,17 @@ enum TickOutcome {
     Advanced,
     /// The advance failed and the backoff ladder will retry it.
     Retrying,
-    /// The advance failed `max_consecutive_failures` times and the writer is exiting.
-    GaveUp,
 }
 
-/// The chain head's status transition rule, pure and total so its invariants
-/// are stated once here instead of re-derived at every store site.
-fn next_status(current: StatusType, outcome: TickOutcome) -> StatusType {
-    match (current, outcome) {
-        // Closing absorbs every outcome: a shutdown that races the final
-        // iteration must stay observable on every handle.
-        (StatusType::Closing, _) => StatusType::Closing,
-        (_, TickOutcome::Advanced) => StatusType::Ready,
-        (_, TickOutcome::Retrying) => StatusType::RecoverableError,
-        (_, TickOutcome::GaveUp) => StatusType::CriticalError,
-    }
+/// The chain head's status transition rule, stated once: each outcome's
+/// status, except that closing absorbs every outcome so a shutdown racing the
+/// final iteration stays observable on every handle.
+fn record(status: &StatusCell, outcome: TickOutcome) {
+    let (lifecycle, health) = match outcome {
+        TickOutcome::Advanced => (Lifecycle::Ready, Health::Healthy),
+        TickOutcome::Retrying => (Lifecycle::Syncing, Health::Recoverable),
+    };
+    status.set_unless_closing(lifecycle, health);
 }
 
 /// Classifies a source [`QueryError`](zaino_source::QueryError) into a
@@ -861,6 +1004,192 @@ where
         zaino_source::QueryError::Domain(domain) => {
             ChainHeadAdvanceError::InconsistentSource(format!("{context}: {domain}"))
         }
+    }
+}
+
+/// A [`ChainHeadService`] before it is spawned: what it syncs from, how, and
+/// which extensions it folds.
+pub struct ChainHeadBuilder<S: ChainHeadBlockSource> {
+    source: Arc<S>,
+    config: ChainHeadConfig,
+    cancel: CancellationToken,
+    #[cfg(any(
+        feature = "transactions",
+        feature = "tree_state",
+        feature = "history_tree"
+    ))]
+    extensions: Option<crate::extension::Enabled>,
+}
+
+impl<S: ChainHeadBlockSource> ChainHeadBuilder<S> {
+    /// Anchors the graph, then starts the writer task. See
+    /// [`ChainHeadService::spawn`] for the shutdown contract.
+    pub async fn spawn(self) -> Result<Arc<ChainHeadService<S>>, ChainHeadInitError> {
+        ChainHeadService::started(self).await
+    }
+
+    /// An anchored service with no writer task, for tests that step it.
+    #[cfg(any(test, feature = "testing"))]
+    pub async fn spawn_without_writer(
+        self,
+    ) -> Result<Arc<ChainHeadService<S>>, ChainHeadInitError> {
+        ChainHeadService::anchored(self).await
+    }
+
+    /// Enables the extensions (D-50): folds of `zaino-indexes` over the
+    /// window, rooted on the store's tip (`None` = no store: the window's
+    /// floor), under the validator's upgrade `schedule`.
+    #[cfg(any(
+        feature = "transactions",
+        feature = "tree_state",
+        feature = "history_tree"
+    ))]
+    pub fn extensions(
+        self,
+        schedule: Arc<[zaino_primitives::types::NetworkUpgradeInfo]>,
+        store_tip: Option<Arc<dyn zaino_chain_head::StoreTip>>,
+    ) -> ExtensionBuilder<S> {
+        let folds = zaino_component::CpuBudget::detect()
+            .concurrency(zaino_component::Share::ChainHead)
+            .get();
+        ExtensionBuilder {
+            inner: self,
+            enabled: crate::extension::Enabled {
+                schedule,
+                store_tip,
+                folds: Arc::new(tokio::sync::Semaphore::new(folds)),
+                #[cfg(any(
+                    feature = "txout_set",
+                    feature = "address_history",
+                    feature = "compact_blocks",
+                    feature = "tree_state",
+                    feature = "history_tree"
+                ))]
+                store_wait: std::sync::atomic::AtomicBool::new(false),
+                #[cfg(feature = "transactions")]
+                transactions: false,
+                #[cfg(feature = "txout_set")]
+                txout_set: None,
+                #[cfg(feature = "address_history")]
+                address_history: None,
+                #[cfg(feature = "compact_blocks")]
+                compact_blocks: None,
+                #[cfg(feature = "tree_state")]
+                tree_state: None,
+                #[cfg(feature = "history_tree")]
+                history_tree: None,
+            },
+        }
+    }
+}
+
+/// A [`ChainHeadBuilder`] with extensions: each `with_*` enables one and
+/// takes the ports it drives below the root.
+#[cfg(any(
+    feature = "transactions",
+    feature = "tree_state",
+    feature = "history_tree"
+))]
+pub struct ExtensionBuilder<S: ChainHeadBlockSource> {
+    inner: ChainHeadBuilder<S>,
+    enabled: crate::extension::Enabled,
+}
+
+#[cfg(any(
+    feature = "transactions",
+    feature = "tree_state",
+    feature = "history_tree"
+))]
+impl<S: ChainHeadBlockSource> ExtensionBuilder<S> {
+    /// Transaction positions and outpoint spenders inside the window (I-03,
+    /// I-09). Needs nothing below the root.
+    #[cfg(feature = "transactions")]
+    pub fn with_transactions(mut self) -> Self {
+        self.enabled.transactions = true;
+        self
+    }
+
+    /// The UTXO set at the tip (I-11), seeded from `ports` at the root; the
+    /// window's spends of outputs below the root are resolved through them.
+    /// Enables `transactions`, which resolves the spends inside the window.
+    #[cfg(feature = "txout_set")]
+    pub fn with_txout_set<P>(mut self, ports: Arc<P>) -> Self
+    where
+        P: zaino_chain_head::PrevoutSource
+            + zaino_chain_head::RemainingOutputs
+            + zaino_chain_head::TxOutSetSeed,
+    {
+        self.enabled.transactions = true;
+        self.enabled.txout_set = Some(crate::extension::txout_set::Ports {
+            prevouts: crate::extension::below::prevouts(&ports),
+            remaining: crate::extension::below::remaining(&ports),
+            accumulator: crate::extension::below::accumulator(&ports),
+        });
+        self
+    }
+
+    /// Transparent address effects inside the window (I-10); the spends of
+    /// outputs below the root are resolved through `prevouts`. Enables
+    /// `transactions`.
+    #[cfg(feature = "address_history")]
+    pub fn with_address_history<P: zaino_chain_head::PrevoutSource>(
+        mut self,
+        prevouts: Arc<P>,
+    ) -> Self {
+        self.enabled.transactions = true;
+        self.enabled.address_history = Some(crate::extension::below::prevouts(&prevouts));
+        self
+    }
+
+    /// The window's compact blocks (I-05), fees included; the spends of
+    /// outputs below the root are resolved through `prevouts`. Enables
+    /// `transactions`.
+    #[cfg(feature = "compact_blocks")]
+    pub fn with_compact_blocks<P: zaino_chain_head::PrevoutSource>(
+        mut self,
+        prevouts: Arc<P>,
+    ) -> Self {
+        self.enabled.transactions = true;
+        self.enabled.compact_blocks = Some(crate::extension::below::prevouts(&prevouts));
+        self
+    }
+
+    /// The note commitment trees after each block (C2), seeded from `seed`
+    /// at the root; the validator reports each block's frontiers and
+    /// completed subtrees, by hash.
+    #[cfg(feature = "tree_state")]
+    pub fn with_tree_state<P: zaino_chain_head::TreeStateSeed>(mut self, seed: Arc<P>) -> Self
+    where
+        S: zaino_source::OneShotGetTreestateByHash + zaino_source::OneShotGetSubtreeRoots,
+    {
+        let source: Arc<S> = Arc::clone(&self.inner.source);
+        let trees: Arc<dyn crate::extension::tree_state::TreeInputs> = source;
+        self.enabled.tree_state = Some(crate::extension::tree_state::Ports { seed, trees });
+        self
+    }
+
+    /// The history tree after each block (C6), seeded from `seed` at the root.
+    #[cfg(feature = "history_tree")]
+    pub fn with_history_tree<P: zaino_chain_head::HistoryTreeSeed>(mut self, seed: Arc<P>) -> Self {
+        self.enabled.history_tree = Some(seed);
+        self
+    }
+
+    /// Anchors the graph, then starts the writer task.
+    pub async fn spawn(self) -> Result<Arc<ChainHeadService<S>>, ChainHeadInitError> {
+        let mut inner = self.inner;
+        inner.extensions = Some(self.enabled);
+        inner.spawn().await
+    }
+
+    /// An anchored service with no writer task, for tests that step it.
+    #[cfg(any(test, feature = "testing"))]
+    pub async fn spawn_without_writer(
+        self,
+    ) -> Result<Arc<ChainHeadService<S>>, ChainHeadInitError> {
+        let mut inner = self.inner;
+        inner.extensions = Some(self.enabled);
+        inner.spawn_without_writer().await
     }
 }
 
@@ -931,7 +1260,7 @@ fn chain_head_block(
 ///
 /// [`ChainGraph::extend`]: crate::graph::ChainGraph::extend
 fn extend(
-    graph: &mut MapBackedSnapshot,
+    graph: &mut PersistentSnapshot,
     block: ChainHeadBlock,
 ) -> Result<(), ChainHeadAdvanceError> {
     graph.extend(block).map_err(|refused: NotChildOfTip| {
@@ -944,7 +1273,7 @@ async fn anchor_with_retry<S: ChainHeadBlockSource>(
     source: &Arc<S>,
     config: &ChainHeadConfig,
     cancel: &CancellationToken,
-) -> Result<MapBackedSnapshot, ChainHeadInitError> {
+) -> Result<PersistentSnapshot, ChainHeadInitError> {
     let mut backoff = config.initial_backoff();
     let mut failures = 0u32;
 
@@ -956,7 +1285,7 @@ async fn anchor_with_retry<S: ChainHeadBlockSource>(
         match anchor(source, config).await {
             Ok(snapshot) => return Ok(snapshot),
             Err(error) => {
-                failures += 1;
+                failures = failures.saturating_add(1);
                 if failures >= config.max_consecutive_failures() {
                     return Err(ChainHeadInitError::SourceUnavailable {
                         attempts: failures,
@@ -967,7 +1296,7 @@ async fn anchor_with_retry<S: ChainHeadBlockSource>(
                 if sleep_or_cancel(backoff, cancel).await.is_break() {
                     return Err(ChainHeadInitError::Cancelled);
                 }
-                backoff = (backoff * 2).min(config.max_backoff());
+                backoff = backoff.saturating_mul(2).min(config.max_backoff());
             }
         }
     }
@@ -979,7 +1308,7 @@ async fn anchor_with_retry<S: ChainHeadBlockSource>(
 async fn anchor<S: ChainHeadBlockSource>(
     source: &Arc<S>,
     config: &ChainHeadConfig,
-) -> Result<MapBackedSnapshot, ChainHeadAdvanceError> {
+) -> Result<PersistentSnapshot, ChainHeadAdvanceError> {
     let (_, tip_height) = source
         .get_chain_tip()
         .await
@@ -987,7 +1316,7 @@ async fn anchor<S: ChainHeadBlockSource>(
 
     let anchor_height = height_below(tip_height, config.max_depth());
 
-    Ok(MapBackedSnapshot::from_initial_block(
+    Ok(PersistentSnapshot::from_initial_block(
         anchor_block(source.as_ref(), anchor_height).await?,
     ))
 }
@@ -1170,51 +1499,69 @@ impl Block for zaino_primitives::types::Block {
 
 #[cfg(test)]
 mod next_status_rule {
-    use super::{next_status, StatusType, TickOutcome};
+    use super::{record, StatusCell, TickOutcome, COMPONENT};
+    use zaino_component::{ComponentName, Health, Lifecycle, StatusSource as _};
 
-    const OUTCOMES: [TickOutcome; 3] = [
-        TickOutcome::Advanced,
-        TickOutcome::Retrying,
-        TickOutcome::GaveUp,
-    ];
+    const OUTCOMES: [TickOutcome; 2] = [TickOutcome::Advanced, TickOutcome::Retrying];
+
+    /// A failure is terminal, keeps its first cause, and never overwrites
+    /// `Closing`.
+    #[test]
+    fn a_failure_is_critical_with_its_cause() {
+        let cell = StatusCell::new(ComponentName(COMPONENT), Lifecycle::Ready, Health::Healthy);
+        cell.fail_unless_closing("first");
+        cell.fail_unless_closing("second");
+        let status = cell.status();
+        assert_eq!(
+            (status.lifecycle, status.health),
+            (Lifecycle::Offline, Health::Critical)
+        );
+        assert_eq!(status.reason.as_deref(), Some("first"));
+
+        let closing = StatusCell::new(
+            ComponentName(COMPONENT),
+            Lifecycle::Closing,
+            Health::Healthy,
+        );
+        closing.fail_unless_closing("late");
+        assert_eq!(closing.status().lifecycle, Lifecycle::Closing);
+    }
 
     /// No outcome may overwrite `Closing`, so a shutdown stays observable.
     #[test]
     fn closing_absorbs_every_outcome() {
         for outcome in OUTCOMES {
-            assert_eq!(
-                next_status(StatusType::Closing, outcome),
-                StatusType::Closing,
-                "{outcome:?} must not overwrite Closing"
+            let cell = StatusCell::new(
+                ComponentName(COMPONENT),
+                Lifecycle::Closing,
+                Health::Healthy,
             );
+            record(&cell, outcome);
+            assert_eq!(cell.status().lifecycle, Lifecycle::Closing, "{outcome:?}");
         }
     }
 
-    /// Every non-`Closing` state takes the status its outcome names.
+    /// From any other phase, each outcome takes its own status.
     #[test]
     fn every_live_state_takes_the_outcome_status() {
-        let live_states = [
-            StatusType::Spawning,
-            StatusType::Syncing,
-            StatusType::Ready,
-            StatusType::Busy,
-            StatusType::RecoverableError,
-            StatusType::CriticalError,
-            StatusType::Offline,
-        ];
-        for current in live_states {
-            assert_eq!(
-                next_status(current, TickOutcome::Advanced),
-                StatusType::Ready
-            );
-            assert_eq!(
-                next_status(current, TickOutcome::Retrying),
-                StatusType::RecoverableError
-            );
-            assert_eq!(
-                next_status(current, TickOutcome::GaveUp),
-                StatusType::CriticalError
-            );
+        for lifecycle in [
+            Lifecycle::Spawning,
+            Lifecycle::Syncing,
+            Lifecycle::Ready,
+            Lifecycle::Offline,
+        ] {
+            for (outcome, expected) in [
+                (TickOutcome::Advanced, (Lifecycle::Ready, Health::Healthy)),
+                (
+                    TickOutcome::Retrying,
+                    (Lifecycle::Syncing, Health::Recoverable),
+                ),
+            ] {
+                let cell = StatusCell::new(ComponentName(COMPONENT), lifecycle, Health::Healthy);
+                record(&cell, outcome);
+                let status = cell.status();
+                assert_eq!((status.lifecycle, status.health), expected, "{outcome:?}");
+            }
         }
     }
 }

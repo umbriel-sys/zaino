@@ -13,7 +13,7 @@
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
-use zaino_primitives::types::{BlockRef, TransactionId};
+use zaino_primitives::types::{BlockRef, Outpoint, TransactionId};
 
 use crate::entry::MempoolEntry;
 
@@ -37,7 +37,7 @@ pub fn reversed_txid_key(txid: TransactionId) -> [u8; 32] {
 ///
 /// This describes the fidelity of a set that *exists*. Whether one has been
 /// built yet is a separate question, on a separate axis — see
-/// [`MempoolSnapshot::is_ready`], and the service's `StatusType`. Mixing the two
+/// [`MempoolSnapshot::is_ready`], and the service's `ComponentStatus`. Mixing the two
 /// here would mean every consumer matching on fidelity also had to handle a
 /// lifecycle case.
 ///
@@ -46,6 +46,7 @@ pub fn reversed_txid_key(txid: TransactionId) -> [u8; 32] {
 ///
 /// - **Short** — the set is missing transactions Zaino knows about, but what it
 ///   holds is accurate ([`IncompleteCapacityLimited`](Self::IncompleteCapacityLimited),
+///   [`IncompleteUndecodable`](Self::IncompleteUndecodable),
 ///   [`IncompletePendingMetadata`](Self::IncompletePendingMetadata)). Serving it
 ///   is more useful than withholding it; the missing txids are named in
 ///   [`MempoolSnapshot::unadmitted`].
@@ -59,6 +60,9 @@ pub enum MempoolCompleteness {
     /// The set is intentionally not complete because a capacity bound was hit.
     /// Full-mempool APIs must not present it as complete.
     IncompleteCapacityLimited,
+    /// The validator holds transactions Zaino could not decode, so they have
+    /// no compact form and are not in the set.
+    IncompleteUndecodable,
     /// Additions were deferred by `metadata_min_interval`: their txids are known
     /// but their validator metadata has not been fetched yet, so they cannot be
     /// admitted. The rest of the poll (removals, tip re-tag) did apply.
@@ -116,7 +120,8 @@ impl MempoolCompleteness {
 ///   suffix lookup binary-searches it, so a wrong or stale order does not panic;
 ///   it simply stops finding matches, and the exclude filter then leaks a txid a
 ///   client asked to hide.
-/// - `by_txid`, `entries_in_order`, `tx_count`, `raw_bytes` and `cost_bytes` all
+/// - `by_txid`, `entries_in_order`, `spenders`, `tx_count`, `raw_bytes` and
+///   `cost_bytes` all
 ///   describe the same set and must agree. Drift between them is unobservable
 ///   until a capacity decision or a `getmempoolinfo` reads the wrong total.
 /// - `unadmitted` is empty iff [`completeness`](Self::completeness) is
@@ -139,12 +144,16 @@ pub struct MempoolSnapshot {
     txids_sorted: Arc<[TransactionId]>,
     /// Entries in deterministic (sorted-txid) order.
     entries_in_order: Arc<[Arc<MempoolEntry>]>,
+    /// The set's transparent spends: outpoint → (spender, its input index).
+    spenders: Arc<HashMap<Outpoint, (TransactionId, u32)>>,
     /// Number of transactions in the set.
     tx_count: usize,
     /// Sum of raw transaction byte lengths.
     raw_bytes: u64,
     /// Sum of per-entry ZIP-401 costs (the value bounded by `max_cost_bytes`).
     cost_bytes: u64,
+    /// The memory the set occupies: its entries and the tables indexing them.
+    memory_bytes: u64,
     /// Completeness of the transaction set.
     completeness: MempoolCompleteness,
     /// Txids the source reported that are **not** in the set.
@@ -172,18 +181,43 @@ impl MempoolSnapshot {
             by_txid: Arc::new(HashMap::new()),
             txids_sorted: Arc::from([]),
             entries_in_order: Arc::from([]),
+            spenders: Arc::new(HashMap::new()),
             tx_count: 0,
             raw_bytes: 0,
             cost_bytes: 0,
+            memory_bytes: 0,
             completeness: MempoolCompleteness::Complete,
             unadmitted: Arc::new(HashSet::new()),
         }
     }
 
+    /// The memory a set occupies: every entry, and the capacity of the txid
+    /// table, the two ordered lists, the spender table and the unadmitted
+    /// set (a table slot is its key, its value and one control byte).
+    fn memory_of(
+        by_txid: &HashMap<TransactionId, Arc<MempoolEntry>>,
+        spenders: &HashMap<Outpoint, (TransactionId, u32)>,
+        unadmitted: &HashSet<TransactionId>,
+    ) -> u64 {
+        let txid = size_of::<TransactionId>();
+        let pointer = size_of::<Arc<MempoolEntry>>();
+        let spend = size_of::<Outpoint>().saturating_add(size_of::<(TransactionId, u32)>());
+        let tables = by_txid
+            .capacity()
+            .saturating_mul(txid.saturating_add(pointer).saturating_add(1))
+            .saturating_add(by_txid.len().saturating_mul(txid.saturating_add(pointer)))
+            .saturating_add(spenders.capacity().saturating_mul(spend.saturating_add(1)))
+            .saturating_add(unadmitted.capacity().saturating_mul(txid.saturating_add(1)));
+        by_txid.values().map(|entry| entry.memory_bytes()).fold(
+            u64::try_from(tables).unwrap_or(u64::MAX),
+            u64::saturating_add,
+        )
+    }
+
     /// The next published set, built from the entries it should hold.
     ///
     /// Owns the [`reversed_txid_key`] ordering and derives `entries_in_order`,
-    /// `tx_count`, `raw_bytes` and `cost_bytes` from `by_txid`, so the derived
+    /// `spenders`, `tx_count`, `raw_bytes` and `cost_bytes` from `by_txid`, so the derived
     /// state cannot disagree with the set. Totals are summed here rather than
     /// carried forward incrementally: the sort is already `O(n log n)` over the
     /// same entries, so one more `O(n)` pass is noise beside it, and it makes a
@@ -215,11 +249,24 @@ impl MempoolSnapshot {
 
         let entries_in_order: Vec<_> = txids_sorted
             .iter()
-            .map(|txid| Arc::clone(&by_txid[txid]))
+            .filter_map(|txid| by_txid.get(txid).map(Arc::clone))
             .collect();
+
+        // in the set's order, so a double spend resolves the same way each build
+        let mut spenders = HashMap::new();
+        for entry in &entries_in_order {
+            for (input_index, input) in (0u32..).zip(&entry.compact.transparent_inputs) {
+                let outpoint = Outpoint {
+                    txid: input.prev_txid,
+                    index: input.prev_index,
+                };
+                spenders.insert(outpoint, (entry.txid, input_index));
+            }
+        }
 
         let raw_bytes = entries_in_order.iter().map(|entry| entry.raw_len).sum();
         let cost_bytes = entries_in_order.iter().map(|entry| entry.cost()).sum();
+        let memory_bytes = Self::memory_of(&by_txid, &spenders, &unadmitted);
 
         Self {
             source_tip,
@@ -229,8 +276,10 @@ impl MempoolSnapshot {
             by_txid: Arc::new(by_txid),
             txids_sorted: Arc::from(txids_sorted),
             entries_in_order: Arc::from(entries_in_order),
+            spenders: Arc::new(spenders),
             raw_bytes,
             cost_bytes,
+            memory_bytes,
             completeness,
             unadmitted: Arc::new(unadmitted),
         }
@@ -266,9 +315,11 @@ impl MempoolSnapshot {
             by_txid: Arc::clone(&self.by_txid),
             txids_sorted: Arc::clone(&self.txids_sorted),
             entries_in_order: Arc::clone(&self.entries_in_order),
+            spenders: Arc::clone(&self.spenders),
             tx_count: self.tx_count,
             raw_bytes: self.raw_bytes,
             cost_bytes: self.cost_bytes,
+            memory_bytes: Self::memory_of(&self.by_txid, &self.spenders, &unadmitted),
             completeness,
             unadmitted,
         }
@@ -315,6 +366,12 @@ impl MempoolSnapshot {
         &self.entries_in_order
     }
 
+    /// The transaction in the set spending `outpoint`, and which of its
+    /// inputs does.
+    pub fn spender(&self, outpoint: &Outpoint) -> Option<(TransactionId, u32)> {
+        self.spenders.get(outpoint).copied()
+    }
+
     /// Number of transactions in the set.
     pub fn tx_count(&self) -> usize {
         self.tx_count
@@ -330,13 +387,21 @@ impl MempoolSnapshot {
         self.cost_bytes
     }
 
+    /// The memory the set occupies (`getmempoolinfo`'s `usage`): each
+    /// entry's allocation and serialized bytes, and the capacity of the
+    /// tables indexing them. Derived whenever the set is built or re-tagged.
+    pub fn memory_bytes(&self) -> u64 {
+        self.memory_bytes
+    }
+
     /// Completeness of the transaction set.
     pub fn completeness(&self) -> MempoolCompleteness {
         self.completeness
     }
 
     /// Txids the source reported that are **not** in [`by_txid`](Self::by_txid):
-    /// refused by the capacity bound, or deferred awaiting their metadata.
+    /// refused by the capacity bound, undecodable, or deferred awaiting
+    /// their metadata.
     ///
     /// This is the per-txid form of [`completeness`](Self::completeness), and the
     /// one reads should consult. It lets a caller distinguish "Zaino is short
@@ -380,6 +445,7 @@ mod tests {
                 txid,
                 serialized_tx: Bytes::from(vec![0u8; raw_len as usize]),
                 raw_len,
+                compact: crate::entry::empty_compact(txid),
                 entry_height: Height::try_from(100u32).expect("valid fixture height"),
                 entry_time: Some(1_700_000_000),
                 first_seen_generation: 0,
@@ -457,6 +523,90 @@ mod tests {
             snapshot.cost_bytes(),
             crate::config::MEMPOOL_TRANSACTION_COST_THRESHOLD + 40_000
         );
+    }
+
+    /// The memory the set occupies is its entries' allocations and bytes
+    /// plus its tables, grows and shrinks with the set, and is nothing for
+    /// an empty one: never the ZIP-401 cost.
+    #[test]
+    fn memory_is_accounted_per_entry_and_table() {
+        assert_eq!(MempoolSnapshot::empty().memory_bytes(), 0);
+        let build = |entries: Vec<(TransactionId, Arc<MempoolEntry>)>| {
+            MempoolSnapshot::from_entries(
+                &MempoolSnapshot::empty(),
+                entries.into_iter().collect(),
+                Some(tip()),
+                MempoolCompleteness::Complete,
+                HashSet::new(),
+            )
+        };
+        let one = build(vec![entry(0x01, 500)]);
+        let two = build(vec![entry(0x01, 500), entry(0x02, 40_000)]);
+
+        let small = entry(0x01, 500).1.memory_bytes();
+        let allocation =
+            u64::try_from(2 * size_of::<usize>() + size_of::<MempoolEntry>()).expect("fits");
+        assert_eq!(small, allocation + 500);
+        assert!(one.memory_bytes() > small, "the tables are counted");
+        assert!(
+            one.memory_bytes() < one.cost_bytes(),
+            "not the ZIP-401 floor"
+        );
+        assert!(two.memory_bytes() >= one.memory_bytes() + allocation + 40_000);
+        assert!(two.memory_bytes() >= two.raw_bytes());
+
+        let retagged = two.retag(
+            Some(tip()),
+            MempoolCompleteness::Complete,
+            Arc::new(HashSet::new()),
+        );
+        assert_eq!(retagged.memory_bytes(), two.memory_bytes());
+    }
+
+    /// Every transparent input is found by the outpoint it spends, with its
+    /// position among its transaction's inputs; a re-tag keeps the table.
+    #[test]
+    fn spenders_index_every_transparent_input() {
+        use zaino_primitives::types::TransparentInput;
+
+        let spent = |byte: u8, index| Outpoint {
+            txid: TransactionId::from([byte; 32]),
+            index,
+        };
+        let input = |outpoint: Outpoint| TransparentInput {
+            prev_txid: outpoint.txid,
+            prev_index: outpoint.index,
+        };
+        let spending = |txid_byte: u8, outpoints: &[Outpoint]| {
+            let (txid, entry) = entry(txid_byte, 10);
+            let mut entry = Arc::into_inner(entry).expect("sole owner");
+            entry.compact.transparent_inputs = outpoints.iter().copied().map(input).collect();
+            (txid, Arc::new(entry))
+        };
+        let (a, b) = (
+            spending(0x01, &[spent(0xA0, 0), spent(0xA0, 3)]),
+            spending(0x02, &[spent(0xB0, 1)]),
+        );
+        let snapshot = MempoolSnapshot::from_entries(
+            &MempoolSnapshot::empty(),
+            [a.clone(), b.clone()].into_iter().collect(),
+            Some(tip()),
+            MempoolCompleteness::Complete,
+            HashSet::new(),
+        );
+
+        assert_eq!(snapshot.spender(&spent(0xA0, 0)), Some((a.0, 0)));
+        assert_eq!(snapshot.spender(&spent(0xA0, 3)), Some((a.0, 1)));
+        assert_eq!(snapshot.spender(&spent(0xB0, 1)), Some((b.0, 0)));
+        assert_eq!(snapshot.spender(&spent(0xB0, 0)), None);
+        assert!(snapshot.memory_bytes() > a.1.memory_bytes() + b.1.memory_bytes());
+
+        let retagged = snapshot.retag(
+            Some(tip()),
+            MempoolCompleteness::Complete,
+            Arc::new(HashSet::new()),
+        );
+        assert_eq!(retagged.spender(&spent(0xA0, 3)), Some((a.0, 1)));
     }
 
     /// A re-tag republishes the same set: the generation must hold, or the

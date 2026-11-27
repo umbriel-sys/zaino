@@ -1,6 +1,6 @@
 //! How the ChainHead runtime is configured.
 
-use std::num::{NonZeroU32, NonZeroU64};
+use std::num::{NonZeroU32, NonZeroU64, NonZeroUsize};
 use std::time::Duration;
 
 /// How far below the tip ChainHead retains blocks, and how hard it polls.
@@ -38,24 +38,22 @@ pub struct ChainHeadConfig {
     initial_backoff_ms: NonZeroU64,
     max_backoff_ms: NonZeroU64,
     max_consecutive_failures: NonZeroU32,
+    fetch_concurrency: NonZeroUsize,
 }
 
-/// The consensus reorg bound, as a `NonZeroU32`.
-///
-/// `expect` rather than a fallible path: this reads a compile-time constant
-/// that is a reorg bound, and a reorg bound of zero would mean the chain never
-/// reorganises. If that ever became true, the whole crate would be pointless.
+// a reorg bound of zero would mean the chain never reorganises
+const _: () = assert!(zaino_consensus::MAX_NONFINALISED_DEPTH > 0);
+
+/// The consensus reorg bound, as a `NonZeroU32` (non-zero, asserted above at
+/// compile time, so the fallback is never taken).
 fn default_max_depth() -> NonZeroU32 {
-    NonZeroU32::new(zaino_consensus::MAX_NONFINALISED_DEPTH)
-        .expect("the consensus reorg bound is not zero")
+    NonZeroU32::new(zaino_consensus::MAX_NONFINALISED_DEPTH).unwrap_or(NonZeroU32::MIN)
 }
 
-/// Milliseconds as a `NonZeroU64`, for the literal defaults below.
-///
-/// Private and only ever called with a literal, so the `expect` asserts
-/// something the reader can check at the call site.
+/// Milliseconds as a `NonZeroU64`, for the literal defaults below (never
+/// zero, so the fallback is never taken).
 fn ms(millis: u64) -> NonZeroU64 {
-    NonZeroU64::new(millis).expect("a literal default interval is not zero")
+    NonZeroU64::new(millis).unwrap_or(NonZeroU64::MIN)
 }
 
 impl Default for ChainHeadConfig {
@@ -65,7 +63,9 @@ impl Default for ChainHeadConfig {
             poll_interval_ms: ms(1_000),
             initial_backoff_ms: ms(500),
             max_backoff_ms: ms(30_000),
-            max_consecutive_failures: NonZeroU32::new(10).expect("10 is not zero"),
+            max_consecutive_failures: NonZeroU32::new(10).unwrap_or(NonZeroU32::MIN),
+            fetch_concurrency: zaino_component::CpuBudget::detect()
+                .concurrency(zaino_component::Share::ChainHead),
         }
     }
 }
@@ -141,5 +141,16 @@ impl ChainHeadConfig {
     /// Set how many consecutive failures are tolerated.
     pub fn set_max_consecutive_failures(&mut self, failures: NonZeroU32) {
         self.max_consecutive_failures = failures;
+    }
+
+    /// Heights fetched ahead of the link while the window is built. Default:
+    /// the chain head's share of [`zaino_component::CpuBudget`].
+    pub fn fetch_concurrency(&self) -> NonZeroUsize {
+        self.fetch_concurrency
+    }
+
+    /// Set how many heights are fetched ahead of the link.
+    pub fn set_fetch_concurrency(&mut self, heights: NonZeroUsize) {
+        self.fetch_concurrency = heights;
     }
 }

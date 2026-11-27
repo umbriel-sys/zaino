@@ -1,0 +1,7 @@
+# The default index set is `lightclient`; a second example config for the full set.
+
+[[changes]]
+crate       = "zainod"
+kind        = "breaking"
+description = "The default index set is `lightclient` (compact blocks, headers, treestates, subtree roots) instead of `full`. Transparent address, spent-outpoint and UTXO-set reads are the validator's unless their indexes are enabled; `GetHistoryProof` is `UNIMPLEMENTED` without `history_tree`. `generate-config` says so in its header, and `docs/example_configs/zainod-full.toml` shows the full set with JSON-RPC."
+migration   = "A config with no `[indexes]` table now builds `lightclient`, and with `delete_stale` (the default) deletes the indexes it no longer names at start. To keep them, set `set = \"full\"`, or name them in `enable` (for example `enable = [\"history_tree\"]`)."

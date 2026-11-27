@@ -1,0 +1,28 @@
+[[changes]]
+crate = "zaino-source-zebra"
+kind = "fix"
+description = """
+The read-state adapter implements the verbose block header, and the zebra \
+source reads it from the state first, falling back to JSON-RPC for a block \
+the state has not replayed or that is off the best chain. It was sent to \
+JSON-RPC only. The answer is assembled from the state requests and rules of \
+zebrad's own `getblockheader` handler, as zebrad's response object, and read \
+back as the JSON-RPC adapter reads zebrad's reply. The verbose block stays \
+on JSON-RPC: the read-only state lacks the lockbox pool's amounts for \
+non-finalised blocks."""
+
+[[changes]]
+crate = "zaino-source-zcash-rpc"
+kind = "feature"
+description = """
+`parse_block_header_object` reads a verbose `getblockheader` object exactly \
+as the adapter does, beside `parse_transaction_object`."""
+
+[[changes]]
+crate = "zainod"
+kind = "fix"
+description = """
+With a zebrad validator, block ranges passed to the validator make no \
+JSON-RPC calls (about 100 `getblock` calls per request before, in a mainnet \
+run on the `empty` index set), and a `getblockheader` no index covers is \
+answered from zebrad's state."""

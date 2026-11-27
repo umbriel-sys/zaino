@@ -1,0 +1,27 @@
+consumed_in = "zainod-0-11-0"
+[[changes]]
+crate = "zaino-persistence"
+kind = "feature"
+description = """
+`NamespaceSpec::unique_map` (`NamespaceKind::Map { unique: true, .. }`): a map \
+whose keys the writer guarantees distinct. A backend refuses a repeat it sees \
+in its buffer, may skip the durable `KeyExists` lookup for a `Put`, and \
+reports a repeat found later (merge, scan) as `Corrupted`. The conformance \
+suite's `probed` map is declared unique and pins both behaviours."""
+
+[[changes]]
+crate = "zaino-persistence-lsm-tree"
+kind = "internal"
+description = """
+A `Put` into a `unique` map is checked against the write buffer only: no \
+durable filter probe per key. The manifest does not record `unique`, so \
+existing directories open unchanged. A map key buffered twice is an internal \
+error."""
+
+[[changes]]
+crate = "zaino-indexes"
+kind = "feature"
+description = """
+`NamespaceLayout::unique_map`; `address_history`, `spent`, `txid_location` and \
+the headers' by-hash map are declared unique (their keys are distinct by \
+construction), each declaration saying why. Schema digests are unchanged."""

@@ -9,7 +9,7 @@ license = { workspace = true }
 readme = { workspace = true }
 keywords = { workspace = true }
 categories = { workspace = true }
-version = "0.2.2"
+version = "0.3.0"
 
 [dependencies]
 # Mempool ports + foundational types
@@ -19,9 +19,6 @@ zaino-mempool = { workspace = true }
 # snapshots are expressed in.
 zaino-source = { workspace = true }
 zaino-primitives = { workspace = true }
-
-# The status vocabulary the service reports its health in.
-zaino-status = { workspace = true }
 
 # Runtime
 tokio = { workspace = true, features = ["full"] }
@@ -40,6 +37,8 @@ bytes.workspace = true
 # becomes visible; `zaino-mempool` is types and ports with nothing to emit.
 tracing = { workspace = true }
 metrics = { workspace = true }
+zaino-component.workspace = true
+zaino-encoding.workspace = true
 
 [features]
 # Opt-in tip-coherence layer: the `CoherenceService` and its coherent read/stream

@@ -1,0 +1,28 @@
+consumed_in = "zainod-0-11-0"
+[[changes]]
+crate = "zaino-state"
+kind = "breaking"
+description = """
+`ChainIndex`'s chain vocabulary (`BlockHash`, `TransactionHash`, `Height`, \
+`Outpoint`, `BlockIndex`, `ChainScope`, `Best`/`NonBestChainLocation`, \
+`ShieldedPool`) and `FinalisedStateMode` are defined in \
+`zaino_state::legacy::chain` (still re-exported where they were), \
+`ChannelStream` in `zaino_state`, and the deprecated store knobs \
+(`DatabaseSize`, `SyncWriteBatchSize`, `AccumulatorRebuildMemorySize`, \
+`DEFAULT_SYNC_CHECKPOINT_INTERVAL_SECS`) in `zaino_state::legacy::config`, \
+none of them from zainodb any more (D6-09). They carry no disk encoding."""
+
+[[changes]]
+crate = "zaino-state"
+kind = "breaking"
+description = """
+Removed, as nothing produces or calls them since the index runs on the \
+service: `ChainIndex::get_indexed_block_by_hash` and \
+`get_indexed_block_by_height` (and `IndexedBlock`), `FinalisedStateError`, \
+`StatusError`, `SyncError`, `BlockCacheError` with \
+`NodeBackedIndexerServiceError::BlockCacheError`, \
+`MempoolError::StatusError`, `InitError::{MempoolInitialzationError, \
+FinalisedStateInitialzationError, ChainHeadInitialisationError}`, \
+`FinalisedStateMode::EphemeralMigrating`, \
+`ChainIndexConfig::{chain_store_config, zainodb_config}`, and the \
+`zaino_encoding::*` re-export."""

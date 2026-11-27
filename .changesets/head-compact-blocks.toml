@@ -1,0 +1,38 @@
+consumed_in = "zainod-0-11-0"
+[[changes]]
+crate = "zaino-chain-head"
+kind = "feature"
+description = """
+`HeadCapability::CompactBlocks` and `ChainHeadCompactBlockService::\
+compact_transactions(hash, pools)`: a window block's compact transactions, \
+fees included, branches answered from their own fold."""
+
+[[changes]]
+crate = "zaino-chain-head-service"
+kind = "feature"
+description = """
+The `compact_blocks` extension (cargo feature, `with_compact_blocks`) folds \
+I-05 over the window with every prevout resolved, so window fees equal the \
+store's."""
+
+[[changes]]
+crate = "zaino-indexes"
+kind = "feature"
+description = """
+`compact_block::Reader::transactions` assembles a block's compact \
+transactions from its layout, shared by the store and the head."""
+
+[[changes]]
+crate = "zaino-chain"
+kind = "fix"
+description = """
+Window blocks and compact blocks carry I-05 fees when the head's \
+`compact_blocks` extension is built. A best-chain hash in the head's window \
+resolves through its height, so a store-covered block keeps its fees."""
+
+[[changes]]
+crate = "zaino-chain-store-service"
+kind = "fix"
+description = """
+`outputs_by_outpoint` needs only I-03 and I-04; a store without the spent \
+index no longer refuses it."""

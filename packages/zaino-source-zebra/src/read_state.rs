@@ -1,0 +1,2251 @@
+//! ReadState adapter: implements source traits via Zebra's ReadStateService.
+//!
+//! The state service has no mempool, so no mempool port is implemented here;
+//! the composite routes those to JSON-RPC.
+//!
+//! `GetBlockDeltas` and `GetAddressDeltas` are derived here: zebrad has
+//! neither RPC, so these are the only implementations a zebrad-backed
+//! deployment has.
+
+use std::path::Path;
+
+use tower::ServiceExt;
+use zebra_chain::parameters::{Network, NetworkUpgrade};
+use zebra_state::{ReadRequest, ReadResponse, ReadStateService};
+
+use zaino_primitives::types::{
+    Block, BlockConfirmations, BlockHash, Height, TreeRoot, TreeRootInfo, TreeSize,
+};
+use zaino_source::{FailureMode, GetBlockError, GetChainTipError, NonDomainError, QueryError};
+
+/// The readstate adapter's own transport-fault vocabulary.
+///
+/// Foreign causes (the state service's error, decode failures) are captured here
+/// with the adapter's local context, then mapped to the shared seam by one
+/// deterministic `From<ReadStateError> for NonDomainError`. Lower deps never appear in
+/// this adapter's public signatures — only as `#[source]` causes inside this type.
+#[derive(Debug, thiserror::Error)]
+pub enum ReadStateError {
+    /// The state service could not be reached or failed to answer.
+    #[error("state service unavailable")]
+    Unreachable(#[source] Box<dyn std::error::Error + Send + Sync + 'static>),
+    /// The state service's bytes could not be decoded into the domain type.
+    #[error("invalid data from the state service")]
+    InvalidData(#[source] Box<dyn std::error::Error + Send + Sync + 'static>),
+    /// The state service answered off-contract (wrong variant, or rows out of order).
+    #[error("state service answered off-contract: {0}")]
+    OffContract(String),
+    /// The state service did not answer within [`READ_TIMEOUT`].
+    #[error("state service did not answer within {}s", READ_TIMEOUT.as_secs())]
+    TimedOut,
+}
+
+/// How long one read of zebra's state may take: none waits without end.
+pub(crate) const READ_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(120);
+
+impl ReadStateError {
+    fn unreachable(cause: impl Into<Box<dyn std::error::Error + Send + Sync + 'static>>) -> Self {
+        Self::Unreachable(cause.into())
+    }
+    fn invalid_data(cause: impl Into<Box<dyn std::error::Error + Send + Sync + 'static>>) -> Self {
+        Self::InvalidData(cause.into())
+    }
+    fn off_contract(what: impl Into<String>) -> Self {
+        Self::OffContract(what.into())
+    }
+}
+
+impl From<ReadStateError> for NonDomainError {
+    fn from(e: ReadStateError) -> Self {
+        let mode = match &e {
+            ReadStateError::Unreachable(_) => FailureMode::Connection,
+            ReadStateError::TimedOut => FailureMode::Timeout,
+            ReadStateError::InvalidData(_) | ReadStateError::OffContract(_) => {
+                FailureMode::InvalidSourceData
+            }
+        };
+        NonDomainError::from_cause(mode, e)
+    }
+}
+
+impl zaino_source::ValidatorSource for ZebraReadStateAdapter {
+    // This adapter owns a distinct non-domain vocabulary; `ReadStateError` maps to
+    // the seam via the deterministic `From<ReadStateError> for NonDomainError`.
+    type NonDomain = ReadStateError;
+}
+
+impl<E: std::fmt::Debug + std::fmt::Display> From<ReadStateError>
+    for QueryError<E, ReadStateError>
+{
+    fn from(e: ReadStateError) -> Self {
+        // The adapter's own type rides in the non-domain slot; the seam
+        // conversion happens later, once, in the resilience wrapper.
+        QueryError::NonDomain(e)
+    }
+}
+
+/// Ask the state service one question.
+///
+/// Every read repeats the same three steps — clone the service, await the
+/// response, and turn a service failure into a transport error — so they live
+/// here once. The response variant is matched by the caller, which is the only
+/// part that genuinely differs.
+async fn read(
+    state: &ReadStateService,
+    request: ReadRequest,
+) -> Result<ReadResponse, ReadStateError> {
+    tokio::time::timeout(READ_TIMEOUT, state.clone().oneshot(request))
+        .await
+        .map_err(|_| ReadStateError::TimedOut)?
+        .map_err(ReadStateError::unreachable)
+}
+
+/// The state service answered with a variant that does not correspond to the
+/// request.
+///
+/// An error rather than a panic. This is a library: a state service that
+/// answers off-contract is a reason to fail the query, not to take the process
+/// down, and the previous implementation's `unreachable!` did the latter.
+fn unexpected_response(request: &'static str) -> ReadStateError {
+    ReadStateError::off_contract(format!("unexpected response to {request}"))
+}
+
+/// A pool's tree root and its note count as the state service reports it.
+///
+/// The count arrives as a `u64`; one the compact protocol cannot carry is
+/// refused here rather than narrowed.
+fn tree_root_info(root: [u8; 32], count: u64) -> Result<TreeRootInfo, ReadStateError> {
+    let size = TreeSize::try_from(count).map_err(ReadStateError::invalid_data)?;
+    Ok(TreeRootInfo {
+        root: TreeRoot::new(root),
+        size,
+    })
+}
+
+/// The state service returned rows out of order.
+///
+/// Zebra's address indexes are documented as ordered, and Zaino relies on that
+/// to stream results without sorting. The previous implementation asserted it,
+/// which turns a misbehaving or corrupted index into a process abort; a caller
+/// can do something useful with an error.
+fn out_of_order(index: &'static str) -> ReadStateError {
+    ReadStateError::off_contract(format!("{index} rows out of chain order"))
+}
+
+/// Zebra ReadState adapter.
+///
+/// Holds a read-only [`ReadStateService`] opened against Zebra's
+/// finalized state database. Implements source query traits with
+/// zero serialization overhead.
+pub struct ZebraReadStateAdapter {
+    state: ReadStateService,
+
+    /// The syncer feeding `state`, when this adapter launched one.
+    ///
+    /// Held so shutdown can stop it: a syncer outliving the indexer would keep
+    /// writing to a database nothing is reading. `None` when the service was
+    /// opened read-only, which starts no syncer of its own.
+    syncer: Option<Syncer>,
+    /// Retained because difficulty is network-relative: the same threshold
+    /// means a different multiple of the minimum on each network, so it cannot
+    /// be computed from the tip alone.
+    network: Network,
+}
+
+impl ZebraReadStateAdapter {
+    /// Open Zebra's state database read-only.
+    ///
+    /// `cache_dir` is the root Zebra cache directory (e.g. `/var/cache/zebrad-cache`).
+    /// The database path is derived from this + the network.
+    pub fn open(cache_dir: &Path, network: &Network) -> Result<Self, String> {
+        let config = zebra_state::Config {
+            cache_dir: cache_dir.to_path_buf(),
+            ..Default::default()
+        };
+
+        let (state, _db, _sender) = zebra_state::init_read_only(config, network)
+            .map_err(|e| format!("failed to open zebra state: {e}"))?;
+
+        Ok(Self {
+            state,
+            syncer: None,
+            network: network.clone(),
+        })
+    }
+}
+
+impl ZebraReadStateAdapter {
+    /// Wrap a `ReadStateService` that a caller has already launched.
+    ///
+    /// The read-only [`open`](Self::open) path starts no syncer and so has no
+    /// tip stream; a caller that needs one launches the service itself and
+    /// hands it here, along with the syncer task so this adapter can stop it.
+    pub fn from_service(
+        state: ReadStateService,
+        network: &Network,
+        syncer: Option<tokio::task::JoinHandle<()>>,
+    ) -> Self {
+        Self::with_syncer(state, network, syncer.map(Syncer::watch))
+    }
+
+    /// [`Self::from_service`] with a syncer already watched.
+    pub(crate) fn with_syncer(
+        state: ReadStateService,
+        network: &Network,
+        syncer: Option<Syncer>,
+    ) -> Self {
+        Self {
+            state,
+            syncer,
+            network: network.clone(),
+        }
+    }
+}
+
+/// zebra's state syncer task, watched: why it ended is kept, and it is
+/// stopped when this drops, so a syncer never outlives what reads its state.
+pub(crate) struct Syncer {
+    stop: tokio::task::AbortHandle,
+    /// The task, until how it ended has been read.
+    task: std::sync::Mutex<Option<tokio::task::JoinHandle<()>>>,
+    /// Why the task ended, once that has been read; never set for a task
+    /// that `stop` ended.
+    ended: std::sync::OnceLock<String>,
+}
+
+impl Syncer {
+    /// Holds `task`, to stop it and to say why it ended.
+    pub(crate) fn watch(task: tokio::task::JoinHandle<()>) -> Self {
+        Self {
+            stop: task.abort_handle(),
+            task: std::sync::Mutex::new(Some(task)),
+            ended: std::sync::OnceLock::new(),
+        }
+    }
+
+    /// Why the syncer ended, if it has: read from the finished task, which
+    /// needs no runtime and starts no task of its own.
+    pub(crate) fn ended(&self) -> Option<&str> {
+        if let Some(cause) = self.ended.get() {
+            return Some(cause);
+        }
+        // a poisoned lock means only that another reader panicked
+        let mut task = self
+            .task
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let Some(handle) = task.as_mut() else {
+            // another reader got there first
+            return self.ended.get().map(String::as_str);
+        };
+        if !handle.is_finished() {
+            return None;
+        }
+        // A finished task answers at once; the one exception is a caller
+        // whose own task budget is spent, and then the next look reads it
+        let mut context = std::task::Context::from_waker(std::task::Waker::noop());
+        let read = std::future::Future::poll(std::pin::Pin::new(handle), &mut context);
+        let std::task::Poll::Ready(result) = read else {
+            return None;
+        };
+        *task = None;
+        let cause = match result {
+            Ok(()) => "it returned".to_owned(),
+            Err(error) if error.is_cancelled() => return None,
+            Err(error) => match error.try_into_panic() {
+                Ok(panic) => format!("it panicked: {}", panic_message(panic.as_ref())),
+                Err(error) => error.to_string(),
+            },
+        };
+        Some(self.ended.get_or_init(|| cause))
+    }
+}
+
+impl Drop for Syncer {
+    fn drop(&mut self) {
+        self.stop.abort();
+    }
+}
+
+/// A panic's message, where it has one.
+fn panic_message(panic: &(dyn std::any::Any + Send)) -> &str {
+    panic
+        .downcast_ref::<&str>()
+        .copied()
+        .or_else(|| panic.downcast_ref::<String>().map(String::as_str))
+        .unwrap_or("(no message)")
+}
+
+#[cfg(feature = "test_dependencies")]
+impl ZebraReadStateAdapter {
+    /// The underlying service.
+    ///
+    /// Test-only escape hatch: live tests recompute expected chain data
+    /// straight off the state service. Production code goes through the ports.
+    pub fn read_state_service(&self) -> &ReadStateService {
+        &self.state
+    }
+}
+
+impl zaino_source::OneShotGetCompactBlock for ZebraReadStateAdapter {
+    #[cfg_attr(feature = "tracing", tracing::instrument(skip(self, pools), fields(h = u32::from(height))))]
+    async fn get_compact_block(
+        &self,
+        height: Height,
+        pools: zaino_primitives::types::PoolFilter,
+    ) -> Result<zaino_primitives::types::CompactBlock, QueryError<GetBlockError, ReadStateError>>
+    {
+        // Zebra's read-state service serves whole blocks only; there is no
+        // compact-block read request. The full block is read and stripped
+        // down through the domain `Block`, as the RPC adapter does, and its
+        // tree sizes are read by its own hash, so both describe one block.
+        use zaino_source::OneShotGetBlock;
+        let block = self.get_block(height).await?;
+        let hash = zebra_chain::block::Hash(block.header.hash.into());
+        // reorged out between the reads: the height no longer names it
+        let sizes = self
+            .tree_sizes(hash)
+            .await?
+            .ok_or(QueryError::Domain(GetBlockError::HeightNotFound(height)))?;
+        Ok(zaino_primitives::types::PreIndexCompactBlock::from(&block).into_compact(sizes, pools))
+    }
+}
+
+impl ZebraReadStateAdapter {
+    /// Each pool's cumulative note count after the block `hash`, in any
+    /// chain; `None` when the state holds no such block. A pool with no
+    /// notes yet counts zero, as zebrad's `getblock` reports it: the state
+    /// seeds every tree at genesis.
+    async fn tree_sizes(
+        &self,
+        hash: zebra_chain::block::Hash,
+    ) -> Result<Option<zaino_primitives::types::ChainMetadata>, ReadStateError> {
+        let (sapling, orchard, ironwood) = tokio::join!(
+            read(&self.state, ReadRequest::AnyChainSaplingTree(hash)),
+            read(&self.state, ReadRequest::AnyChainOrchardTree(hash)),
+            read(&self.state, ReadRequest::AnyChainIronwoodTree(hash)),
+        );
+        let sapling = match sapling? {
+            ReadResponse::SaplingTree(tree) => tree.map(|tree| tree.count()),
+            _ => return Err(unexpected_response("SaplingTree")),
+        };
+        let orchard = match orchard? {
+            ReadResponse::OrchardTree(tree) => tree.map(|tree| tree.count()),
+            _ => return Err(unexpected_response("OrchardTree")),
+        };
+        let ironwood = match ironwood? {
+            ReadResponse::IronwoodTree(tree) => tree.map(|tree| tree.count()),
+            _ => return Err(unexpected_response("IronwoodTree")),
+        };
+        let (Some(sapling), Some(orchard), Some(ironwood)) = (sapling, orchard, ironwood) else {
+            return Ok(None);
+        };
+        let size = |count: u64| TreeSize::try_from(count).map_err(ReadStateError::invalid_data);
+        Ok(Some(zaino_primitives::types::ChainMetadata {
+            sapling_tree_size: size(sapling)?,
+            orchard_tree_size: size(orchard)?,
+            ironwood_tree_size: size(ironwood)?,
+        }))
+    }
+}
+
+impl ZebraReadStateAdapter {
+    /// Fetch just the block header — no transaction deserialization at all.
+    pub async fn get_block_header(
+        &self,
+        height: Height,
+    ) -> Result<zebra_chain::block::Header, QueryError<GetBlockError, ReadStateError>> {
+        let zebra_height = zebra_chain::block::Height(u32::from(height));
+        let request = ReadRequest::BlockHeader(zebra_height.into());
+
+        let response = read(&self.state, request).await?;
+
+        match response {
+            ReadResponse::BlockHeader { header, .. } => Ok(*header),
+            _ => Err(ReadStateError::off_contract("unexpected response variant").into()),
+        }
+    }
+}
+
+impl zaino_source::OneShotGetBlock for ZebraReadStateAdapter {
+    #[cfg_attr(feature = "tracing", tracing::instrument(skip(self), fields(h = u32::from(height))))]
+    async fn get_block(
+        &self,
+        height: Height,
+    ) -> Result<Block, QueryError<GetBlockError, ReadStateError>> {
+        let zebra_height = zebra_chain::block::Height(u32::from(height));
+        let request = ReadRequest::Block(zebra_height.into());
+
+        let response = read(&self.state, request).await?;
+
+        match response {
+            ReadResponse::Block(Some(arc_block)) => {
+                // Convert from &Block — no clone of the Arc'd block.
+                zaino_primitives::zebra::block_from_zebra(&arc_block)
+                    .map_err(|e| ReadStateError::invalid_data(e).into())
+            }
+            ReadResponse::Block(None) => {
+                Err(QueryError::Domain(GetBlockError::HeightNotFound(height)))
+            }
+            _ => Err(ReadStateError::off_contract("unexpected response variant").into()),
+        }
+    }
+}
+
+impl zaino_source::OneShotGetChainTip for ZebraReadStateAdapter {
+    #[cfg_attr(feature = "tracing", tracing::instrument(skip(self)))]
+    async fn get_chain_tip(
+        &self,
+    ) -> Result<(BlockHash, Height), QueryError<GetChainTipError, ReadStateError>> {
+        let response = read(&self.state, ReadRequest::Tip).await?;
+
+        match response {
+            ReadResponse::Tip(Some((height, hash))) => {
+                let h = Height::try_from(height.0).map_err(ReadStateError::invalid_data)?;
+                Ok((BlockHash::from(hash.0), h))
+            }
+            ReadResponse::Tip(None) => Err(QueryError::Domain(GetChainTipError::NotReady)),
+            _ => Err(ReadStateError::off_contract("unexpected response variant").into()),
+        }
+    }
+}
+
+impl zaino_source::OneShotGetBlockByHash for ZebraReadStateAdapter {
+    async fn get_block_by_hash(
+        &self,
+        hash: BlockHash,
+    ) -> Result<Block, QueryError<zaino_source::GetBlockByHashError, ReadStateError>> {
+        let zebra_hash = zebra_chain::block::Hash(hash.into());
+
+        match read(&self.state, ReadRequest::Block(zebra_hash.into())).await? {
+            ReadResponse::Block(Some(arc_block)) => {
+                zaino_primitives::zebra::block_from_zebra(&arc_block)
+                    .map_err(|e| ReadStateError::invalid_data(e).into())
+            }
+            // Zebra's read-state does not serve side-chain blocks, so an absent
+            // block here means "not in the finalized state" rather than "no such
+            // block anywhere". A composite that also has an RPC adapter should
+            // fall back to it before concluding the block does not exist.
+            ReadResponse::Block(None) => Err(QueryError::Domain(
+                zaino_source::GetBlockByHashError::NotFound(hash),
+            )),
+            _ => Err(unexpected_response("Block").into()),
+        }
+    }
+}
+
+impl zaino_source::OneShotGetBestBlockHeight for ZebraReadStateAdapter {
+    async fn get_best_block_height(
+        &self,
+    ) -> Result<Height, QueryError<zaino_source::GetBestBlockHeightError, ReadStateError>> {
+        match read(&self.state, ReadRequest::Tip).await? {
+            ReadResponse::Tip(Some((height, _hash))) => {
+                Height::try_from(height.0).map_err(|e| ReadStateError::invalid_data(e).into())
+            }
+            // The previous implementation fell back to a JSON-RPC block count
+            // here. This adapter cannot reach RPC, and should not: a composite
+            // holding both adapters routes the fallback, which keeps "what this
+            // transport can answer" separate from "what to do when it cannot".
+            ReadResponse::Tip(None) => Err(QueryError::Domain(
+                zaino_source::GetBestBlockHeightError::NotReady,
+            )),
+            _ => Err(unexpected_response("Tip").into()),
+        }
+    }
+}
+
+impl zaino_source::OneShotGetSubtreeRoots for ZebraReadStateAdapter {
+    async fn get_subtree_roots(
+        &self,
+        pool: zaino_primitives::types::ShieldedPool,
+        start_index: u16,
+        limit: Option<u16>,
+    ) -> Result<
+        Vec<zaino_primitives::types::SubtreeRoot>,
+        QueryError<zaino_source::GetSubtreeRootsError, ReadStateError>,
+    > {
+        use zaino_primitives::types::{ShieldedPool, SubtreeRoot, TreeRoot};
+        use zebra_chain::subtree::NoteCommitmentSubtreeIndex;
+
+        let start_index = NoteCommitmentSubtreeIndex(start_index);
+        let limit = limit.map(NoteCommitmentSubtreeIndex);
+
+        let request = match pool {
+            ShieldedPool::Sapling => ReadRequest::SaplingSubtrees { start_index, limit },
+            ShieldedPool::Orchard => ReadRequest::OrchardSubtrees { start_index, limit },
+            ShieldedPool::Ironwood => ReadRequest::IronwoodSubtrees { start_index, limit },
+        };
+
+        let response = read(&self.state, request).await?;
+
+        // Each pool answers with its own response variant, so the match is on
+        // the pair. Sapling roots serialise via `to_bytes`; Orchard and
+        // Ironwood share a representation and use `to_repr`.
+        // An out-of-range end height is propagated rather than defaulted:
+        // substituting another height would put a subtree at the wrong point in
+        // the chain, which is worse than failing the query.
+        let roots: Result<Vec<_>, ReadStateError> = match (pool, response) {
+            (ShieldedPool::Sapling, ReadResponse::SaplingSubtrees(subtrees)) => subtrees
+                .values()
+                .map(|subtree| {
+                    Ok(SubtreeRoot {
+                        root: TreeRoot::new(subtree.root.to_bytes()),
+                        end_height: subtree_end_height(subtree.end_height)?,
+                    })
+                })
+                .collect(),
+            (ShieldedPool::Orchard, ReadResponse::OrchardSubtrees(subtrees))
+            | (ShieldedPool::Ironwood, ReadResponse::IronwoodSubtrees(subtrees)) => subtrees
+                .values()
+                .map(|subtree| {
+                    Ok(SubtreeRoot {
+                        root: TreeRoot::new(subtree.root.to_repr()),
+                        end_height: subtree_end_height(subtree.end_height)?,
+                    })
+                })
+                .collect(),
+            _ => return Err(unexpected_response("Subtrees").into()),
+        };
+
+        Ok(roots?)
+    }
+}
+
+impl zaino_source::OneShotGetAddressBalance for ZebraReadStateAdapter {
+    async fn get_address_balance(
+        &self,
+        addresses: Vec<String>,
+    ) -> Result<
+        zaino_primitives::types::AddressBalance,
+        QueryError<zaino_source::GetAddressBalanceError, ReadStateError>,
+    > {
+        let valid = parse_addresses(
+            addresses,
+            &self.network,
+            zaino_source::GetAddressBalanceError::InvalidAddress,
+        )?;
+
+        match read(&self.state, ReadRequest::AddressBalance(valid)).await? {
+            ReadResponse::AddressBalance { balance, received } => {
+                Ok(zaino_primitives::types::AddressBalance {
+                    balance: zaino_primitives::types::Zatoshis::new(balance.into())
+                        .map_err(ReadStateError::invalid_data)?,
+                    // A lifetime receipts flow, delivered pre-summed by the
+                    // state service; not supply-bounded, so it lands in the
+                    // flow-sum type through its boundary door rather than
+                    // being rejected by the amount bound.
+                    received: zaino_primitives::types::ZatoshisFlowSum::from_summed(received),
+                })
+            }
+            _ => Err(unexpected_response("AddressBalance").into()),
+        }
+    }
+}
+
+/// Validate transparent addresses before they reach the state service.
+///
+/// Rejection here is the port's domain error (`InvalidAddress`), as on the
+/// RPC path: the caller asked about something that is not an address, and
+/// retrying will not change that.
+fn parse_addresses<E>(
+    addresses: Vec<String>,
+    network: &Network,
+    invalid_address: impl Fn(String) -> E,
+) -> Result<
+    std::collections::HashSet<zebra_chain::transparent::Address>,
+    QueryError<E, ReadStateError>,
+>
+where
+    E: std::fmt::Debug + std::fmt::Display,
+{
+    let invalid = |address: &str, reason: &dyn std::fmt::Display| {
+        QueryError::Domain(invalid_address(format!(
+            "invalid transparent address `{address}`: {reason}"
+        )))
+    };
+    addresses
+        .into_iter()
+        .map(|address| {
+            match address.parse::<zebra_chain::transparent::Address>() {
+                // Parses, but the index never keys on it: zebrad 7 rejects it
+                // rather than answering empty.
+                Ok(zebra_chain::transparent::Address::Tex { .. }) => Err(invalid(
+                    &address,
+                    &"TEX addresses are not supported by the address index",
+                )),
+                // Another network's address can never match: zcashd refuses
+                // it, so this does too (D-88) rather than answering empty.
+                Ok(parsed) if parsed.network_kind() != network.t_addr_kind() => {
+                    Err(invalid(&address, &"an address for another network"))
+                }
+                Ok(parsed) => Ok(parsed),
+                Err(e) => Err(invalid(&address, &e)),
+            }
+        })
+        .collect()
+}
+
+/// The `max_entries` that detects an answer over [`MAX_ADDRESS_QUERY_RESULTS`]:
+/// one more than the cap, as zebrad 7 asks.
+///
+/// [`MAX_ADDRESS_QUERY_RESULTS`]: zaino_source::MAX_ADDRESS_QUERY_RESULTS
+const ADDRESS_QUERY_PROBE: Option<usize> =
+    Some(zaino_source::MAX_ADDRESS_QUERY_RESULTS.saturating_add(1));
+
+/// Reject an answer with more rows than [`zaino_source::MAX_ADDRESS_QUERY_RESULTS`].
+fn within_result_cap<E>(rows: usize, too_many: impl FnOnce(usize) -> E) -> Result<(), E> {
+    if rows > zaino_source::MAX_ADDRESS_QUERY_RESULTS {
+        Err(too_many(zaino_source::MAX_ADDRESS_QUERY_RESULTS))
+    } else {
+        Ok(())
+    }
+}
+
+/// Convert a zebra height, failing rather than substituting another.
+fn subtree_end_height(height: zebra_chain::block::Height) -> Result<Height, ReadStateError> {
+    Height::try_from(height.0).map_err(ReadStateError::invalid_data)
+}
+
+impl zaino_source::OneShotGetAddressUtxos for ZebraReadStateAdapter {
+    async fn get_address_utxos(
+        &self,
+        addresses: Vec<String>,
+        page: zaino_source::UtxoPage,
+    ) -> Result<
+        Vec<zaino_primitives::types::Utxo>,
+        QueryError<zaino_source::GetAddressUtxosError, ReadStateError>,
+    > {
+        use zaino_primitives::types::{Script, TransparentAddress, Utxo, Zatoshis};
+
+        let valid = parse_addresses(
+            addresses,
+            &self.network,
+            zaino_source::GetAddressUtxosError::InvalidAddress,
+        )?;
+
+        let response = read(
+            &self.state,
+            ReadRequest::UtxosByAddresses {
+                addresses: valid,
+                height_range: zebra_chain::block::Height(u32::from(page.start()))
+                    ..=zebra_chain::block::Height::MAX,
+                max_entries: page
+                    .max_entries()
+                    .map(std::num::NonZeroUsize::get)
+                    .or(ADDRESS_QUERY_PROBE),
+            },
+        )
+        .await?;
+        let utxos = match response {
+            ReadResponse::AddressUtxos(utxos) => utxos,
+            _ => return Err(unexpected_response("UtxosByAddresses").into()),
+        };
+
+        // Zebra documents this index as ordered by output location, and Zaino
+        // relies on that rather than sorting. Verify it, but as a check that
+        // fails the query — the previous implementation asserted, which turns a
+        // corrupted index into a process abort.
+        let mut previous =
+            zebra_state::OutputLocation::from_usize(zebra_chain::block::Height(0), 0, 0);
+        let mut result = Vec::new();
+
+        for (address, txid, location, output) in utxos.utxos() {
+            if result.is_empty() {
+                // The first row has nothing to compare against; `previous` is a
+                // floor, not a real predecessor.
+                if location < &previous {
+                    return Err(out_of_order("UTXO").into());
+                }
+            } else if location <= &previous {
+                return Err(out_of_order("UTXO").into());
+            }
+            previous = *location;
+
+            result.push(Utxo {
+                address: TransparentAddress::try_new(address.to_string())
+                    .map_err(ReadStateError::invalid_data)?,
+                txid: zaino_primitives::types::TransactionId::from(txid.0),
+                output_index: location.output_index().index(),
+                script: Script::new(output.lock_script.as_raw_bytes().to_vec()),
+                satoshis: Zatoshis::new(u64::from(output.value()))
+                    .map_err(ReadStateError::invalid_data)?,
+                height: Height::try_from(location.height().0)
+                    .map_err(ReadStateError::invalid_data)?,
+            });
+        }
+
+        page.select(result, |utxo| utxo.height).map_err(|limit| {
+            QueryError::Domain(zaino_source::GetAddressUtxosError::TooManyResults { limit })
+        })
+    }
+}
+
+impl zaino_source::OneShotGetAddressTxids for ZebraReadStateAdapter {
+    async fn get_address_txids(
+        &self,
+        addresses: Vec<String>,
+        start: Height,
+        end: Height,
+    ) -> Result<
+        Vec<zaino_primitives::types::TransactionId>,
+        QueryError<zaino_source::GetAddressTxidsError, ReadStateError>,
+    > {
+        use zaino_primitives::types::TransactionId;
+
+        // Bounds are checked against the tip before the index is queried, so an
+        // impossible range is reported as such rather than silently returning
+        // nothing.
+        let tip = match read(&self.state, ReadRequest::Tip).await? {
+            ReadResponse::Tip(Some((height, _))) => height,
+            ReadResponse::Tip(None) => {
+                return Err(ReadStateError::off_contract("no blocks in chain").into())
+            }
+            _ => return Err(unexpected_response("Tip").into()),
+        };
+
+        if start > end {
+            return Err(QueryError::Domain(
+                zaino_source::GetAddressTxidsError::InvalidRange { start, end },
+            ));
+        }
+        if u32::from(start) > tip.0 || u32::from(end) > tip.0 {
+            return Err(QueryError::Domain(
+                zaino_source::GetAddressTxidsError::InvalidRange { start, end },
+            ));
+        }
+
+        let request = ReadRequest::TransactionIdsByAddresses {
+            addresses: parse_addresses(
+                addresses,
+                &self.network,
+                zaino_source::GetAddressTxidsError::InvalidAddress,
+            )?,
+            height_range: zebra_chain::block::Height(u32::from(start))
+                ..=zebra_chain::block::Height(u32::from(end)),
+            max_entries: ADDRESS_QUERY_PROBE,
+        };
+
+        let hashes = match read(&self.state, request).await? {
+            ReadResponse::AddressesTransactionIds(hashes) => hashes,
+            _ => return Err(unexpected_response("TransactionIdsByAddresses").into()),
+        };
+        within_result_cap(hashes.len(), |limit| {
+            QueryError::Domain(zaino_source::GetAddressTxidsError::TooManyResults { limit })
+        })?;
+
+        // Chain order again checked rather than asserted.
+        let mut previous =
+            zebra_state::TransactionLocation::from_usize(zebra_chain::block::Height(0), 0);
+        let mut result = Vec::new();
+
+        for (location, txid) in hashes.iter() {
+            if !result.is_empty() && location <= &previous {
+                return Err(out_of_order("address transaction").into());
+            }
+            previous = *location;
+            result.push(TransactionId::from(txid.0));
+        }
+
+        Ok(result)
+    }
+}
+
+/// Deltas are synthesised from the address index rather than fetched.
+///
+/// Zebra has no `getaddressdeltas` RPC — the method is the legacy full node's — so on a Zebra
+/// validator this is the only implementation there is. It rebuilds the answer
+/// from two things the state service does have: the transparent address index,
+/// which maps an address and height range to the transactions touching it, and
+/// the transactions themselves.
+///
+/// # What this reports
+///
+/// Both halves, as zcashd's `getaddressdeltas` does: each output paying a
+/// requested address is a credit under the output's index, and each input
+/// spending such an output is a debit (the spent value, negated) under the
+/// input's index. Spends are resolved by fetching each funding transaction once.
+impl zaino_source::OneShotGetAddressDeltas for ZebraReadStateAdapter {
+    async fn get_address_deltas(
+        &self,
+        addresses: Vec<String>,
+        start: Height,
+        end: Height,
+    ) -> Result<
+        Vec<zaino_primitives::types::AddressDelta>,
+        QueryError<zaino_source::GetAddressDeltasError, ReadStateError>,
+    > {
+        use std::collections::hash_map::Entry;
+        use std::collections::HashMap;
+        use std::sync::Arc;
+        use zaino_primitives::types::{AddressDelta, TransactionId};
+        use zebra_chain::transaction::Transaction;
+        use zebra_chain::transparent;
+
+        if start > end {
+            return Err(QueryError::Domain(
+                zaino_source::GetAddressDeltasError::InvalidRange { start, end },
+            ));
+        }
+
+        let request = ReadRequest::TransactionIdsByAddresses {
+            addresses: parse_addresses(
+                addresses.clone(),
+                &self.network,
+                zaino_source::GetAddressDeltasError::InvalidAddress,
+            )?,
+            height_range: zebra_chain::block::Height(u32::from(start))
+                ..=zebra_chain::block::Height(u32::from(end)),
+            max_entries: ADDRESS_QUERY_PROBE,
+        };
+
+        let located = match read(&self.state, request).await? {
+            ReadResponse::AddressesTransactionIds(located) => located,
+            _ => return Err(unexpected_response("TransactionIdsByAddresses").into()),
+        };
+        within_result_cap(located.len(), |limit| {
+            QueryError::Domain(zaino_source::GetAddressDeltasError::TooManyResults { limit })
+        })?;
+
+        // The index gives each transaction's location, so the height and the
+        // position within the block come from it rather than from a second
+        // lookup. Only the transaction body still has to be fetched.
+        let mut deltas: Vec<AddressDelta> = Vec::new();
+        // Funding transactions of the inputs seen so far: one read per
+        // distinct funder, not per input.
+        let mut funders: HashMap<zebra_chain::transaction::Hash, Arc<Transaction>> = HashMap::new();
+
+        for (location, txid) in located.iter() {
+            let transaction = self.mined_transaction(*txid).await?;
+            let height =
+                Height::try_from(location.height.0).map_err(ReadStateError::invalid_data)?;
+            let block_index = Some(u32::from(location.index.index()));
+            let delta_txid = TransactionId::from(txid.0);
+            let delta = |index: usize, output: &transparent::Output, spend: bool| {
+                let zatoshis = output.value.zatoshis();
+                address_delta(
+                    &self.network,
+                    &addresses,
+                    output,
+                    // a value within the supply: never `i64::MIN`
+                    if spend {
+                        zatoshis.saturating_neg()
+                    } else {
+                        zatoshis
+                    },
+                    delta_txid,
+                    index as u32,
+                    height,
+                    block_index,
+                )
+            };
+
+            for (index, output) in transaction.outputs().iter().enumerate() {
+                deltas.extend(delta(index, output, false)?);
+            }
+
+            // The address index lists spenders too; a spend debits the
+            // address by the output it consumes, under the input's index.
+            for (index, input) in transaction.inputs().iter().enumerate() {
+                let Some(outpoint) = input.outpoint() else {
+                    continue;
+                };
+                let funder = match funders.entry(outpoint.hash) {
+                    Entry::Occupied(found) => Arc::clone(found.get()),
+                    Entry::Vacant(slot) => {
+                        Arc::clone(slot.insert(self.mined_transaction(outpoint.hash).await?))
+                    }
+                };
+                let spent = funder
+                    .outputs()
+                    .get(outpoint.index as usize)
+                    .cloned()
+                    .ok_or_else(|| {
+                        ReadStateError::off_contract(format!(
+                            "{txid:?} spends an output {outpoint:?} does not have"
+                        ))
+                    })?;
+                deltas.extend(delta(index, &spent, true)?);
+            }
+        }
+
+        // the legacy full node orders deltas by (height, position in block, index within the
+        // transaction). The address index carries each transaction's real
+        // location, so this is the documented order rather than an
+        // approximation of it.
+        // `unwrap_or(MAX)` rather than letting `None` sort first: a delta whose
+        // position in its block is unknown cannot be placed among those that
+        // know theirs, so it goes last. Matches the ordering this replaced.
+        deltas.sort_by_key(|delta| {
+            (
+                u32::from(delta.height),
+                delta.block_index.unwrap_or(u32::MAX),
+                delta.index,
+            )
+        });
+
+        Ok(deltas)
+    }
+}
+
+/// The ReadState adapter observes the chain directly, so it can offer a real
+/// tip stream rather than a synthesised one.
+impl zaino_source::SubscribeChainTip for ZebraReadStateAdapter {
+    fn subscribe_to_chain_tip(
+        &self,
+    ) -> Option<tokio::sync::watch::Receiver<zaino_source::TipObservation>> {
+        // Not yet wired: `init_read_only` yields no `ChainTipChange`, so a tip
+        // stream needs the syncer-backed construction path rather than the
+        // read-only one. Until this adapter is built that way, a composite
+        // should synthesise the capability with `PolledChainTip`.
+        None
+    }
+}
+
+impl zaino_source::SourceLifecycle for ZebraReadStateAdapter {
+    /// Stop the syncer, if this adapter launched one.
+    ///
+    /// The database handle is released when the adapter drops, but a spawned
+    /// syncer would outlive it and keep writing, so it is aborted explicitly.
+    fn shutdown(&self) {
+        if let Some(syncer) = &self.syncer {
+            syncer.stop.abort();
+        }
+    }
+
+    /// The syncer has ended: the state no longer follows the validator.
+    fn failure(&self) -> Option<String> {
+        self.syncer
+            .as_ref()
+            .and_then(Syncer::ended)
+            .map(syncer_ended)
+    }
+}
+
+/// What an ended syncer means, for an operator, with why it ended.
+pub(crate) fn syncer_ended(cause: &str) -> String {
+    format!(
+        "zebra's state syncer has ended ({cause}), so the state Zaino reads no longer follows \
+         the validator; reconnecting to the validator starts a new one"
+    )
+}
+
+/// Reading the state directly gives no push notification of new blocks — that
+/// signal belongs to the syncer, not the read handle.
+impl zaino_source::SubscribeBlocks for ZebraReadStateAdapter {}
+
+impl zaino_source::OneShotGetCommitmentTreeRoots for ZebraReadStateAdapter {
+    async fn get_commitment_tree_roots(
+        &self,
+        block: BlockHash,
+    ) -> Result<
+        zaino_primitives::types::TreeRoots,
+        QueryError<zaino_source::GetCommitmentTreeRootsError, ReadStateError>,
+    > {
+        let hash = zebra_chain::block::Hash(block.into());
+        // The block's height decides which pools have a tree (D-68): the state
+        // seeds every tree at genesis, so a tree's presence does not.
+        let Some((height, _)) = self.block_identity(hash).await? else {
+            return Err(QueryError::Domain(
+                zaino_source::GetCommitmentTreeRootsError::BlockNotFound(block),
+            ));
+        };
+        Ok(self.roots_at(hash, height).await?)
+    }
+}
+
+impl ZebraReadStateAdapter {
+    /// Each pool's root and size after the block `hash` at `height`; `None`
+    /// for a pool not yet active there.
+    async fn roots_at(
+        &self,
+        hash: zebra_chain::block::Hash,
+        height: zebra_chain::block::Height,
+    ) -> Result<zaino_primitives::types::TreeRoots, ReadStateError> {
+        use zebra_chain::parameters::NetworkUpgrade;
+
+        // Read the three pools concurrently: they are independent reads and the
+        // caller waits for all of them regardless. The any-chain reads find a
+        // side-chain block too, as zcashd's `getblock` does.
+        let (sapling, orchard, ironwood) = tokio::join!(
+            read(&self.state, ReadRequest::AnyChainSaplingTree(hash)),
+            read(&self.state, ReadRequest::AnyChainOrchardTree(hash)),
+            read(&self.state, ReadRequest::AnyChainIronwoodTree(hash)),
+        );
+        let active = |upgrade| pool_active(&self.network, upgrade, height);
+
+        // Unlike the RPC path, the state service hands back a live tree, so the
+        // root and count are read from it directly rather than deserialised.
+        let sapling = match sapling? {
+            ReadResponse::SaplingTree(tree) => tree
+                .as_deref()
+                .filter(|_| active(NetworkUpgrade::Sapling))
+                .map(|tree| tree_root_info(tree.root().into(), tree.count()))
+                .transpose()?,
+            _ => return Err(unexpected_response("SaplingTree")),
+        };
+        let orchard = match orchard? {
+            ReadResponse::OrchardTree(tree) => tree
+                .as_deref()
+                .filter(|_| active(NetworkUpgrade::Nu5))
+                .map(|tree| tree_root_info(tree.root().into(), tree.count()))
+                .transpose()?,
+            _ => return Err(unexpected_response("OrchardTree")),
+        };
+        let ironwood = match ironwood? {
+            ReadResponse::IronwoodTree(tree) => tree
+                .as_deref()
+                .filter(|_| active(NetworkUpgrade::Nu6_3))
+                .map(|tree| tree_root_info(tree.root().into(), tree.count()))
+                .transpose()?,
+            _ => return Err(unexpected_response("IronwoodTree")),
+        };
+        Ok(zaino_primitives::types::TreeRoots {
+            sapling,
+            orchard,
+            ironwood,
+        })
+    }
+}
+
+impl zaino_source::OneShotGetCommitmentTreeRootsByHeight for ZebraReadStateAdapter {
+    async fn get_commitment_tree_roots_by_height(
+        &self,
+        height: Height,
+    ) -> Result<
+        (BlockHash, zaino_primitives::types::TreeRoots),
+        QueryError<zaino_source::GetCommitmentTreeRootsByHeightError, ReadStateError>,
+    > {
+        let zebra_height = zebra_chain::block::Height(u32::from(height));
+        let hash = match read(&self.state, ReadRequest::BestChainBlockHash(zebra_height)).await? {
+            ReadResponse::BlockHash(Some(hash)) => BlockHash::from(hash.0),
+            ReadResponse::BlockHash(None) => {
+                return Err(QueryError::Domain(
+                    zaino_source::GetCommitmentTreeRootsByHeightError::HeightNotFound(height),
+                ))
+            }
+            _ => return Err(unexpected_response("BlockHash").into()),
+        };
+        let roots = self
+            .roots_at(zebra_chain::block::Hash(hash.into()), zebra_height)
+            .await?;
+        Ok((hash, roots))
+    }
+}
+
+impl zaino_source::OneShotGetTreestateByHash for ZebraReadStateAdapter {
+    async fn get_treestate_by_hash(
+        &self,
+        hash: BlockHash,
+    ) -> Result<
+        zaino_primitives::types::Treestate,
+        QueryError<zaino_source::GetTreestateByHashError, ReadStateError>,
+    > {
+        self.treestate(zebra_chain::block::Hash(hash.into()))
+            .await?
+            .ok_or(QueryError::Domain(
+                zaino_source::GetTreestateByHashError::BlockNotFound(hash),
+            ))
+    }
+}
+
+impl zaino_source::OneShotGetTreestate for ZebraReadStateAdapter {
+    async fn get_treestate(
+        &self,
+        height: Height,
+    ) -> Result<
+        zaino_primitives::types::Treestate,
+        QueryError<zaino_source::GetTreestateError, ReadStateError>,
+    > {
+        let not_found = QueryError::Domain(zaino_source::GetTreestateError::HeightNotFound(height));
+        let zebra_height = zebra_chain::block::Height(u32::from(height));
+        let hash = match read(&self.state, ReadRequest::BestChainBlockHash(zebra_height)).await? {
+            ReadResponse::BlockHash(Some(hash)) => hash,
+            ReadResponse::BlockHash(None) => return Err(not_found),
+            _ => return Err(unexpected_response("BlockHash").into()),
+        };
+        // reorged out between the two reads: the height no longer names it
+        self.treestate(hash).await?.ok_or(not_found)
+    }
+}
+
+/// One address's balance change from an output, if it pays a requested address.
+///
+/// `satoshis` is the output's value for a receive and its negation for a
+/// spend; `index` is the output's or the spending input's index, as
+/// `getaddressdeltas` documents it.
+#[allow(clippy::too_many_arguments)]
+fn address_delta(
+    network: &Network,
+    requested: &[String],
+    output: &zebra_chain::transparent::Output,
+    satoshis: i64,
+    txid: zaino_primitives::types::TransactionId,
+    index: u32,
+    height: Height,
+    block_index: Option<u32>,
+) -> Result<Option<zaino_primitives::types::AddressDelta>, ReadStateError> {
+    use zaino_primitives::types::{AddressDelta, SignedZatoshis, TransparentAddress};
+
+    let Some(address) = output.address(network) else {
+        return Ok(None);
+    };
+    let address = address.to_string();
+    if !requested.iter().any(|candidate| candidate == &address) {
+        return Ok(None);
+    }
+    Ok(Some(AddressDelta {
+        satoshis: SignedZatoshis::try_new(satoshis).map_err(ReadStateError::invalid_data)?,
+        txid,
+        index,
+        height,
+        address: TransparentAddress::try_new(address).map_err(ReadStateError::invalid_data)?,
+        block_index,
+    }))
+}
+
+/// A pool's treestate at a block, absent before the pool's upgrade activates.
+///
+/// Zebra's state seeds every tree at genesis, so a tree read below activation
+/// finds the empty tree rather than nothing; its RPC gates on activation and
+/// omits the pool. The gate here is the same schedule the state was opened
+/// with, so both transports answer `None`, which the wire carries as the
+/// empty string.
+/// Whether the pool `upgrade` introduces is active at `height`.
+fn pool_active(
+    network: &Network,
+    upgrade: zebra_chain::parameters::NetworkUpgrade,
+    height: zebra_chain::block::Height,
+) -> bool {
+    upgrade
+        .activation_height(network)
+        .is_some_and(|activation| activation <= height)
+}
+
+fn pool_if_active(
+    network: &Network,
+    upgrade: zebra_chain::parameters::NetworkUpgrade,
+    height: zebra_chain::block::Height,
+    final_state: Option<Vec<u8>>,
+) -> Option<zaino_primitives::types::PoolTreestate> {
+    let final_state = final_state.filter(|_| pool_active(network, upgrade, height))?;
+    Some(zaino_primitives::types::PoolTreestate {
+        // Roots are answered by `get_commitment_tree_roots` on both adapters.
+        final_root: None,
+        final_state,
+    })
+}
+
+impl ZebraReadStateAdapter {
+    /// The mined transaction the chain holds under `txid`.
+    async fn mined_transaction(
+        &self,
+        txid: zebra_chain::transaction::Hash,
+    ) -> Result<std::sync::Arc<zebra_chain::transaction::Transaction>, ReadStateError> {
+        match read(&self.state, ReadRequest::AnyChainTransaction(txid)).await? {
+            ReadResponse::AnyChainTransaction(Some(zebra_state::AnyTx::Mined(mined))) => {
+                Ok(mined.tx)
+            }
+            ReadResponse::AnyChainTransaction(_) => Err(ReadStateError::off_contract(format!(
+                "address index names a transaction the chain lacks: {txid:?}"
+            ))),
+            _ => Err(unexpected_response("AnyChainTransaction")),
+        }
+    }
+
+    /// The height and time of block `hash` in any chain; `None` when the
+    /// state holds no such block. A best-chain block is read by header; only
+    /// a side-chain block costs a whole-block read.
+    async fn block_identity(
+        &self,
+        hash: zebra_chain::block::Hash,
+    ) -> Result<Option<(zebra_chain::block::Height, u32)>, ReadStateError> {
+        match read(&self.state, ReadRequest::Depth(hash)).await? {
+            ReadResponse::Depth(Some(_)) => {
+                match read(&self.state, ReadRequest::BlockHeader(hash.into())).await? {
+                    ReadResponse::BlockHeader { header, height, .. } => {
+                        Ok(Some((height, header.time.timestamp() as u32)))
+                    }
+                    _ => Err(unexpected_response("BlockHeader")),
+                }
+            }
+            ReadResponse::Depth(None) => {
+                match read(&self.state, ReadRequest::AnyChainBlock(hash.into())).await? {
+                    ReadResponse::Block(Some(block)) => {
+                        let height = block.coinbase_height().ok_or_else(|| {
+                            ReadStateError::off_contract(format!("block {hash} has no height"))
+                        })?;
+                        Ok(Some((height, block.header.time.timestamp() as u32)))
+                    }
+                    ReadResponse::Block(None) => Ok(None),
+                    _ => Err(unexpected_response("AnyChainBlock")),
+                }
+            }
+            _ => Err(unexpected_response("Depth")),
+        }
+    }
+
+    /// Serialised commitment trees for block `hash` in any chain, one per
+    /// pool (`None` for a pool not active at that block, `pool_if_active`);
+    /// `None` when the state holds no such block.
+    ///
+    /// Shared by the height- and hash-addressed queries: a height is resolved
+    /// to its best-chain hash first.
+    async fn treestate(
+        &self,
+        hash: zebra_chain::block::Hash,
+    ) -> Result<Option<zaino_primitives::types::Treestate>, ReadStateError> {
+        // The block's identity and its trees, read together: a treestate is
+        // only meaningful against one block.
+        let (identity, sapling, orchard, ironwood) = tokio::join!(
+            self.block_identity(hash),
+            read(&self.state, ReadRequest::AnyChainSaplingTree(hash)),
+            read(&self.state, ReadRequest::AnyChainOrchardTree(hash)),
+            read(&self.state, ReadRequest::AnyChainIronwoodTree(hash)),
+        );
+        let Some((zebra_height, time)) = identity? else {
+            return Ok(None);
+        };
+        let block_hash = BlockHash::from(hash.0);
+        let height = Height::try_from(zebra_height.0).map_err(ReadStateError::invalid_data)?;
+
+        let pool = |upgrade, final_state: Option<Vec<u8>>| {
+            pool_if_active(&self.network, upgrade, zebra_height, final_state)
+        };
+        let sapling = match sapling? {
+            ReadResponse::SaplingTree(tree) => pool(
+                NetworkUpgrade::Sapling,
+                tree.as_deref().map(|tree| tree.to_rpc_bytes()),
+            ),
+            _ => return Err(unexpected_response("SaplingTree")),
+        };
+        let orchard = match orchard? {
+            ReadResponse::OrchardTree(tree) => pool(
+                NetworkUpgrade::Nu5,
+                tree.as_deref().map(|tree| tree.to_rpc_bytes()),
+            ),
+            _ => return Err(unexpected_response("OrchardTree")),
+        };
+        let ironwood = match ironwood? {
+            ReadResponse::IronwoodTree(tree) => pool(
+                NetworkUpgrade::Nu6_3,
+                tree.as_deref().map(|tree| tree.to_rpc_bytes()),
+            ),
+            _ => return Err(unexpected_response("IronwoodTree")),
+        };
+
+        Ok(Some(zaino_primitives::types::Treestate {
+            block_hash,
+            height,
+            time,
+            sapling,
+            orchard,
+            ironwood,
+        }))
+    }
+}
+
+/// The name a validator puts on the wire for a network upgrade.
+///
+/// Zebra's `Display` is its `Debug`, which spells NU5 as `Nu5` and NU6.1 as
+/// `Nu6_1`. Neither is what a validator sends: the wire name comes from the
+/// enum's serde renames, so it is read from there.
+///
+/// This has to agree with what the RPC adapter parses out of a validator's
+/// reply, or the same chain gets two different upgrade names depending on which
+/// transport answered — which `getlightdinfo` then reports to wallets.
+fn upgrade_wire_name(upgrade: zebra_chain::parameters::NetworkUpgrade) -> String {
+    match serde_json::to_value(upgrade) {
+        Ok(serde_json::Value::String(name)) => name,
+        // Unreachable for a unit variant, but a debug spelling is a better
+        // answer than a panic in a field that is only ever displayed.
+        _ => format!("{upgrade:?}"),
+    }
+}
+
+/// Address a block by hash for the state service.
+fn hash_or_height(hash: BlockHash) -> zebra_state::HashOrHeight {
+    zebra_state::HashOrHeight::Hash(zebra_chain::block::Hash(hash.into()))
+}
+
+/// What zebrad's `getblockheader` reports for one best-chain block.
+struct HeaderParts {
+    hash: zebra_chain::block::Hash,
+    height: zebra_chain::block::Height,
+    header: std::sync::Arc<zebra_chain::block::Header>,
+    confirmations: i64,
+    next_block_hash: Option<zebra_chain::block::Hash>,
+    block_commitments: [u8; 32],
+    final_sapling_root: [u8; 32],
+    sapling_tree_size: u64,
+    nonce: [u8; 32],
+    difficulty: f64,
+}
+
+impl HeaderParts {
+    /// zebrad's own verbose header object.
+    fn object(&self) -> zebra_rpc::client::BlockHeaderObject {
+        zebra_rpc::client::BlockHeaderObject::new(
+            self.hash,
+            self.confirmations,
+            self.height,
+            self.header.version,
+            self.header.merkle_root,
+            self.block_commitments,
+            self.final_sapling_root,
+            self.sapling_tree_size,
+            self.header.time.timestamp(),
+            self.nonce,
+            self.header.solution,
+            self.header.difficulty_threshold,
+            self.difficulty,
+            self.header.previous_block_hash,
+            self.next_block_hash,
+        )
+    }
+}
+
+// The verbose header, from the state: the reads and the rules of zebrad's own
+// `getblockheader` handler (zebra-rpc `methods.rs`), built as zebrad's
+// response object and read back exactly as the JSON-RPC adapter reads
+// zebrad's reply, so both transports answer alike.
+impl ZebraReadStateAdapter {
+    /// The header of the best-chain block `hash`; `None` when the best chain
+    /// holds no such block (zebrad's handler answers no other).
+    async fn header_parts(
+        &self,
+        hash: zebra_chain::block::Hash,
+    ) -> Result<Option<HeaderParts>, ReadStateError> {
+        use zebra_chain::block::Commitment;
+        use zebra_chain::serialization::BytesInDisplayOrder as _;
+
+        let depth = match read(&self.state, ReadRequest::Depth(hash)).await? {
+            ReadResponse::Depth(Some(depth)) => depth,
+            ReadResponse::Depth(None) => return Ok(None),
+            _ => return Err(unexpected_response("Depth")),
+        };
+        // Both by the resolved hash, so the header and its Sapling tree are
+        // one block's.
+        let (header, sapling) = tokio::join!(
+            read(&self.state, ReadRequest::BlockHeader(hash.into())),
+            read(&self.state, ReadRequest::SaplingTree(hash.into())),
+        );
+        let ReadResponse::BlockHeader {
+            header,
+            hash,
+            height,
+            next_block_hash,
+        } = header?
+        else {
+            return Err(unexpected_response("BlockHeader"));
+        };
+        let sapling_tree = match sapling? {
+            ReadResponse::SaplingTree(Some(tree)) => tree,
+            // reorged out between the reads
+            ReadResponse::SaplingTree(None) => return Ok(None),
+            _ => return Err(unexpected_response("SaplingTree")),
+        };
+
+        let mut nonce = *header.nonce;
+        nonce.reverse();
+        let sapling_active = NetworkUpgrade::Sapling
+            .activation_height(&self.network)
+            .is_some_and(|activation| height >= activation);
+        let final_sapling_root = match sapling_active {
+            true => {
+                let mut root: [u8; 32] = sapling_tree.root().into();
+                root.reverse();
+                root
+            }
+            false => [0; 32],
+        };
+        let block_commitments = match header
+            .commitment(&self.network, height)
+            .map_err(ReadStateError::invalid_data)?
+        {
+            Commitment::PreSaplingReserved(bytes) => bytes,
+            Commitment::FinalSaplingRoot(_) => final_sapling_root,
+            Commitment::ChainHistoryActivationReserved => [0; 32],
+            Commitment::ChainHistoryRoot(root) => root.bytes_in_display_order(),
+            Commitment::ChainHistoryBlockTxAuthCommitment(hash) => hash.bytes_in_display_order(),
+        };
+        Ok(Some(HeaderParts {
+            hash,
+            height,
+            // one more than the depth, which the height bounds
+            confirmations: i64::from(depth).saturating_add(1),
+            next_block_hash,
+            block_commitments,
+            final_sapling_root,
+            sapling_tree_size: sapling_tree.count(),
+            nonce,
+            difficulty: header
+                .difficulty_threshold
+                .relative_to_network(&self.network),
+            header,
+        }))
+    }
+}
+
+impl zaino_source::OneShotGetBlockHeader for ZebraReadStateAdapter {
+    async fn get_block_header(
+        &self,
+        hash: BlockHash,
+    ) -> Result<
+        zaino_primitives::types::rpc::BlockHeaderVerbose,
+        QueryError<zaino_source::GetBlockHeaderError, ReadStateError>,
+    > {
+        let Some(parts) = self
+            .header_parts(zebra_chain::block::Hash(hash.into()))
+            .await?
+        else {
+            return Err(QueryError::Domain(
+                zaino_source::GetBlockHeaderError::BlockNotFound(hash),
+            ));
+        };
+        let json = serde_json::to_value(parts.object()).map_err(ReadStateError::invalid_data)?;
+        Ok(zaino_source_zcash_rpc::parse_block_header_object(&json)
+            .map_err(ReadStateError::invalid_data)?)
+    }
+}
+
+impl zaino_source::OneShotGetTransaction for ZebraReadStateAdapter {
+    async fn get_transaction(
+        &self,
+        txid: zaino_primitives::types::TransactionId,
+        verbosity: zaino_primitives::types::rpc::TransactionVerbosity,
+    ) -> Result<
+        zaino_source::TransactionAnswer,
+        QueryError<zaino_source::GetTransactionError, ReadStateError>,
+    > {
+        use zaino_primitives::types::rpc::TransactionVerbosity;
+        use zebra_chain::serialization::ZcashSerialize;
+        use zebra_rpc::client::TransactionObject;
+
+        let zebra_txid = zebra_chain::transaction::Hash::from(<[u8; 32]>::from(txid));
+
+        let response = read(&self.state, ReadRequest::AnyChainTransaction(zebra_txid)).await?;
+
+        // Only a best-chain transaction is answered here. zebrad looks in its
+        // mempool before a side chain, and the state service has no mempool:
+        // anything else is "not found", and the composite asks the RPC adapter.
+        let mined = match response {
+            ReadResponse::AnyChainTransaction(Some(zebra_state::AnyTx::Mined(mined))) => mined,
+            ReadResponse::AnyChainTransaction(_) => {
+                return Err(QueryError::Domain(
+                    zaino_source::GetTransactionError::NotFound(txid),
+                ))
+            }
+            _ => return Err(unexpected_response("AnyChainTransaction").into()),
+        };
+
+        if verbosity == TransactionVerbosity::Raw {
+            return Ok(zaino_source::TransactionAnswer::Raw(
+                mined
+                    .tx
+                    .zcash_serialize_to_vec()
+                    .map_err(ReadStateError::invalid_data)?,
+            ));
+        }
+
+        // as zebrad's `getrawtransaction` builds it from the same response
+        let block_hash =
+            match read(&self.state, ReadRequest::BestChainBlockHash(mined.height)).await? {
+                ReadResponse::BlockHash(hash) => hash,
+                _ => return Err(unexpected_response("BestChainBlockHash").into()),
+            };
+        let object = TransactionObject::from_transaction(
+            mined.tx.clone(),
+            Some(mined.height),
+            Some(mined.confirmations.into()),
+            &self.network,
+            Some(mined.block_time),
+            block_hash,
+            Some(true),
+            zebra_txid,
+        );
+        let json = serde_json::to_value(&object).map_err(ReadStateError::invalid_data)?;
+        let object = zaino_source_zcash_rpc::parse_transaction_object(&json)
+            .map_err(ReadStateError::invalid_data)?;
+        Ok(zaino_source::TransactionAnswer::Object(Box::new(object)))
+    }
+}
+
+impl zaino_source::OneShotGetDifficulty for ZebraReadStateAdapter {
+    async fn get_difficulty(
+        &self,
+    ) -> Result<
+        zaino_primitives::types::Difficulty,
+        QueryError<zaino_source::GetDifficultyError, ReadStateError>,
+    > {
+        // Reuses zebra's own calculation rather than reimplementing the
+        // expansion from the compact threshold: difficulty is defined relative
+        // to each network's minimum, and a second implementation of that would
+        // be a second thing to keep correct.
+        zebra_rpc::methods::chain_tip_difficulty(self.network.clone(), self.state.clone(), false)
+            .await
+            .map_err(|e| ReadStateError::unreachable(e).into())
+    }
+}
+
+/// Not routed to by [`ZebraValidator`](crate::ZebraValidator), which answers
+/// this over JSON-RPC. Behind zebra's syncer the value pools here are short:
+/// the syncer commits non-finalised blocks without their deferred (lockbox)
+/// amounts, so the lockbox pool and the chain supply stop at the finalised
+/// tip's. Every other field is the validator's.
+impl zaino_source::OneShotGetBlockchainInfo for ZebraReadStateAdapter {
+    async fn get_blockchain_info(
+        &self,
+    ) -> Result<
+        zaino_primitives::types::BlockchainInfo,
+        QueryError<zaino_source::GetBlockchainInfoError, ReadStateError>,
+    > {
+        use zaino_primitives::types::{
+            BlockchainInfo, ConsensusBranchId, ConsensusBranchIds, NetworkUpgradeInfo,
+            NetworkUpgradeStatus, ValuePoolBalance, Zatoshis,
+        };
+        use zebra_chain::parameters::NetworkUpgrade;
+
+        let (height, hash, balance) = match read(&self.state, ReadRequest::TipPoolValues).await? {
+            ReadResponse::TipPoolValues {
+                tip_height,
+                tip_hash,
+                value_balance,
+            } => (tip_height, tip_hash, value_balance),
+            _ => return Err(unexpected_response("TipPoolValues").into()),
+        };
+
+        let size_on_disk = match read(&self.state, ReadRequest::UsageInfo).await? {
+            ReadResponse::UsageInfo(size) => size,
+            _ => return Err(unexpected_response("UsageInfo").into()),
+        };
+
+        let header = match read(&self.state, ReadRequest::BlockHeader(hash.into())).await? {
+            ReadResponse::BlockHeader { header, .. } => header,
+            _ => return Err(unexpected_response("BlockHeader").into()),
+        };
+
+        // The estimate is clamped to the real tip in two cases: a tip whose
+        // timestamp is in the future, and an estimate that lands below the tip
+        // we already have. Either would otherwise report progress above 1.0 or
+        // a network tip behind our own.
+        let now = chrono::Utc::now();
+        let estimate = zebra_chain::chain_tip::NetworkChainTipHeightEstimator::new(
+            header.time,
+            height,
+            &self.network,
+        )
+        .estimate_height_at(now);
+        let estimated_height = if header.time > now || estimate < height {
+            height
+        } else {
+            estimate
+        };
+
+        // Zebra's activation list is the schedule this node is actually
+        // enforcing, which is the point of reading it from the validator rather
+        // than compiling one in. Upgrades without a consensus branch id are
+        // zebra-internal rule changes with no the legacy full node equivalent, so they are
+        // not part of the schedule a client can act on.
+        let upgrades = self
+            .network
+            .full_activation_list()
+            .into_iter()
+            .filter_map(|(activation_height, upgrade)| {
+                let branch_id = upgrade.branch_id()?;
+                let status = if height >= activation_height {
+                    NetworkUpgradeStatus::Active
+                } else {
+                    NetworkUpgradeStatus::Pending
+                };
+                Some(
+                    Height::try_from(activation_height.0)
+                        .map(|activation_height| NetworkUpgradeInfo {
+                            branch_id: ConsensusBranchId::new(u32::from(branch_id)),
+                            name: upgrade_wire_name(upgrade),
+                            activation_height,
+                            status,
+                        })
+                        .map_err(ReadStateError::invalid_data),
+                )
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+
+        let next_height = height
+            .next()
+            .map_err(|_| ReadStateError::off_contract("chain tip is at the maximum height"))?;
+        let branch_at = |h| {
+            NetworkUpgrade::current(&self.network, h)
+                .branch_id()
+                .map(|id| ConsensusBranchId::new(u32::from(id)))
+                .unwrap_or(ConsensusBranchId::new(0))
+        };
+
+        // `true`: as zebrad's own getblockchaininfo asks it (methods.rs)
+        let difficulty = zebra_rpc::methods::chain_tip_difficulty(
+            self.network.clone(),
+            self.state.clone(),
+            true,
+        )
+        .await
+        .map_err(ReadStateError::unreachable)?;
+
+        let to_zatoshis =
+            |amount: zebra_chain::amount::Amount<zebra_chain::amount::NonNegative>| {
+                Zatoshis::new(amount.into()).map_err(ReadStateError::invalid_data)
+            };
+
+        // Every pool the interface has a slot for, in its order. Omitting one
+        // reports it as zero, which is indistinguishable from an empty pool —
+        // that is how ironwood read as empty across NU6.3 activation.
+        // The NU7 NSM reserve (`nsm_amount`) is deliberately absent: it is not
+        // issued supply, and zebra's own `getblockchaininfo` omits it too.
+        let pools = [
+            ("transparent", balance.transparent_amount()),
+            ("sprout", balance.sprout_amount()),
+            ("sapling", balance.sapling_amount()),
+            ("orchard", balance.orchard_amount()),
+            ("lockbox", balance.deferred_amount()),
+            ("ironwood", balance.ironwood_amount()),
+        ];
+        let value_pools = pools
+            .iter()
+            .map(|(id, amount)| {
+                Ok(ValuePoolBalance {
+                    id: (*id).to_string(),
+                    chain_value: to_zatoshis(*amount)?,
+                    monitored: amount.zatoshis() != 0,
+                    value_delta: None,
+                })
+            })
+            .collect::<Result<Vec<_>, ReadStateError>>()?;
+
+        // `chainSupply` is the sum over those pools, carried unnamed — a total,
+        // not a pool. It is not the transparent balance.
+        let supply = pools
+            .iter()
+            .try_fold(
+                zebra_chain::amount::Amount::<zebra_chain::amount::NonNegative>::zero(),
+                // zebra's `Amount` addition is checked: it returns a `Result`
+                |acc, (_, amount)| std::ops::Add::add(acc, *amount),
+            )
+            .map_err(ReadStateError::invalid_data)?;
+        let chain_supply = ValuePoolBalance {
+            id: String::new(),
+            chain_value: to_zatoshis(supply)?,
+            monitored: supply.zatoshis() != 0,
+            value_delta: None,
+        };
+
+        Ok(BlockchainInfo {
+            chain: self.network.bip70_network_name(),
+            blocks: Height::try_from(height.0).map_err(ReadStateError::invalid_data)?,
+            // The read-state serves the finalized chain, so validated headers
+            // and processed blocks are the same height here.
+            headers: Height::try_from(height.0).map_err(ReadStateError::invalid_data)?,
+            estimated_height: Height::try_from(estimated_height.0)
+                .map_err(ReadStateError::invalid_data)?,
+            best_block_hash: BlockHash::from(hash.0),
+            difficulty,
+            verification_progress: verification_progress(
+                self.network.is_regtest(),
+                height,
+                estimated_height,
+            ),
+            // Zebra does not store cumulative work per height
+            // (ZcashFoundation/zebra#7109), so it is genuinely unknown here
+            // rather than zero.
+            chain_work: None,
+            pruned: false,
+            size_on_disk,
+            // Not tracked by the read-state; the legacy full node counts sprout commitments
+            // only, which has no meaning for a modern chain.
+            commitments: 0,
+            chain_supply,
+            value_pools,
+            upgrades,
+            consensus: ConsensusBranchIds {
+                chain_tip: branch_at(height),
+                next_block: branch_at(next_height),
+            },
+        })
+    }
+}
+
+/// Serialize a block held by the state service back to its canonical bytes.
+///
+/// The state service hands back a parsed block, so the bytes are reproduced
+/// rather than passed through. Zebra's serialization is the inverse of the
+/// deserialization that produced the block, so the result is byte-identical to
+/// what the hash commits to.
+fn serialize_block(block: &zebra_chain::block::Block) -> Result<Vec<u8>, ReadStateError> {
+    use zebra_chain::serialization::ZcashSerialize;
+    block
+        .zcash_serialize_to_vec()
+        .map_err(ReadStateError::invalid_data)
+}
+
+impl zaino_source::OneShotGetRawBlock for ZebraReadStateAdapter {
+    async fn get_raw_block(
+        &self,
+        height: Height,
+    ) -> Result<Vec<u8>, QueryError<zaino_source::GetBlockError, ReadStateError>> {
+        let zebra_height = zebra_chain::block::Height(u32::from(height));
+
+        match read(&self.state, ReadRequest::Block(zebra_height.into())).await? {
+            ReadResponse::Block(Some(block)) => Ok(serialize_block(&block)?),
+            ReadResponse::Block(None) => Err(QueryError::Domain(
+                zaino_source::GetBlockError::HeightNotFound(height),
+            )),
+            _ => Err(unexpected_response("Block").into()),
+        }
+    }
+}
+
+impl zaino_source::OneShotGetRawBlockByHash for ZebraReadStateAdapter {
+    async fn get_raw_block_by_hash(
+        &self,
+        hash: BlockHash,
+    ) -> Result<Vec<u8>, QueryError<zaino_source::GetBlockByHashError, ReadStateError>> {
+        match read(&self.state, ReadRequest::Block(hash_or_height(hash))).await? {
+            ReadResponse::Block(Some(block)) => Ok(serialize_block(&block)?),
+            // As with `GetBlockByHash`: absent here means "not in the finalized
+            // state", so a composite retries over JSON-RPC before concluding
+            // the block does not exist.
+            ReadResponse::Block(None) => Err(QueryError::Domain(
+                zaino_source::GetBlockByHashError::NotFound(hash),
+            )),
+            _ => Err(unexpected_response("Block").into()),
+        }
+    }
+}
+
+impl ZebraReadStateAdapter {
+    /// The median time past at `block`: the median timestamp of it and up to
+    /// the ten blocks before it.
+    ///
+    /// Walks backwards by parent hash rather than by height so it follows the
+    /// chain the block is actually on. A short walk is not an error — near
+    /// genesis there simply are fewer than eleven blocks, and the median of
+    /// what exists is the answer.
+    async fn median_time_past(
+        &self,
+        block: &zebra_chain::block::Block,
+    ) -> Result<u32, ReadStateError> {
+        let time = |block: &zebra_chain::block::Block| {
+            u32::try_from(block.header.time.timestamp()).map_err(ReadStateError::invalid_data)
+        };
+        // Newest first while walking back; reversed below.
+        let mut times = Vec::with_capacity(zaino_consensus::MEDIAN_TIME_SPAN);
+        times.push(time(block)?);
+
+        let mut previous = block.header.previous_block_hash;
+        while times.len() < zaino_consensus::MEDIAN_TIME_SPAN {
+            // Genesis's parent hash is all zeroes and names no block, so the
+            // read below simply misses and ends the walk.
+            match read(&self.state, ReadRequest::Block(previous.into())).await? {
+                ReadResponse::Block(Some(parent)) => {
+                    times.push(time(&parent)?);
+                    previous = parent.header.previous_block_hash;
+                }
+                ReadResponse::Block(None) => break,
+                _ => return Err(unexpected_response("Block")),
+            }
+        }
+
+        times.reverse();
+        zaino_consensus::median_time_past(&times)
+            .ok_or_else(|| ReadStateError::off_contract("no block times to take a median of"))
+    }
+
+    /// The transaction a spend refers to, for resolving the spent output's
+    /// address and value.
+    async fn prevout_transaction(
+        &self,
+        txid: zebra_chain::transaction::Hash,
+    ) -> Result<Option<std::sync::Arc<zebra_chain::transaction::Transaction>>, ReadStateError> {
+        match read(&self.state, ReadRequest::AnyChainTransaction(txid)).await? {
+            ReadResponse::AnyChainTransaction(Some(zebra_state::AnyTx::Mined(mined))) => {
+                Ok(Some(mined.tx))
+            }
+            ReadResponse::AnyChainTransaction(_) => Ok(None),
+            _ => Err(unexpected_response("AnyChainTransaction")),
+        }
+    }
+}
+
+impl zaino_source::OneShotGetBlockDeltas for ZebraReadStateAdapter {
+    /// Derives `getblockdeltas` from the state service.
+    ///
+    /// # Why this is derived rather than proxied
+    ///
+    /// `getblockdeltas` is a legacy full-node method. **zebrad does not implement it** —
+    /// it answers `-32601 Method not found` — so on a zebrad-backed deployment
+    /// this derivation is the only implementation there is, not a second copy
+    /// of one the validator already has.
+    ///
+    /// # What is attributed, and what is not
+    ///
+    /// Only inputs and outputs with exactly one derivable transparent address
+    /// are reported, matching the legacy full node. A nonstandard script has no address to
+    /// credit, and a bare multisig has no single owner; the legacy full node omits both
+    /// rather than crediting the first address. So the deltas do not sum to a
+    /// transaction's transparent balance and must not be used to derive one.
+    async fn get_block_deltas(
+        &self,
+        hash: BlockHash,
+    ) -> Result<
+        zaino_primitives::types::rpc::BlockDeltas,
+        QueryError<zaino_source::GetBlockDeltasError, ReadStateError>,
+    > {
+        use zaino_primitives::types::{
+            rpc::{BlockDelta, BlockDeltas, InputDelta, OutputDelta},
+            MerkleRoot, SignedZatoshis, TransactionId, TransparentAddress, Zatoshis,
+        };
+        use zebra_chain::serialization::ZcashSerialize as _;
+
+        let zebra_hash = zebra_chain::block::Hash(hash.into());
+        let block = match read(&self.state, ReadRequest::Block(zebra_hash.into())).await? {
+            ReadResponse::Block(Some(block)) => block,
+            // As elsewhere: the read state holds the best chain only, so a miss
+            // here is "not in the finalized state". The composite decides
+            // whether to ask another transport before concluding it is absent.
+            ReadResponse::Block(None) => {
+                return Err(QueryError::Domain(
+                    zaino_source::GetBlockDeltasError::BlockNotFound(hash),
+                ))
+            }
+            _ => return Err(unexpected_response("Block").into()),
+        };
+
+        let height = block
+            .coinbase_height()
+            .ok_or_else(|| ReadStateError::off_contract("block has no coinbase height"))?;
+        let domain_height = Height::try_from(height.0).map_err(ReadStateError::invalid_data)?;
+
+        let tip = match read(&self.state, ReadRequest::Tip).await? {
+            ReadResponse::Tip(Some((tip_height, _))) => tip_height,
+            ReadResponse::Tip(None) => {
+                return Err(ReadStateError::off_contract("state service has no tip").into())
+            }
+            _ => return Err(unexpected_response("Tip").into()),
+        };
+        let domain_tip = Height::try_from(tip.0).map_err(ReadStateError::invalid_data)?;
+
+        let next_block_hash = match height.next() {
+            // the highest height has no next block
+            Err(_) => None,
+            Ok(next) => match read(&self.state, ReadRequest::BestChainBlockHash(next)).await? {
+                ReadResponse::BlockHash(next) => next.map(|next| BlockHash::from(next.0)),
+                _ => return Err(unexpected_response("BlockHash").into()),
+            },
+        };
+
+        let mut deltas = Vec::with_capacity(block.transactions.len());
+        for (tx_index, transaction) in block.transactions.iter().enumerate() {
+            let mut inputs = Vec::new();
+            for (index, input) in transaction.inputs().iter().enumerate() {
+                // A coinbase input creates value rather than moving it, and
+                // names no previous output to attribute.
+                let Some(outpoint) = input.outpoint() else {
+                    continue;
+                };
+
+                let previous = self
+                    .prevout_transaction(outpoint.hash)
+                    .await?
+                    .ok_or_else(|| {
+                        ReadStateError::off_contract(format!(
+                            "getblockdeltas: prevout tx {} not in the chain",
+                            outpoint.hash
+                        ))
+                    })?;
+                let output = previous
+                    .outputs()
+                    .into_iter()
+                    .nth(outpoint.index as usize)
+                    .ok_or_else(|| {
+                        ReadStateError::off_contract(format!(
+                            "getblockdeltas: prevout index {} out of range for {}",
+                            outpoint.index, outpoint.hash
+                        ))
+                    })?;
+
+                let Some(address) = output.address(&self.network) else {
+                    continue;
+                };
+
+                inputs.push(InputDelta {
+                    address: TransparentAddress::try_new(address.to_string())
+                        .map_err(ReadStateError::invalid_data)?,
+                    // A spend debits the address, so the value leaves it.
+                    satoshis: SignedZatoshis::try_new(output.value.zatoshis().saturating_neg())
+                        .map_err(ReadStateError::invalid_data)?,
+                    index: index as u32,
+                    prev_txid: TransactionId::from(outpoint.hash.0),
+                    prev_output: outpoint.index,
+                });
+            }
+
+            let mut outputs = Vec::new();
+            for (index, output) in transaction.outputs().iter().enumerate() {
+                let Some(address) = output.address(&self.network) else {
+                    continue;
+                };
+                outputs.push(OutputDelta {
+                    address: TransparentAddress::try_new(address.to_string())
+                        .map_err(ReadStateError::invalid_data)?,
+                    satoshis: Zatoshis::new(u64::from(output.value))
+                        .map_err(ReadStateError::invalid_data)?,
+                    index: index as u32,
+                });
+            }
+
+            deltas.push(BlockDelta {
+                txid: TransactionId::from(transaction.hash().0),
+                index: tx_index as u32,
+                inputs,
+                outputs,
+            });
+        }
+
+        Ok(BlockDeltas {
+            hash,
+            // A best-chain answer by construction: the block was looked up on
+            // the best chain above. The constructor owns the depth + 1
+            // off-by-one and the height-above-tip clamp.
+            confirmations: BlockConfirmations::of_best_chain_block(domain_height, domain_tip),
+            size: block
+                .zcash_serialized_size()
+                .try_into()
+                .map_err(ReadStateError::invalid_data)?,
+            height: domain_height,
+            version: block.header.version,
+            merkle_root: MerkleRoot::from(block.header.merkle_root.0),
+            deltas,
+            time: u32::try_from(block.header.time.timestamp())
+                .map_err(ReadStateError::invalid_data)?,
+            median_time: self.median_time_past(&block).await?,
+            nonce: *block.header.nonce,
+            // Same conversion `zaino-convert-zebra` uses for a block header:
+            // zebra exposes no raw-bits accessor, so the nBits value crosses
+            // as its display-order bytes, revalidated at the primitives door.
+            bits: zaino_primitives::types::CompactDifficulty::try_from_be_bytes(
+                block.header.difficulty_threshold.bytes_in_display_order(),
+            )
+            .map_err(ReadStateError::invalid_data)?,
+            // zcashd's `GetDifficulty`, as zebrad reports a header's
+            difficulty: block
+                .header
+                .difficulty_threshold
+                .relative_to_network(&self.network),
+            // zebra tracks no chain work
+            chainwork: None,
+            previous_block_hash: Some(BlockHash::from(block.header.previous_block_hash.0)),
+            next_block_hash,
+        })
+    }
+}
+
+/// `getblockchaininfo`'s `verificationprogress` as zebrad computes it: the
+/// tip over the estimated height, and 1.0 on regtest.
+fn verification_progress(
+    regtest: bool,
+    height: zebra_chain::block::Height,
+    estimated_height: zebra_chain::block::Height,
+) -> f64 {
+    match regtest {
+        true => 1.0,
+        false => f64::from(height.0) / f64::from(estimated_height.0),
+    }
+}
+
+#[cfg(test)]
+mod verification_progress_tests {
+    use super::verification_progress;
+    use zebra_chain::block::Height;
+
+    #[test]
+    fn regtest_is_fully_verified() {
+        assert_eq!(verification_progress(true, Height(5), Height(50)), 1.0);
+        assert_eq!(verification_progress(false, Height(5), Height(50)), 0.1);
+    }
+}
+
+#[cfg(test)]
+mod address_query_tests {
+    use super::{parse_addresses, within_result_cap, ADDRESS_QUERY_PROBE};
+    use zaino_source::{QueryError, MAX_ADDRESS_QUERY_RESULTS};
+    use zcash_address::{ToAddress as _, ZcashAddress};
+    use zcash_protocol::consensus::NetworkType;
+    use zebra_chain::parameters::Network;
+
+    use zaino_source::GetAddressBalanceError::InvalidAddress;
+
+    /// TEX addresses on every network parse as zebra addresses but are refused,
+    /// as zebrad 7 refuses them, rather than answering empty: the port's
+    /// `InvalidAddress`, as on the RPC path.
+    #[test]
+    fn tex_addresses_are_refused() {
+        for network in [NetworkType::Main, NetworkType::Test, NetworkType::Regtest] {
+            let tex = ZcashAddress::from_tex(network, [7; 20]).encode();
+            let refused = parse_addresses(vec![tex.clone()], &Network::Mainnet, InvalidAddress)
+                .expect_err("a TEX address must be refused");
+            assert!(
+                matches!(&refused, QueryError::Domain(InvalidAddress(why)) if why.contains("TEX")),
+                "{tex}: {refused:?}"
+            );
+        }
+    }
+
+    /// A string that is no address is the port's `InvalidAddress`, not a fault.
+    #[test]
+    fn malformed_addresses_are_invalid_address() {
+        let refused = parse_addresses(
+            vec!["not an address".to_owned()],
+            &Network::Mainnet,
+            InvalidAddress,
+        )
+        .expect_err("refused");
+        assert!(
+            matches!(&refused, QueryError::Domain(InvalidAddress(_))),
+            "{refused:?}"
+        );
+    }
+
+    /// Another network's address is refused as zcashd refuses it (D-88);
+    /// testnet and regtest share their transparent encoding.
+    #[test]
+    fn another_networks_address_is_invalid_address() {
+        let mainnet = ZcashAddress::from_transparent_p2pkh(NetworkType::Main, [7; 20]).encode();
+        let testnet = ZcashAddress::from_transparent_p2pkh(NetworkType::Test, [7; 20]).encode();
+        let regtest = Network::new_regtest(Default::default());
+        assert!(matches!(
+            parse_addresses(vec![mainnet.clone()], &regtest, InvalidAddress),
+            Err(QueryError::Domain(InvalidAddress(why))) if why.contains("another network")
+        ));
+        assert!(parse_addresses(vec![testnet.clone()], &regtest, InvalidAddress).is_ok());
+        assert!(parse_addresses(vec![mainnet], &Network::Mainnet, InvalidAddress).is_ok());
+        assert!(parse_addresses(vec![testnet], &Network::Mainnet, InvalidAddress).is_err());
+    }
+
+    /// The probe asks for one row past the cap, so an oversize answer is seen.
+    #[test]
+    fn the_probe_detects_one_row_past_the_cap() {
+        assert_eq!(ADDRESS_QUERY_PROBE, Some(MAX_ADDRESS_QUERY_RESULTS + 1));
+        assert_eq!(within_result_cap(MAX_ADDRESS_QUERY_RESULTS, |l| l), Ok(()));
+        assert_eq!(
+            within_result_cap(MAX_ADDRESS_QUERY_RESULTS + 1, |l| l),
+            Err(MAX_ADDRESS_QUERY_RESULTS)
+        );
+    }
+}
+
+#[cfg(test)]
+mod address_delta_tests {
+    use super::address_delta;
+    use zaino_primitives::types::{Height, TransactionId};
+    use zebra_chain::amount::Amount;
+    use zebra_chain::parameters::{Network, NetworkKind};
+    use zebra_chain::transparent::{Address, Output};
+
+    fn output(pub_key_hash: [u8; 20]) -> (String, Output) {
+        let address = Address::from_pub_key_hash(NetworkKind::Regtest, pub_key_hash);
+        let output = Output {
+            value: Amount::try_from(1_000).expect("in range"),
+            lock_script: address.script(),
+        };
+        (address.to_string(), output)
+    }
+
+    /// A spend is the consumed output's value negated, under the input's
+    /// index, so an address's deltas sum to its balance.
+    #[test]
+    fn a_spend_debits_what_the_output_paid() {
+        let network = Network::new_regtest(Default::default());
+        let (address, paid) = output([7; 20]);
+        let txid = TransactionId::from([1; 32]);
+        let height = Height::try_from(9).expect("in range");
+        let delta = |satoshis, index| {
+            address_delta(
+                &network,
+                std::slice::from_ref(&address),
+                &paid,
+                satoshis,
+                txid,
+                index,
+                height,
+                Some(2),
+            )
+            .expect("in range")
+            .expect("the address is requested")
+        };
+
+        let receive = delta(1_000, 0);
+        let spend = delta(-1_000, 3);
+        assert_eq!(i64::from(receive.satoshis), 1_000);
+        assert_eq!(i64::from(spend.satoshis), -1_000);
+        assert_eq!(spend.index, 3);
+        assert_eq!(spend.address.as_str(), address);
+    }
+
+    /// An output paying an address nobody asked about yields nothing.
+    #[test]
+    fn an_unrequested_address_yields_no_delta() {
+        let network = Network::new_regtest(Default::default());
+        let (requested, _) = output([7; 20]);
+        let (_, other) = output([8; 20]);
+        let delta = address_delta(
+            &network,
+            &[requested],
+            &other,
+            1_000,
+            TransactionId::from([1; 32]),
+            0,
+            Height::try_from(9).expect("in range"),
+            None,
+        )
+        .expect("in range");
+        assert_eq!(delta, None);
+    }
+}
+
+#[cfg(test)]
+mod pool_if_active_tests {
+    use super::pool_if_active;
+    use zebra_chain::block::Height;
+    use zebra_chain::parameters::testnet::{ConfiguredActivationHeights, RegtestParameters};
+    use zebra_chain::parameters::{Network, NetworkUpgrade};
+
+    /// Zebra's state holds an empty tree below a pool's activation; the pool
+    /// is reported absent there and present from activation on, empty or not.
+    #[test]
+    fn a_pool_is_absent_before_its_activation() {
+        let network = Network::new_regtest(RegtestParameters {
+            activation_heights: ConfiguredActivationHeights {
+                nu5: Some(5),
+                ..Default::default()
+            },
+            ..Default::default()
+        });
+        let empty = Some(Vec::new());
+
+        assert_eq!(
+            pool_if_active(&network, NetworkUpgrade::Nu5, Height(4), empty.clone()),
+            None
+        );
+        let active = pool_if_active(&network, NetworkUpgrade::Nu5, Height(5), empty)
+            .expect("active at its activation height");
+        assert_eq!(active.final_state, Vec::<u8>::new());
+        assert_eq!(
+            pool_if_active(&network, NetworkUpgrade::Nu5, Height(5), None),
+            None
+        );
+    }
+}
+
+#[cfg(test)]
+mod tree_root_info_tests {
+    use super::tree_root_info;
+    use zaino_primitives::types::TreeSize;
+    use zaino_source::{FailureMode, NonDomainError};
+
+    /// The largest count the compact protocol carries is accepted, and a full
+    /// depth-32 tree (`2^32`) is refused rather than wrapped to zero (#549).
+    #[test]
+    fn a_count_past_u32_is_refused() {
+        let max = tree_root_info([0; 32], u64::from(u32::MAX)).expect("u32::MAX fits");
+        assert_eq!(max.size, TreeSize::from(u32::MAX));
+
+        let full = tree_root_info([0; 32], 1_u64 << 32).expect_err("2^32 does not fit");
+        // The adapter's `InvalidData` is the non-retryable `InvalidSourceData` at the seam.
+        assert_eq!(
+            NonDomainError::from(full).mode,
+            FailureMode::InvalidSourceData
+        );
+    }
+}
+
+#[cfg(test)]
+mod syncer_tests {
+    use super::{syncer_ended, Syncer};
+
+    /// Why `syncer` ended, once its watcher has seen it end.
+    async fn ended(syncer: &Syncer) -> String {
+        loop {
+            if let Some(cause) = syncer.ended() {
+                return cause.to_owned();
+            }
+            tokio::task::yield_now().await;
+        }
+    }
+
+    /// A syncer that panics is reported with its panic message, a `&str` or
+    /// a formatted one, and the failure says what it means.
+    #[tokio::test]
+    async fn a_panicked_syncer_is_reported_with_its_message() {
+        let syncer = Syncer::watch(tokio::spawn(async { panic!("the tip went missing") }));
+        assert_eq!(ended(&syncer).await, "it panicked: the tip went missing");
+
+        let height = 7;
+        let formatted = Syncer::watch(tokio::spawn(async move { panic!("no block at {height}") }));
+        let cause = ended(&formatted).await;
+        assert_eq!(cause, "it panicked: no block at 7");
+        assert_eq!(
+            syncer_ended(&cause),
+            "zebra's state syncer has ended (it panicked: no block at 7), so the state Zaino \
+             reads no longer follows the validator; reconnecting to the validator starts a \
+             new one"
+        );
+    }
+
+    /// A syncer that returns has ended too.
+    #[tokio::test]
+    async fn a_syncer_that_returns_has_ended() {
+        let syncer = Syncer::watch(tokio::spawn(async {}));
+        assert_eq!(ended(&syncer).await, "it returned");
+    }
+
+    /// A running syncer has not ended, and one that was stopped is not a
+    /// failure, however often it is looked at.
+    #[tokio::test]
+    async fn a_stopped_syncer_is_not_a_failure() {
+        let syncer = Syncer::watch(tokio::spawn(std::future::pending::<()>()));
+        assert_eq!(syncer.ended(), None);
+        syncer.stop.abort();
+        while !syncer.stop.is_finished() {
+            tokio::task::yield_now().await;
+        }
+        assert_eq!(syncer.ended(), None);
+        assert_eq!(syncer.ended(), None);
+    }
+
+    /// Dropping the watch stops the syncer.
+    #[tokio::test]
+    async fn dropping_the_watch_stops_the_syncer() {
+        let task = tokio::spawn(std::future::pending::<()>());
+        let stopped = task.abort_handle();
+        drop(Syncer::watch(task));
+        while !stopped.is_finished() {
+            tokio::task::yield_now().await;
+        }
+    }
+
+    /// Watching and reading a syncer needs no runtime: a task that ended on
+    /// one is read after that runtime is gone.
+    #[test]
+    fn a_syncer_is_read_outside_a_runtime() {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .build()
+            .expect("builds");
+        let task = runtime.spawn(async { panic!("the tip went missing") });
+        runtime.block_on(async {
+            while !task.is_finished() {
+                tokio::task::yield_now().await;
+            }
+        });
+        drop(runtime);
+        let syncer = Syncer::watch(task);
+        assert_eq!(syncer.ended(), Some("it panicked: the tip went missing"));
+        assert_eq!(syncer.ended(), Some("it panicked: the tip went missing"));
+    }
+}

@@ -1,4 +1,4 @@
-//! What a store can serve, how far it can serve it, and what schema it is on.
+//! What a store can serve, and how far it can serve it.
 
 use core::fmt;
 
@@ -7,15 +7,14 @@ use zaino_primitives::types::BlockRef;
 /// One thing a chain store may be able to answer.
 ///
 /// Coarser than a method and finer than a trait bound: it names an *index*, on
-/// the grounds that indexes are what a deployment chooses to build and what a
-/// migration adds. A capability being absent is a fact about this store, not
-/// about the chain.
+/// the grounds that indexes are what a deployment chooses to build. A
+/// capability being absent is a fact about this store, not about the chain.
 ///
 /// # Not a serving surface
 ///
 /// This is the storage-shaped view: one variant per index the finalised state
-/// maintains, and a runtime fact — a store on an older schema gains one
-/// mid-migration. It answers "does this database hold that index", and nothing
+/// maintains, and a runtime fact — a store gains one when it finishes
+/// building it. It answers "does this database hold that index", and nothing
 /// else. It does not answer *to what height*, and it does not describe what a
 /// consumer can ask for.
 ///
@@ -36,8 +35,8 @@ pub enum StoreCapability {
     /// Heights, hashes, and the watermark. Always present: a store that
     /// cannot answer these is not a store.
     Core,
-    /// Indexed blocks, as the store's own projection of them.
-    StoredBlocks,
+    /// Commitment tree roots and sizes after each block.
+    TreeRoots,
     /// Compact blocks, for wallet sync.
     CompactBlocks,
     /// Where a transaction was mined, and what is at a position.
@@ -48,6 +47,10 @@ pub enum StoreCapability {
     TxOutSet,
     /// Transparent address history within the finalised range.
     TransparentHistory,
+    /// Note commitment tree frontiers and completed subtree roots.
+    TreeState,
+    /// The ZIP 221 chain history tree.
+    HistoryTree,
 }
 
 impl StoreCapability {
@@ -56,26 +59,30 @@ impl StoreCapability {
     /// The set is closed — one variant per index the finalised state maintains
     /// — so it can be enumerated. A store's advertised set is a subset of this,
     /// and a coherence check over the ports needs something to iterate.
-    pub const ALL: [Self; 7] = [
+    pub const ALL: [Self; 9] = [
         Self::Core,
-        Self::StoredBlocks,
+        Self::TreeRoots,
         Self::CompactBlocks,
         Self::Transactions,
         Self::SpentOutputs,
         Self::TxOutSet,
         Self::TransparentHistory,
+        Self::TreeState,
+        Self::HistoryTree,
     ];
 
     /// This capability's bit in a [`StoreCapabilities`] set.
-    const fn bit(self) -> u8 {
+    const fn bit(self) -> u16 {
         match self {
             Self::Core => 1 << 0,
-            Self::StoredBlocks => 1 << 1,
+            Self::TreeRoots => 1 << 1,
             Self::CompactBlocks => 1 << 2,
             Self::Transactions => 1 << 3,
             Self::SpentOutputs => 1 << 4,
             Self::TxOutSet => 1 << 5,
             Self::TransparentHistory => 1 << 6,
+            Self::TreeState => 1 << 7,
+            Self::HistoryTree => 1 << 8,
         }
     }
 }
@@ -84,12 +91,14 @@ impl fmt::Display for StoreCapability {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let name = match self {
             StoreCapability::Core => "core reads",
-            StoreCapability::StoredBlocks => "stored blocks",
+            StoreCapability::TreeRoots => "commitment tree roots",
             StoreCapability::CompactBlocks => "compact blocks",
             StoreCapability::Transactions => "the transaction index",
             StoreCapability::SpentOutputs => "the spent-output index",
             StoreCapability::TxOutSet => "the txout-set accumulator",
             StoreCapability::TransparentHistory => "transparent address history",
+            StoreCapability::TreeState => "note commitment tree state",
+            StoreCapability::HistoryTree => "the chain history tree",
         };
         f.write_str(name)
     }
@@ -97,16 +106,15 @@ impl fmt::Display for StoreCapability {
 
 /// The capabilities a store currently offers.
 ///
-/// Runtime state, not a type-level fact. A store on an older schema genuinely
-/// lacks indexes a newer one has, and gains them part-way through a migration,
-/// so this can change over the life of one handle. A consumer that cached it
+/// Runtime state, not a type-level fact. A store lacks an index until it has
+/// built it, so this can change over the life of one handle. A consumer that cached it
 /// at open will be wrong later.
 /// A bit set rather than a sorted `Vec`. The capability set is closed and
 /// small, so membership is a mask test; sorting, deduplicating and binary
-/// searching a seven-element vector was more machinery — and an allocation —
-/// for an answer a `u8` holds.
+/// searching a short vector was more machinery — and an allocation — for an
+/// answer a `u16` holds.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-pub struct StoreCapabilities(u8);
+pub struct StoreCapabilities(u16);
 
 impl StoreCapabilities {
     /// The set offering exactly these capabilities.
@@ -135,50 +143,6 @@ impl StoreCapabilities {
     }
 }
 
-/// A schema version triple.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
-pub struct SchemaVersion {
-    /// Incompatible layout change. A store will not open a major it does not
-    /// know.
-    pub major: u32,
-    /// Additive change — new indexes or new rows, readable by an older reader
-    /// that ignores them.
-    pub minor: u32,
-    /// A change with no layout consequence.
-    pub patch: u32,
-}
-
-impl fmt::Display for SchemaVersion {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{}.{}.{}", self.major, self.minor, self.patch)
-    }
-}
-
-/// Where a store is in its migration lifecycle.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub enum MigrationState {
-    /// On its target schema, with nothing outstanding.
-    #[default]
-    Settled,
-    /// Moving from one schema to another. Some capabilities may be absent
-    /// until it finishes.
-    InProgress {
-        /// The schema being migrated away from.
-        from: SchemaVersion,
-        /// The schema being migrated to.
-        to: SchemaVersion,
-    },
-}
-
-/// The schema a store is on, and whether it is moving.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct StoreSchema {
-    /// The version currently on disk.
-    pub version: SchemaVersion,
-    /// Whether a migration is under way.
-    pub migration: MigrationState,
-}
-
 /// Where a watermark's answer came from.
 ///
 /// A store that is far behind can still answer reads by passing them to the
@@ -192,7 +156,7 @@ pub enum Provenance {
     /// Answers come from the store's own committed data.
     Durable,
     /// Answers are being passed through to the validator while the store
-    /// builds or migrates. Coherent with the chain, but not evidence that the
+    /// builds. Coherent with the chain, but not evidence that the
     /// store holds anything.
     Passthrough,
 }

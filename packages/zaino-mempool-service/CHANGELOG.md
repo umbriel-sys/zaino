@@ -13,6 +13,24 @@ and this library adheres to Rust's notion of
 ### Removed
 ### Fixed
 
+## [0.3.0] - 2026-11-21
+### Added
+- Each mempool transaction is decoded once at ingest with `zaino-encoding`. One whose bytes do not decode to its txid is not admitted: logged, listed in `unadmitted`, fetched once rather than every poll (C4).
+- The coherence loop emits `MEMPOOL_COHERENCE_FROZEN_SECONDS` and warns when coherence stays frozen for over 120 s, once per freeze.
+### Changed
+- `MempoolService`, `MempoolSubscriber`, `CoherenceService` and `CoherentSubscriber` report `ComponentStatus`; `zaino-status` dropped.
+- dependency `zaino-component` 0.1.0→0.2.0 crossed the requirement `^0.1.0`
+- dependency `zaino-encoding` 0.1.0→0.2.0 crossed the requirement `^0.1.0`
+- dependency `zaino-mempool` 0.2.2→0.3.0 crossed the requirement `^0.2.2`
+- dependency `zaino-primitives` 0.3.0→0.4.0 crossed the requirement `^0.3.0`
+- dependency `zaino-source` 0.2.2→0.3.0 crossed the requirement `^0.2.2`
+### Fixed
+- `getmempoolinfo`'s `usage` is the memory zaino's mempool set occupies, not the ZIP-401 cost total (C3).
+- A block or epoch wake whose sender is gone no longer spins its loop (a closed watch fires at once forever): the loop falls back to its interval. Poisoned locks keep their value instead of panicking. The crate denies panicking code in production.
+- A failing source makes the mempool `Recoverable` with its cause (was `Healthy`); no transition after `close` overwrites `Closing`.
+### Internal
+- Adapt to the renamed non-domain seam error.
+
 ## [0.2.2] - 2026-09-26
 ### Added
 - Poll-loop metrics `zaino.mempool.transactions`, `zaino.mempool.bytes{kind}`, `zaino.mempool.unadmitted`, `zaino.mempool.poll_seconds`.

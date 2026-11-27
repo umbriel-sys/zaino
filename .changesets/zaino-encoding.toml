@@ -1,0 +1,21 @@
+consumed_in = "zainod-0-11-0"
+[[changes]]
+crate = "zaino-encoding"
+kind = "breaking"
+description = """
+**Breaking: the crate name is reused for different code.** The old \
+`zaino-encoding` (versioned serde traits and byte helpers, removed with \
+zainodb) is gone and none of its API remains. The crate is now the \
+non-validating decoder from Zcash consensus bytes to the \
+domain `Block` and `Transaction`, moved out of `zaino-source-zcash-rpc` so a \
+crate above the source layer can decode without an adapter or a node library. \
+`parse_block(bytes, light)`, `parse_transaction(bytes)`, `DecodeError`, \
+`GENESIS_COINBASE_SCRIPT_SIG` (C4)."""
+
+[[changes]]
+crate = "zaino-source-zcash-rpc"
+kind = "breaking"
+description = """
+The raw block decoder moved to `zaino-encoding`. `parse_block` and \
+`BlockVerification` are unchanged; `RawBlockError` is now `Decode` (the \
+decoder's `DecodeError`), `Upstream` and `UpstreamMismatch` (C4)."""

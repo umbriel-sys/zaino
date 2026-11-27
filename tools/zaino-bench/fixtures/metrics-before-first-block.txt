@@ -1,0 +1,64 @@
+# HELP zaino_chain_head_tip_disagreements_total Advances where a retained branch outweighed the validator's tip and the head followed the heavier
+# TYPE zaino_chain_head_tip_disagreements_total counter
+zaino_chain_head_tip_disagreements_total 0
+
+# HELP zainod_restarts_total Times the supervisor has restarted the indexer
+# TYPE zainod_restarts_total counter
+zainod_restarts_total 0
+
+# HELP zaino_store_panics_total Panics caught in the build pipeline, per stage; an index whose writer panicked is reopened
+# TYPE zaino_store_panics_total counter
+zaino_store_panics_total 0
+
+# HELP zaino_sync_reorg_total Reorganizations: tip changes where the previous tip stopped being canonical
+# TYPE zaino_sync_reorg_total counter
+zaino_sync_reorg_total 0
+
+# HELP process_cpu_seconds_total Total user and system CPU time spent in seconds.
+# TYPE process_cpu_seconds_total counter
+process_cpu_seconds_total 0
+
+# HELP zaino_store_blocks_built_total Blocks folded and committed, per index
+# TYPE zaino_store_blocks_built_total counter
+zaino_store_blocks_built_total 0
+
+# HELP zaino_store_build_failures_total Builds that ended in a failure (the store keeps what it committed)
+# TYPE zaino_store_build_failures_total counter
+zaino_store_build_failures_total 0
+
+# HELP zaino_chain_head_extension_failures_total Extension folds or seeds that failed, per extension; the slot answers nothing until rebuilt
+# TYPE zaino_chain_head_extension_failures_total counter
+zaino_chain_head_extension_failures_total 0
+
+# HELP process_virtual_memory_max_bytes Maximum amount of virtual memory available in bytes.
+# TYPE process_virtual_memory_max_bytes gauge
+process_virtual_memory_max_bytes 0
+
+# HELP process_max_fds Maximum number of open file descriptors.
+# TYPE process_max_fds gauge
+process_max_fds 1048576
+
+# HELP process_open_fds Number of open file descriptors.
+# TYPE process_open_fds gauge
+process_open_fds 21
+
+# HELP process_resident_memory_bytes Resident memory size in bytes.
+# TYPE process_resident_memory_bytes gauge
+process_resident_memory_bytes 18931712
+
+# HELP process_virtual_memory_bytes Virtual memory size in bytes.
+# TYPE process_virtual_memory_bytes gauge
+process_virtual_memory_bytes 1290301440
+
+# HELP process_threads Number of OS threads in the process.
+# TYPE process_threads gauge
+process_threads 19
+
+# HELP process_start_time_seconds Start time of the process since unix epoch in seconds.
+# TYPE process_start_time_seconds gauge
+process_start_time_seconds 1795644518
+
+# HELP zainod_build_info Static build metadata; always 1, version in a label
+# TYPE zainod_build_info gauge
+zainod_build_info{version="0.11.0"} 1
+

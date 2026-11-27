@@ -1,0 +1,16 @@
+consumed_in = "zainod-0-11-0"
+[[changes]]
+crate = "zaino-chain"
+kind = "feature"
+description = """
+Feature `frames`: `CompactFrameRead::{compact_frame, stream_compact_frames}` \
+serve compact blocks as encoded wire frames, chunked by their exact bytes, \
+from a byte-bounded LRU keyed by (height, filter) and shared by every \
+snapshot (`ChainViewConfig::frame_cache_bytes`, default 64 MiB). Only final \
+frames are kept: the store's, and the head's folded ones for their epoch."""
+
+[[changes]]
+crate = "zaino-primitives"
+kind = "feature"
+description = """
+`PoolFilter` is `Hash`."""

@@ -1,0 +1,17 @@
+# A store building in the background says so, and the chain head waits for it
+# without reporting failures.
+
+[[changes]]
+crate       = "zaino-chain-store-service"
+kind        = "fix"
+description = "The store logs what it is doing: at boot, each index and the height it holds; for a build of more than 100 blocks, its range, then progress every 30 seconds (height, percent, blocks per second, time remaining, the slowest index), then that it is built and how long it took, or a warning that it stopped short. A build was silent before."
+
+[[changes]]
+crate       = "zaino-chain-head-service"
+kind        = "fix"
+description = "A store that has not built to the window's floor is a wait, not a failure: the extensions seeded from it ask no port, carry `waiting for the store to reach height N` as their reason, and are logged once when the wait starts and once when the store arrives. Before, each was tried every tick, logged at error level and counted in `zaino.chain_head.extension_failures_total` for the whole of an initial build."
+
+[[changes]]
+crate       = "zainod"
+kind        = "fix"
+description = "The first `Zaino status check` line is logged as serving starts, not ten seconds later."

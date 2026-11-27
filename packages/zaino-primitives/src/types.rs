@@ -17,14 +17,18 @@ mod compact_difficulty;
 mod confirmations;
 mod ephemeral_key;
 mod equihash_solution;
+mod frontier;
 mod height;
 mod index_id;
+mod legacy_tree;
 mod mempool_info;
 mod merkle_root;
+mod network;
 mod network_upgrade;
 mod note_commitment;
 mod nullifier;
 mod outpoint;
+mod pool_filter;
 pub mod rpc;
 mod script;
 mod shielded_pool;
@@ -50,31 +54,37 @@ pub use block_commitments::BlockCommitments;
 pub use block_hash::BlockHash;
 pub use block_ref::BlockRef;
 pub use block_tx_position::BlockTxPosition;
-pub use block_verbose::{BlockTreeSizes, BlockVerbose};
+pub use block_verbose::{BlockTransactions, BlockTreeSizes, BlockVerbose, BlockVerbosity};
 pub use blockchain_info::{BlockchainInfo, ValuePoolBalance};
 pub use chain_state_epoch::ChainStateEpoch;
-pub use compact_block::{CompactBlock, PreIndexCompactBlock, PreIndexCompactTx};
+pub use compact_block::{
+    ActionOutput, CompactAction, CompactBlock, PreIndexCompactBlock, PreIndexCompactTx,
+};
 pub use compact_ciphertext::{CompactCiphertext, CompactCiphertextLength};
 pub use compact_difficulty::{CompactDifficulty, CompactDifficultyError};
 pub use confirmations::{BlockConfirmations, ConfirmationsCodecError, TxConfirmations};
 pub use ephemeral_key::EphemeralKey;
 pub use equihash_solution::EquihashSolution;
+pub use frontier::{NoteFrontier, PoolFrontier};
 pub use height::{Height, HeightOverflow};
 pub use index_id::IndexId;
+pub use legacy_tree::{frontier_from_legacy_tree, legacy_tree_from_frontier, LegacyTreeError};
 pub use mempool_info::MempoolInfo;
 pub use merkle_root::MerkleRoot;
+pub use network::{ActivationHeights, Network};
 pub use network_upgrade::{
-    ConsensusBranchId, ConsensusBranchIds, NetworkUpgradeInfo, NetworkUpgradeStatus,
+    branch_at, ConsensusBranchId, ConsensusBranchIds, NetworkUpgradeInfo, NetworkUpgradeStatus,
 };
 pub use note_commitment::NoteCommitment;
 pub use nullifier::Nullifier;
 pub use outpoint::Outpoint;
+pub use pool_filter::PoolFilter;
 pub use script::{classify_script, Script, ScriptType, TransparentAddressKey};
 pub use shielded_pool::ShieldedPool;
 pub use subtree_root::SubtreeRoot;
 pub use transaction::{
-    OrchardAction, OrchardData, SaplingData, SaplingOutput, SaplingSpend, Transaction,
-    TransparentData, TransparentInput, TransparentOutput,
+    OrchardAction, OrchardData, PoolBalances, SaplingData, SaplingOutput, SaplingSpend, SproutData,
+    Transaction, TransparentData, TransparentInput, TransparentOutput,
 };
 pub use transaction_hash::TransactionId;
 pub use transaction_location::TransactionLocation;

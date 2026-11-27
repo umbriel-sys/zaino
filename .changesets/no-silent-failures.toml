@@ -1,0 +1,62 @@
+# No failure is silent: every task is supervised, every wait and retry is
+# bounded, and zainod exits with the cause.
+
+[[changes]]
+crate       = "zaino-component"
+kind        = "feature"
+description = "`supervised(cancel, run, failed)` runs a long-lived task and hands a panic, or a return before cancellation, to `failed` with its cause. `ComponentStatus::fail` and `StatusCell::{fail_unless_closing, exhausted_unless_closing}` fail a component (`Offline`, `Critical`, with a reason; the first cause stays), and the new `ComponentStatus::retryable` says whether the cause was something outside Zaino not answering."
+
+[[changes]]
+crate       = "zaino-chain-head-service"
+kind        = "fix"
+description = "A writer task that panics or stops is `Critical` with the cause instead of leaving the status at its last value. Giving up on the validator records the error as the reason, `retryable` only when the validator was unreachable."
+
+[[changes]]
+crate       = "zaino-mempool-service"
+kind        = "fix"
+description = "The mempool and coherence tasks are supervised: a panic or an unexpected stop is `Critical` with the cause. A validator mempool that cannot be read for five minutes stops the mempool as `Critical` and `retryable` instead of leaving it degraded forever."
+
+[[changes]]
+crate       = "zaino-chain"
+kind        = "fix"
+description = "`spawn_sync` retries a failed store build on its own timer (1 second doubling to 30) instead of only when the chain head next moves, at most 20 times in a row without the store advancing; then, and at once for a failure that is not the validator's, the loop is `Critical` with the cause. The loop's task is supervised. A chain head that answers fewer blocks than coverage routed to it is an error, not a short answer."
+
+[[changes]]
+crate       = "zaino-chain-store-service"
+kind        = "fix"
+description = "A linked store's poller is supervised, and 20 failed refreshes in a row make the store `Critical`. A linked index whose reader does not open is logged instead of dropped silently. Five failed writes of the primary record in a row fail the store. A build that ends early stops its in-flight fetch tasks."
+
+[[changes]]
+crate       = "zaino-source"
+kind        = "feature"
+description = "`first_chain_tip` waits for a fresh validator's first block for five minutes at most and fails at once on a validator that cannot be reached or authenticated to. `SourceLifecycle::failure()` reports a source whose own background work has stopped."
+
+[[changes]]
+crate       = "zaino-source-zebra"
+kind        = "fix"
+description = "`ZebraValidator::connect` no longer waits without end: it fails when zebra serves no tip within five minutes, when the state syncer stops, or when the state sits behind zebra's tip for five minutes without advancing. A syncer that stops later is reported through `SourceLifecycle::failure()`. Every read of zebra's state has a 120-second timeout (`ReadStateError::TimedOut`)."
+
+[[changes]]
+crate       = "zaino-source-zcash-rpc"
+kind        = "fix"
+description = "Fields the validator always sends are required instead of defaulted when absent: `branchlen` (`getchaintips`), `solution` (`getblockheader`), `chain` and `testnet` (`getmininginfo`), `coinbase` (`gettxout`), `pruned`, `size_on_disk`, `commitments`, each pool's `monitored` and each upgrade's `name` (`getblockchaininfo`)."
+
+[[changes]]
+crate       = "zaino-service"
+kind        = "fix"
+description = "`Statuses` gains `source`, the validator source's status, `Critical` once its background work has stopped. `caught_up` and `wait_until_local` fail with the new `ServiceError::ComponentFailed` when a component fails instead of waiting without end. The chain head's epoch relay is supervised."
+
+[[changes]]
+crate       = "zaino-logging"
+kind        = "breaking"
+description = "`init` returns `LogInitError` and refuses a `RUST_LOG`, `ZAINOLOG_FORMAT`, `ZAINOLOG_COLOR` or `ZAINOLOG_LOCATION` value it does not take, instead of silently using the default."
+
+[[changes]]
+crate       = "zainod"
+kind        = "fix"
+description = "zainod no longer hangs or runs on through a failure. A component that fails for a fault of Zaino's own (a stopped zebra state syncer, a panicked task, a store failure, a stopped admin endpoint) ends zainod with an error naming each failed component and its cause. Where every failure was the validator not answering, zainod restarts after 5 seconds doubling to 60, five times in a row at most, instead of at once and without limit. Start-up waits on the validator and the chain head are bounded. A store that does not flush at shutdown, and shutdown signals that cannot be listened for, are errors, not a clean exit."
+
+[[changes]]
+crate       = "zainod"
+kind        = "fix"
+description = "A request has 300 seconds to answer on gRPC and JSON-RPC. A gRPC stream cut by shutdown ends with `UNAVAILABLE` instead of ending as if complete. JSON-RPC shutdown waits 5 seconds for open requests instead of without limit, and its status is `Offline` once its task has ended. `getinfo` leaves `errorstimestamp` out when the validator sent none instead of sending 0. A store or zebra state path left to its default is refused when neither `XDG_CACHE_HOME` nor `HOME` is set, instead of falling under `/tmp`. The admin endpoint failing to start fails start-up. The status line shows the validator source and the store sync, and `not configured` for an unconfigured JSON-RPC server."

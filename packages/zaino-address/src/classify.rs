@@ -39,6 +39,11 @@ pub fn validate_address<P: Parameters>(raw_address: String, params: &P) -> Valid
             is_script: matches!(taddr, TransparentAddress::ScriptHash(_)),
             address: raw_address,
         },
+        // a TEX address (ZIP 320) is a transparent key hash, as zebrad reads it
+        Some(Address::Tex(_)) => ValidatedAddress::Transparent {
+            is_script: false,
+            address: raw_address,
+        },
         _ => ValidatedAddress::Invalid,
     }
 }
@@ -53,12 +58,15 @@ pub fn validate_address<P: Parameters>(raw_address: String, params: &P) -> Valid
 pub fn z_validate_address<P: Parameters>(raw_address: String, params: &P) -> ZValidatedAddress {
     tracing::warn!("{}", DEPRECATION_NOTICE);
 
-    // The transparent arms echo the caller's string; the shielded arms
-    // re-encode, because `convert_if_network` has already proved the address
+    // The transparent and unified arms echo the caller's string; the Sapling arm
+    // re-encodes, because `convert_if_network` has already proved the address
     // belongs to this network and the canonical encoding is what the legacy full node
-    // reports.
+    // reports. Unified addresses are not re-encoded: a UA has more than one valid ZIP 316
+    // revision encoding, and `UnifiedAddress::encode` may pick a different one (and HRP)
+    // than the caller sent.
     match parse_for_network(&raw_address, params) {
-        Some(Address::Transparent(TransparentAddress::PublicKeyHash(_))) => {
+        // a TEX address (ZIP 320) is a transparent key hash, as zebrad reads it
+        Some(Address::Transparent(TransparentAddress::PublicKeyHash(_)) | Address::Tex(_)) => {
             ZValidatedAddress::P2pkh {
                 address: raw_address,
             }
@@ -74,8 +82,8 @@ pub fn z_validate_address<P: Parameters>(raw_address: String, params: &P) -> ZVa
                 diversified_transmission_key,
             }
         }
-        Some(Address::Unified(unified)) => ZValidatedAddress::Unified {
-            address: unified.encode(params),
+        Some(Address::Unified(_)) => ZValidatedAddress::Unified {
+            address: raw_address,
         },
         // Sprout, and any address kind a future `Address` variant introduces.
         // Reporting "invalid" rather than guessing preserves the previous
@@ -111,8 +119,7 @@ mod tests {
     const REGTEST: Net = Net(NetworkType::Regtest);
     const MAIN: Net = Net(NetworkType::Main);
 
-    // Canonical source: zaino-serve wire::address::tests::served_vectors
-    // Tracked for DRY consolidation: https://github.com/zingolabs/zaino/issues/988
+    // Canonical source: zainod serve::jsonrpc::wire::address::served_vectors
     const TESTNET_P2PKH: &str = "tmVqEASZxBNKFTbmASZikGa5fPLkd68iJyx";
     const TESTNET_P2SH: &str = "t2MjoXQ2iDrjG9QXNZNCY9io8ecN4FJYK1u";
     const REGTEST_SAPLING: &str = "zregtestsapling1jalqhycwumq3unfxlzyzcktq3n478n82k2wacvl8gwfxk6ahshkxmtp2034qj28n7gl92ka5wca";
@@ -120,6 +127,28 @@ mod tests {
     /// A Sprout address. Zaino does not classify these — see
     /// [`ZValidatedAddress`]'s Sprout note.
     const SPROUT: &str = "ztfhKyLouqi8sSwjRm4YMQdWPjTmrJ4QgtziVQ1Kd1e9EsRHYKofjoJdF438FwcUQnix8yrbSrzPpJJNABewgNffs5d4YZJ";
+
+    /// A TEX address (ZIP 320) is valid for its network, a transparent key
+    /// hash to both RPCs, as zebrad classifies it (#41).
+    #[test]
+    fn a_tex_address_is_a_transparent_key_hash() {
+        use zcash_address::ToAddress as _;
+        let tex = zcash_address::ZcashAddress::from_tex(NetworkType::Test, [0x11; 20]).encode();
+        assert_eq!(
+            validate_address(tex.clone(), &TEST),
+            ValidatedAddress::Transparent {
+                address: tex.clone(),
+                is_script: false,
+            }
+        );
+        assert_eq!(
+            z_validate_address(tex.clone(), &TEST),
+            ZValidatedAddress::P2pkh {
+                address: tex.clone()
+            }
+        );
+        assert_eq!(validate_address(tex, &MAIN), ValidatedAddress::Invalid);
+    }
 
     #[test]
     fn unparseable_is_invalid() {

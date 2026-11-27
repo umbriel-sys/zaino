@@ -6,12 +6,12 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use futures::{stream, StreamExt as _};
-use zaino_status::StatusType;
+use zaino_component::{Health, Lifecycle, StatusSource as _};
 
 use zaino_mempool::entry::MempoolEntry;
 use zaino_mempool::ports::MempoolSource;
 use zaino_mempool::snapshot::{MempoolCompleteness, MempoolSnapshot};
-use zaino_primitives::types::BlockRef;
+use zaino_primitives::types::{BlockRef, PreIndexCompactTx, TransactionId};
 use zaino_source::{GetRawMempoolTransactionError, MempoolTxMeta, QueryError};
 
 use super::state::{admission_key, PollState};
@@ -32,6 +32,10 @@ const CAPACITY_LOW_WATER_PERCENT: u64 = 90;
 /// `pub(super)` only so [`PollState::consecutive_discards`](super::state::PollState)
 /// can name it in its doc link; the value is used only within this module.
 pub(super) const MAX_CONSECUTIVE_DISCARDS: u32 = 5;
+
+/// How long polls may fail in a row before the mempool stops and reports the
+/// validator's mempool unreadable.
+const OUTAGE_LIMIT: std::time::Duration = std::time::Duration::from_secs(300);
 
 /// - A guard, not a tail statement: `tick` returns early from six places, and a tail
 ///   sample would omit exactly the degraded polls worth measuring
@@ -81,12 +85,15 @@ impl<S: MempoolSource> super::MempoolService<S> {
         fields(poll_interval_ms = self.config.poll_interval().as_millis()),
     )]
     pub(super) async fn run(self: Arc<Self>) {
-        self.status.store(StatusType::Syncing);
+        self.status
+            .set_unless_closing(Lifecycle::Syncing, Health::Healthy);
 
         let mut interval = tokio::time::interval(self.config.poll_interval());
         interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
         let mut block_wake = self.source.subscribe_to_blocks_received();
         let mut state = PollState::default();
+        // when the run of failed polls now under way began
+        let mut degraded_since: Option<tokio::time::Instant> = None;
 
         tracing::debug!(
             block_wake = block_wake.is_some(),
@@ -94,6 +101,7 @@ impl<S: MempoolSource> super::MempoolService<S> {
         );
 
         loop {
+            let mut wake_closed = false;
             tokio::select! {
                 _ = self.cancel.cancelled() => {
                     tracing::debug!("mempool poll loop cancelled; publishing Closing");
@@ -101,17 +109,38 @@ impl<S: MempoolSource> super::MempoolService<S> {
                     return;
                 }
                 _ = interval.tick() => {}
-                _ = async {
+                closed = async {
                     match block_wake.as_mut() {
-                        Some(rx) => {
-                            let _ = rx.changed().await;
-                        }
-                        None => std::future::pending::<()>().await,
+                        Some(rx) => rx.changed().await.is_err(),
+                        None => std::future::pending::<bool>().await,
                     }
-                } => {}
+                } => wake_closed = closed,
+            }
+            // a wake whose sender is gone fires at once forever: poll on the interval alone
+            if wake_closed {
+                tracing::debug!("block wake closed; polling on the interval");
+                block_wake = None;
             }
 
             self.tick(&mut state).await;
+
+            // a poll that keeps failing is retried for OUTAGE_LIMIT, not forever
+            let status = self.status.status();
+            match status.health {
+                Health::Recoverable => {
+                    let since = *degraded_since.get_or_insert_with(tokio::time::Instant::now);
+                    if since.elapsed() >= OUTAGE_LIMIT {
+                        let cause = status.reason.unwrap_or_default();
+                        tracing::error!(%cause, "the mempool has been degraded too long; stopping");
+                        self.status.exhausted_unless_closing(format!(
+                            "the validator's mempool could not be read for {}s: {cause}",
+                            OUTAGE_LIMIT.as_secs()
+                        ));
+                        return;
+                    }
+                }
+                Health::Healthy | Health::Critical | Health::Offline => degraded_since = None,
+            }
         }
     }
 
@@ -149,6 +178,7 @@ impl<S: MempoolSource> super::MempoolService<S> {
         // A refused transaction that has left the source's mempool is no longer
         // ours to admit, so it leaves the memo with it.
         state.refused.retain(|txid, _| source_txids.contains(txid));
+        state.undecodable.retain(|txid| source_txids.contains(txid));
         self.retry_refused_that_now_fit(&current, state);
 
         // Deferral is recomputed each poll: a txid deferred last poll is
@@ -158,7 +188,9 @@ impl<S: MempoolSource> super::MempoolService<S> {
         let added_txids: Vec<_> = txids
             .into_iter()
             .filter(|txid| {
-                !current.by_txid().contains_key(txid) && !state.refused.contains_key(txid)
+                !current.by_txid().contains_key(txid)
+                    && !state.refused.contains_key(txid)
+                    && !state.undecodable.contains(txid)
             })
             .collect();
 
@@ -266,7 +298,10 @@ impl<S: MempoolSource> super::MempoolService<S> {
             .fetch_added_entries_bounded(added_meta, next_generation)
             .await
         {
-            Some(entries) => entries,
+            Some((entries, undecodable)) => {
+                state.undecodable.extend(undecodable);
+                entries
+            }
             None => return self.source_error(state, "get_raw_mempool_transaction", None),
         };
 
@@ -308,7 +343,8 @@ impl<S: MempoolSource> super::MempoolService<S> {
                 self.publish_snapshot(current, Some(tip_before), Vec::new(), Vec::new(), state);
             }
         } else {
-            self.status.store(StatusType::Ready);
+            self.status
+                .set_unless_closing(Lifecycle::Ready, Health::Healthy);
         }
     }
 
@@ -375,14 +411,16 @@ impl<S: MempoolSource> super::MempoolService<S> {
 
     /// The completeness the next published set carries.
     ///
-    /// Both classes below are *short*, not *wrong* — the set accurately holds
+    /// The classes below are *short*, not *wrong* — the set accurately holds
     /// what it holds — but they are reported separately so operator telemetry
-    /// attributes the shortfall to the right cause. The capacity bound wins when
-    /// both apply: it is the more serious of the two, and it does not clear on
-    /// its own the way a deferral does.
+    /// attributes the shortfall to the right cause. The capacity bound wins,
+    /// then an undecodable transaction: neither clears on its own the way a
+    /// deferral does.
     pub(super) fn completeness_for(state: &PollState) -> MempoolCompleteness {
         if !state.refused.is_empty() {
             MempoolCompleteness::IncompleteCapacityLimited
+        } else if !state.undecodable.is_empty() {
+            MempoolCompleteness::IncompleteUndecodable
         } else if !state.deferred.is_empty() {
             MempoolCompleteness::IncompletePendingMetadata
         } else {
@@ -390,11 +428,14 @@ impl<S: MempoolSource> super::MempoolService<S> {
         }
     }
 
+    /// The entries for `added`, each decoded to its compact form here, once;
+    /// and the txids whose bytes did not decode to that transaction. `None`
+    /// when a fetch failed.
     async fn fetch_added_entries_bounded(
         &self,
         added: Vec<MempoolTxMeta>,
         next_generation: u64,
-    ) -> Option<Vec<Arc<MempoolEntry>>> {
+    ) -> Option<(Vec<Arc<MempoolEntry>>, Vec<TransactionId>)> {
         let concurrency = self.config.max_concurrent_raw_fetches();
         let source = &self.source;
 
@@ -410,32 +451,57 @@ impl<S: MempoolSource> super::MempoolService<S> {
                     // hiccup silently delete a transaction from a set that still
                     // publishes as complete.
                     Err(QueryError::Domain(GetRawMempoolTransactionError::NotFound(_))) => {
-                        return Ok(None)
+                        return Ok(Fetched::Gone)
                     }
                     Err(e) => return Err(zaino_mempool::MempoolError::source(e)),
                 };
 
+                let compact = match zaino_encoding::parse_transaction(&serialized_tx) {
+                    Ok(transaction) if transaction.txid == meta.txid => {
+                        PreIndexCompactTx::from(&transaction)
+                    }
+                    Ok(transaction) => {
+                        tracing::error!(
+                            asked = %meta.txid,
+                            decoded = %transaction.txid,
+                            "mempool transaction decodes to another txid; not admitted"
+                        );
+                        return Ok(Fetched::Undecodable(meta.txid));
+                    }
+                    Err(error) => {
+                        tracing::error!(
+                            txid = %meta.txid,
+                            %error,
+                            "mempool transaction does not decode; not admitted"
+                        );
+                        return Ok(Fetched::Undecodable(meta.txid));
+                    }
+                };
+
                 let raw_len = serialized_tx.len() as u64;
-                Ok(Some(Arc::new(MempoolEntry {
+                Ok(Fetched::Entry(Arc::new(MempoolEntry {
                     txid: meta.txid,
                     // One copy out of the validator's response, shared from here
                     // on (see `MempoolEntry::serialized_tx`).
                     serialized_tx: bytes::Bytes::from(serialized_tx),
                     raw_len,
+                    compact,
                     entry_height: meta.entry_height,
                     entry_time: meta.entry_time,
                     first_seen_generation: next_generation,
                 })))
             })
             .buffer_unordered(concurrency)
-            .collect::<Vec<Result<Option<Arc<MempoolEntry>>, zaino_mempool::MempoolError>>>()
+            .collect::<Vec<Result<Fetched, zaino_mempool::MempoolError>>>()
             .await;
 
         let mut entries = Vec::new();
+        let mut undecodable = Vec::new();
         for result in results {
             match result {
-                Ok(Some(entry)) => entries.push(entry),
-                Ok(None) => {}
+                Ok(Fetched::Entry(entry)) => entries.push(entry),
+                Ok(Fetched::Undecodable(txid)) => undecodable.push(txid),
+                Ok(Fetched::Gone) => {}
                 // Any raw-fetch error aborts this poll's update; the last set
                 // stays readable and the next poll retries. The error was fully
                 // built before this point, so dropping it unlogged would discard
@@ -449,6 +515,16 @@ impl<S: MempoolSource> super::MempoolService<S> {
                 }
             }
         }
-        Some(entries)
+        Some((entries, undecodable))
     }
+}
+
+/// What one addition's fetch came to.
+enum Fetched {
+    /// The entry, with its compact form.
+    Entry(Arc<MempoolEntry>),
+    /// It left the mempool between listing and fetch.
+    Gone,
+    /// Its bytes did not decode to this transaction.
+    Undecodable(TransactionId),
 }

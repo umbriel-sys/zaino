@@ -5,25 +5,22 @@ use std::collections::HashSet;
 use futures::{Stream, StreamExt as _};
 use zaino_chain::{
     AddressRead as _, BlockId, BlockRead as _, ForkReconcile as _, Locator, SpendRead as _,
-    TransactionRead as _, TreestateRead as _,
+    TreestateRead as _,
 };
-use zaino_mempool::ports::TipAwareMempool as _;
-use zaino_primitives::types::TransactionLocation;
 use zebra_rpc::client::{GetAddressBalanceRequest, GetAddressTxIdsRequest};
 
-use super::chain_head::WithChainHeadSource;
-use super::chain_store::WithChainStoreSource;
-use super::chain_view::{BestTip as _, ChainIndexSnapshot, WithChainViewSource};
+use super::chain_view::{BestTip as _, ChainIndexSnapshot};
 use super::node_backed::NodeBackedChainIndexSubscriber;
-use super::source::{BlockchainSource, BlockchainSourceError, PoolTreestate};
+use super::source::PoolTreestate;
+use super::source_ports::ChainIndexSourcePorts;
 use super::types::{
-    self, balance_request_addresses, block_index, chain_locations, domain_hash, domain_height,
-    domain_scope, domain_txid, encoded_addresses, indexed_block, local_hash, local_height,
-    local_txid, BestChainLocation, BlockIndex, NonBestChainLocation,
+    self, block_index, chain_locations, checked_addresses, domain_hash, domain_height,
+    domain_scope, domain_txid, local_hash, local_height, local_txid, BestChainLocation, BlockIndex,
+    NonBestChainLocation,
 };
 use super::{ChainIndex, ShieldedPool};
 use crate::error::{ChainIndexError, ChainIndexErrorKind};
-use crate::IndexedBlock;
+use zaino_service::ServiceSource;
 
 /// A chain view's chunked range, one item at a time.
 pub(super) fn flatten<T>(
@@ -38,21 +35,52 @@ pub(super) fn flatten<T>(
 }
 
 /// A request height, rejected as the legacy source rejected it.
-fn request_height(height: u32) -> Result<zaino_primitives::types::Height, ChainIndexError> {
-    zaino_primitives::types::Height::try_from(height).map_err(|error| {
-        ChainIndexError::backing_validator(BlockchainSourceError::Unrecoverable(error.to_string()))
-    })
+/// The address reads over a snapshot the caller holds, so one request reads
+/// one chain state (#49).
+impl<V: ChainIndexSourcePorts + ServiceSource> NodeBackedChainIndexSubscriber<V> {
+    pub(crate) async fn address_balance_in(
+        &self,
+        snapshot: &ChainIndexSnapshot<V>,
+        address_strings: GetAddressBalanceRequest,
+    ) -> Result<zaino_primitives::types::AddressBalance, ChainIndexError> {
+        let addresses = checked_addresses(&address_strings)?;
+        Ok(snapshot.address_balance(&addresses).await?)
+    }
+
+    pub(crate) async fn address_txids_in(
+        &self,
+        snapshot: &ChainIndexSnapshot<V>,
+        request: GetAddressTxIdsRequest,
+    ) -> Result<Vec<types::TransactionHash>, ChainIndexError> {
+        let addresses = checked_addresses(&request)?;
+        // an absent bound is 0, which zebrad's range rule reads the same way
+        let (_, start, end) = request.into_parts();
+        Ok(self
+            .reads(snapshot)
+            .address_txids(&addresses, Some(start), Some(end))
+            .await?
+            .into_iter()
+            .map(local_txid)
+            .collect())
+    }
+
+    pub(crate) async fn address_utxos_in(
+        &self,
+        snapshot: &ChainIndexSnapshot<V>,
+        address_strings: GetAddressBalanceRequest,
+        page: zaino_source::UtxoPage,
+    ) -> Result<Vec<zaino_primitives::types::Utxo>, ChainIndexError> {
+        let addresses = checked_addresses(&address_strings)?;
+        Ok(snapshot.address_utxos(&addresses, page).await?)
+    }
 }
 
-impl<
-        Source: BlockchainSource + WithChainHeadSource + WithChainStoreSource + WithChainViewSource,
-    > ChainIndex for NodeBackedChainIndexSubscriber<Source>
-{
-    type Snapshot = ChainIndexSnapshot<Source>;
+impl<V: ChainIndexSourcePorts + ServiceSource> ChainIndex for NodeBackedChainIndexSubscriber<V> {
+    type Snapshot = ChainIndexSnapshot<V>;
     type Error = ChainIndexError;
 
     fn snapshot_nonfinalized_state(&self) -> Self::Snapshot {
-        self.composer.snapshot()
+        self.service.chain_snapshot()
     }
 
     async fn get_block_height(
@@ -75,33 +103,6 @@ impl<
             return Ok(None);
         };
         Ok(snapshot.block_hash(height).await?.map(local_hash))
-    }
-
-    async fn get_indexed_block_by_hash(
-        &self,
-        snapshot: &Self::Snapshot,
-        target_hash: &types::BlockHash,
-    ) -> Result<Option<IndexedBlock>, Self::Error> {
-        snapshot
-            .block(BlockId::Hash(domain_hash(*target_hash)))
-            .await?
-            .map(indexed_block)
-            .transpose()
-    }
-
-    async fn get_indexed_block_by_height(
-        &self,
-        snapshot: &Self::Snapshot,
-        target_height: &types::Height,
-    ) -> Result<Option<IndexedBlock>, Self::Error> {
-        let Some(height) = domain_height(*target_height) else {
-            return Ok(None);
-        };
-        snapshot
-            .block(BlockId::Height(height))
-            .await?
-            .map(indexed_block)
-            .transpose()
     }
 
     fn get_block_range(
@@ -137,52 +138,37 @@ impl<
         snapshot: &Self::Snapshot,
         txid: &types::TransactionHash,
     ) -> Result<Option<(Vec<u8>, Option<u32>)>, Self::Error> {
+        use zaino_service::{Placement, ServiceError};
+        let reads = self.reads(snapshot);
         let txid = domain_txid(txid);
-
-        // The mempool, but only when it is coherent with this snapshot: an
-        // unmined transaction's branch id comes from the height it would be
-        // mined at, which a stale snapshot would get wrong.
-        let coherent = self.coherence.coherent_snapshot();
-        match Self::coherent_epoch(&coherent, snapshot) {
-            Some(epoch) => {
-                if let Some(entry) = coherent.get(&txid) {
-                    let branch_id = epoch
-                        .best_tip
-                        .height
-                        .checked_add(1)
-                        .and_then(|next| types::branch_id(&self.network, next));
-                    return Ok(Some((entry.wire_bytes().to_vec(), branch_id)));
-                }
-            }
-            None if self.mempool.contains_txid(&txid) => {
-                return Err(ChainIndexError::unavailable(
-                    "mempool is not coherent with the requested snapshot; retry with a fresh snapshot",
-                ));
-            }
-            None => {}
-        }
-
-        let Some(transaction) = snapshot.raw_transaction(txid).await? else {
-            return Ok(None);
+        let next = || {
+            let tip = snapshot.best_tip().height;
+            tip.checked_add(1).ok_or(ServiceError::HeightOverflow(tip))
         };
-        let height = match transaction.location {
-            TransactionLocation::BestChain(height) => height,
-            TransactionLocation::NonBestChain => {
-                let locations = snapshot.transaction_locations(txid).await?;
-                match locations
-                    .best_chain
-                    .or_else(|| locations.non_best_chain.first().copied())
-                {
-                    Some(position) => position.block.height,
-                    None => return Ok(None),
+        // a mempool transaction's branch id is the one at the height it would
+        // be mined at
+        let height = match reads.transaction_status(txid).await {
+            Err(ServiceError::MinedAndInMempool(_)) => next()?,
+            Err(error) => return Err(error.into()),
+            Ok(status) => match (status.best, status.elsewhere.as_slice()) {
+                (Some(Placement::Block(position)), _) => position.block.height,
+                (Some(Placement::Mempool(_)), _) => next()?,
+                (None, []) => return Ok(None),
+                (None, elsewhere) => {
+                    let mined = elsewhere.iter().find_map(|placement| match placement {
+                        Placement::Block(position) => Some(position.block.height),
+                        Placement::Mempool(_) => None,
+                    });
+                    // only a mempool for another tip holds it: ask again
+                    mined.ok_or(ServiceError::MempoolIncoherent)?
                 }
-            }
-            TransactionLocation::Mempool => return Ok(None),
+            },
         };
-        Ok(Some((
-            transaction.bytes,
-            types::branch_id(&self.network, height),
-        )))
+        let verbosity = zaino_primitives::types::rpc::TransactionVerbosity::Raw;
+        Ok(reads
+            .transaction(txid, verbosity, None)
+            .await?
+            .map(|served| (served.into_bytes(), types::branch_id(&self.network, height))))
     }
 
     async fn get_transaction_status(
@@ -190,46 +176,27 @@ impl<
         snapshot: &Self::Snapshot,
         txid: &types::TransactionHash,
     ) -> Result<(Option<BestChainLocation>, HashSet<NonBestChainLocation>), ChainIndexError> {
-        let txid = domain_txid(txid);
-        let (mut best, mut non_best) = chain_locations(snapshot.transaction_locations(txid).await?);
-
-        if self.mempool.contains_txid(&txid) {
-            let coherent = self.coherence.coherent_snapshot();
-            if Self::coherent_epoch(&coherent, snapshot).is_some() {
-                if best.is_some() {
-                    return Err(ChainIndexError {
-                        kind: ChainIndexErrorKind::InvalidSnapshot,
-                        message:
-                            "Best chain and up-to-date mempool both contain the same transaction"
-                                .to_string(),
-                        source: None,
-                    });
-                }
-                best = Some(BestChainLocation::Mempool(
-                    local_height(snapshot.best_tip().height) + 1,
-                ));
-            } else {
-                // The height it would be mined at under the mempool's tip, if
-                // this index still holds that block.
-                let target_height = match coherent.valid_for {
-                    Some(epoch) => self
-                        .composer
-                        .snapshot()
-                        .block_height(epoch.best_tip.hash)
-                        .await?
-                        .map(|height| local_height(height) + 1),
-                    None => None,
-                };
-                non_best.insert(NonBestChainLocation::Mempool(target_height));
+        let status = match self
+            .reads(snapshot)
+            .transaction_status(domain_txid(txid))
+            .await
+        {
+            Ok(status) => status,
+            Err(error @ zaino_service::ServiceError::MinedAndInMempool(_)) => {
+                return Err(ChainIndexError::with_source(
+                    ChainIndexErrorKind::InvalidSnapshot,
+                    error,
+                ))
             }
-        }
-        Ok((best, non_best))
+            Err(error) => return Err(error.into()),
+        };
+        chain_locations(status)
     }
 
     async fn get_mempool_txids(&self) -> Result<Vec<types::TransactionHash>, Self::Error> {
         Ok(self
-            .mempool
-            .get_txids()
+            .service
+            .mempool_txids()
             .iter()
             .copied()
             .map(local_txid)
@@ -240,32 +207,15 @@ impl<
         &self,
         exclude_list: Vec<Vec<u8>>,
     ) -> Result<Vec<std::sync::Arc<zaino_mempool::MempoolEntry>>, Self::Error> {
-        // Validated rather than clamped: silently truncating would serve
-        // transactions the caller believes it excluded.
-        let suffixes = self
-            .mempool
-            .validate_exclude_suffixes(&exclude_list)
-            .map_err(|e| ChainIndexError::invalid_argument(e.to_string()))?;
-        Ok(self.mempool.get_filtered_entries(&suffixes))
+        Ok(self.service.mempool_entries(&exclude_list)?)
     }
 
     fn get_mempool_stream(
         &self,
         snapshot: Option<&Self::Snapshot>,
     ) -> Option<impl Stream<Item = Result<bytes::Bytes, Self::Error>>> {
-        let expected = match snapshot {
-            None => None,
-            Some(snapshot) => Some(Self::coherent_epoch(
-                &self.coherence.coherent_snapshot(),
-                snapshot,
-            )?),
-        };
-        let stream = self
-            .coherence
-            .stream_transactions_until_tip_change(expected)?;
+        let stream = self.service.mempool_stream(snapshot)?;
         Some(stream.map(|item| {
-            // A lag is not a normal end: reporting it as one would have the
-            // client believe it had received the whole mempool.
             item.map_err(|e| {
                 ChainIndexError::unavailable(format!("mempool stream ended early: {e}"))
             })
@@ -298,7 +248,7 @@ impl<
         ),
         Self::Error,
     > {
-        let snapshot = self.composer.snapshot();
+        let snapshot = self.service.chain_snapshot();
         if !Self::block_hash_known(&snapshot, *hash).await? {
             return Err(ChainIndexError::internal(format!(
                 "block hash {hash} not found in local chain index"
@@ -322,8 +272,8 @@ impl<
         max_entries: Option<u16>,
     ) -> Result<Vec<([u8; 32], u32)>, Self::Error> {
         Ok(self
-            .composer
-            .snapshot()
+            .service
+            .chain_snapshot()
             .subtree_roots(ShieldedPool::to_domain(pool), start_index, max_entries)
             .await?
             .into_iter()
@@ -335,32 +285,29 @@ impl<
         &self,
         address_strings: GetAddressBalanceRequest,
     ) -> Result<zaino_primitives::types::AddressBalance, Self::Error> {
-        let addresses = balance_request_addresses(&address_strings)?;
-        Ok(self.composer.snapshot().address_balance(&addresses).await?)
+        let snapshot = self.service.chain_snapshot();
+        self.address_balance_in(&snapshot, address_strings).await
     }
 
     async fn get_address_txids(
         &self,
         request: GetAddressTxIdsRequest,
     ) -> Result<Vec<types::TransactionHash>, Self::Error> {
-        let (addresses, start, end) = request.into_parts();
-        let addresses = encoded_addresses(addresses)?;
-        Ok(self
-            .composer
-            .snapshot()
-            .address_txids(&addresses, request_height(start)?, request_height(end)?)
-            .await?
-            .into_iter()
-            .map(local_txid)
-            .collect())
+        let snapshot = self.service.chain_snapshot();
+        self.address_txids_in(&snapshot, request).await
     }
 
     async fn get_address_utxos(
         &self,
         address_strings: GetAddressBalanceRequest,
     ) -> Result<Vec<zaino_primitives::types::Utxo>, Self::Error> {
-        let addresses = balance_request_addresses(&address_strings)?;
-        Ok(self.composer.snapshot().address_utxos(&addresses).await?)
+        let snapshot = self.service.chain_snapshot();
+        self.address_utxos_in(
+            &snapshot,
+            address_strings,
+            zaino_source::UtxoPage::default(),
+        )
+        .await
     }
 
     async fn get_outpoint_spenders(
@@ -369,10 +316,7 @@ impl<
         outpoints: Vec<types::Outpoint>,
         scope: types::ChainScope,
     ) -> Result<Vec<Option<types::TransactionHash>>, Self::Error> {
-        let outpoints: Vec<_> = outpoints
-            .iter()
-            .map(zaino_chain_store_zainodb::adapter::domain_outpoint)
-            .collect();
+        let outpoints: Vec<_> = outpoints.iter().map(types::domain_outpoint).collect();
         snapshot
             .outpoint_spenders(&outpoints, domain_scope(scope))
             .await?

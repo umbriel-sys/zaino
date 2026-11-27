@@ -87,6 +87,11 @@ Lifecycle is absent for the same reason. Starting, stopping and status are
 inherent methods on the concrete service; a read handle cannot shut the chain
 head down because there is no method on it that could.
 
+What a consumer does set is `ChainHeadConfig`: the window depth, the poll and
+backoff intervals, the failure tolerance, and `fetch_concurrency`, how many
+heights the window build reads ahead (default: the chain head's share of
+`zaino_component::CpuBudget`).
+
 ## Work is anchor-relative
 
 A block's `work` is a `RelativeChainWork`: the total over the blocks this window
@@ -140,21 +145,48 @@ inside the graph, and rebasing at the edge, is what keeps that comparison exact.
 
 ## The driven port names only what is asked
 
-`ChainHeadBlockSource` is a bound alias over five `zaino-source` ports with a
-blanket impl. Nothing implements it directly: a type answering all five earns
+`ChainHeadBlockSource` is a bound alias over six `zaino-source` ports with a
+blanket impl. Nothing implements it directly: a type answering all six earns
 the bound automatically, so production composites and test mocks qualify the
 same way.
 
 Add a port to that bound **only when the chain head actually asks the question**.
 The bound is a statement of requirements, and every entry obliges every source
-to answer. `GetChainTips` was in it and was removed for precisely this reason —
-the chain head learns of a competing branch by living through the reorg that
-created it, never by asking a validator to enumerate tips. See ADR-0011, which
-also records that `zebra-rpc` does not implement `getchaintips` at all.
+to answer. `GetChainTips` is in it because the head asks it once at start, to
+seed side-chain tips where the validator lists them (zcashd); a source that
+cannot answer says `Unsupported`, as the zebra composite does without a round
+trip (`zebra-rpc` has no `getchaintips`).
 
 The bound is deliberately not `Clone`. A source may own connections and a
 database handle that must not be duplicated; the runtime shares one behind an
 `Arc`.
+
+## The ports the extensions drive
+
+An extension (D-50) folds one `zaino-indexes` index over the window, starting
+from the store's tip (its root, `StoreTip`); it reads nothing below the root
+except through one of five ports in `extension`, each a single question:
+`PrevoutSource` (the outputs the window's inputs spend from below the root),
+`RemainingOutputs` (how many counted outputs a transaction still had there,
+for the UTXO set's transaction count), `TxOutSetSeed` (the accumulator at the
+root), `TreeStateSeed` (each pool's frontier at the root) and
+`HistoryTreeSeed` (the history tree's epoch at the root). `zaino-chain`
+implements them over the finalised store; the head names neither the store
+nor the validator. The answers are the capability traits:
+`ChainHeadTransactionService`, `ChainHeadTxOutSetService`,
+`ChainHeadTreeStateService`, `ChainHeadHistoryTreeService`,
+`ChainHeadTransparentHistoryService` and `ChainHeadCompactBlockService`; each
+covers the window above the store's tip, the store answering at and below it.
+`compact_transactions` takes a block hash, so a branch block is answered from
+its own fold, fees included.
+
+Every capability method returns a `Result` whose default body is
+`ChainHeadError::NotBuilt` (D-56): a runtime implements only what it builds,
+and a consumer tells "not built" (fall back) from "nothing in the window"
+(an empty or `None` answer). An extension that failed and is not yet rebuilt
+answers `ChainHeadError::Failed` with the reason. `ChainHeadSnapshot::capabilities` lists what a
+snapshot builds. `address_effects` reads at most the query's `limit` rows
+(receives and spends) and past it refuses with `ChainHeadError::TooManyRows`.
 
 ## What the chain head is not
 
@@ -166,30 +198,9 @@ finalised state and the mempool, and that combining belongs to the consumer.
 A retained block is a parsed projection, not the consensus bytes, so raw
 transaction and raw block queries cannot be served from here.
 
-### Contributions, not complete answers
+## The chain head hands off no blocks
 
-Where a complete answer spans the floor, the chain head reports its window's
-contribution and stops there. `ChainHeadTxOutSetService::txout_delta(start)` is
-the shape: the outputs the canonical blocks from `start` created and did not
-spend, and the outpoints they spent that were created below `start`. A spend and
-its output both inside the range cancel. The spent-below outpoints are only
-outpoints — the value and script they remove are the finalised state's to
-supply — and a `start` below the window is refused rather than answered from a
-partial range.
-
-```rust
-let delta = snapshot.txout_delta(store_top.checked_add(1)?)?;
-// delta.created: apply to the set; delta.spent_below: resolve, then remove.
-```
-
-## Freeze events are best-effort
-
-`ChainHeadFreezeEvents` carries blocks that have fallen below the consensus seam,
-whole and with their tree roots, so a chain store can ingest without re-fetching.
-
-Treat gaps as normal. It is a broadcast channel — the chain head follows the tip
-and will not stall on a slow consumer — so a lagging subscriber gets
-`RecvError::Lagged(n)`, and a chain head re-anchoring after an outage never
-emits what it skipped. A store must be able to build from source regardless;
-this only spares it the fetch in steady state. Building a consumer that assumes
-contiguity is the mistake this section exists to prevent.
+There is no freeze stream. A store builds from its own validator through
+`ChainStoreIngest::build_to`, and the party that wants it to follow the seam
+(ChainView's sync loop) watches `subscribe_updates` and reads the window's
+floor from each snapshot (`best_chain().next()`), building the store to it.

@@ -1,0 +1,54 @@
+consumed_in = "zainod-0-11-0"
+[[changes]]
+crate = "zaino-state"
+kind = "breaking"
+description = """
+The entry points `IndexerService::spawn` and `NodeBackedChainIndex::new` are \
+`#[deprecated]` (#52). `storage.database.delete_stale` (default true) reaches \
+the store's stale-directory sweep (C6). The `ChainIndex` doctest compiles \
+(S-05). Tests run on the current-thread runtime unless their body needs more \
+(S-02)."""
+
+[[changes]]
+crate = "zaino-chain-store-service"
+kind = "feature"
+description = """
+The stale sweep also deletes the old zainodb database directory \
+(`<root>/<network>/v1`); `delete_stale = false` keeps it (C6)."""
+
+[[changes]]
+crate = "zaino-persistence-lsm-tree"
+kind = "feature"
+description = """
+`DEFAULT_WRITE_BUFFER` / `DEFAULT_WRITE_BUFFER_MIB`: the one default write \
+buffer (E8). The crate denies discarded results (`let_underscore_must_use`, \
+`let_underscore_drop`); advisory results are dropped explicitly and a \
+compaction thread that panicked at close is logged (#53)."""
+
+[[changes]]
+crate = "zaino-persistence"
+kind = "fix"
+description = "The crate denies discarded results, as every other crate does (#53)."
+
+[[changes]]
+crate = "zaino-source-mock"
+kind = "fix"
+description = "The crate denies discarded results (#53)."
+
+[[changes]]
+crate = "zaino-state"
+kind = "fix"
+description = """
+gRPC `GetTransaction` no longer reports height 0 for a transaction whose \
+bytes are found but which nothing places: it is `Unavailable`. Height 0 is \
+a mempool transaction only. `MapBackedSnapshot` is back as a deprecated \
+alias of `PersistentSnapshot`."""
+
+[[changes]]
+crate = "zaino-source-zebra"
+kind = "breaking"
+description = """
+The temp directory zebra's read-only state leaves behind \
+(`zebra-secondary_state-…`) is removed when the read-state adapter drops. \
+`ZebraReadStateAdapter::from_service` takes the `SecondaryStateDirs` an \
+`Opening` around the launch returns; `open` tracks its own."""

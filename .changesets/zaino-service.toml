@@ -1,0 +1,19 @@
+consumed_in = "zainod-0-11-0"
+[[changes]]
+crate = "zaino-service"
+kind = "feature"
+description = """
+New crate: `Service::spawn` over a `ServiceSource` runs the store \
+(validator-backed, primary or linked), the chain head with an extension per \
+built index, ChainView with its background sync, and the coherent mempool, \
+without waiting for the store to catch up. `Service::manifest` reports each \
+`Capability` as `Local(index)`, `Validator`, `Building { index, height }` or \
+`Unavailable(index)`; `require` checks it. `ServiceError` is the one error \
+type."""
+
+[[changes]]
+crate = "zaino-chain-store-service"
+kind = "feature"
+description = """
+`indexes_of(capability)` is public (roots first), and \
+`StoreReader::empty(network, status)` reads over no store."""

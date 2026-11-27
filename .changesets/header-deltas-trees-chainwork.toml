@@ -1,0 +1,69 @@
+consumed_in = "zainod-0-11-0"
+[[changes]]
+crate = "zaino-source-zcash-rpc"
+kind = "fix"
+description = """
+Header fields are read by zebrad's rules into the header's own bytes (F2, #8, \
+#16): the nonce and `finalsaplingroot` reversed, an all-zero root (below \
+Sapling) absent, `blockcommitments` raw below Sapling and reversed from it, in \
+`getblockheader`, `getblock` and `getblockdeltas`. `chainwork` is read where \
+sent; absent or zebrad's `0` is `None` (CW-6). A `z_gettreestate` pool with no \
+`finalState` is absent, not an empty tree (F4)."""
+
+[[changes]]
+crate = "zaino-primitives"
+kind = "breaking"
+description = """
+`rpc::BlockDeltas` gains `chainwork`. New `rpc::HeaderDisplay`: a header's \
+`blockcommitments`, `finalsaplingroot` and nonce as zebrad writes them."""
+
+[[changes]]
+crate = "zainod"
+kind = "fix"
+description = """
+`getblockheader` writes the nonce, `finalsaplingroot` (all zeros below \
+Sapling) and `blockcommitments` as zebrad does; `getblockdeltas` writes the \
+nonce reversed, as zcashd does, and gains `chainwork` (C1)."""
+
+[[changes]]
+crate = "zaino-service"
+kind = "fix"
+description = """
+`block_header` names genesis's all-zero parent, as zebrad does; `block_deltas` \
+carries chainwork from the local path (C1)."""
+
+[[changes]]
+crate = "zaino-state"
+kind = "fix"
+description = """
+`z_gettreestate` is ChainView's answer: the pre-check and the second validator \
+call are gone, and a block it does not hold is −8 (S-03). `getblock` writes the \
+header fields as zebrad does."""
+
+[[changes]]
+crate = "zaino-indexes"
+kind = "breaking"
+description = """
+`tree_state` and `chain_metadata` are schema version 2 (`tree_state_2`, \
+`chain_metadata_2`): stores built through the RPC adapter held an empty tree \
+for a pool below its activation (F4) and are rebuilt."""
+
+[[changes]]
+crate = "zaino-source-zebra"
+kind = "fix"
+description = "The read-state `getblockdeltas` states no chainwork: zebra tracks none."
+
+[[changes]]
+crate = "zaino-chain"
+kind = "fix"
+description = """
+`transaction_locations` asks the validator for a transaction mined in a hole \
+between the store and the chain head (no store, or one still building); it \
+answered "nowhere", which gRPC `GetTransaction` served as height 0."""
+
+[[changes]]
+crate = "zaino-source-mock"
+kind = "fix"
+description = """
+`get_block_header` names genesis's all-zero parent, as zebrad does; \
+`get_block_deltas` carries chainwork under `NodeFacts::chainwork` (#12)."""

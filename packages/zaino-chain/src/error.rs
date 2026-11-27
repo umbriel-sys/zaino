@@ -1,6 +1,9 @@
 //! What can go wrong asking a chain view a question.
 
+use zaino_primitives::types::Height;
 use zaino_source::NonDomainError;
+
+use crate::ChainCapability;
 
 /// A chain view could not answer.
 ///
@@ -14,14 +17,39 @@ use zaino_source::NonDomainError;
 #[derive(Debug, thiserror::Error)]
 #[non_exhaustive]
 pub enum ChainViewError {
-    /// The view does not offer this, or cannot reach that far.
-    ///
-    /// Not a miss and not a failure: the view is healthy and the question is
-    /// well-formed. Retrying is pointless — an index is not built, the
-    /// validator is switched off, or the providers leave a hole that nothing
-    /// can fill. The message names which.
-    #[error("chain view cannot service this read: {0}")]
-    NotServiceable(&'static str),
+    /// This deployment does not serve the capability.
+    #[error("this deployment does not serve {0}")]
+    NotServed(ChainCapability),
+
+    /// The store index or chain-head extension the read needs is not built
+    /// here; retrying will not help.
+    #[error("not built: {0}")]
+    NotBuilt(&'static str),
+
+    /// The finalised store has not yet built the heights the read needs;
+    /// a later attempt is answered.
+    #[error("still building: {what} (store built to {store_tip:?})")]
+    Building {
+        /// What the read needs.
+        what: &'static str,
+        /// The store's tip, `None` before its first block.
+        store_tip: Option<Height>,
+    },
+
+    /// No provider covers the read and the validator is switched off.
+    #[error("the validator is disabled: {0}")]
+    ValidatorDisabled(&'static str),
+
+    /// The read refuses this range: inverted, or past the tip where the read
+    /// requires it. Block ranges never refuse an inverted range: they run
+    /// descending.
+    #[error("invalid range {start}..={end}")]
+    InvalidRange {
+        /// The requested start.
+        start: Height,
+        /// The requested end.
+        end: Height,
+    },
 
     /// The request was invalid, and retrying it unchanged fails the same way.
     #[error("chain view rejected the request: {0}")]

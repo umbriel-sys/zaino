@@ -12,7 +12,7 @@ use tracing::warn;
 use zaino_address::{ValidatedAddress, ZValidatedAddress};
 use zaino_primitives::types::rpc::{
     AddressDeltas, AddressDeltasRequest, BlockDeltas, BlockHeaderVerbose, BlockSubsidy, MiningInfo,
-    NodeInfo, PeerInfo,
+    NodeInfo, PeerInfo, StandardFee,
 };
 use zaino_proto::proto::{
     compact_formats::CompactBlock,
@@ -30,11 +30,11 @@ use zebra_rpc::methods::{
     GetAddressBalanceRequest, GetAddressTxIdsRequest, GetBlock, GetBlockHash, GetRawTransaction,
 };
 
+use crate::legacy::status::Status;
 use crate::stream::{
     AddressStream, CompactBlockStream, CompactTransactionStream, IndexedTipStream,
     RawTransactionStream, SubtreeRootReplyStream, UtxoReplyStream,
 };
-use zaino_status::Status;
 
 /// Wrapper struct for a ZainoState chain-fetch service (currently the single
 /// [`node_backed_indexer::NodeBackedIndexerService`]).
@@ -52,6 +52,7 @@ where
     Service: ZcashService,
 {
     /// Creates a new `IndexerService` using the provided `config`.
+    #[deprecated(note = "zaino-state is the legacy surface: build on `zaino_service::Service`")]
     pub async fn spawn(
         config: Service::Config,
     ) -> Result<Self, <Service::Subscriber as ZcashIndexer>::Error> {
@@ -75,8 +76,8 @@ where
 
 /// Zcash Service functionality.
 ///
-/// Implementors automatically gain [`Liveness`](zaino_status::probing::Liveness) and
-/// [`Readiness`](zaino_status::probing::Readiness) via the [`Status`] supertrait.
+/// Implementors automatically gain [`Liveness`](crate::legacy::status::Liveness) and
+/// [`Readiness`](crate::legacy::status::Readiness) via the [`Status`] supertrait.
 pub trait ZcashService: Sized + Status {
     /// A subscriber to the service, used to fetch chain data.
     type Subscriber: Clone + ZcashIndexer + LightWalletIndexer + IndexedTipIndexer + Status;
@@ -95,7 +96,7 @@ pub trait ZcashService: Sized + Status {
     /// Returns which backend is currently answering finalised-state reads.
     ///
     /// Companion to [`Status::status`], which cannot express this: an ephemeral passthrough reports
-    /// [`zaino_status::StatusType::Ready`] identically to a synced persistent database, so a caller
+    /// [`crate::legacy::status::StatusType::Ready`] identically to a synced persistent database, so a caller
     /// gating on `Ready` alone cannot tell which one it is about to query.
     fn finalised_state_mode(&self) -> crate::FinalisedStateMode;
 
@@ -228,6 +229,13 @@ pub trait ZcashIndexer: Send + Sync + 'static {
     /// - `height`: (number, optional) The block height. If not provided, defaults to the current height of the chain.
     fn get_block_subsidy(&self, height: u32) -> impl SendFut<Result<BlockSubsidy, Self::Error>>;
 
+    /// Returns the fee per logical action wallets should pay for a transaction mined in the next block.
+    ///
+    /// Zebra RPC reference: `getstandardfee`
+    /// method: post
+    /// tags: blockchain
+    fn get_standard_fee(&self) -> impl SendFut<Result<StandardFee, Self::Error>>;
+
     /// Returns details on the active state of the TX memory pool.
     ///
     /// Zcash RPC reference: [`getmempoolinfo`](https://zcash.github.io/rpc/getmempoolinfo.html)
@@ -275,7 +283,7 @@ pub trait ZcashIndexer: Send + Sync + 'static {
     ) -> impl SendFut<Result<zaino_primitives::types::AddressBalance, Self::Error>>;
 
     /// Sends the raw bytes of a signed transaction to the local node's mempool, if the transaction is valid.
-    /// Returns the [`TransactionHash`](zaino_primitives::types::TransactionHash) for the transaction, as a JSON string.
+    /// Returns the transaction's id, as a JSON string.
     ///
     /// Zcash RPC reference: [`sendrawtransaction`](https://zcash.github.io/rpc/sendrawtransaction.html)
     /// method: post
@@ -401,7 +409,7 @@ pub trait ZcashIndexer: Send + Sync + 'static {
     /// Zcash RPC reference: [`z_validateaddress`](https://zcash.github.io/rpc/z_validateaddress.html)
     /// method: post
     /// tags: util
-    #[deprecated(note = "https://github.com/zingolabs/zaino/issues/992#issuecomment-4245596178")]
+    #[deprecated(note = "see `zaino_address::DEPRECATION_NOTICE`")]
     fn z_validate_address(
         &self,
         address: String,
@@ -527,11 +535,12 @@ pub trait ZcashIndexer: Send + Sync + 'static {
     /// # Notes
     ///
     /// the legacy full node 6.12.2 returns an undocumented `height` field in addition to
-    /// the documented `txid` and `index` fields.
+    /// the documented `txid` and `index` fields; a spend still in the mempool
+    /// has height −1.
     fn get_spent_info(
         &self,
         outpoint: zaino_primitives::types::rpc::SpentOutpoint,
-    ) -> impl SendFut<Result<zaino_primitives::types::rpc::SpentInfo, Self::Error>>;
+    ) -> impl SendFut<Result<zaino_service::Spend, Self::Error>>;
 
     /// Returns the transaction ids made by the provided transparent addresses.
     ///
@@ -586,7 +595,7 @@ pub trait ZcashIndexer: Send + Sync + 'static {
     /// tags: blockchain
     fn get_tx_out_set_info(
         &self,
-    ) -> impl SendFut<Result<Option<zaino_primitives::types::TxOutSetInfo>, Self::Error>>;
+    ) -> impl SendFut<Result<zaino_primitives::types::TxOutSetInfo, Self::Error>>;
 
     /// Returns the estimated network solutions per second based on the last n blocks.
     ///
@@ -617,40 +626,72 @@ pub trait ZcashIndexer: Send + Sync + 'static {
         request: TransparentAddressBlockFilter,
     ) -> impl SendFut<Result<Vec<String>, Self::Error>> {
         async move {
-            let chain_height = self.chain_height().await?;
-            let (start, end) = match request.range {
-                Some(range) => {
-                    let start = clamped_optional_height(
-                        range.start,
-                        chain_height,
-                        "Error: Start height out of range. Failed to convert to u32.",
-                    )
-                    .map_err(Self::Error::from)?;
-                    let end = clamped_optional_height(
-                        range.end,
-                        chain_height,
-                        "Error: End height out of range. Failed to convert to u32.",
-                    )
-                    .map_err(Self::Error::from)?;
-                    match (start, end) {
-                        (Some(start), Some(end)) if start > end => (Some(end), Some(start)),
-                        _ => (start, end),
-                    }
-                }
-                None => {
-                    return Err(Self::Error::from(tonic::Status::invalid_argument(
-                        "Error: No block range given.",
-                    )))
-                }
-            };
-            self.get_address_tx_ids(GetAddressTxIdsRequest::new(
-                vec![request.address],
-                start,
-                end,
-            ))
-            .await
+            let request = taddress_txids_request(request).map_err(Self::Error::from)?;
+            self.get_address_tx_ids(request).await
         }
     }
+}
+
+/// A `GetSubtreeRoots` request's pool, start index and limit (`max_entries`
+/// 0: none).
+pub(crate) fn subtree_roots_request(
+    request: &GetSubtreeRootsArg,
+) -> Result<(zaino_primitives::types::ShieldedPool, u16, Option<u16>), tonic::Status> {
+    let pool = match ShieldedProtocol::try_from(request.shielded_protocol) {
+        Ok(ShieldedProtocol::Sapling) => zaino_primitives::types::ShieldedPool::Sapling,
+        Ok(ShieldedProtocol::Orchard) => zaino_primitives::types::ShieldedPool::Orchard,
+        Ok(ShieldedProtocol::Ironwood) => zaino_primitives::types::ShieldedPool::Ironwood,
+        Err(_) => {
+            return Err(tonic::Status::invalid_argument(
+                "Error: Invalid shielded protocol value.",
+            ))
+        }
+    };
+    let start_index = u16::try_from(request.start_index).map_err(|_| {
+        tonic::Status::invalid_argument("Error: start_index value exceeds u16 range.")
+    })?;
+    let limit = match request.max_entries {
+        0 => None,
+        max_entries => Some(u16::try_from(max_entries).map_err(|_| {
+            tonic::Status::invalid_argument("Error: max_entries value exceeds u16 range.")
+        })?),
+    };
+    Ok((pool, start_index, limit))
+}
+
+/// A `GetTaddressTransactions` filter as a `getaddresstxids` request, as
+/// lightwalletd reads it: a range and its start are required; an absent or
+/// zero end is the tip. The bounds are never swapped.
+pub(crate) fn taddress_txids_request(
+    request: TransparentAddressBlockFilter,
+) -> Result<GetAddressTxIdsRequest, tonic::Status> {
+    let height = |block: BlockId, out_of_range: &'static str| {
+        u32::try_from(block.height).map_err(|_| tonic::Status::invalid_argument(out_of_range))
+    };
+    let range = request
+        .range
+        .ok_or_else(|| tonic::Status::invalid_argument("Error: No block range given."))?;
+    let start = range
+        .start
+        .ok_or_else(|| tonic::Status::invalid_argument("Error: No start height given."))?;
+    let start = height(
+        start,
+        "Error: Start height out of range. Failed to convert to u32.",
+    )?;
+    let end = range
+        .end
+        .map(|end| {
+            height(
+                end,
+                "Error: End height out of range. Failed to convert to u32.",
+            )
+        })
+        .transpose()?;
+    Ok(GetAddressTxIdsRequest::new(
+        vec![request.address],
+        Some(start),
+        end,
+    ))
 }
 
 /// Publishes the canonical tip that is currently readable through the local index.
@@ -673,29 +714,13 @@ where
 {
     let (sender, receiver) = mpsc::channel(channel_size as usize);
     let work = body(sender.clone());
-    let limit = std::time::Duration::from_secs(u64::from(timeout_secs) * multiple);
+    let limit = std::time::Duration::from_secs(u64::from(timeout_secs).saturating_mul(multiple));
     tokio::spawn(async move {
         if timeout(limit, work).await.is_err() {
             sender.send(Err(on_timeout)).await.ok();
         }
     });
     receiver
-}
-
-/// Clamps an optional block-range endpoint to the chain height, or errors
-/// with `out_of_range_message` when the provided height cannot be
-/// represented as a `u32`.
-fn clamped_optional_height(
-    endpoint: Option<BlockId>,
-    chain_height: Height,
-    out_of_range_message: &'static str,
-) -> Result<Option<u32>, tonic::Status> {
-    endpoint
-        .map(|block_id| match u32::try_from(block_id.height) {
-            Ok(height) => Ok(height.min(chain_height.0)),
-            Err(_) => Err(tonic::Status::invalid_argument(out_of_range_message)),
-        })
-        .transpose()
 }
 
 /// Light Client Protocol gRPC method signatures.
@@ -709,7 +734,8 @@ pub trait LightWalletIndexer: Send + Sync + Clone + ZcashIndexer + 'static {
     /// Return the compact block corresponding to the given block identifier
     fn get_block(&self, request: BlockId) -> impl SendFut<Result<CompactBlock, Self::Error>>;
 
-    /// Same as GetBlock except actions contain only nullifiers
+    /// Same as GetBlock, carrying only the shielded nullifiers (Sapling spends,
+    /// Orchard and Ironwood actions) and zero tree sizes.
     fn get_block_nullifiers(
         &self,
         request: BlockId,
@@ -721,7 +747,8 @@ pub trait LightWalletIndexer: Send + Sync + Clone + ZcashIndexer + 'static {
         request: BlockRange,
     ) -> impl SendFut<Result<CompactBlockStream, Self::Error>>;
 
-    /// Same as GetBlockRange except actions contain only nullifiers
+    /// Same as GetBlockRange, carrying only the shielded nullifiers (Sapling
+    /// spends, Orchard and Ironwood actions) and zero tree sizes.
     fn get_block_range_nullifiers(
         &self,
         request: BlockRange,
@@ -807,40 +834,8 @@ pub trait LightWalletIndexer: Send + Sync + Clone + ZcashIndexer + 'static {
         request: GetSubtreeRootsArg,
     ) -> impl SendFut<Result<SubtreeRootReplyStream, <Self as ZcashIndexer>::Error>> {
         async move {
-            let pool = match ShieldedProtocol::try_from(request.shielded_protocol) {
-                Ok(ShieldedProtocol::Sapling) => zaino_primitives::types::ShieldedPool::Sapling,
-                Ok(ShieldedProtocol::Orchard) => zaino_primitives::types::ShieldedPool::Orchard,
-                Ok(ShieldedProtocol::Ironwood) => zaino_primitives::types::ShieldedPool::Ironwood,
-                Err(_) => {
-                    return Err(<Self as ZcashIndexer>::Error::from(
-                        tonic::Status::invalid_argument("Error: Invalid shielded protocol value."),
-                    ))
-                }
-            };
-            let start_index = match u16::try_from(request.start_index) {
-                Ok(value) => value,
-                Err(_) => {
-                    return Err(<Self as ZcashIndexer>::Error::from(
-                        tonic::Status::invalid_argument(
-                            "Error: start_index value exceeds u16 range.",
-                        ),
-                    ))
-                }
-            };
-            let limit = if request.max_entries == 0 {
-                None
-            } else {
-                match u16::try_from(request.max_entries) {
-                    Ok(value) => Some(value),
-                    Err(_) => {
-                        return Err(<Self as ZcashIndexer>::Error::from(
-                            tonic::Status::invalid_argument(
-                                "Error: max_entries value exceeds u16 range.",
-                            ),
-                        ))
-                    }
-                }
-            };
+            let (pool, start_index, limit) =
+                subtree_roots_request(&request).map_err(<Self as ZcashIndexer>::Error::from)?;
             let service_clone = self.clone();
             let subtrees = service_clone
                 .z_get_subtrees_by_index(
@@ -961,6 +956,11 @@ pub trait LightWalletIndexer: Send + Sync + Clone + ZcashIndexer + 'static {
     /// Return information about this lightwalletd instance and the blockchain
     fn get_lightd_info(&self) -> impl SendFut<Result<LightdInfo, Self::Error>>;
 
+    /// Return the validator's standard fee per logical action (`GetStandardFee`).
+    fn get_standard_fee(
+        &self,
+    ) -> impl SendFut<Result<zaino_proto::proto::service::StandardFee, Self::Error>>;
+
     /// Testing-only, requires lightwalletd --ping-very-insecure (do not enable in production)
     ///
     /// NOTE: Currently unimplemented in Zaino.
@@ -1021,31 +1021,74 @@ fn validate_utxo_address_count(count: usize) -> Result<(), tonic::Status> {
     Ok(())
 }
 
-/// The most recently activated network upgrade the validator reported.
-///
-/// The domain preserves the validator's ordering, so the last entry is the
-/// newest. An empty list is a failure rather than a default: `getlightdinfo`
-/// reports the upgrade name and height to wallets, and inventing either would
-/// have them believe they are on a chain they are not.
-fn latest_network_upgrade(
-    upgrades: &[zaino_primitives::types::NetworkUpgradeInfo],
-) -> Result<&zaino_primitives::types::NetworkUpgradeInfo, tonic::Status> {
-    upgrades.last().ok_or_else(|| {
-        tonic::Status::failed_precondition("validator returned no network upgrade metadata")
-    })
+/// The most distinct addresses one `GetTaddressBalanceStream` may send, as
+/// lightwalletd's `maxTaddrsPerRequest`.
+const BALANCE_STREAM_MAX_ADDRESSES: usize = 10_000;
+
+/// Refuses a `GetTaddressBalanceStream` past [`BALANCE_STREAM_MAX_ADDRESSES`].
+fn validate_balance_address_count(count: usize) -> Result<(), tonic::Status> {
+    if count > BALANCE_STREAM_MAX_ADDRESSES {
+        return Err(tonic::Status::invalid_argument(format!(
+            "Error: too many addresses in request: the maximum is {BALANCE_STREAM_MAX_ADDRESSES}."
+        )));
+    }
+    Ok(())
 }
 
 #[cfg(test)]
 mod tests {
     #[test]
-    fn latest_network_upgrade_rejects_empty_metadata() {
-        let err = super::latest_network_upgrade(&[]).expect_err("empty upgrades must fail");
+    fn balance_stream_addresses_are_bounded() {
+        assert!(super::validate_balance_address_count(super::BALANCE_STREAM_MAX_ADDRESSES).is_ok());
+        let refused =
+            super::validate_balance_address_count(super::BALANCE_STREAM_MAX_ADDRESSES + 1)
+                .expect_err("over the limit");
+        assert_eq!(refused.code(), tonic::Code::InvalidArgument);
+    }
 
-        assert_eq!(err.code(), tonic::Code::FailedPrecondition);
+    /// As lightwalletd: a range and its start are required, an absent end is
+    /// left to the range rule (the tip), and the bounds are never swapped.
+    #[test]
+    fn a_taddress_filter_is_read_as_lightwalletd_reads_it() {
+        use zaino_proto::proto::service::{BlockId, BlockRange, TransparentAddressBlockFilter};
+        let block = |height| {
+            Some(BlockId {
+                height,
+                hash: Vec::new(),
+            })
+        };
+        let filter = |range| TransparentAddressBlockFilter {
+            address: "t".to_owned(),
+            range,
+        };
+        let range = |start, end| {
+            Some(BlockRange {
+                start,
+                end,
+                pool_types: Vec::new(),
+            })
+        };
+        let parts = |start, end| {
+            super::taddress_txids_request(filter(range(start, end)))
+                .map(|request| request.into_parts())
+        };
         assert_eq!(
-            err.message(),
-            "validator returned no network upgrade metadata"
+            parts(block(9), block(2)).expect("read").1,
+            9,
+            "an inverted range is not swapped"
         );
+        assert_eq!(parts(block(9), block(2)).expect("read").2, 2);
+        assert_eq!(parts(block(5), None).expect("read").2, 0, "the tip");
+        for refused in [
+            super::taddress_txids_request(filter(None)).map(drop),
+            parts(None, block(5)).map(drop),
+            parts(block(u64::MAX), block(5)).map(drop),
+        ] {
+            assert_eq!(
+                refused.expect_err("refused").code(),
+                tonic::Code::InvalidArgument
+            );
+        }
     }
 
     #[test]

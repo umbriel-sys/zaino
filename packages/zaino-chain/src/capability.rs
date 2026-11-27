@@ -31,6 +31,11 @@ pub enum ChainCapability {
     SpendStatus,
     /// The unspent transparent output set's running totals.
     TxOutSet,
+    /// The ZIP 221 chain history tree: roots, epochs and entries.
+    HistoryTree,
+    /// The outputs outpoints name: value and script, from Zaino's own
+    /// indexes (`getblockdeltas`).
+    Prevouts,
 }
 
 impl ChainCapability {
@@ -40,7 +45,7 @@ impl ChainCapability {
     /// hand-kept list: a capability added here appears without anyone
     /// remembering to add it, which is what stops "what we advertise" and
     /// "what we answer" drifting apart.
-    pub const ALL: [Self; 9] = [
+    pub const ALL: [Self; 11] = [
         Self::Blocks,
         Self::CompactBlocks,
         Self::Transactions,
@@ -50,6 +55,8 @@ impl ChainCapability {
         Self::AddressHistory,
         Self::SpendStatus,
         Self::TxOutSet,
+        Self::HistoryTree,
+        Self::Prevouts,
     ];
 }
 
@@ -115,6 +122,8 @@ impl core::fmt::Display for ChainCapability {
             Self::AddressHistory => "transparent address history",
             Self::SpendStatus => "spend status",
             Self::TxOutSet => "the txout set",
+            Self::HistoryTree => "the chain history tree",
+            Self::Prevouts => "previous outputs",
         })
     }
 }
@@ -208,7 +217,9 @@ mod tests {
                 | ChainCapability::ChainTips
                 | ChainCapability::AddressHistory
                 | ChainCapability::SpendStatus
-                | ChainCapability::TxOutSet => {}
+                | ChainCapability::TxOutSet
+                | ChainCapability::HistoryTree
+                | ChainCapability::Prevouts => {}
             }
         }
         let mut seen = ChainCapability::ALL;

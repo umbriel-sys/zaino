@@ -1,0 +1,46 @@
+consumed_in = "zainod-0-11-0"
+[[changes]]
+crate = "zaino-chain-store"
+kind = "breaking"
+description = """
+`SpenderRef` carries the spending `input_index` (I-09 stores it, D-62)."""
+
+[[changes]]
+crate = "zaino-chain-store-service"
+kind = "feature"
+description = """
+`outpoint_spenders` reports each spender's input index from I-09."""
+
+
+[[changes]]
+crate = "zaino-chain-head"
+kind = "breaking"
+description = """
+`SpenderLocation` carries the spending `input_index`."""
+
+[[changes]]
+crate = "zaino-chain-head-service"
+kind = "fix"
+description = """
+Every extension answer that read its own rows turned a failed read or an \
+inconsistency into a plausible answer: a transaction 'not in the window', an \
+outpoint 'not spent', no subtree roots, no history root or entry, address \
+events skipped, a missing view answered as nothing. Each now fails as \
+`ChainHeadError::ReadFailed`, and in-window prevout resolution during a fold \
+fails the extension for the tick instead of asking below the root. The \
+oracle test covers branch views (D-52)."""
+
+[[changes]]
+crate = "zaino-chain"
+kind = "breaking"
+description = """
+`SpendStatus::SpentBy` carries the spending txid, input index and height, \
+what `getspentinfo` answers. A transaction the store places at a height it \
+holds no hash for is `Fatal`, not 'not found'."""
+
+[[changes]]
+crate = "zaino-primitives"
+kind = "internal"
+description = """
+`BlockTxPosition`'s doc no longer suggests merging it with the chain head's \
+position type."""

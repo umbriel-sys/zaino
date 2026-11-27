@@ -13,6 +13,45 @@ and this library adheres to Rust's notion of
 ### Removed
 ### Fixed
 
+## [0.4.0] - 2026-11-21
+### Added
+- `TransparentAddress::is_for(network)`: whether a node on that network accepts the address (testnet and regtest share an encoding).
+- `PoolFilter` is `Hash`.
+- `NoteFrontier` and `PoolFrontier` move here from `zaino-indexes`, which re-exports them. `CompactBlock` and `PreIndexCompactTx` derive `PartialEq` and `Eq`.
+- `Script::as_bytes` borrows a script's raw bytes.
+- `frontier_from_legacy_tree` moves here from `zaino-indexes`, with its inverse `legacy_tree_from_frontier`, which writes the legacy tree encoding as zebrad does (all 31 parent slots). `TransparentAddress::key()`: the key an index holds the address under.
+- Feature `zebra` adds the `zebra` module, the `zebra_chain` → domain conversions (`block_from_zebra`, `header_from_zebra`, `transaction_from_zebra`, `ConvertError`) that were the `zaino-convert-zebra` crate, with its consensus and difficulty agreement tests. `Network` (the network kind) and `ActivationHeights` (a regtest schedule) move here from `zaino-common`, serialisable under the new `serde` feature and, under `zebra`, convertible through `Network::from_zebra`, `ActivationHeights::to_zebra` and `to_regtest_network`. Both features are off by default; the crate's footprint is unchanged without them. `zaino-convert-zebra` and `zaino-common` are removed.
+- `PreIndexCompactTx::filtered(pools)` clears the pools a filter leaves out and `has_pool_data` says whether anything is left to serve.
+- `types::branch_at(schedule, height)`: the consensus branch a height was mined under, from the validator's reported upgrade schedule.
+- `Transaction::pool_balances` and `PoolBalances`: each shielded pool's value balance, `None` where the transaction does not use the pool.
+- `MerkleRoot::of(txids)` and `Block::merkle_root_matches`: the transaction merkle root, and a block's header checked against it.
+- `types::rpc::StandardFee`, the `getstandardfee` response in domain terms.
+- `Block`, `Transaction`, `TransparentData`, `SaplingData` and `OrchardData` derive `PartialEq` and `Eq`.
+- `rpc::{NetworkInfo, NetworkEntry, LocalAddress}`.
+- `TransparentAddress::from_standard_script(script, network)`.
+- `TreeRoots` derives `PartialEq` and `Eq`.
+- `TransparentAddressKey::from_standard_script`: the address of an exact 25-byte P2PKH or 23-byte P2SH script, `None` otherwise, without `classify_script`'s legacy 21-byte arm.
+- Feature `txout-commitment`: the UTXO-set commitment (`txout_commitment`: canonical entry, BLAKE2b-256 entry digest, `TxOutSetAccumulator`), moved here from `zaino-chain-store` so every store and the chain head share one definition. The functions take `(value, address)` instead of a `StoredTxOut`; the digest is unchanged.
+### Changed
+- `Block` carries its serialized size: `Block::try_new(header, transactions, size)` and `Block::size()`. `block_from_zebra` sets it from zebra's serialized size.
+- `Block` no longer carries `chain_metadata`; `Block::try_new(header, transactions)` and `block_from_zebra(&block)` lose the parameter. The field documented the cumulative tree sizes but both adapters filled it with `ChainMetadata::ZERO` ("a placeholder, not a measurement") because a block's bytes hold no tree sizes; those are indexed state, answered by the tree-roots ports and the chain-metadata index, which every consumer already used. `ChainMetadata` stays as the compact block's indexed output.
+- `PreIndexCompactTx` carries its `fee: Option<Zatoshis>`: zero for the coinbase, `None` from a parsed block, which lacks the outputs its inputs spend.
+- `rpc::BlockDeltas` gains `chainwork`. New `rpc::HeaderDisplay`: a header's `blockcommitments`, `finalsaplingroot` and nonce as zebrad writes them.
+- `rpc::PeerInfo` carries zebrad's entry (services, last received, ban score, user agent, version, connection state, ping time and wait) and is no longer `Eq` (#35). `rpc::TxOut` gains `version` (#36). `rpc::NodeInfo::errors_timestamp` is the validator's value whenever sent (#30).
+- Built against zcash_address 0.14 and zcash_protocol 0.11, the librustzcash release zebra 7.0.0 links.
+  _Migration:_ Upgrade the `zcash_*` crates to the same versions.
+- `PoolFilter` moves here from `zaino-chain-store` and gains `nullifiers_only()` / `includes_outputs()`. Compact transactions carry actions as `CompactAction { nullifier, output: Option<ActionOutput> }`, `None` where a nullifiers-only read left the output unread.
+- Block.transactions is a private field read through Block::transactions(), which returns the list in block order. A Block is built only through Block::try_new, so its transaction list is fixed at construction and every block carries at least its coinbase.
+- `Transaction` gains `sprout: SproutData { joinsplits, value_balance }`: the JoinSplits' count and net value (`vpub_new - vpub_old`, zebra's sign). `PoolBalances` gains `sprout`. Without it a Sprout unshielding's fee went negative (mainnet block 407).
+- `PreIndexCompactTx::sapling_outputs_unread`: the Sapling outputs a nullifiers-only read of an included pool left out.
+- `BlockVerbose` carries the validator's whole verbose `getblock` answer: header fields, size, roots, transactions (`BlockTransactions::Ids` or `Objects`), value pools and links. New `BlockVerbosity` and `rpc::TransactionVerbose` with its input, output, shielded and Orchard parts.
+- The UTXO set follows zcashd: `txout_commitment::is_unspendable(script)` excludes only `OP_RETURN` and scripts past `MAX_SCRIPT_SIZE` (10 000 bytes), so `txouts`, `transactions` and `total_amount` match zcashd's `gettxoutsetinfo` (on mainnet, 97 P2PK/multisig outputs holding 798 ZEC were left out). `commitment_address(script)` keys an output strictly.
+### Fixed
+- The crate denies panicking code in production, as the other crates do. Its 11 remaining panic sites are fixed: unchecked arithmetic in the difficulty and 256-bit code, the zatoshi flow negation, a slice in the zebra conversion, and two `expect`s in chain-work decoding.
+### Internal
+- `BlockTxPosition`'s doc no longer suggests merging it with the chain head's position type.
+- Documentation and comments only: rustdoc builds without warnings.
+
 ## [0.3.0] - 2026-09-26
 ### Added
 - Add RelativeChainWork, the proof-of-work total a run of blocks holds, measured from where the run begins rather than from genesis.

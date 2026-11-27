@@ -1,0 +1,14 @@
+consumed_in = "zainod-0-11-0"
+[[changes]]
+crate = "zainod"
+kind = "feature"
+description = """
+`GrpcServerConfig::limits` (AP-02): per-connection concurrency limit (32), \
+HTTP/2 stream limit (64) and keep-alive (60 s, 20 s timeout), each \
+configurable; an excess stream waits on its connection."""
+
+[[changes]]
+crate = "zainod"
+kind = "feature"
+description = """
+`[grpc_settings.limits]` reaches the gRPC server."""

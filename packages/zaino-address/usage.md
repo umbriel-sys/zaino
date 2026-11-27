@@ -12,9 +12,9 @@ dependency set is substantial and nothing else in Zaino wants it.
 - Not `zaino-primitives`: that crate depends only on `thiserror`, and the whole
   point of it is that everything can depend on it. Adding the address stack
   there would put it in every crate in the workspace.
-- Not `zaino-common`: that is config, logging, net, status, xdg — shared
-  infrastructure. Address classification is domain logic, and it would force the
-  zcash address stack on every crate that merely wants a `ServiceConfig`.
+- Not `zaino-state`: address classification is domain logic, and that crate
+  is the legacy stack; it would force the zcash address stack on every crate
+  that merely wants its configuration types.
 
 As a leaf below `zaino-state` it isolates the dependency, and it is the natural
 home for validating address *parameters* on `getaddressbalance`,
@@ -30,8 +30,12 @@ let result = z_validate_address(address_string, network);
 ```
 
 Both return domain types (`ValidatedAddress`, `ZValidatedAddress`) with **no
-serde**. The legacy-shaped JSON — including the exact field sets, which differ
-per address kind — is `zaino-serve`'s `wire/address.rs`, per ADR-0009.
+serde**. The served JSON, zebrad's shape, is `zainod`'s
+`serve/jsonrpc/wire/address.rs`: the served schema lives in the serving layer.
+
+A TEX address (ZIP 320) is valid for its network and is a transparent key
+hash to both: `Transparent { is_script: false }` and `P2pkh`, as zebrad
+classifies it.
 
 ## What is deliberately not classified
 
@@ -61,4 +65,4 @@ carries no notice.
 
 ## Related
 
-- ADR-0009 — why the serde impls live in `zaino-serve` rather than here.
+- [`zainod`](../zainod/usage.md) — the serving layer, where the serde impls for these types live.

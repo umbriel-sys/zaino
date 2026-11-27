@@ -7,41 +7,9 @@ and this library adheres to Rust's notion of
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-11-21
 ### Added
+- `encode_header`: a block header back to its consensus bytes, for serving headers Zaino holds.
 ### Changed
-### Deprecated
-### Removed
-### Fixed
-
-## [0.1.1] - 2026-09-26
-### Internal
-- The published package carries a README, keywords and categories.
-
-## [0.1.0] - 2026-09-11
-
-### Added
-- New crate. Versioned encoding traits and byte helpers, moved verbatim from
-  `zaino-state`'s `chain_index/types/encoding.rs`. A leaf: it knows about bytes
-  and version tags, and about no domain type whatsoever.
-- `ZainoVersionedSerde` — the versioned record format. Every record is a version
-  tag byte followed by a version-specific body; a build writes `Self::VERSION`
-  and dispatches on the tag when reading, so a newer build reads every older
-  row it was taught about.
-- `serialize_with_version` / `to_bytes_with_version` — reproduce the exact bytes
-  a historical writer produced. Load-bearing rather than a convenience: a
-  checksum computed over a nested field's *current* encoding will not verify
-  against a row written with an older nested tag, so historical top-level
-  encodings must pin their inner versions explicitly.
-- `FixedEncodedLen` — for records whose encoded length is a constant, which is
-  what lets fixed-width tables be read without a length prefix.
-- `CompactSize` and the `read_*` / `write_*` primitives for `u8`…`u64`, `i64`,
-  fixed byte arrays, `Option` and `Vec`, in both endiannesses.
-
-### Changed
-- No behaviour change. The traits, the helpers and the wire format are the ones
-  `zaino-state` already used; the golden vectors checked in before the move pass
-  unchanged after it. See ADR-0012.
-
-### Deprecated
-### Removed
-### Fixed
+- **Breaking: the crate name is reused for different code.** The old `zaino-encoding` (versioned serde traits and byte helpers, removed with zainodb) is gone and none of its API remains. The crate is now the non-validating decoder from Zcash consensus bytes to the domain `Block` and `Transaction`, moved out of `zaino-source-zcash-rpc` so a crate above the source layer can decode without an adapter or a node library. `parse_block(bytes, light)`, `parse_transaction(bytes)`, `DecodeError`, `GENESIS_COINBASE_SCRIPT_SIG` (C4).
+- dependency `zaino-primitives` 0.3.0→0.4.0 crossed the requirement `^0.3.0`

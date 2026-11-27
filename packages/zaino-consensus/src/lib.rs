@@ -22,6 +22,25 @@
 //! becomes a test failure rather than a silent behaviour change, without
 //! anything having to depend on zebra to obtain a number.
 
+// production code never panics: no indexing, unchecked arithmetic or panicking calls
+#![cfg_attr(
+    not(test),
+    deny(
+        clippy::unwrap_used,
+        clippy::expect_used,
+        clippy::panic,
+        clippy::unreachable,
+        clippy::todo,
+        clippy::unimplemented,
+        clippy::indexing_slicing,
+        clippy::arithmetic_side_effects,
+        clippy::string_slice,
+        clippy::get_unwrap,
+        clippy::let_underscore_must_use,
+        let_underscore_drop
+    )
+)]
+
 /// Number of confirmations before a coinbase output becomes spendable.
 ///
 /// Zcash protocol specification §3.10: a coinbase output cannot be spent until
@@ -47,6 +66,66 @@ pub const MAX_NONFINALISED_DEPTH: u32 = MAX_BLOCK_REORG_HEIGHT + 1;
 /// rather than a literal of its own.
 pub const FAST_TEST_MAX_NONFINALISED_DEPTH: u32 = MAX_NONFINALISED_DEPTH / 10;
 
+/// Mainnet's proof-of-work limit (protocol §5.3, `PoWLimit`, `2^243 - 1`) in
+/// compact form.
+pub const POW_LIMIT_BITS: u32 = 0x1f07_ffff;
+
+/// The public Testnet's proof-of-work limit (`2^251 - 1`) in compact form.
+pub const TESTNET_POW_LIMIT_BITS: u32 = 0x2007_ffff;
+
+/// Regtest's proof-of-work limit in compact form (zcashd's `0x0f0f…0f`).
+pub const REGTEST_POW_LIMIT_BITS: u32 = 0x200f_0f0f;
+
+/// A block's difficulty (`bits`) as a multiple of the network's minimum
+/// (`pow_limit_bits`), as zcashd's `GetDifficulty` and zebrad's headers
+/// compute it: the ratio of the compact mantissas, shifted a byte per
+/// exponent difference.
+pub fn difficulty(bits: u32, pow_limit_bits: u32) -> f64 {
+    let [mut exponent, ..] = bits.to_be_bytes();
+    let [limit_exponent, ..] = pow_limit_bits.to_be_bytes();
+    let mut ratio = f64::from(pow_limit_bits << 8) / f64::from(bits << 8);
+    while exponent < limit_exponent {
+        ratio *= 256.0;
+        exponent = exponent.saturating_add(1);
+    }
+    while exponent > limit_exponent {
+        ratio /= 256.0;
+        exponent = exponent.saturating_sub(1);
+    }
+    ratio
+}
+
+/// The most a block's time may exceed its median time past, in seconds
+/// (zebra's `BLOCK_MAX_TIME_SINCE_MEDIAN`, zcashd's `nTime <= MTP + 90 min`).
+pub const BLOCK_MAX_TIME_SINCE_MEDIAN: u32 = 90 * 60;
+
+/// The height from which a testnet enforces [`BLOCK_MAX_TIME_SINCE_MEDIAN`]
+/// (zebra treats Regtest as a testnet); Mainnet enforces it at every height.
+pub const TESTNET_MAX_TIME_START_HEIGHT: u32 = 653_606;
+
+/// Blocks a median time is taken over: protocol §7.7.3, `PoWMedianBlockSpan`.
+///
+/// No zebra agreement test: zebra-state keeps its `POW_MEDIAN_BLOCK_SPAN`
+/// `pub(crate)`. The getblockdeltas contract (mock, zebrad, zcashd) checks
+/// `mediantime` end to end.
+pub const MEDIAN_TIME_SPAN: usize = 11;
+
+/// The median of the last [`MEDIAN_TIME_SPAN`] of `times` (oldest first), as
+/// protocol §7.7.3's `MedianTime`: `sorted(S)[ceiling((len(S)+1)/2)]`,
+/// 1-based. `None` when `times` is empty.
+///
+/// A block's `mediantime` (zcashd's `GetMedianTimePast`) is this over the
+/// block's time and its ten predecessors'; near genesis, over those that exist.
+pub fn median_time_past(times: &[u32]) -> Option<u32> {
+    let mut window: Vec<u32> = times
+        .iter()
+        .skip(times.len().saturating_sub(MEDIAN_TIME_SPAN))
+        .copied()
+        .collect();
+    window.sort_unstable();
+    window.get(window.len() / 2).copied()
+}
+
 /// Why a client's raw transaction was rejected before it reached a validator.
 ///
 /// A local rejection: nothing here needs the chain, only the protocol's size
@@ -66,6 +145,35 @@ pub enum RawTransactionError {
         /// Size of the decoded transaction, in bytes.
         size: usize,
     },
+}
+
+/// Consensus branch ids (protocol §7.1, ZIP 200 and each upgrade's ZIP).
+/// From Heartwood each epoch has a ZIP 221 chain history tree: V1 nodes for
+/// Heartwood and Canopy, V2 for NU5 to NU6.2 (Orchard), V3 for NU6.3 and NU7
+/// (Ironwood). Overwinter, Sapling and Blossom have none.
+pub mod branch_id {
+    /// Overwinter.
+    pub const OVERWINTER: u32 = 0x5ba8_1b19;
+    /// Sapling.
+    pub const SAPLING: u32 = 0x76b8_09bb;
+    /// Blossom.
+    pub const BLOSSOM: u32 = 0x2bb4_0e60;
+    /// Heartwood: the first epoch with a chain history tree.
+    pub const HEARTWOOD: u32 = 0xf5b9_230b;
+    /// Canopy.
+    pub const CANOPY: u32 = 0xe9ff_75a6;
+    /// NU5: Orchard, history nodes V2.
+    pub const NU5: u32 = 0xc2d6_d0b4;
+    /// NU6.
+    pub const NU6: u32 = 0xc8e7_1055;
+    /// NU6.1.
+    pub const NU6_1: u32 = 0x4dec_4df0;
+    /// NU6.2.
+    pub const NU6_2: u32 = 0x5437_f330;
+    /// NU6.3: Ironwood, history nodes V3.
+    pub const NU6_3: u32 = 0x37a5_165b;
+    /// NU7 (ZIP 259).
+    pub const NU7: u32 = 0x7719_0ad9;
 }
 
 /// Maximum serialised size of a block, in bytes.
@@ -141,5 +249,35 @@ mod raw_transaction_tests {
         let oversized = vec![0u8; MAX_BLOCK_BYTES as usize + 1];
 
         assert!(validate_raw_transaction_bytes(&oversized).is_err());
+    }
+}
+
+#[cfg(test)]
+mod median_time_tests {
+    use super::*;
+
+    #[test]
+    fn no_times_have_no_median() {
+        assert_eq!(median_time_past(&[]), None);
+    }
+
+    /// Timestamps are not monotonic; the median sorts them.
+    #[test]
+    fn an_odd_window_takes_the_middle_of_the_sorted_times() {
+        assert_eq!(median_time_past(&[50, 10, 40, 20, 30]), Some(30));
+    }
+
+    /// `ceiling((len+1)/2)`, 1-based, is the upper middle of an even window.
+    #[test]
+    fn an_even_window_takes_the_upper_middle() {
+        assert_eq!(median_time_past(&[40, 10, 30, 20]), Some(30));
+    }
+
+    /// Only the last eleven count: the older times are outside the span.
+    #[test]
+    fn only_the_last_eleven_times_count() {
+        let mut times = vec![1_000; 5];
+        times.extend(1..=11);
+        assert_eq!(median_time_past(&times), Some(6));
     }
 }

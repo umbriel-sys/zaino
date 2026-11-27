@@ -1,0 +1,102 @@
+consumed_in = "zainod-0-11-0"
+[[changes]]
+crate = "zaino-state"
+kind = "breaking"
+description = """
+`NodeBackedChainIndex` runs on `zaino_service::Service`. A persistent index \
+builds every index but `history_tree` at `storage.database.path` (D6-13); an \
+ephemeral one is validator-backed. The old store's tuning knobs \
+(`storage.database.size`, `sync_write_batch_size`, \
+`accumulator_rebuild_memory_size`, `sync_checkpoint_interval`, \
+`storage.cache`) are no longer read and are warned when set (D6-14). \
+`BlockchainSource` no longer requires the mempool ports nor declares \
+`get_block_header`, `get_raw_block_header`, `get_block_deltas`, \
+`get_spent_info` or `get_address_deltas`. `NodeBackedIndexerServiceSubscriber::\
+mempool` (test_dependencies) returns the subscriber by value. \
+`InitError::ServiceInitialisationError` is new."""
+
+[[changes]]
+crate = "zaino-state"
+kind = "fix"
+description = """
+getblockheader, getblockdeltas, getspentinfo, getaddressdeltas and \
+gettxoutsetinfo read Zaino's indexes, the validator only where they do not \
+reach (they always went to the validator). getblock by height asks the \
+validator by the hash the snapshot holds. `NodeBackedIndexerService::spawn` \
+waits until every built index answers locally, the head's half included, so \
+window compact blocks carry their fees from the first request (D6-10)."""
+
+[[changes]]
+crate = "zaino-state"
+kind = "fix"
+description = """
+GetLightdInfo: `upgradeName`/`upgradeHeight` are the next pending upgrade \
+(empty and 0 when none), as the protocol defines them, not the latest active \
+one; an unscheduled Sapling is 0, not 1 (K-02)."""
+
+[[changes]]
+crate = "zaino-state"
+kind = "fix"
+description = """
+GetBlockNullifiers and GetBlockRangeNullifiers read only the nullifier \
+columns (D6-18), with the same responses as before: shielded data only, \
+outputs-only transactions served empty, tree sizes 0."""
+
+[[changes]]
+crate = "zainod"
+kind = "breaking"
+description = """
+Metrics: the store's are `zaino.store.*` (fetch, resolve, queue and writer \
+waits, fold, commit, read; watermark, index tip and build target heights; \
+blocks built, build failures, panics). The old finalised database's \
+`zaino.db.*` and `zaino.sync.*` store metrics are no longer registered; \
+nothing emits them."""
+
+[[changes]]
+crate = "zaino-service"
+kind = "feature"
+description = """
+`Statuses` (store, head, mempool, coherence, sync), `chain_snapshot`, \
+`with_chain`, `subscribe_tip`, `store_tip`, `mempool_frozen_for`, \
+`caught_up`/`is_caught_up`, `stop`, the snapshot-free mempool reads \
+(`mempool_txids`, `mempool_info`, `mempool_entries`, `mempool_stream`), \
+`ServiceSnapshot::address_deltas`, and `schedule_at` for an upgrade \
+schedule read against a tip."""
+
+[[changes]]
+crate = "zaino-service"
+kind = "fix"
+description = """
+`transaction_status` places a mempool not coherent with the snapshot at the \
+successor of the mempool's tip as the chain holds it now, as zaino-state did, \
+not as the older snapshot holds it."""
+
+[[changes]]
+crate = "zaino-primitives"
+kind = "breaking"
+description = """
+`PreIndexCompactTx::sapling_outputs_unread`: the Sapling outputs a \
+nullifiers-only read of an included pool left out."""
+
+[[changes]]
+crate = "zaino-indexes"
+kind = "feature"
+description = """
+`compact_block::Reader::transactions` reports each transaction's unread \
+Sapling outputs under a nullifiers-only filter, from the layout."""
+
+[[changes]]
+crate = "zaino-chain"
+kind = "fix"
+description = """
+Compact blocks projected from the validator or the window's parsed blocks \
+report unread Sapling outputs under a nullifiers-only filter, as the store's \
+do."""
+
+[[changes]]
+crate = "zaino-proto"
+kind = "breaking"
+description = """
+`compact_block_to_nullifiers` is removed: nullifier responses are read under \
+`PoolFilter::nullifiers_only`. A transaction whose only data is unread \
+Sapling outputs is served empty at its index."""

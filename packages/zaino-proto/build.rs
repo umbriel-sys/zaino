@@ -6,6 +6,7 @@ use tonic_prost_build::{compile_protos, configure};
 
 const COMPACT_FORMATS_PROTO: &str = "proto/compact_formats.proto";
 const INDEXED_TIP_PROTO: &str = "proto/indexed_tip.proto";
+const LIGHT_CLIENT_PROTO: &str = "proto/light_client.proto";
 const PROPOSAL_PROTO: &str = "proto/proposal.proto";
 const SERVICE_PROTO: &str = "proto/service.proto";
 
@@ -47,6 +48,7 @@ fn main() -> io::Result<()> {
     println!("cargo:rerun-if-changed=build.rs");
     println!("cargo:rerun-if-changed={COMPACT_FORMATS_PROTO}");
     println!("cargo:rerun-if-changed={INDEXED_TIP_PROTO}");
+    println!("cargo:rerun-if-changed={LIGHT_CLIENT_PROTO}");
     println!("cargo:rerun-if-changed={PROPOSAL_PROTO}");
     println!("cargo:rerun-if-changed={SERVICE_PROTO}");
 
@@ -128,6 +130,17 @@ fn build() -> io::Result<()> {
     copy_generated(
         &out.join("cash.z.wallet.sdk.rpc.rs"),
         "src/proto/service.rs",
+    )?;
+
+    // Last, so the lightwalletd package's output above is already copied:
+    // the lightwalletd messages this service borrows are those types.
+    configure()
+        .build_server(true)
+        .extern_path(".cash.z.wallet.sdk.rpc", "crate::proto::service")
+        .compile_protos(&[LIGHT_CLIENT_PROTO], &["proto/"])?;
+    copy_generated(
+        &out.join("zaino.lightclient.v1.rs"),
+        "src/proto/light_client.rs",
     )?;
 
     Ok(())

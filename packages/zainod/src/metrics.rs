@@ -5,11 +5,11 @@ use std::net::SocketAddr;
 use metrics_exporter_prometheus::{Matcher, PrometheusBuilder};
 
 // Names owned by the emitting crates, so `describe_*` cannot drift from emission
+use crate::serve::metric_names::*;
 use zaino_chain_head_service::metric_names::*;
+use zaino_chain_store_service::metric_names::*;
+use zaino_mempool_service::metric_names::*;
 use zaino_rpc::metric_names::*;
-use zaino_serve::metric_names::*;
-use zaino_state::mempool_metric_names::*;
-use zaino_state::metric_names::*;
 
 use crate::error::IndexerError;
 
@@ -28,41 +28,32 @@ const COARSE_SECONDS: &[f64] = &[
     0.001, 0.005, 0.01, 0.05, 0.1, 0.25, 0.5, 1.0, 2.5, 5.0, 10.0, 30.0, 60.0, 300.0,
 ];
 
-/// Accumulator rebuild, client-held streams
-const LONG_SECONDS: &[f64] = &[
-    0.01, 0.1, 1.0, 5.0, 15.0, 60.0, 300.0, 900.0, 1800.0, 3600.0, 10800.0, 43200.0,
-];
-
 /// Integer ladder, dense at small ints (1 = routine, past the NFS window = incident)
 const REORG_DEPTHS: &[f64] = &[1.0, 2.0, 3.0, 4.0, 5.0, 7.0, 10.0, 20.0, 50.0, 100.0];
-
-const BATCH_BLOCK_COUNTS: &[f64] = &[1.0, 2.0, 4.0, 8.0, 16.0, 32.0, 64.0, 128.0, 256.0, 512.0];
 
 /// Bucket ladder per emitted histogram; the `# HELP` comes from the emitting crate
 ///
 /// - `Matcher::Full`, never `Suffix`: overlapping matchers resolve lexicographically
 /// - A histogram missing here would ship as a summary, so [`init`] refuses to start
 const BUCKETS: &[(&str, &[f64])] = &[
-    (SYNC_BLOCK_FETCH_SECONDS, PER_BLOCK_SECONDS),
-    (SYNC_TREESTATE_FETCH_SECONDS, PER_BLOCK_SECONDS),
-    (SYNC_BLOCK_ASSEMBLE_SECONDS, PER_BLOCK_SECONDS),
-    (DB_READ_SECONDS, PER_BLOCK_SECONDS),
-    (SYNC_BATCH_WRITE_SECONDS, COARSE_SECONDS),
-    (SYNC_FSYNC_SECONDS, COARSE_SECONDS),
-    (DB_VALIDATION_SECONDS, COARSE_SECONDS),
+    (STORE_FETCH_SECONDS, PER_BLOCK_SECONDS),
+    (STORE_RESOLVE_SECONDS, PER_BLOCK_SECONDS),
+    (STORE_FOLD_SECONDS, PER_BLOCK_SECONDS),
+    (STORE_COMMIT_SECONDS, PER_BLOCK_SECONDS),
+    (STORE_READ_SECONDS, PER_BLOCK_SECONDS),
+    (STORE_QUEUE_WAIT_SECONDS, COARSE_SECONDS),
+    (STORE_WRITER_WAIT_SECONDS, COARSE_SECONDS),
     (GRPC_REQUEST_DURATION_SECONDS, COARSE_SECONDS),
     (JSONRPC_REQUEST_DURATION_SECONDS, COARSE_SECONDS),
     (RPC_OUTBOUND_DURATION_SECONDS, COARSE_SECONDS),
     (MEMPOOL_POLL_SECONDS, COARSE_SECONDS),
-    (SYNC_ACCUMULATOR_SECONDS, LONG_SECONDS),
     (CHAIN_HEAD_REORG_DEPTH, REORG_DEPTHS),
-    (SYNC_BATCH_BLOCKS, BATCH_BLOCK_COUNTS),
 ];
 
 /// Every counter the workspace emits, with its `# HELP`, from the crate that emits it
 const COUNTERS: &[&[(&str, &str)]] = &[
-    zaino_state::metric_names::store::COUNTERS,
-    zaino_serve::metric_names::COUNTERS,
+    zaino_chain_store_service::metric_names::COUNTERS,
+    crate::serve::metric_names::COUNTERS,
     zaino_rpc::metric_names::COUNTERS,
     zaino_chain_head_service::metric_names::COUNTERS,
     &[(
@@ -72,8 +63,8 @@ const COUNTERS: &[&[(&str, &str)]] = &[
 ];
 
 const GAUGES: &[&[(&str, &str)]] = &[
-    zaino_state::metric_names::store::GAUGES,
-    zaino_state::mempool_metric_names::GAUGES,
+    zaino_chain_store_service::metric_names::GAUGES,
+    zaino_mempool_service::metric_names::GAUGES,
     zaino_chain_head_service::metric_names::GAUGES,
     &[(
         BUILD_INFO,
@@ -82,9 +73,9 @@ const GAUGES: &[&[(&str, &str)]] = &[
 ];
 
 const HISTOGRAMS: &[&[(&str, &str)]] = &[
-    zaino_state::metric_names::store::HISTOGRAMS,
-    zaino_state::mempool_metric_names::HISTOGRAMS,
-    zaino_serve::metric_names::HISTOGRAMS,
+    zaino_chain_store_service::metric_names::HISTOGRAMS,
+    zaino_mempool_service::metric_names::HISTOGRAMS,
+    crate::serve::metric_names::HISTOGRAMS,
     zaino_rpc::metric_names::HISTOGRAMS,
     zaino_chain_head_service::metric_names::HISTOGRAMS,
 ];
@@ -176,7 +167,7 @@ fn initialise_counters() {
     }
 }
 
-/// Labels unknown until emission; a partial seed is a different series, not a placeholder
+/// Labels unknown until emission; a partial seed is a different series, not this one's zero
 ///
 /// - `rate()` over an absent series yields no data, so alerts need `or vector(0)`
 const UNSEEDABLE_COUNTERS: &[&str] = &[
@@ -215,8 +206,8 @@ mod tests {
     fn height_gauges_are_absent_until_measured() {
         let scrape = scrape(|| {});
         assert!(
-            !scrape.contains("zaino_sync_finalized_height "),
-            "a finalized height was published before any block was indexed, which \
+            !scrape.contains("zaino_store_watermark_height "),
+            "a store watermark was published before any block was indexed, which \
              reads as a tip at genesis. Scrape was:\n{scrape}"
         );
     }

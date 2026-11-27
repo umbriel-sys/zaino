@@ -1,7 +1,7 @@
 [package]
 name = "zaino-primitives"
 description = "Zero-dependency Zcash chain-level domain types (heights, hashes, blocks, transactions) for the Zaino indexer."
-version = "0.3.0"
+version = "0.4.0"
 edition.workspace = true
 authors.workspace = true
 repository.workspace = true
@@ -12,10 +12,35 @@ keywords.workspace = true
 categories.workspace = true
 
 [dependencies]
+# The UTXO-set commitment's hash (feature `txout-commitment`).
+blake2 = { workspace = true, optional = true }
+orchard = { workspace = true, optional = true }
+serde = { workspace = true, features = ["derive"], optional = true }
+sha2.workspace = true
 thiserror = { workspace = true }
 zcash_address.workspace = true
 zcash_protocol.workspace = true
+zebra-chain = { workspace = true, optional = true }
 
 [lints.rust]
 unsafe_code = "forbid"
 missing_docs = "warn"
+
+[features]
+# `zebra_chain` → domain conversions (the `zebra` module). Off by default; the
+# crates that hold zebra types turn it on.
+zebra = ["dep:zebra-chain", "dep:orchard"]
+# `Serialize`/`Deserialize` on the configuration vocabulary (`Network`,
+# `ActivationHeights`).
+serde = ["dep:serde"]
+# Zaino's UTXO-set commitment (the `txout_commitment` module), shared by every
+# store and the chain head.
+txout-commitment = ["dep:blake2"]
+
+[dev-dependencies]
+incrementalmerkletree.workspace = true
+orchard.workspace = true
+proptest.workspace = true
+sapling-crypto.workspace = true
+zaino-consensus.workspace = true
+zebra-chain.workspace = true

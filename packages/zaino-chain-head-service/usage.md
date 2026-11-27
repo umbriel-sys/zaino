@@ -37,6 +37,12 @@ disagree.
 
 `spawn` anchors a complete window before it returns, or fails.
 
+The window is read `fetch_concurrency` heights at a time (the chain head's
+`CpuBudget` share, settable on `ChainHeadConfig`), each height's block and
+tree roots together, and linked in order as they arrive. A reorg seen while
+linking drops the reads in flight and restarts from the new tip; a 1,001-block
+window costs about a second of round trips, not a thousand of them.
+
 A chain head has no persistent state and no second data source, so one that
 cannot reach its validator has nothing whatsoever to offer. Failing here rather
 than existing in a degraded state is what makes `current()` total for the rest of
@@ -49,7 +55,10 @@ then to `CriticalError` once `max_consecutive_failures` is spent. Stale data wit
 a status saying it is stale is more useful than no data.
 
 Callers wanting readiness poll `status()`, on either handle. There is
-deliberately no `wait_until_ready`.
+deliberately no `wait_until_ready`. `Ready` is the block window at the
+validator's tip: the first tick publishes the blocks, then folds the extensions
+and publishes again, so readiness never waits on an extension (its reads
+answer `NotBuilt` until then).
 
 ## Cancellation, and who owns the writer task
 
@@ -86,15 +95,14 @@ inside the reorg walk to "make the intermediate state visible".
 
 There is one writer, which is why publication is a plain store rather than a
 compare-and-swap. Adding a second writer breaks more than the store: the epoch
-bump and the freeze emission both assume exclusive access to what changed.
+bump assumes exclusive access to what changed.
 
 ## Testing: two styles, and which to use
 
 **Stepped** — `spawn_without_writer` + `advance_once`, both compiled out of
 production builds. No writer task runs, so the test is the only thing advancing
-the graph and observes exactly what it caused. Use this for reorg shapes,
-trimming, and freeze emission, where precise sequencing matters and timing does
-not.
+the graph and observes exactly what it caused. Use this for reorg shapes and
+trimming, where precise sequencing matters and timing does not.
 
 **Running** — `spawn` the real service against a mock source and observe through
 the subscriber with a bounded `wait_for(predicate)`. Use this when the writer
@@ -103,10 +111,14 @@ task, the wake handling or the backoff ladder is the thing under test.
 Reach for stepped first. A running test that polls for a condition is slower and
 can pass for the wrong reason.
 
+Both styles run against `zaino-source-mock`'s `MockChain`, the fake validator
+every crate shares; the test module drives it by block id (`MockValidator`).
+
 `spawn_without_writer` is not a `sync` method under another name — it does not
 exist in a production build, and it advances nothing on its own. Do not
 "promote" either of these to production visibility for a caller's convenience;
-see ADR-0011 for why the chain head cannot be driven from outside.
+see [`zaino-chain-head`'s guide](../zaino-chain-head/usage.md) for why the
+chain head cannot be driven from outside.
 
 The `testing` feature is for downstream test crates only, and belongs in
 `[dev-dependencies]`. In-crate tests get the same paths from `cfg(test)` without
@@ -122,14 +134,20 @@ This is not merely an optimisation to preserve. Without it every poll interval
 rebuilds and republishes the whole window, which in tests turned seconds into
 minutes.
 
-## The source picks the tip; retained work only checks it
+## The heaviest retained chain is the best chain
 
-The chain head does not validate blocks and sees only what it retained, so the
-source's tip is the best chain. After every advance the tip's work is compared
-against the heaviest retained block. A heavier retained block means the source
-moved away from it — a rollback, an invalidation, or a misbehaving source — and
-is logged at `warn`, not followed. Selection by retained work is available
-inside the crate as a policy; under it, a rollback is overridden.
+After every advance the validator's tip is compared against the heaviest
+retained block. A strictly heavier retained branch becomes the best chain, even
+a shorter one; on equal work the validator's tip stays. A validator tip lighter
+than a retained branch (a rollback, an invalidation, a misbehaving source) is a
+disagreement: the status is `Ready | Recoverable` with a reason naming both
+tips until they agree again, and
+`zaino.chain_head.tip_disagreements_total` counts it.
+
+Once, after its first advance, the head asks `GetChainTips` and lays down each
+fully validated side-chain tip that forks inside the window as a retained
+branch. A validator that refuses the question (`Unsupported`, zebrad) is not
+asked again.
 
 The comparison against the tip is strictly greater-than. Taking the heaviest
 block by `max_by_key` alone would settle an equal-work tie by hash-map iteration
@@ -137,15 +155,70 @@ order, which differs between runs.
 
 If you touch that comparison, keep it strict.
 
-## `MapBackedSnapshot` is an implementation detail
+## `PersistentSnapshot` is an implementation detail
 
 It is this crate's `ChainHeadSnapshot` implementation and the only place the
-graph's representation is decided. Consumers name the trait.
+graph's representation is decided. Consumers name the trait; do not let one
+come to depend on the concrete type.
 
-Replacing it — persistent structures sharing unchanged subtrees between publishes
-rather than maps cloned on each one — is a change to this crate alone, and that
-is the arrangement to protect. Do not let a consumer come to depend on the
-concrete type.
+The representation (D-49): the canonical chain is a trunk (an `imbl::Vector`
+of `Arc` blocks, heights contiguous from the retained floor), the retained side
+chains a table of at most nine branches (each its blocks above a fork point,
+strongest first; a tenth tip evicts the lowest by tip work, then tip height,
+then hash), and every retained block sits once in an `imbl::HashMap`
+directory. Cloning is O(1) and snapshots share what did not change; a reorg
+splits the trunk and pushes, a trim drops exactly the blocks below the floor.
+
+## Extensions: the indexes folded over the window
+
+An extension (D-50) runs one `zaino-indexes` fold over the window, so the head
+answers from an index above the store's watermark as the store does below it.
+Each is a cargo feature of the same name and is enabled through the builder;
+a head with none pulls in neither `zaino-indexes` nor the persistence port:
+
+```rust
+let head = ChainHeadService::builder(source, config, cancel)
+    .extensions(schedule, Some(store_indexes.clone())) // the validator's upgrades; the store's tip
+    .with_transactions()                      // I-03, I-09: positions and spenders
+    .with_txout_set(store_indexes.clone())    // I-11: the set at the tip (enables transactions)
+    .with_address_history(store_indexes.clone()) // I-10: address effects (enables transactions)
+    .with_compact_blocks(store_indexes.clone()) // I-05: compact blocks with fees (enables transactions)
+    .with_tree_state(store_indexes.clone())   // C2: trees after each block
+    .with_history_tree(store_indexes)         // C6: the history tree after each block
+    .spawn()
+    .await?;
+```
+
+Every retained block above the root (the store's tip, asked through
+`StoreTip`: a trunk block or the floor's parent, as when the store has been
+built to the floor and the floor then moved; the window's floor with no store)
+carries the index after it: its fold state and an overlay of
+the rows the window wrote. A view costs one fold per block, a branch's views
+are already there when a reorg returns to it, and an answer is a typed read
+over the tip's view, so it covers the window alone and the store answers
+below. Compact blocks are read from the named block's own view, so a branch
+block reads as it did on the trunk. `address_history` and `compact_blocks`
+resolve every spend's prevout, inside the window from the head and below the
+root through `PrevoutSource`, so I-05's fees are the store's. What a fold needs from below the root is asked through the ports in
+`zaino_chain_head::extension`, implemented by `zaino-chain` over the store;
+the head names neither the store nor the validator for it.
+
+Every tick that brings a block seeds the extensions that are not built, folds
+the new blocks and, once the store's tip has advanced 32 blocks past the root,
+rebases the views onto it by replaying each block's own ops. A tick with no
+new block does the same only when the store's tip moved since, so a store
+catching up builds the extensions within one poll and an unchanged store asks
+nothing. A fold or port failure darkens that extension alone
+(`PersistentSnapshot::extension_failures` names it and why,
+`zaino.chain_head.extension_failures_total` counts it).
+`ChainHeadSnapshot::capabilities` reports what is built.
+
+A store that has not built to the window's floor (an initial build, hours on
+Mainnet) holds no state at any root the window could sit on. The extensions
+seeded from it then wait: no port is asked, each slot's reason is
+`waiting for the store to reach height N`, nothing is counted as a failure,
+and the wait is logged once when it starts and once when the store arrives.
+Their capabilities are not built meanwhile, so a consumer falls back.
 
 ## Metrics
 
@@ -156,3 +229,5 @@ concrete type.
 - `zaino.sync.consecutive_failures` and `zaino.sync.backoff_seconds`: the retry
   ladder, both 0 when healthy.
 - `zaino.sync.reorg_total` and `zaino.sync.reorg_depth`: reorganisations.
+- `zaino.chain_head.tip_disagreements_total`: advances that followed a
+  retained branch heavier than the validator's tip.

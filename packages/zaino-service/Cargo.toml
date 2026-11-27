@@ -1,0 +1,49 @@
+[package]
+name = "zaino-service"
+description = "One configurable indexer service over ChainView, the chain head, the store and the mempool."
+authors = { workspace = true }
+repository = { workspace = true }
+homepage = { workspace = true }
+edition = { workspace = true }
+license = { workspace = true }
+readme = { workspace = true }
+keywords = { workspace = true }
+categories = { workspace = true }
+version = "0.2.0"
+
+[dependencies]
+bytes.workspace = true
+futures.workspace = true
+hex.workspace = true
+thiserror.workspace = true
+tokio = { workspace = true, features = ["rt", "sync", "time"] }
+tokio-util.workspace = true
+tracing.workspace = true
+zaino-chain = { workspace = true, features = ["frames"] }
+zaino-chain-head.workspace = true
+zaino-chain-head-service = { workspace = true, features = ["address_history", "compact_blocks", "history_tree", "transactions", "tree_state", "txout_set"] }
+zaino-chain-store.workspace = true
+zaino-chain-store-service.workspace = true
+zaino-component.workspace = true
+zaino-consensus.workspace = true
+zaino-encoding.workspace = true
+zaino-indexes = { workspace = true }
+zaino-mempool = { workspace = true, features = ["tip_aware_mempool"] }
+zaino-mempool-service = { workspace = true, features = ["tip_aware_mempool"] }
+zaino-persistence-lsm-tree = { workspace = true }
+zaino-primitives.workspace = true
+zaino-source.workspace = true
+
+[lints.rust]
+unsafe_code = "forbid"
+missing_docs = "warn"
+
+[dev-dependencies]
+proptest.workspace = true
+tokio = { workspace = true, features = ["macros", "rt", "time"] }
+zaino-consensus.workspace = true
+zaino-persistence-lsm-tree = { path = "../zaino-persistence-lsm-tree", features = ["testing"] }
+zaino-source-mock.workspace = true
+zaino-source-zcash-rpc.workspace = true
+zaino-source-zebra.workspace = true
+zcash_history = "0.6"

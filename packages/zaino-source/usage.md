@@ -28,6 +28,19 @@ reads names the block it describes: `get_commitment_tree_roots_by_height`
 returns the answering block's hash alongside the roots, and the consumer
 compares it against the block it holds before combining the two.
 
+A port returns what the validator returns and composes nothing: the getblock
+ports (`get_block_verbose`, `get_block_verbose_by_hash`) take the
+`BlockVerbosity` and answer the validator's whole `getblock`.
+
+`get_compact_block(height, pools)` answers the complete compact block: the
+block's compact data and its cumulative tree sizes, as one answer about one
+block, so a consumer filling a range makes one read per block. The source
+applies `pools`, as the store and the chain head apply it in their own reads:
+a pool it leaves out is cleared from every transaction, every transaction is
+kept, and the tree sizes are never filtered. An adapter that needs two
+validator calls to answer (the JSON-RPC adapter: `getblock` verbosity 0 and 1)
+issues them together and refuses replies that name different blocks.
+
 ## The error model, which is the point
 
 ```rust
@@ -71,7 +84,7 @@ never reaches consumers. The seam `NonDomainError` carries a machine-readable ki
 
 ```rust
 pub enum FailureMode {
-    Connection, Timeout, HttpStatus(u16), RpcError(i64), Parse, Auth,
+    Connection, Timeout, HttpStatus(u16), RpcError(i64), Parse, InvalidSourceData, Auth,
 }
 ```
 
@@ -84,13 +97,29 @@ A port's error enum enumerates what that question can be answered with:
 
 ```rust
 GetBlockError::HeightNotFound(Height)
-SendRawTransactionError::Rejected(String)
+SendRawTransactionError::{ Malformed, Rejected, RejectedByPolicy, AlreadyInChain } // −22, −25, −26, −27
 GetSpentInfoError::{ NotSpent, Unsupported }
+GetStandardFeeError::Unsupported             // validator lacks getstandardfee
+GetAddressTxidsError::TooManyResults { limit } // over MAX_ADDRESS_QUERY_RESULTS
 ```
+
+`MAX_ADDRESS_QUERY_RESULTS` (100,000) is zebrad 7's address-query row cap; an
+adapter reading the index directly enforces it, and the RPC adapter maps
+zebrad's own refusal to the same `TooManyResults`. `get_address_utxos` takes
+a `UtxoPage` (zebrad's `startHeight` and `maxEntries`): outputs created at or
+above the start, at most `maxEntries` of them, else refused past the cap.
+`UtxoPage::new` refuses a `maxEntries` above the cap, and every implementor
+applies `UtxoPage::select`, so the page is the same from any source.
 
 Write the variant that says what happened. A generic `NotFound` on every port
 throws away the thing the caller needs to act on — and, at the serving
 boundary, the thing that decides which the legacy full node error code the client sees.
+
+A parameter is typed the same way. `GetNetworkSolPs` takes a
+`SolutionRateWindow` (`Default`, `DifficultyAveraging`, `Blocks(n)`) rather
+than an optional count, because `getnetworksolps` reads an absent count and a
+non-positive one differently; `from_rpc` / `to_rpc` hold that rule.
+`GetChainTips` answers `Unsupported` where the validator has no such method.
 
 ## Two port layers: `OneShot*` and the canonical resilient ports
 
@@ -128,9 +157,15 @@ let source = ValidatorClient::new(adapter, RetryPolicy::default());
 let block = source.get_block(height).await?; // -> SourceError<GetBlockError>
 ```
 
-Retryable: `Connection`, `Timeout`, `HttpStatus(>= 500)`, and exactly two RPC
-codes — `-1` (work queue full) and `-28` (in warmup). Both mean the node is up
-and busy or starting. Every other code is the validator's considered reply.
+Retryable: `Connection`, `Timeout`, `Busy`, `HttpStatus(>= 500)`, and exactly
+one RPC code, `-28` (in warmup): the node is up and starting. Every other code
+is the validator's considered reply. That includes `-1`, which zebrad and
+zakura answer for any failure of a request, invalid parameters among them; it
+is not a busy signal.
+
+`FailureMode::Busy` is the validator declining for now: HTTP 429 (zebrad and
+zakura past 100 requests in flight) or HTTP 503. The transport has already
+asked again before reporting it.
 
 Subscriptions (`SubscribeBlocks`, `SubscribeChainTip`) are forwarded unchanged:
 they are synchronous and return `Option<Receiver>`, not `Result`, so there is
@@ -142,7 +177,7 @@ to retry.
 ## Capability is structural
 
 An adapter implements only the ports it can answer.
-`zaino-source-zebra-readstate` does not implement the mempool traits, because a
+`zaino-source-zebra`'s read-state adapter does not implement the mempool traits, because a
 read-state service has no mempool — so routing a mempool query to it is a
 compile error rather than a runtime panic. Do not add a port impl that
 `unimplemented!()`s; leave it out and let the type system carry the fact.
@@ -160,6 +195,11 @@ that already exist. They cannot, and each split is load-bearing:
 - **`GetRawMempoolTransaction` is separate from `GetTransaction`** because
   `GetTransaction` may be routed to a state database that has no mempool. Bytes
   assembled from one source against a listing from another are not a mempool.
+  `get_transaction(txid, verbosity)` is `getrawtransaction` itself:
+  `TransactionVerbosity::Raw` answers `TransactionAnswer::Raw` (the bytes),
+  `Object` the validator's `TransactionVerbose`, whose `location()` is its
+  placement: a best-chain height, a side-chain block (no height, no
+  confirmations) or the mempool (no block).
 - **`GetMempoolSourceTip` is separate from `GetChainTip`** for the same reason,
   and this is the subtle one. `GetChainTip` is free to answer from whichever
   transport is fastest, and `ZebraValidator` prefers the state database. But a
@@ -175,7 +215,7 @@ answer exists elsewhere. `ZebraValidator` does: they sit in the JSON-RPC-only
 section of `routing.rs`, and `GetMempoolSourceTip` deliberately does not use the
 `fast_or_slow!` macro its `GetChainTip` neighbour does.
 
-The listing caps live in the adapter (`zaino-source-zebra-rpc`'s
+The listing caps live in the adapter (`zaino-source-zcash-rpc`'s
 `MAX_MEMPOOL_LISTING_ENTRIES`), checked on the declared entry count before any
 entry is decoded. That bounds the parse's peak allocation *and* stops an
 oversized listing from driving a million raw-transaction fetches upstream.
@@ -217,24 +257,28 @@ impl<T> ChainIndexSourcePorts for T where T: GetBlock + GetChainTip + /* ... */ 
 An alias states a requirement of its consumer, not a capability of this crate.
 `zaino-source` should not have to know who its consumers are.
 
-## Testing: `MockChain`
+## Start-up and liveness
 
-Behind the `testing` feature (and always on for this crate's own tests):
+`first_chain_tip(&source, |refusal| ..)` is the one wait for a fresh
+validator's first block. A validator that answers but refuses the question is
+waited on for five minutes at most; one that cannot be reached or
+authenticated to fails at once.
 
-```rust
-use zaino_source::mock::MockChain;
+`SourceLifecycle::failure()` says why a source can no longer be relied on once
+its own background work has stopped (zebra's state syncer), `None` while it
+runs. A source that owns no background work inherits `None`. The service
+reports it as the `validator source` component, as a failure a restart may
+clear: the work belongs to a connection, and connecting again starts it anew.
+## Testing
 
-let mock = MockChain::new()
-    .with_block(block)
-    .fail_next(2, FailureMode::Timeout);   // failure injection
-```
-
-If you add a mock module elsewhere, gate it `#[cfg(any(test, feature = "..."))]`
-— a bare `#[cfg(feature = ...)]` that nothing in the workspace enables means the
-module never compiles and its tests silently never run.
+A fake validator for consumers' tests is `zaino-source-mock`'s `MockChain`
+(D-87); this crate ships none. Its own tests run on a scripted `#[cfg(test)]`
+source: every generated resilient port is tested through `ValidatorClient`
+(retried, delegated with its arguments, its failure translated), and
+`PolledChainTip` on paused time. Never feature-gate a test of code that
+always exists: a feature nothing enables means it silently never runs.
 
 ## Related
 
-- ADR-0008 — the split, and why the bound-swap approach was abandoned.
 - `zaino-primitives` — the vocabulary these ports speak.
 - `zaino-source-zebra` — the composite that routes questions to transports.

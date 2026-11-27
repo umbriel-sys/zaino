@@ -1,10 +1,56 @@
 #![doc = include_str!("../usage.md")]
+// production code never panics: no indexing, unchecked arithmetic or panicking calls
+#![cfg_attr(
+    not(test),
+    deny(
+        clippy::panic,
+        clippy::unwrap_used,
+        clippy::expect_used,
+        clippy::unreachable,
+        clippy::todo,
+        clippy::unimplemented,
+        clippy::indexing_slicing,
+        clippy::arithmetic_side_effects,
+        clippy::string_slice,
+        clippy::get_unwrap,
+        clippy::let_underscore_must_use,
+        let_underscore_drop
+    )
+)]
 
 mod backend;
+mod chunk;
 mod error;
+mod overlay;
+mod rules;
+mod storage;
+mod verify;
 
-pub use backend::{Backend, BackendReader, BackendWriter, Namespace, RawKey, RawValue, WriteOp};
-pub use error::{CommitError, FlushError, OpenError, ReadError};
+pub use backend::{
+    raw_entry, sequence_key, sequence_position, Backend, BackendReader, BackendWriter,
+    MaintenanceReader, Namespace, NamespaceKind, NamespaceSpec, RawKey, RawValue, ReadOnlyBackend,
+    ScanDirection, ScanRange, SchemaDigest, Width, WriteOp, SEQUENCE_KEY_LEN,
+};
+pub use error::{
+    CommitError, FlushError, FootprintError, OpenError, Part, ReadError, RefreshError, VerifyError,
+};
+pub use overlay::{Overlay, RebaseError};
+pub use rules::{
+    check_commit, check_key, check_keys, check_shape, check_specs, is_empty_range, ranged,
+    CommitState, KeyState,
+};
+pub use storage::{Identity, Storage};
+pub use verify::{NamespaceFootprint, Problem, Unit, Verification};
 
+// test support (feature `testing`, never in production builds): asserting is its job
+#[cfg(feature = "testing")]
+#[allow(
+    clippy::panic,
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::indexing_slicing,
+    clippy::arithmetic_side_effects
+)]
+pub mod conformance;
 #[cfg(feature = "testing")]
 pub mod in_memory;

@@ -11,16 +11,6 @@
 //! type answering all of the questions, so an adapter earns the bound by
 //! implementing the ports it can serve — production composites and test mocks
 //! alike.
-//!
-//! # Relationship to `BlockchainSource`
-//!
-//! [`BlockchainSource`](super::source::BlockchainSource) is the *driven port*:
-//! the shape ChainIndex consumes, still expressed in wire types, and temporary
-//! scaffolding.
-//! [`ValidatorSource`](super::validator_source::ValidatorSource) is the
-//! single adapter between the two — it implements the driven port for any
-//! `ChainIndexSourcePorts`. As subsystems move onto the ports directly, methods
-//! leave `BlockchainSource` and this bound shrinks with it.
 
 /// Every question ChainIndex asks a validator.
 ///
@@ -35,6 +25,7 @@ pub trait ChainIndexSourcePorts:
     + zaino_source::OneShotGetBlockDeltas
     + zaino_source::OneShotGetBlockHeader
     + zaino_source::OneShotGetBlockSubsidy
+    + zaino_source::OneShotGetStandardFee
     + zaino_source::OneShotGetBlockVerboseByHash
     + zaino_source::OneShotGetBlockchainInfo
     + zaino_source::OneShotGetChainTip
@@ -54,7 +45,6 @@ pub trait ChainIndexSourcePorts:
     + zaino_source::OneShotGetRawMempoolTransaction
     + zaino_source::OneShotGetSpentInfo
     + zaino_source::OneShotGetSubtreeRoots
-    + zaino_source::OneShotGetTransaction
     + zaino_source::OneShotGetTreestate
     + zaino_source::OneShotGetTreestateByHash
     + zaino_source::OneShotGetTxOut
@@ -76,6 +66,7 @@ impl<T> ChainIndexSourcePorts for T where
         + zaino_source::OneShotGetBlockDeltas
         + zaino_source::OneShotGetBlockHeader
         + zaino_source::OneShotGetBlockSubsidy
+        + zaino_source::OneShotGetStandardFee
         + zaino_source::OneShotGetBlockVerboseByHash
         + zaino_source::OneShotGetBlockchainInfo
         + zaino_source::OneShotGetChainTip
@@ -95,7 +86,6 @@ impl<T> ChainIndexSourcePorts for T where
         + zaino_source::OneShotGetRawMempoolTransaction
         + zaino_source::OneShotGetSpentInfo
         + zaino_source::OneShotGetSubtreeRoots
-        + zaino_source::OneShotGetTransaction
         + zaino_source::OneShotGetTreestate
         + zaino_source::OneShotGetTreestateByHash
         + zaino_source::OneShotGetTxOut

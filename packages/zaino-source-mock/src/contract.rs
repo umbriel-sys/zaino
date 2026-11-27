@@ -1,0 +1,783 @@
+//! The source contract (D-88): what every source answers, checked through
+//! the ports alone.
+//!
+//! Each check discovers the chain through the source it checks, so the same
+//! checks run against [`MockChain`](crate::MockChain) in fast tests and
+//! against zebrad (read-state and RPC) and zcashd in the live suite. A
+//! check returns the first rule it found broken.
+
+use std::collections::BTreeSet;
+
+use zaino_consensus::branch_id;
+use zaino_primitives::types::{
+    rpc::{ChainTipStatus, SpentOutpoint, TransactionVerbose, TransactionVerbosity},
+    Block, BlockConfirmations, BlockHash, BlockTransactions, BlockVerbosity, Height,
+    NetworkUpgradeStatus, PoolFilter, PreIndexCompactBlock, ShieldedPool, TransactionId,
+    TransactionLocation,
+};
+use zaino_source::TransactionAnswer;
+use zaino_source::{
+    GetAddressBalanceError, GetAddressDeltasError, GetAddressTxidsError, GetAddressUtxosError,
+    GetBlockByHashError, GetBlockError, GetChainTipsError, GetCommitmentTreeRootsByHeightError,
+    GetCommitmentTreeRootsError, GetSpentInfoError, GetSubtreeRootsError, GetTransactionError,
+    GetTreestateByHashError, GetTreestateError, QueryError,
+};
+
+/// A broken rule, named.
+pub type Broken = String;
+
+/// A hash no chain holds.
+const UNKNOWN: [u8; 32] = [0xee; 32];
+
+fn ensure(holds: bool, rule: impl FnOnce() -> String) -> Result<(), Broken> {
+    match holds {
+        true => Ok(()),
+        false => Err(rule()),
+    }
+}
+
+fn answered<T, E: std::fmt::Debug + std::fmt::Display, N: std::error::Error>(
+    what: &str,
+    result: Result<T, QueryError<E, N>>,
+) -> Result<T, Broken> {
+    result.map_err(|error| format!("{what}: {error}"))
+}
+
+/// The best tip's height.
+async fn tip<S: zaino_source::OneShotGetBestBlockHeight>(source: &S) -> Result<Height, Broken> {
+    answered("best block height", source.get_best_block_height().await)
+}
+
+/// A compact block is its block's own data with that block's tree sizes;
+/// the filter clears what it leaves out and keeps every transaction; past
+/// the tip is the domain refusal.
+pub async fn compact_blocks<S>(source: &S) -> Result<(), Broken>
+where
+    S: zaino_source::OneShotGetBestBlockHeight
+        + zaino_source::OneShotGetBlock
+        + zaino_source::OneShotGetBlockVerbose
+        + zaino_source::OneShotGetCompactBlock,
+{
+    let tip = tip(source).await?;
+    let nullifiers = PoolFilter::default().nullifiers_only();
+    for height in 0..=u32::from(tip) {
+        let height = Height::try_from(height).map_err(|e| e.to_string())?;
+        let block = answered("block", source.get_block(height).await)?;
+        let verbose = answered(
+            "verbose block",
+            source
+                .get_block_verbose(height, BlockVerbosity::TransactionIds)
+                .await,
+        )?;
+        let whole = PreIndexCompactBlock::from(&block);
+        for pools in [PoolFilter::all(), PoolFilter::default(), nullifiers] {
+            let compact = answered(
+                "compact block",
+                source.get_compact_block(height, pools).await,
+            )?;
+            let expected = whole.clone().into_compact(verbose.tree_sizes.into(), pools);
+            ensure(compact == expected, || {
+                format!("compact block {height} under {pools:?} is not its block and tree sizes")
+            })?;
+        }
+    }
+    let past = tip.checked_add(1).ok_or("tip at the maximum height")?;
+    ensure(
+        matches!(
+            source.get_compact_block(past, PoolFilter::all()).await,
+            Err(QueryError::Domain(GetBlockError::HeightNotFound(h))) if h == past
+        ),
+        || "a compact block past the tip is not HeightNotFound".to_owned(),
+    )?;
+    Ok(())
+}
+
+/// Blocks by height and by hash agree and link; past the tip and an unknown
+/// hash are the domain refusals; the tip ports agree.
+pub async fn blocks<S>(source: &S) -> Result<(), Broken>
+where
+    S: zaino_source::OneShotGetBestBlockHeight
+        + zaino_source::OneShotGetBlock
+        + zaino_source::OneShotGetBlockByHash
+        + zaino_source::OneShotGetChainTip
+        + zaino_source::OneShotGetChainTips,
+{
+    let tip = tip(source).await?;
+    let mut previous: Option<Block> = None;
+    for height in 0..=u32::from(tip) {
+        let height = Height::try_from(height).map_err(|e| e.to_string())?;
+        let block = answered("block by height", source.get_block(height).await)?;
+        ensure(block.header.height == height, || {
+            format!("block {height} reports height {}", block.header.height)
+        })?;
+        let by_hash = answered(
+            "block by hash",
+            source.get_block_by_hash(block.header.hash).await,
+        )?;
+        ensure(by_hash.header == block.header, || {
+            format!("block {height} by hash differs")
+        })?;
+        if let Some(previous) = &previous {
+            ensure(block.header.prev_hash == previous.header.hash, || {
+                format!("block {height} does not link")
+            })?;
+        }
+        previous = Some(block);
+    }
+    let past = tip.checked_add(1).ok_or("tip at the maximum height")?;
+    ensure(
+        matches!(source.get_block(past).await, Err(QueryError::Domain(GetBlockError::HeightNotFound(h))) if h == past),
+        || "a height past the tip is not HeightNotFound".to_owned(),
+    )?;
+    let unknown = BlockHash::from(UNKNOWN);
+    ensure(
+        matches!(
+            source.get_block_by_hash(unknown).await,
+            Err(QueryError::Domain(GetBlockByHashError::NotFound(_)))
+        ),
+        || "an unknown hash is not NotFound".to_owned(),
+    )?;
+    let (hash, height) = answered("chain tip", source.get_chain_tip().await)?;
+    let tip_hash = previous.map(|block| block.header.hash);
+    ensure(height == tip && Some(hash) == tip_hash, || {
+        "chain tip disagrees with the best block".to_owned()
+    })?;
+    let tips = match source.get_chain_tips().await {
+        // zebrad has no getchaintips
+        Err(QueryError::Domain(GetChainTipsError::Unsupported)) => return Ok(()),
+        answer => answered("chain tips", answer)?,
+    };
+    ensure(
+        tips.iter()
+            .filter(|t| t.status == ChainTipStatus::Active)
+            .map(|t| (t.hash, t.height))
+            .eq([(hash, height)]),
+        || "chain tips do not name the best tip as the one active tip".to_owned(),
+    )
+}
+
+/// Roots by hash and by height agree; a pool has a root exactly from its
+/// activation (D-68: absent before, never an empty tree); an unknown hash is
+/// `BlockNotFound`, a height past the tip `HeightNotFound`.
+pub async fn tree_roots<S>(source: &S) -> Result<(), Broken>
+where
+    S: zaino_source::OneShotGetBestBlockHeight
+        + zaino_source::OneShotGetBlock
+        + zaino_source::OneShotGetBlockchainInfo
+        + zaino_source::OneShotGetCommitmentTreeRoots
+        + zaino_source::OneShotGetCommitmentTreeRootsByHeight,
+{
+    let upgrades = answered("blockchain info", source.get_blockchain_info().await)?.upgrades;
+    let active = |branch: u32, height: Height| {
+        upgrades.iter().any(|upgrade| {
+            u32::from(upgrade.branch_id) == branch
+                && upgrade.status != NetworkUpgradeStatus::Disabled
+                && upgrade.activation_height <= height
+        })
+    };
+    let tip = tip(source).await?;
+    for height in 0..=u32::from(tip) {
+        let height = Height::try_from(height).map_err(|e| e.to_string())?;
+        let hash = answered("block", source.get_block(height).await)?
+            .header
+            .hash;
+        let (named, by_height) = answered(
+            "roots by height",
+            source.get_commitment_tree_roots_by_height(height).await,
+        )?;
+        ensure(named == hash, || {
+            format!("roots at {height} name another block")
+        })?;
+        let by_hash = answered(
+            "roots by hash",
+            source.get_commitment_tree_roots(hash).await,
+        )?;
+        ensure(by_hash == by_height, || {
+            format!("roots at {height} differ by hash and height")
+        })?;
+        for (pool, branch, root) in [
+            (ShieldedPool::Sapling, branch_id::SAPLING, &by_hash.sapling),
+            (ShieldedPool::Orchard, branch_id::NU5, &by_hash.orchard),
+            (ShieldedPool::Ironwood, branch_id::NU6_3, &by_hash.ironwood),
+        ] {
+            ensure(root.is_some() == active(branch, height), || {
+                format!(
+                    "{pool} at {height}: root {} while the pool is {}",
+                    if root.is_some() { "present" } else { "absent" },
+                    if active(branch, height) {
+                        "active"
+                    } else {
+                        "inactive"
+                    },
+                )
+            })?;
+        }
+    }
+    ensure(
+        matches!(
+            source
+                .get_commitment_tree_roots(BlockHash::from(UNKNOWN))
+                .await,
+            Err(QueryError::Domain(
+                GetCommitmentTreeRootsError::BlockNotFound(_)
+            ))
+        ),
+        || "roots of an unknown hash are not BlockNotFound".to_owned(),
+    )?;
+    let past = tip.checked_add(1).ok_or("tip at the maximum height")?;
+    ensure(
+        matches!(
+            source.get_commitment_tree_roots_by_height(past).await,
+            Err(QueryError::Domain(
+                GetCommitmentTreeRootsByHeightError::HeightNotFound(_)
+            ))
+        ),
+        || "roots past the tip are not HeightNotFound".to_owned(),
+    )
+}
+
+/// Treestates by height and hash agree and name their block, carry no root
+/// (roots come from the roots ports), and refuse an unknown hash and a
+/// height past the tip.
+pub async fn treestates<S>(source: &S) -> Result<(), Broken>
+where
+    S: zaino_source::OneShotGetBestBlockHeight
+        + zaino_source::OneShotGetBlock
+        + zaino_source::OneShotGetTreestate
+        + zaino_source::OneShotGetTreestateByHash,
+{
+    let tip = tip(source).await?;
+    for height in 0..=u32::from(tip) {
+        let height = Height::try_from(height).map_err(|e| e.to_string())?;
+        let hash = answered("block", source.get_block(height).await)?
+            .header
+            .hash;
+        let by_height = answered("treestate", source.get_treestate(height).await)?;
+        ensure(
+            by_height.block_hash == hash && by_height.height == height,
+            || format!("treestate at {height} names another block"),
+        )?;
+        let by_hash = answered(
+            "treestate by hash",
+            source.get_treestate_by_hash(hash).await,
+        )?;
+        ensure(by_hash == by_height, || {
+            format!("treestate at {height} differs by hash and height")
+        })?;
+        let rooted = [&by_height.sapling, &by_height.orchard, &by_height.ironwood]
+            .into_iter()
+            .flatten()
+            .any(|pool| pool.final_root.is_some());
+        ensure(!rooted, || format!("treestate at {height} carries a root"))?;
+    }
+    ensure(
+        matches!(
+            source.get_treestate_by_hash(BlockHash::from(UNKNOWN)).await,
+            Err(QueryError::Domain(GetTreestateByHashError::BlockNotFound(
+                _
+            )))
+        ),
+        || "the treestate of an unknown hash is not BlockNotFound".to_owned(),
+    )?;
+    let past = tip.checked_add(1).ok_or("tip at the maximum height")?;
+    ensure(
+        matches!(
+            source.get_treestate(past).await,
+            Err(QueryError::Domain(GetTreestateError::HeightNotFound(_)))
+        ),
+        || "a treestate past the tip is not HeightNotFound".to_owned(),
+    )
+}
+
+/// `txid` at both verbosities: its bytes, and its object carrying them.
+async fn both_forms<S: zaino_source::OneShotGetTransaction>(
+    source: &S,
+    txid: TransactionId,
+) -> Result<TransactionVerbose, Broken> {
+    let raw = answered(
+        "raw transaction",
+        source
+            .get_transaction(txid, TransactionVerbosity::Raw)
+            .await,
+    )?;
+    let object = answered(
+        "transaction object",
+        source
+            .get_transaction(txid, TransactionVerbosity::Object)
+            .await,
+    )?;
+    let (TransactionAnswer::Raw(bytes), TransactionAnswer::Object(object)) = (raw, object) else {
+        return Err(format!("{txid} is not answered in the form asked"));
+    };
+    ensure(object.hex == bytes && object.txid == txid, || {
+        format!("{txid}'s object is not the transaction asked")
+    })?;
+    Ok(*object)
+}
+
+/// Every mined transaction is answered at both verbosities, its object
+/// placed in its best-chain block; an unknown txid is `NotFound`.
+pub async fn transactions<S>(source: &S) -> Result<(), Broken>
+where
+    S: zaino_source::OneShotGetBestBlockHeight
+        + zaino_source::OneShotGetBlock
+        + zaino_source::OneShotGetTransaction,
+{
+    let tip = tip(source).await?;
+    for height in 0..=u32::from(tip) {
+        let height = Height::try_from(height).map_err(|e| e.to_string())?;
+        let block = answered("block", source.get_block(height).await)?;
+        for tx in block.transactions() {
+            let object = both_forms(source, tx.txid).await?;
+            let placed = object.location() == TransactionLocation::BestChain(height)
+                && object.block_hash == Some(block.header.hash)
+                && object.in_active_chain != Some(false)
+                && object.confirmations
+                    == Some(BlockConfirmations::of_best_chain_block(height, tip))
+                && object.block_time == Some(i64::from(block.header.time));
+            ensure(placed, || {
+                format!("{} is not placed in block {height}", tx.txid)
+            })?;
+        }
+    }
+    for verbosity in [TransactionVerbosity::Raw, TransactionVerbosity::Object] {
+        ensure(
+            matches!(
+                source
+                    .get_transaction(TransactionId::from(UNKNOWN), verbosity)
+                    .await,
+                Err(QueryError::Domain(GetTransactionError::NotFound(_)))
+            ),
+            || "an unknown txid is not NotFound".to_owned(),
+        )?;
+    }
+    Ok(())
+}
+
+/// The side-chain block `hash`: its verbose form reads, and its
+/// transactions are placed by it alone, with no height or confirmations,
+/// unless the best chain mined them again.
+pub async fn side_chain<S>(source: &S, hash: BlockHash) -> Result<(), Broken>
+where
+    S: zaino_source::OneShotGetBlockVerboseByHash + zaino_source::OneShotGetTransaction,
+{
+    let block = answered(
+        "side block",
+        source
+            .get_block_verbose_by_hash(hash, BlockVerbosity::Transactions)
+            .await,
+    )?;
+    let BlockTransactions::Objects(listed) = &block.transactions else {
+        return Err("verbosity 2 answered ids".to_owned());
+    };
+    let on_side = |object: &TransactionVerbose| {
+        object.location() == TransactionLocation::NonBestChain
+            && object.block_hash == Some(hash)
+            && object.in_active_chain == Some(false)
+            && object.confirmations.is_none()
+            && object.block_time.is_none()
+    };
+    ensure(
+        block.confirmations == BlockConfirmations::NotInBestChain,
+        || format!("{hash} is on the best chain"),
+    )?;
+    let mut side_only = 0usize;
+    for in_block in listed {
+        ensure(
+            in_block.height.is_none()
+                && in_block.confirmations.is_none()
+                && in_block.block_hash == Some(hash)
+                && in_block.in_active_chain == Some(false),
+            || format!("{} is not placed by its side block", in_block.txid),
+        )?;
+        let object = both_forms(source, in_block.txid).await?;
+        match object.location() {
+            // mined again, perhaps with other authorizing data
+            TransactionLocation::BestChain(_) => {}
+            _ => {
+                ensure(on_side(&object) && object.hex == in_block.hex, || {
+                    format!("{} is not placed on its side block", in_block.txid)
+                })?;
+                side_only = side_only.saturating_add(1);
+            }
+        }
+    }
+    ensure(side_only > 0, || {
+        format!("{hash} holds no side-chain transaction")
+    })
+}
+
+/// Subtree roots end in ascending order at or below the tip, and `limit`
+/// and `start_index` bound the answer. Sapling and Orchard are always
+/// answered; Ironwood may be `PoolUnavailable` (zcashd lacks it).
+pub async fn subtrees<S>(source: &S) -> Result<(), Broken>
+where
+    S: zaino_source::OneShotGetBestBlockHeight + zaino_source::OneShotGetSubtreeRoots,
+{
+    let tip = tip(source).await?;
+    for pool in ShieldedPool::ALL {
+        let all = match source.get_subtree_roots(pool, 0, None).await {
+            Err(QueryError::Domain(GetSubtreeRootsError::PoolUnavailable(refused)))
+                if pool == ShieldedPool::Ironwood && refused == pool =>
+            {
+                continue;
+            }
+            answer => answered("subtree roots", answer)?,
+        };
+        ensure(
+            all.windows(2)
+                .all(|pair| matches!(pair, [a, b] if a.end_height <= b.end_height))
+                && all.iter().all(|root| root.end_height <= tip),
+            || format!("{pool} subtrees out of order or past the tip"),
+        )?;
+        let one = answered(
+            "subtree roots",
+            source.get_subtree_roots(pool, 0, Some(1)).await,
+        )?;
+        ensure(one.len() == all.len().min(1), || {
+            format!("{pool} subtree limit ignored")
+        })?;
+        let count = u16::try_from(all.len()).map_err(|e| e.to_string())?;
+        let beyond = answered(
+            "subtree roots",
+            source.get_subtree_roots(pool, count, None).await,
+        )?;
+        ensure(beyond.is_empty(), || {
+            format!("{pool} subtrees past the last answered")
+        })?;
+    }
+    Ok(())
+}
+
+/// The address index over `address` (one that has received and spent):
+/// deltas carry its credits and its debits, ordered; they sum to its balance
+/// and positive ones to its receipts; its UTXOs sum to its balance; its txids
+/// are the deltas' transactions in order; each debit's outpoint is spent per
+/// `getspentinfo` and absent per `gettxout`, each UTXO present per
+/// `gettxout`; a malformed address, and `foreign` (valid, for another
+/// network), are `InvalidAddress` on every port.
+pub async fn address_index<S>(source: &S, address: &str, foreign: &str) -> Result<(), Broken>
+where
+    S: zaino_source::OneShotGetBestBlockHeight
+        + zaino_source::OneShotGetAddressBalance
+        + zaino_source::OneShotGetAddressDeltas
+        + zaino_source::OneShotGetAddressTxids
+        + zaino_source::OneShotGetAddressUtxos
+        + zaino_source::OneShotGetSpentInfo
+        + zaino_source::OneShotGetTxOut
+        + zaino_source::OneShotGetBlock,
+{
+    let tip = tip(source).await?;
+    let wanted = vec![address.to_owned()];
+    // genesis outputs are never spendable: in no UTXO set, no address index
+    let genesis = answered("genesis", source.get_block(Height::GENESIS).await)?;
+    for tx in genesis.transactions() {
+        for index in (0u32..).take(tx.transparent.outputs.len()) {
+            let out = answered("txout", source.get_tx_out(tx.txid, index, false).await)?;
+            ensure(out.is_none(), || {
+                format!("genesis output {}:{index} in gettxout", tx.txid)
+            })?;
+        }
+    }
+    let deltas = answered(
+        "deltas",
+        source
+            .get_address_deltas(wanted.clone(), Height::GENESIS, tip)
+            .await,
+    )?;
+    ensure(deltas.iter().all(|d| d.height != Height::GENESIS), || {
+        format!("{address}: a delta at genesis")
+    })?;
+    let debits: Vec<_> = deltas.iter().filter(|d| d.satoshis.as_i64() < 0).collect();
+    ensure(!debits.is_empty() && deltas.len() > debits.len(), || {
+        format!("{address}: deltas lack credits or debits")
+    })?;
+    ensure(
+        deltas.windows(2).all(|pair| matches!(pair, [a, b] if (a.height, a.block_index, a.index) <= (b.height, b.block_index, b.index))),
+        || "deltas out of order".to_owned(),
+    )?;
+    let balance = answered("balance", source.get_address_balance(wanted.clone()).await)?;
+    let net: i128 = deltas.iter().map(|d| i128::from(d.satoshis.as_i64())).sum();
+    ensure(net == i128::from(u64::from(balance.balance)), || {
+        format!("deltas net {net}, balance {}", u64::from(balance.balance))
+    })?;
+    let received: u64 = deltas
+        .iter()
+        .filter(|d| d.satoshis.as_i64() > 0)
+        .map(|d| d.satoshis.as_i64().unsigned_abs())
+        .sum();
+    ensure(
+        balance.received == zaino_primitives::types::ZatoshisFlowSum::from_summed(received),
+        || "received is not the credits' sum".to_owned(),
+    )?;
+    let utxos = answered(
+        "utxos",
+        source
+            .get_address_utxos(wanted.clone(), zaino_source::UtxoPage::default())
+            .await,
+    )?;
+    let unspent: u64 = utxos.iter().map(|u| u64::from(u.satoshis)).sum();
+    ensure(unspent == u64::from(balance.balance), || {
+        "UTXOs do not sum to the balance".to_owned()
+    })?;
+    // a page: from the last output's height, at most one entry
+    if let Some(last) = utxos.last() {
+        let page = zaino_source::UtxoPage::new(last.height, 1)
+            .map_err(|error| format!("a one-entry page: {error}"))?;
+        let paged = answered(
+            "a utxo page",
+            source.get_address_utxos(wanted.clone(), page).await,
+        )?;
+        let expected: Vec<_> = utxos
+            .iter()
+            .filter(|utxo| utxo.height >= last.height)
+            .take(1)
+            .cloned()
+            .collect();
+        ensure(paged == expected, || {
+            format!("the page from {:?}: {paged:?}", last.height)
+        })?;
+    }
+    let txids = answered(
+        "txids",
+        source
+            .get_address_txids(wanted.clone(), Height::GENESIS, tip)
+            .await,
+    )?;
+    let mut seen = BTreeSet::new();
+    let from_deltas: Vec<_> = deltas
+        .iter()
+        .map(|d| d.txid)
+        .filter(|txid| seen.insert(*txid))
+        .collect();
+    ensure(txids == from_deltas, || {
+        "txids are not the deltas' transactions in order".to_owned()
+    })?;
+    for utxo in &utxos {
+        let out = answered(
+            "txout",
+            source.get_tx_out(utxo.txid, utxo.output_index, false).await,
+        )?;
+        ensure(out.is_some_and(|out| out.value == utxo.satoshis), || {
+            format!(
+                "UTXO {}:{} absent from gettxout",
+                utxo.txid, utxo.output_index
+            )
+        })?;
+    }
+    // every credit is either spent, by a debit the deltas carry, or a UTXO
+    let mut matched = 0usize;
+    for credit in deltas.iter().filter(|d| d.satoshis.as_i64() > 0) {
+        let outpoint = SpentOutpoint {
+            txid: credit.txid,
+            index: credit.index,
+        };
+        match source.get_spent_info(outpoint).await {
+            Ok(spender) => {
+                let debited = debits.iter().any(|d| {
+                    d.txid == spender.txid && d.index == spender.index && d.height == spender.height
+                });
+                ensure(debited, || {
+                    format!(
+                        "{}:{} spent by {}:{}, a debit the deltas lack",
+                        credit.txid, credit.index, spender.txid, spender.index
+                    )
+                })?;
+                let out = answered(
+                    "txout",
+                    source.get_tx_out(credit.txid, credit.index, false).await,
+                )?;
+                ensure(out.is_none(), || {
+                    format!("spent {}:{} present in gettxout", credit.txid, credit.index)
+                })?;
+                matched += 1;
+            }
+            Err(QueryError::Domain(GetSpentInfoError::NotSpent)) => {
+                let listed = utxos
+                    .iter()
+                    .any(|u| u.txid == credit.txid && u.output_index == credit.index);
+                ensure(listed, || {
+                    format!(
+                        "unspent {}:{} missing from the UTXOs",
+                        credit.txid, credit.index
+                    )
+                })?;
+            }
+            Err(error) => return Err(format!("spent info: {error}")),
+        }
+    }
+    ensure(matched == debits.len(), || {
+        format!("{} debits, {matched} matched to credits", debits.len())
+    })?;
+    for invalid in ["not an address", foreign] {
+        let invalid = vec![invalid.to_owned()];
+        ensure(
+            matches!(
+                source.get_address_balance(invalid.clone()).await,
+                Err(QueryError::Domain(GetAddressBalanceError::InvalidAddress(
+                    _
+                )))
+            ),
+            || format!("balance {invalid:?}: InvalidAddress"),
+        )?;
+        ensure(
+            matches!(
+                source
+                    .get_address_utxos(invalid.clone(), zaino_source::UtxoPage::default())
+                    .await,
+                Err(QueryError::Domain(GetAddressUtxosError::InvalidAddress(_)))
+            ),
+            || format!("utxos {invalid:?}: InvalidAddress"),
+        )?;
+        ensure(
+            matches!(
+                source
+                    .get_address_txids(invalid.clone(), Height::GENESIS, tip)
+                    .await,
+                Err(QueryError::Domain(GetAddressTxidsError::InvalidAddress(_)))
+            ),
+            || format!("txids {invalid:?}: InvalidAddress"),
+        )?;
+        ensure(
+            matches!(
+                source
+                    .get_address_deltas(invalid.clone(), Height::GENESIS, tip)
+                    .await,
+                Err(QueryError::Domain(GetAddressDeltasError::InvalidAddress(_)))
+            ),
+            || format!("deltas {invalid:?}: InvalidAddress"),
+        )?;
+    }
+    Ok(())
+}
+
+/// The mempool listings agree, each member is located in the mempool, and
+/// the mempool's tip is at or below the best tip.
+pub async fn mempool<S>(source: &S) -> Result<(), Broken>
+where
+    S: zaino_source::OneShotGetBestBlockHeight
+        + zaino_source::OneShotGetMempoolTxids
+        + zaino_source::OneShotGetMempoolMetadata
+        + zaino_source::OneShotGetMempoolSourceTip
+        + zaino_source::OneShotGetTransaction,
+{
+    let tip = tip(source).await?;
+    let txids = answered("mempool txids", source.get_mempool_txids().await)?;
+    let metadata = answered("mempool metadata", source.get_mempool_metadata().await)?;
+    let listed: BTreeSet<_> = txids.iter().collect();
+    ensure(listed == metadata.iter().map(|m| &m.txid).collect(), || {
+        "mempool listings disagree".to_owned()
+    })?;
+    for txid in &txids {
+        let object = both_forms(source, *txid).await?;
+        let unplaced = object.location() == TransactionLocation::Mempool
+            && object.confirmations.is_none()
+            && object.in_active_chain != Some(true)
+            && object.block_time.is_none();
+        ensure(unplaced, || format!("{txid} is not placed in the mempool"))?;
+    }
+    let (_, at) = answered("mempool source tip", source.get_mempool_source_tip().await)?;
+    ensure(at <= tip, || {
+        "the mempool's tip is past the best tip".to_owned()
+    })
+}
+
+/// `ping` answers; `getnetworkinfo` agrees with `getinfo` on the node's
+/// identity, connections and relay fee.
+pub async fn node_status<S>(source: &S) -> Result<(), Broken>
+where
+    S: zaino_source::OneShotPing
+        + zaino_source::OneShotGetNetworkInfo
+        + zaino_source::OneShotGetNodeInfo,
+{
+    answered("ping", source.ping().await)?;
+    let network = answered("network info", source.get_network_info().await)?;
+    let node = answered("node info", source.get_node_info().await)?;
+    ensure(
+        (
+            network.version,
+            &network.subversion,
+            network.protocol_version,
+        ) == (node.version, &node.subversion, node.protocol_version),
+        || "network info names another node".to_owned(),
+    )?;
+    ensure(
+        network.connections == node.connections && network.relay_fee == node.relay_fee,
+        || "network info's connections or relay fee differ from getinfo's".to_owned(),
+    )?;
+    Ok(())
+}
+
+/// `getblockchaininfo` names the best tip and its supply is the pools' sum;
+/// verbose blocks link forward and count confirmations from the tip.
+pub async fn chain_info<S>(source: &S) -> Result<(), Broken>
+where
+    S: zaino_source::OneShotGetBestBlockHeight
+        + zaino_source::OneShotGetBlock
+        + zaino_source::OneShotGetBlockchainInfo
+        + zaino_source::OneShotGetBlockVerbose,
+{
+    let tip = tip(source).await?;
+    let info = answered("blockchain info", source.get_blockchain_info().await)?;
+    let best = answered("block", source.get_block(tip).await)?.header.hash;
+    ensure(info.blocks == tip && info.best_block_hash == best, || {
+        "blockchain info names another tip".to_owned()
+    })?;
+    let pooled: u64 = info
+        .value_pools
+        .iter()
+        .map(|pool| u64::from(pool.chain_value))
+        .sum();
+    ensure(pooled == u64::from(info.chain_supply.chain_value), || {
+        "chain supply is not the pools' sum".to_owned()
+    })?;
+    let mut next: Option<BlockHash> = None;
+    for height in (0..=u32::from(tip)).rev() {
+        let height = Height::try_from(height).map_err(|e| e.to_string())?;
+        let block = answered("block", source.get_block(height).await)?;
+        let txids: Vec<TransactionId> = block.transactions().iter().map(|tx| tx.txid).collect();
+        for verbosity in [
+            BlockVerbosity::TransactionIds,
+            BlockVerbosity::Transactions,
+            BlockVerbosity::TransactionsWithPrevouts,
+        ] {
+            let verbose = answered(
+                "verbose block",
+                source.get_block_verbose(height, verbosity).await,
+            )?;
+            let listed: Vec<TransactionId> = match &verbose.transactions {
+                BlockTransactions::Ids(ids) => ids.clone(),
+                BlockTransactions::Objects(objects) => {
+                    objects.iter().map(|object| object.txid).collect()
+                }
+            };
+            ensure(
+                verbose.hash == block.header.hash
+                    && verbose.height == height
+                    && verbose.previous_block_hash == Some(block.header.prev_hash)
+                    && listed == txids,
+                || format!("verbose block {height} at {verbosity:?} is not the block"),
+            )?;
+        }
+        let verbose = answered(
+            "verbose block",
+            source
+                .get_block_verbose(height, BlockVerbosity::TransactionIds)
+                .await,
+        )?;
+        ensure(verbose.next_block_hash == next, || {
+            format!("verbose block {height} does not link forward")
+        })?;
+        let depth = u32::from(tip) - u32::from(height) + 1;
+        let counted = matches!(verbose.confirmations, zaino_primitives::types::BlockConfirmations::Confirmed(n) if n.get() == depth);
+        ensure(counted, || {
+            format!("verbose block {height} miscounts confirmations")
+        })?;
+        next = Some(
+            answered("block", source.get_block(height).await)?
+                .header
+                .hash,
+        );
+    }
+    Ok(())
+}

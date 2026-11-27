@@ -1,0 +1,15 @@
+consumed_in = "zainod-0-11-0"
+[[changes]]
+crate = "zaino-source"
+kind = "breaking"
+description = """
+`FailureMode::InvalidSourceData`: the source's data decoded but broke its \
+own contract (an in-process state answering off-shape). Non-retryable, like \
+`Parse`, which it was reported as before."""
+
+[[changes]]
+crate = "zaino-source-zebra"
+kind = "fix"
+description = """
+The read-state adapter's `InvalidData` and `OffContract` faults map to \
+`FailureMode::InvalidSourceData` instead of `Parse`."""

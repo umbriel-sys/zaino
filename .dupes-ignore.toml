@@ -19,3 +19,51 @@ a chain-store capability to an RPC chain-tip status for no reason beyond their \
 both being enums. They also live in crates that do not and should not depend \
 on each other.
 """
+
+[[ignore]]
+fingerprint = "5434ff95b44fc0d3"
+members = [
+    "parse_sapling_spend",
+    "parse_sapling_output",
+]
+reason = """
+Two `getblock` object readers, each building its own six-field type from its \
+own JSON keys. The shape is shared; the fields and types are not, so a shared \
+helper would only take the key names as arguments.
+"""
+
+# zainod and zaino-state. zaino-state is the frozen legacy shim: it keeps its
+# own copy of the served behaviour until it is removed, and zainod, which no
+# longer depends on it, carries the live one. Sharing either way would make
+# zainod depend on the shim or change the shim. Each entry below goes when
+# zaino-state does.
+
+[[ignore]]
+fingerprint = "68ddc297d55606cd"
+members = ["transaction", "transaction"]
+reason = "The getblock transaction object: zainod's serving copy and the frozen zaino-state shim's (see the note above)."
+
+[[ignore]]
+fingerprint = "b92c131257b9408a"
+members = ["input", "input"]
+reason = "The getblock transparent input object: zainod's serving copy and the frozen zaino-state shim's (see the note above)."
+
+[[ignore]]
+fingerprint = "28e0937d450b4f1c"
+members = ["orchard", "orchard"]
+reason = "The getblock Orchard bundle object: zainod's serving copy and the frozen zaino-state shim's (see the note above)."
+
+[[ignore]]
+fingerprint = "8ef480b022fd8c45"
+members = ["balance", "balance"]
+reason = "The getblock value-pool object: zainod's serving copy and the frozen zaino-state shim's (see the note above)."
+
+[[ignore]]
+fingerprint = "ff410636b813ca1b"
+members = ["utxo_reply", "utxo_reply"]
+reason = "The GetAddressUtxos reply: zainod's serving copy and the frozen zaino-state shim's (see the note above)."
+
+[[ignore]]
+fingerprint = "43aa6ef9dbe0bbf0"
+members = ["main", "main"]
+reason = "The build script that records the git commit and build facts: zainod reports them now, and the frozen zaino-state shim still builds its own (see the note above)."

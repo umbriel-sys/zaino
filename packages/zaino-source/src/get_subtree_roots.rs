@@ -9,7 +9,8 @@ use super::{QueryError, ValidatorSource};
 /// Domain error for [`GetSubtreeRoots`].
 #[derive(Debug, thiserror::Error, Clone, PartialEq, Eq)]
 pub enum GetSubtreeRootsError {
-    /// The requested pool is not supported or not active.
+    /// The node does not support the pool (zcashd: Ironwood). An inactive
+    /// pool is not refused: it has no subtrees, an empty answer.
     #[error("pool unavailable: {0}")]
     PoolUnavailable(ShieldedPool),
 }

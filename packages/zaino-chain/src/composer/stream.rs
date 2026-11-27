@@ -21,11 +21,7 @@
 //! client, which at this scale is the difference between bounded and unbounded
 //! memory.
 
-use zaino_chain_store::PoolFilter;
-use zaino_primitives::types::{
-    ChainMetadata, CompactBlock, Height, PreIndexCompactBlock, PreIndexCompactTx, ShieldedPool,
-    TreeRoots, TreeSize,
-};
+use zaino_primitives::types::{ChainMetadata, CompactBlock, Height, TreeRoots, TreeSize};
 
 use crate::composer::coverage::Segment;
 
@@ -70,9 +66,13 @@ impl Chunker {
         if blocks == 0 {
             return;
         }
-        let average = (bytes / blocks).max(1);
-        let target = (self.budget_bytes / average).clamp(1, Self::MAX as usize);
-        self.count = target as u32;
+        let average = bytes.checked_div(blocks).unwrap_or(0).max(1);
+        let target = self
+            .budget_bytes
+            .checked_div(average)
+            .unwrap_or(1)
+            .clamp(1, Self::MAX as usize);
+        self.count = u32::try_from(target).unwrap_or(Self::MAX);
     }
 }
 
@@ -143,55 +143,22 @@ pub(crate) fn approx_size(block: &CompactBlock) -> usize {
     /// An outpoint or a script-bearing output.
     const PER_TRANSPARENT: usize = 40;
 
-    OVERHEAD
-        + block
-            .transactions
-            .iter()
-            .map(|tx| {
-                PER_TX
-                    + PER_NOTE
-                        * (tx.sapling_nullifiers.len()
-                            + tx.sapling_outputs.len()
-                            + tx.orchard_actions.len()
-                            + tx.ironwood_actions.len())
-                    + PER_TRANSPARENT * (tx.transparent_inputs.len() + tx.transparent_outputs.len())
-            })
-            .sum::<usize>()
-}
-
-/// The compact block a caller asked for, from a pre-index projection.
-///
-/// Shared by the chain head and the validator so a compact block above the
-/// store's range has one definition however it was obtained.
-///
-/// # The filter is applied here, not skipped
-///
-/// The store pushes [`PoolFilter`] into its read, where it decides which row
-/// families decode at all. There is nothing to push it into for an
-/// already-projected block, so above the store it is applied afterwards. That
-/// is a performance difference and must not become a semantic one: a caller
-/// filtering to sapling gets the same shape from every provider. Like the
-/// store's, the block keeps every transaction, since position is the index.
-pub(crate) fn compact_from_pre_index(
-    pre_index: PreIndexCompactBlock,
-    chain_metadata: ChainMetadata,
-    pools: PoolFilter,
-) -> CompactBlock {
-    let transactions = pre_index
-        .transactions
-        .into_iter()
-        .map(|tx| filter_tx(tx, pools))
-        .collect();
-
-    CompactBlock {
-        hash: pre_index.hash,
-        prev_hash: pre_index.prev_hash,
-        height: pre_index.height,
-        time: pre_index.time,
-        bits: pre_index.bits,
-        transactions,
-        chain_metadata,
-    }
+    let sum = |counts: &[usize]| counts.iter().fold(0usize, |sum, n| sum.saturating_add(*n));
+    block.transactions.iter().fold(OVERHEAD, |size, tx| {
+        let notes = sum(&[
+            tx.sapling_nullifiers.len(),
+            tx.sapling_outputs.len(),
+            tx.orchard_actions.len(),
+            tx.ironwood_actions.len(),
+        ]);
+        let transparent = sum(&[tx.transparent_inputs.len(), tx.transparent_outputs.len()]);
+        sum(&[
+            size,
+            PER_TX,
+            PER_NOTE.saturating_mul(notes),
+            PER_TRANSPARENT.saturating_mul(transparent),
+        ])
+    })
 }
 
 /// The cumulative tree sizes a compact block reports, from commitment roots.
@@ -205,25 +172,6 @@ pub(crate) fn metadata_from_roots(roots: &TreeRoots) -> ChainMetadata {
 
 fn size_of(info: Option<&zaino_primitives::types::TreeRootInfo>) -> TreeSize {
     info.map_or(TreeSize::ZERO, |info| info.size)
-}
-
-/// Clears the pools the caller did not ask for.
-fn filter_tx(mut tx: PreIndexCompactTx, pools: PoolFilter) -> PreIndexCompactTx {
-    if !pools.includes_transparent() {
-        tx.transparent_inputs.clear();
-        tx.transparent_outputs.clear();
-    }
-    if !pools.includes(ShieldedPool::Sapling) {
-        tx.sapling_nullifiers.clear();
-        tx.sapling_outputs.clear();
-    }
-    if !pools.includes(ShieldedPool::Orchard) {
-        tx.orchard_actions.clear();
-    }
-    if !pools.includes(ShieldedPool::Ironwood) {
-        tx.ironwood_actions.clear();
-    }
-    tx
 }
 
 // ***** The walk *****
@@ -366,8 +314,8 @@ where
                 WalkState::Done => return None,
                 WalkState::Failed => {
                     self.state = WalkState::Done;
-                    return Some(Err(ChainViewError::NotServiceable(
-                        "no provider covers part of this range and the validator is disabled",
+                    return Some(Err(ChainViewError::ValidatorDisabled(
+                        "no provider covers part of this range",
                     )));
                 }
                 WalkState::Running {

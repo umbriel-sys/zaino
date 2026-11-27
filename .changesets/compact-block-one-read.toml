@@ -1,0 +1,70 @@
+[[changes]]
+crate = "zaino-source"
+kind = "breaking"
+description = """
+`OneShotGetPreIndexCompactBlock::get_pre_index_compact_block(height)` becomes \
+`OneShotGetCompactBlock::get_compact_block(height, pools)` and answers the \
+complete `CompactBlock`: the block's compact data and its cumulative tree \
+sizes, as one answer about one block, with the pool filter applied by the \
+source. Its one consumer had to pair every answer with a verbose-block read \
+for the tree sizes."""
+migration = """
+Call `get_compact_block(height, pools)` in place of \
+`get_pre_index_compact_block(height)` plus `get_block_verbose(height, ..)`; \
+pass `PoolFilter::all()` for an unfiltered block. An implementer builds the \
+answer with `PreIndexCompactBlock::into_compact(chain_metadata, pools)`."""
+
+[[changes]]
+crate = "zaino-primitives"
+kind = "feature"
+description = """
+`PreIndexCompactBlock::into_compact(chain_metadata, pools)` makes the \
+complete `CompactBlock`; `ChainMetadata: From<BlockTreeSizes>`."""
+
+[[changes]]
+crate = "zaino-source-zebra"
+kind = "fix"
+description = """
+The read-state adapter answers the compact block whole from zebra's state: \
+the block and its three tree counts, read by that block's own hash. A block \
+range passed to zebrad made one JSON-RPC `getblock` call per block for the \
+tree sizes; it now makes none."""
+
+[[changes]]
+crate = "zaino-source-zcash-rpc"
+kind = "fix"
+description = """
+The JSON-RPC adapter answers the compact block with `getblock` verbosity 0 \
+and 1 issued together, and refuses replies that name different blocks. The \
+two were issued by the consumer before and never compared."""
+
+[[changes]]
+crate = "zaino-chain"
+kind = "breaking"
+description = """
+A compact block read from the validator is one port call, with the caller's \
+pool filter passed to the source as it is to the store and the chain head. \
+`ChainViewSource` requires `OneShotGetCompactBlock` and no longer requires \
+`OneShotGetBlockVerbose`."""
+migration = """
+A `ChainViewSource` implements `OneShotGetCompactBlock` in place of \
+`OneShotGetPreIndexCompactBlock`."""
+
+[[changes]]
+crate = "zaino-chain"
+kind = "fix"
+description = """
+A range read from the validator that fails on its connection is asked again, \
+at most twice more, 250 ms apart: one dropped connection no longer fails a \
+client's whole block range. A timeout, a busy validator and anything the \
+validator answered are not asked again."""
+
+[[changes]]
+crate = "zaino-source-mock"
+kind = "breaking"
+description = """
+`MockChain` implements `OneShotGetCompactBlock` (call log name \
+`get_compact_block`) in place of `OneShotGetPreIndexCompactBlock`; \
+`contract::compact_blocks` checks a compact block against its block and its \
+verbose form under three filters."""
+migration = "Call logs and `fail_ports` name `get_compact_block`."

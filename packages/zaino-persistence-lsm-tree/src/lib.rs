@@ -1,0 +1,50 @@
+#![doc = include_str!("../usage.md")]
+// only `unsafe` = `fs::sys` (mmap, sync_file_range, mincore, ioprio)
+#![deny(unsafe_code)]
+// production code never panics: no indexing, unchecked arithmetic or panicking calls
+#![cfg_attr(
+    not(test),
+    deny(
+        clippy::panic,
+        clippy::unwrap_used,
+        clippy::expect_used,
+        clippy::unreachable,
+        clippy::todo,
+        clippy::unimplemented,
+        clippy::indexing_slicing,
+        clippy::arithmetic_side_effects,
+        clippy::string_slice,
+        clippy::get_unwrap,
+        clippy::let_underscore_must_use,
+        let_underscore_drop
+    )
+)]
+
+mod backend;
+mod buffer;
+mod dir;
+mod emit;
+mod engine;
+mod error;
+pub mod fs;
+mod lsm;
+mod manifest;
+mod pages;
+mod record;
+mod remove;
+mod sequence;
+mod storage;
+mod tails;
+#[cfg(test)]
+mod testing;
+
+pub use backend::{
+    verify_dir, LsmTreeBackend, LsmTreeConfig, LsmTreeReadOnly, LsmTreeReader, LsmTreeWriter,
+};
+pub use dir::{disk_bytes, ManifestRead};
+pub use emit::{describe_metrics, METRIC_BUCKETS};
+pub use lsm::{LsmConfig, Tuning, METRIC_BUCKETS as LSM_METRIC_BUCKETS};
+pub use remove::remove_dir_all;
+pub use storage::{
+    LsmTreeStorage, StoreLock, DEFAULT_WRITE_BUFFER, DEFAULT_WRITE_BUFFER_MIB, MIN_SHARED_THREADS,
+};

@@ -1,22 +1,10 @@
-//! Guard: one rustls CryptoProvider — aws-lc-rs — plus the single tolerated
-//! ring path through zebra (ADR-0006).
+//! Guard: one rustls CryptoProvider — aws-lc-rs — and no ring.
 //!
 //! Two checks against the production workspace's resolved dependency graph:
 //!
 //! 1. rustls must resolve with `aws_lc_rs` and `prefer-post-quantum`.
-//! 2. The set of feature edges that select ring anywhere in the graph must
-//!    equal [`RING_EDGE_ALLOWLIST`] — today, the single chain rooted in
-//!    zebra-node-services' `rpc-client` feature (its reqwest `rustls-tls`;
-//!    reqwest 0.12 offers no aws-lc alternative). That ring is compiled but
-//!    dormant: reqwest consults the process-default provider first and zaino
-//!    installs aws-lc-rs at both TLS boundaries.
-//!
-//! Loud in both directions. A NEW edge means a second provider path is
-//! creeping back in via feature unification — the regression this guard
-//! exists to catch (zingolabs/zaino#1360). A MISSING edge — in particular
-//! ring vanishing from the graph entirely — means zebra dropped its ring
-//! dependence: delete [`RING_EDGE_ALLOWLIST`], make this check assert ring's
-//! absence, and close the classical-deprecation tracking issue's zebra item.
+//! 2. ring must not be in the graph. A dependent means a second provider
+//!    path is creeping back in via feature unification.
 
 use std::collections::BTreeSet;
 use std::path::Path;
@@ -27,21 +15,11 @@ use workbench::{repo_root, run};
 /// Feature names that select the ring provider when enabled on any crate.
 const RING_SELECTING_FEATURES: [&str; 3] = ["ring", "__rustls-ring", "tls-ring"];
 
-/// Every feature edge expected to select ring, all downstream of
-/// zebra-node-services' reqwest `rustls-tls` (see module docs).
-const RING_EDGE_ALLOWLIST: [&str; 5] = [
-    "hyper-rustls feature \"ring\"",
-    "reqwest feature \"__rustls-ring\"",
-    "rustls feature \"ring\"",
-    "rustls-webpki feature \"ring\"",
-    "tokio-rustls feature \"ring\"",
-];
-
 fn main() {
     run("check-crypto-provider", check, |()| {
         println!(
             "check-crypto-provider: ok — rustls resolves aws-lc-rs + prefer-post-quantum; \
-             ring edges match the tolerated zebra path"
+             ring is not in the graph"
         );
     })
 }
@@ -52,23 +30,18 @@ fn check() -> Result<(), Vec<String>> {
     let rustls_features = cargo_tree(&root, &["--package", "rustls", "--depth", "0"], "{f}")?;
     check_preferred_provider(&rustls_features)?;
 
-    let ring_tree = match cargo_tree(&root, &["--invert", "ring", "--edges", "features"], "{p}") {
-        Ok(out) => out,
+    match cargo_tree(&root, &["--invert", "ring", "--edges", "features"], "{p}") {
+        Ok(ring_tree) => check_ring_absent(&ring_tree),
+        // Not even in the lockfile.
         Err(diag)
             if diag
                 .iter()
                 .any(|l| l.contains("did not match any packages")) =>
         {
-            return Err(vec![
-                "ring is GONE from the dependency graph — zebra dropped it!".to_string(),
-                "Tighten this guard: delete RING_EDGE_ALLOWLIST and assert ring's absence,"
-                    .to_string(),
-                "and close the zebra item on the classical-deprecation tracking issue.".to_string(),
-            ]);
+            Ok(())
         }
-        Err(diag) => return Err(diag),
-    };
-    check_ring_edges(&ring_tree)
+        Err(diag) => Err(diag),
+    }
 }
 
 /// Assert the resolved rustls feature set contains the preferred-provider pair.
@@ -82,41 +55,34 @@ fn check_preferred_provider(features_line: &str) -> Result<(), Vec<String>> {
         Ok(())
     } else {
         Err(vec![format!(
-            "rustls resolved without {} (got: {}) — the preferred provider per \
-             ADR-0006 is aws-lc-rs with prefer-post-quantum; check \
-             packages/zaino-common/Cargo.toml's rustls features",
+            "rustls resolved without {} (got: {}) — the preferred provider \
+             is aws-lc-rs with prefer-post-quantum; check \
+             packages/zaino-rpc/Cargo.toml's rustls features",
             missing.join(" + "),
             features_line.trim(),
         )])
     }
 }
 
-/// Assert the ring-selecting feature edges equal the tolerated allowlist.
-fn check_ring_edges(ring_tree: &str) -> Result<(), Vec<String>> {
-    let found = ring_selecting_edges(ring_tree);
-    let expected: BTreeSet<String> = RING_EDGE_ALLOWLIST
-        .iter()
-        .map(ToString::to_string)
-        .collect();
-
-    if found == expected {
+/// Assert nothing in the resolved graph depends on ring: `ring_tree` is the
+/// inverted tree, empty when ring is only in the lockfile.
+fn check_ring_absent(ring_tree: &str) -> Result<(), Vec<String>> {
+    if ring_tree.trim().is_empty() {
         return Ok(());
     }
 
-    let mut msg = Vec::new();
-    for new in found.difference(&expected) {
+    let mut msg = vec![
+        "ring is in the dependency graph — a second CryptoProvider path is creeping back in"
+            .to_string(),
+    ];
+    for edge in ring_selecting_edges(ring_tree) {
         msg.push(format!(
-            "NEW ring-selecting feature edge: {new} — a second CryptoProvider path is \
-             creeping back in (zingolabs/zaino#1360); remove the enabling feature",
+            "ring-selecting feature edge: {edge} — remove the enabling feature"
         ));
     }
-    for gone in expected.difference(&found) {
-        msg.push(format!(
-            "tolerated ring edge disappeared: {gone} — if zebra dropped ring, tighten \
-             this guard (see the module docs in check-crypto-provider.rs)",
-        ));
+    if msg.len() == 1 {
+        msg.push("no ring-selecting feature: a crate depends on ring directly; run `cargo tree --invert ring`".to_string());
     }
-    msg.push("see zingo-adrs zaino/0006".to_string());
     Err(msg)
 }
 
@@ -184,6 +150,18 @@ ring v0.17.14
                 "rustls-webpki feature \"ring\"",
             ]
         );
+    }
+
+    #[test]
+    fn an_empty_inverted_tree_passes() {
+        assert!(check_ring_absent("\n").is_ok());
+    }
+
+    #[test]
+    fn a_dependent_fails_and_names_its_ring_edges() {
+        let tree = "ring v0.17.14\n└── rustls v0.23.41\n    └── rustls feature \"ring\"\n";
+        let msg = check_ring_absent(tree).expect_err("ring has a dependent");
+        assert!(msg.iter().any(|l| l.contains("rustls feature \"ring\"")));
     }
 
     #[test]

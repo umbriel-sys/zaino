@@ -66,6 +66,20 @@ Anything addressed by a block takes a [`BlockId`] — `Height` or `Hash` — rat
 than appearing twice. That is how the chain is addressed (zebra takes a
 `HashOrHeight`), and it halves the surface without removing anything.
 
+A `ChainBlock` is an indexed block: the header, every transaction in compact
+form, the tree roots after it, the chainwork where known, and the block's
+serialized size (from I-01, or the parsed block's bytes). For a
+store-covered height it is composed from three store reads, each over one index
+(headers with chainwork, compact transactions with every pool, tree roots), so a
+store answers it with the `CompactBlocks` and `TreeRoots` capabilities; `block_header`
+and `stream_headers(start, end)` (a range, in either direction, truncated at
+the tip) need only the headers index. The chain head and the validator supply parsed
+blocks, projected to the same shape. Each compact transaction's `fee` comes
+from I-05: the store's always, the head's where its `compact_blocks`
+extension is built (otherwise `None`, as from the validator). A hash on the
+best chain is answered by the provider covering its height; only a competing
+block is read from the head directly.
+
 Every read answers for the snapshot's chain, even when the validator serves the
 bytes. A raw block wanted by height is fetched by the hash the snapshot pins at
 that height, so a reorg since the snapshot was taken cannot substitute a block
@@ -74,9 +88,33 @@ hash, is fetched by height — and there the chain is below the reorg seam anywa
 A pinned block the validator no longer serves is `Transient`: retry on a fresh
 snapshot. A treestate wanted by height is pinned the same way.
 
-A treestate carries each pool's root. The validator's tree port leaves roots
-unset, so the view reads them by the treestate's own block hash and joins them
-in.
+Where the store and the chain head both build tree state with nothing between
+them, a treestate is answered locally: the store's frontiers at or below its
+tip, the head's above it, each encoded as zebrad encodes it
+(`legacy_tree_from_frontier`, all 31 parent slots), with each pool's root from
+the tree roots and the time from the header. Subtree roots are the store's
+list, then the head's. Otherwise the validator answers; its tree port leaves
+roots unset, so the view reads them by the treestate's own block hash and joins
+them in. A hash off the snapshot's best chain, or a pool not active at the
+tip, always goes to the validator. Local subtree roots cover every pool active
+at the tip, whatever the validator indexes: a validator without a pool's
+subtree index (zcashd lacks Ironwood) refuses what Zaino answers from its own.
+
+The four address reads are answered the same way where both build address
+history: the store's effects to its tip and the head's above it, shaped as the
+validator shapes them (genesis outputs excluded, its ordering, its refusals:
+an address for the store's other network, an inverted range, txids past the
+tip, more than `MAX_ADDRESS_QUERY_RESULTS`). The scan itself is bounded: the
+store and the head share one budget of `max_address_scan_rows` rows of history
+(default 400,000), and a query past it is refused (`Rejected`) before more is
+held, never truncated (K-01). `address_utxos` takes a `UtxoPage`: the start
+height filter runs before the cap, so a client pages through a large address
+as zebrad allows.
+
+`PrevoutRead::previous_outputs` answers the output each outpoint names (value
+and script) from Zaino's own indexes: the window's blocks, else the store's
+I-03 + I-04. Local only, so a hole is refused; `ChainCapability::Prevouts`
+reports it, gated as spend status.
 
 ## Ranges stream
 
@@ -105,24 +143,59 @@ endpoint. Three properties matter at scale:
   per client instead, which with thousands of them is the difference between
   bounded and unbounded memory.
 
+### Frames: encoded once, shared by every client
+
+With the `frames` feature, `CompactFrameRead` serves the same blocks as
+encoded `CompactBlock` messages (`bytes::Bytes`), written by
+`zaino_proto::compact::write_compact_block`:
+
+```rust,ignore
+let mut frames = chain.stream_compact_frames(start, end, pools);
+while let Some(chunk) = frames.try_next().await? {
+    // chunk: Vec<Bytes>, sized by its exact bytes
+}
+let one = chain.compact_frame(height, pools).await?;
+```
+
+A frame is the compact block under `pools` exactly as prost would encode it,
+with zero tree sizes under a nullifiers-only filter. The view keeps a
+byte-bounded LRU of frames keyed by (height, filter) and shared by every
+snapshot (`frame_cache_bytes`, default 64 MiB; 0 keeps none). It keeps only
+final frames: the store's, and the head's from its `compact_blocks` fold
+(dropped when the epoch moves). Projected head frames (fees unknown) and the
+validator's are never kept, so a frame read from the cache is always what an
+uncached read would return.
+
 ## Capabilities are traits, and optional ones are absent
 
 The always-available reads — `BlockRead`, `CompactBlockRead`,
 `TransactionRead`, `TreestateRead`, `ForkReconcile` — are bundled by
-`ChainViewSnapshot`. `AddressRead`, `SpendRead` and `TxOutSetRead` are
-implemented **only** where the providers can back them, so a store that builds
-no spend index yields a view that does not have the trait:
+`ChainViewSnapshot`. `AddressRead`, `SpendRead`, `PrevoutRead`, `TxOutSetRead`
+and `HistoryTreeRead` are implemented **only** where the providers can back them,
+so a store that builds no spend index yields a view that does not have the
+trait:
 
 ```rust,ignore
 fn serve(chain: impl ChainViewSnapshot + SpendRead) { .. }   // names what it needs
 ```
 
 `TxOutSetRead::txout_set` answers at the snapshot's tip, for the whole chain:
-the store's accumulator extended by the chain head's `txout_delta` above the
-store's top, with the window's spends of older outputs resolved through the
-store's `SpentOutputIndex`. It needs the store's `TxOutSet`, `SpentOutputs` and
-`Transactions` indexes, and refuses while a hole separates the store from the
-window.
+it is the chain head's `txout_set` extension, which starts from the store's
+accumulator at the store's tip and folds the window above it (see
+`StoreIndexes` below). It refuses while the head has not built it: the
+extension not enabled, the store without its indexes, or a hole between the
+store and the window.
+
+`HistoryTreeRead` answers the ZIP 221 history tree (root, epoch, entries) from
+the store at or below its tip and the head above it; entries the head's seed
+predates come from the store when the epoch is the same. No validator holds
+it, so it is not serviceable unless both halves build it with nothing between.
+
+The manifest reads both halves the same way the reads do: a capability merged
+from store and head (treestate, subtree roots, address history, history tree)
+is answerable locally only where the store's index and the head's
+`HeadCapabilities` both hold it, and the UTXO set only once the head has built
+it.
 
 That is the point of splitting them: a capability the providers cannot support
 must be absent, not present and always failing, and an impl can only be absent
@@ -140,10 +213,27 @@ match view.serviceability().get(ChainCapability::SpendStatus) {
 ## Validator concurrency
 
 Gap fills share one permit pool across every client, sized by
-`ChainViewConfig::passthrough_permits` (default 512). Without it, concurrency is
+`ChainViewConfig::passthrough_permits` (default 24). Without it, concurrency is
 the product of clients and per-client concurrency — 5,000 clients fetching 16
-blocks each is 80,000 simultaneous requests — and nothing else in the stack caps
-it.
+blocks each is 80,000 simultaneous fetches.
+
+The default is sized against the validator, not the clients. A permit covers
+one block: one compact-block read, which a JSON-RPC validator answers with two
+requests issued together (a zebrad read from its state makes none), so 24
+permits are at most 48 requests. That is under the 64 requests the validator's
+JSON-RPC client keeps in flight, so gap fills alone can never fill it, and
+well under the 100 zebrad serves at once (it answers the rest HTTP 429).
+
+Only gap fills take a permit. A single read passed to the validator (a
+transaction, a treestate, an address balance) takes none: it waits its turn in
+the validator's client with every other request, the chain head's and the
+mempool's among them. Enough single reads at once can therefore delay those
+two; nothing fails, since every wait there is in order and bounded.
+
+A gap-fill read that fails on the validator's connection is asked again, at
+most twice more, 250 ms apart, with its permit released for the wait: one
+dropped connection does not fail a client's whole range. A timeout, a busy
+validator and anything the validator answered are not asked again.
 
 Two things make it safe to size modestly:
 
@@ -183,7 +273,16 @@ head.
 `block_height` and `transaction_locations` distinguish **absent**, **on the best
 chain**, and **on a retained competing branch**. Only the chain head can report
 the third; below its window there is a single chain, so the store's
-best-chain-only index is correct there rather than deficient.
+best-chain-only index is correct there rather than deficient. In a hole
+between them (no store, or one still building) the validator places the
+transaction: its mined height, then its index in that block.
+
+`raw_transaction(txid, verbosity)` is the validator's `getrawtransaction`
+answer (`TransactionAnswer::Raw` or `Object`) for a transaction the view
+places by that same rule, a side-chain one included; `None` for any other,
+the validator's mempool included. A locally placed transaction is asked at
+the verbosity given; one in a hole is asked as an object, which places it and
+carries its bytes.
 
 `block_height` returns `None` for a branch hash — it answers about the chain the
 caller is reading. `fork_point` is the branch question, and still finds it.
@@ -195,8 +294,18 @@ chain at a height no tier covers; at a covered height the view pins a different
 block, and above the tip there is none.
 
 A miss is not a rejection. An address never paid is an empty answer, but an
-invalid request — an unparseable address, a range the validator cannot serve,
-a pool not yet active — is `ChainViewError::Rejected`, never an empty result.
+invalid request — an unparseable address, a pool not yet active — is
+`ChainViewError::Rejected`, never an empty result. An address read over an
+inverted range is `ChainViewError::InvalidRange`, from the local and the
+validator path alike; `address_txids` reads its range as zebrad does (bounds
+clamp to the tip, an end of 0 is the tip) before that check;
+block ranges never refuse an inverted range, they run descending.
+
+A read not answered here says why: `NotServed(capability)` (the deployment
+withholds it), `NotBuilt` (no store index or head extension builds it),
+`Building { store_tip }` (the store has not reached the heights it needs;
+retry) or `ValidatorDisabled` (no provider covers it and passthrough is off).
+A failed head extension is `Fatal`.
 
 ## Configuration
 
@@ -205,11 +314,13 @@ ChainViewComposer::new(store, head, source, ChainViewConfig::default())
 
 ChainViewConfig::default().without_store()        // head + validator only
 ChainViewConfig::default().without_passthrough()  // serve only what we hold
+ChainViewConfig::default().with_max_address_scan_rows(400_000) // K-01 bound
 ```
 
 `without_store` replaces the ephemeral mode that used to live inside the store.
 `without_passthrough` makes a hole unserviceable and disables the reads no tier
-holds at all — raw transactions, treestates, address history.
+holds — raw transactions always, and treestates, subtree roots and address
+history wherever the store and the head do not both build them.
 
 ## Bring your own store, your own head, or both
 
@@ -219,17 +330,48 @@ Implement those traits and the composer works unchanged. A different finalised
 store, a different chain head, Zebra's read state in an ephemeral mode: none of
 them requires writing a composition.
 
-The suite is the standing proof rather than a claim. `FakeStore`, `FakeHead` and
-`FakeSource` are an independent implementation of all three tiers — none of them
-is a Zaino production adapter — and every composition test runs the real
-composer over them. `MinimalStore` goes further: it implements `ChainStoreReader`
-and the block ports but deliberately *not* `SpentOutputIndex` or `TxOutSetIndex`,
-so a store that builds only some indexes is a case the compiler checks rather
-than a case someone remembered.
+The composer names only the ports, so a store, head or validator satisfying them
+composes unchanged; the suite runs it over Zaino's own services (below), and a
+store that builds only some indexes is covered there by configuring the real
+store without them.
 
 Writing your own `ChainView` is possible too — that is why the ports are
 separate from the composer — but it is for a consumer who wants different
 *composition*, not one who merely has different storage.
+
+## Seeding the head's extensions: `StoreIndexes`
+
+The chain head's extensions (D-50) fold the indexes over the window, starting
+from the store's tip (their root), and ask five questions there, the ports in
+`zaino_chain_head::extension`: the outputs the window spends, how many outputs
+a transaction still had, the UTXO-set accumulator, each pool's frontier, and
+the history tree's epoch and peaks. `StoreIndexes<Store>` answers each from the
+store's reader, and the store's tip itself (`StoreTip`, from the watermark);
+this crate names both ports, so this is where the two meet. `ChainViewSync`
+builds the store to the head's floor, so the store's tip is the floor or the
+floor's parent, and the head starts there:
+
+```rust,ignore
+let indexes = Arc::new(StoreIndexes::new(store.clone()));
+let head = ChainHeadService::builder(source, config, cancel)
+    .extensions(schedule, Some(indexes.clone())) // the store's tip, where the head starts
+    .with_transactions()
+    .with_txout_set(indexes.clone())
+    .with_address_history(indexes.clone())
+    .with_tree_state(indexes.clone())
+    .with_history_tree(indexes)
+    .spawn()
+    .await?;
+```
+
+A port is implemented where the reader has the index port it needs, and a store
+built without that index answers `SeedError::Unavailable`, as it does every
+other read. A root the store does not hold is `RootNotHeld`. The accumulator
+and the remaining counts exist only at the watermark, so they are answered only
+while the watermark is the root; the frontiers, the epoch and the outputs are
+read at the root's height whatever the watermark. There is no validator fill:
+every store index an extension seeds from is built from I-03 and I-04 (D-83),
+so a store that can seed holds the outputs too.
 
 ## Offering less than the tiers can do
 
@@ -246,8 +388,9 @@ ChainViewComposer::builder(store, head, source)
 ```
 
 It starts at `ServedCapabilities::CORE` — blocks, compact blocks, transactions,
-treestate, subtree roots, chain tips — and takes the three optional capabilities
-by name.
+treestate, subtree roots, chain tips — and takes the four optional capabilities
+by name (`serving_spend_status`, `serving_txout_set`,
+`serving_address_history`, `serving_history_tree`).
 
 **Each `serving_*` method exists only when both tiers can supply its half.**
 `serving_spend_status` requires `Store::Reader: SpentOutputIndex` and
@@ -269,26 +412,27 @@ manifest report `NotAnswerable` while the store is still building.
 ## Driving the store: `spawn_sync`
 
 Everything above reads. One method writes: `spawn_sync` starts a background task
-that feeds the finalised store from the chain head's freeze stream, so the seam
-between the two tiers closes itself.
+that keeps the finalised store built to the chain head's floor, so the seam
+between the two tiers closes itself (D-72).
 
 ```rust
 let view = Arc::new(ChainViewComposer::new(store, head, source, config));
 let sync = view.spawn_sync(cancel.clone());
 ```
 
-**On launch it builds, then follows.** The loop first builds the store up to the
-chain head's floor — its lowest canonical block — so a store comes up even on a
-chain that is not moving, where no freeze would ever arrive. Freezes sent during
-the build wait in the stream, and those the build already covered are skipped.
-After that the chain head emits a block once it falls below the consensus seam,
-and the store accepts one only at `tip + 1`. A block that does not follow the
-store answers `ChainStoreError::FreezeGap`, which carries the height to build
-to, so a chain head that re-anchored after an outage is repaired the same way.
+**The floor is the target.** The chain head's floor is its lowest retained
+canonical block, below the consensus seam, so everything up to it is settled.
+On launch, and again on every chain-head update, the loop asks the store to
+`build_to(floor)`; the store fetches those blocks from its own validator, which
+is the store's only write path. A floor the store already holds is not asked
+for again.
 
-The repair runs once per batch, not until it succeeds. A second gap means the
-chain moved while the build was running; the next batch reports it again with a
-nearer target, and looping in place would block on a chain that is still moving.
+**A failed build is retried, and the retries are bounded.** A build the
+validator did not answer (`Unavailable`, `NotReady`) is retried on the loop's
+own timer, 1 second doubling to 30, whether or not the chain head moves. After
+20 failures in a row with the store not advancing, the loop stops `Offline`
+and `Critical` with the cause, marked `retryable`. Any other failure
+(inconsistent data, a failed commit) stops it at once, not `retryable`.
 
 **It is asked for, never assumed.** A deployment that drives its own store —
 building it from a validator on its own schedule — must not also get this, or two
@@ -297,55 +441,46 @@ the store stays caller-driven and this call is the caller.
 
 It is deliberately not a cargo feature. The bounds already do what a flag would,
 and do it per deployment rather than per build: `spawn_sync` exists only where
-`Store: ChainStoreIngest + ChainStoreFreezeSink` and `Head: ChainHeadFreezeEvents`,
-so a composer whose providers cannot freeze does not have the method. A feature
-would be worse on both counts — features are additive across a workspace, so one
-crate enabling it turns it on for every other consumer.
+`Store: ChainStoreIngest`, so a composer over a store that cannot be built (a
+linked, read-only one) does not have the method. A feature would be worse on
+both counts — features are additive across a workspace, so one crate enabling it
+turns it on for every other consumer.
 
-**Losing blocks costs a fetch, not correctness.** The freeze stream is
-best-effort by contract: it is a `broadcast`, so a slow consumer is told it
-lagged rather than blocking the chain head, and a chain head that re-anchors
-never emits what it skipped. Neither is handled specially, because a missed block
-becomes a gap on the next freeze and the gap repairs itself.
-
-`ChainViewSync::status()` reports `Syncing` until the store holds the floor and
-while a gap is open, `Ready` once it holds the floor or freezes are landing, and
-`Offline` once the loop has stopped. This is separate
-from the store's own status, which says whether the *database* is healthy;
-this says whether anything is still feeding it. Cancelling the token stops the
-loop, and so does dropping the handle — `shutdown()` additionally publishes
-`Closing`, so the stop is observable rather than merely effective.
+`ChainViewSync::status()` reports `Syncing` until the store holds the floor,
+`Ready` once it does, `Recoverable` (with the error as its `reason`) while a
+failed build waits for its retry, `Offline` and `Critical` once the loop has
+failed, and `Offline` once it has been stopped. This is separate from the store's own status, which says
+whether the *database* is healthy; this says whether anything is still feeding
+it. Cancelling the token stops the loop, and so does dropping the handle —
+`shutdown()` additionally publishes `Closing`, so the stop is observable rather
+than merely effective.
 
 ## Testing
 
-The `testing` feature provides one `Chain` and three views of it, so coverage
-shapes are explicit at the call site:
+The suite runs the real composer over the real services (D-90): the shared fake
+validator (`zaino-source-mock`, real consensus bytes), `zaino-chain-store-service`
+over in-memory storage, and `zaino-chain-head-service` stepped through its
+`testing` feature. There are no fakes of the ports; the one fake is the
+validator. `tests/common/mod.rs` assembles one coverage shape per test:
 
 ```rust,ignore
-let chain = Chain::of_length(1201);
-ChainViewComposer::new(
-    FakeStore::covering(&chain, 100),        // built to 100
-    FakeHead::covering(&chain, 1100, 1200),  // window near the tip
-    Arc::new(FakeSource::over(&chain)),      // knows everything
-    ChainViewConfig::default(),
-);                                           // -> a hole at 101..=1099
+let rig = rig(chain())        // 301 real blocks, served to the tip
+    .store_to(100)            // the store built through 100
+    .window(200, 300)         // the head's window: depth 100 below the tip
+    .build()
+    .await;                   // -> a hole at 101..=199
+let view = rig.view();
 ```
 
-`FakeSource` records every question, which is how the by-height/by-hash
-assertions work — the returned value is identical either way, and only the call
-log distinguishes them.
+The validator's call log is what the by-height/by-hash assertions read — the
+returned value is identical either way — and a second validator over the same
+blocks (`rig.view_over(chain(), ..)`) isolates the composer's own fetches from
+the store's and the head's. Reorgs and competing branches come from the mock
+(`reorg`, `know`, `forget`) followed by stepping the head.
 
-`tests/vectors.rs` additionally drives the composition with the checked-in
-regtest chain from `zaino-chain-store-zainodb/testing` (dev-dependency only, so
-`zebra-chain` never reaches the shipped `testing` feature). The programmatic
-`Chain` proves coverage *shapes*; the vectors prove the stitched output is
-*correct* — it caught fakes that were silently serving synthetic blocks.
-
-These fakes are also the *second implementation* of the ports;
-`zaino-chain-store-zainodb` and `zaino-chain-head-service` are the first. A port
-with only one implementation is that implementation's surface with extra steps.
-When a fake here becomes awkward to write, that is a signal about the port — the
-branch-retention split in `FakeHeadSnapshot` came from exactly that.
+Most tests use the fast seam depth (`FAST_TEST_MAX_NONFINALISED_DEPTH`, 100) on a
+300-block chain; `tests/real_seam.rs` runs a 1 200-block chain under the chain
+head's default depth, so the production seam is exercised end to end.
 
 ## What a chain view is not
 

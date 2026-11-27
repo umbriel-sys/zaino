@@ -1,26 +1,26 @@
-//! Query: fetch a pre-index compact block at a given height.
-//!
-//! The pre-index compact block has all per-block data needed for indexing
-//! (proofs/sigs stripped) but no indexed state like commitment tree sizes.
+//! Query: fetch the complete compact block at a given height.
 
 use std::future::Future;
 
-use zaino_primitives::types::{Height, PreIndexCompactBlock};
+use zaino_primitives::types::{CompactBlock, Height, PoolFilter};
 
 use super::{QueryError, ValidatorSource};
 
 pub use super::GetBlockError;
 
-/// Fetch a pre-index compact block at a given height.
+/// Fetch the complete compact block at a given height: the block's compact
+/// data and its cumulative tree sizes, as one answer about one block.
 ///
-/// The adapter deserializes from its wire format into
-/// [`PreIndexCompactBlock`], skipping proofs and signatures.
+/// `pools` is applied by the source, as the store and the chain head apply
+/// it in their own reads: a pool it leaves out is cleared from every
+/// transaction, and every transaction is kept. The tree sizes are never
+/// filtered.
 #[zaino_source_macros::resilient_port]
-pub trait OneShotGetPreIndexCompactBlock: ValidatorSource + Send + Sync {
-    /// Fetch a pre-index compact block.
-    fn get_pre_index_compact_block(
+pub trait OneShotGetCompactBlock: ValidatorSource + Send + Sync {
+    /// Fetch the compact block.
+    fn get_compact_block(
         &self,
         height: Height,
-    ) -> impl Future<Output = Result<PreIndexCompactBlock, QueryError<GetBlockError, Self::NonDomain>>>
-           + Send;
+        pools: PoolFilter,
+    ) -> impl Future<Output = Result<CompactBlock, QueryError<GetBlockError, Self::NonDomain>>> + Send;
 }

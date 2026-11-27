@@ -1,0 +1,33 @@
+[[changes]]
+crate = "zaino-source-zebra"
+kind = "breaking"
+description = """
+zebra's state syncer is watched. If it ends before the state is synced, \
+`ZebraValidator::connect` starts it again for five minutes (waits of 5 \
+seconds doubling to 60), then fails with the new \
+`ConnectError::SyncerKeepsEnding`: how often it ended, why (its panic \
+message) and what to check. An ended syncer is reported through \
+`SourceLifecycle::failure()` with why it ended. The syncer is stopped when \
+the adapter drops and when a `connect` fails. \
+`ZebraReadStateAdapter::from_service` takes the syncer's `JoinHandle<()>`, \
+not an `Arc` of it. `ConnectError` also gains `SyncerEnded`."""
+migration = """
+Pass `Some(handle)` to `from_service` in place of `Some(Arc::new(handle))`. \
+An exhaustive match on `ConnectError` handles `SyncerEnded` and \
+`SyncerKeepsEnding`."""
+
+[[changes]]
+crate = "zaino-service"
+kind = "fix"
+description = """
+A failed `validator source` (zebra's state syncer ended) is a failure a \
+restart may clear, not one that ends the service for good."""
+
+[[changes]]
+crate = "zainod"
+kind = "fix"
+description = """
+zainod restarts when zebra's state syncer ends, which starts a new one, \
+instead of exiting; the failure names why the syncer ended. At start-up a \
+syncer that ends is started again for five minutes before zainod exits with \
+the cause."""

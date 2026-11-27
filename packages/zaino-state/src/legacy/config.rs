@@ -1,0 +1,177 @@
+//! Service and storage configuration of the legacy stack.
+
+use std::path::PathBuf;
+
+use crate::legacy::xdg::resolve_path_with_xdg_cache_defaults;
+
+/// The old store's checkpoint interval default, in seconds (deprecated).
+pub const DEFAULT_SYNC_CHECKPOINT_INTERVAL_SECS: u64 = 120;
+
+/// The old store's size limit, in gigabytes (deprecated: not read).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Deserialize, serde::Serialize)]
+#[serde(transparent)]
+pub struct DatabaseSize(pub usize);
+
+impl Default for DatabaseSize {
+    fn default() -> Self {
+        Self(384)
+    }
+}
+
+/// The old store's bulk-sync write batch, in gibibytes (deprecated: not read).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Deserialize, serde::Serialize)]
+#[serde(transparent)]
+pub struct SyncWriteBatchSize(pub usize);
+
+impl Default for SyncWriteBatchSize {
+    fn default() -> Self {
+        Self(8)
+    }
+}
+
+/// The old store's accumulator rebuild budget, in gibibytes (deprecated: not
+/// read).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Deserialize, serde::Serialize)]
+#[serde(transparent)]
+pub struct AccumulatorRebuildMemorySize(pub usize);
+
+impl Default for AccumulatorRebuildMemorySize {
+    fn default() -> Self {
+        Self(8)
+    }
+}
+
+/// Service-level configuration for timeouts and channels.
+#[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
+pub struct ServiceConfig {
+    /// Service RPC timeout in seconds
+    pub timeout: u32,
+    /// Service RPC maximum channel size
+    pub channel_size: u32,
+}
+
+impl Default for ServiceConfig {
+    fn default() -> Self {
+        Self {
+            timeout: 30,
+            channel_size: 32,
+        }
+    }
+}
+
+/// Cache configuration for DashMaps.
+///
+/// Used by the mempool and BlockCache non-finalized state (FetchService backend).
+#[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
+#[serde(default)]
+pub struct CacheConfig {
+    /// Capacity of the DashMaps used for caching.
+    pub capacity: usize,
+    /// Power of 2 for number of shards (e.g., 4 means 16 shards).
+    ///
+    /// The actual shard count will be 2^shard_power.
+    /// Valid range is typically 0-8 (1 to 256 shards).
+    /// Must be greater than 0.
+    pub shard_power: u8,
+}
+
+impl CacheConfig {
+    /// Get the actual number of shards (2^shard_power)
+    pub fn shard_count(&self) -> u32 {
+        2u32.pow(self.shard_power.into())
+    }
+}
+
+impl Default for CacheConfig {
+    fn default() -> Self {
+        Self {
+            capacity: 10000, // Default capacity
+            shard_power: 4,  // Default to 16 shards
+        }
+    }
+}
+
+/// Database configuration.
+///
+/// Configures the file path and size limits for persistent storage
+/// used by Zaino services.
+///
+/// `deny_unknown_fields`: an unrecognized key under `[storage.database]` is a hard error rather
+/// than being silently ignored. This guards against the exact footgun that motivated this struct's
+/// last revision — a config still using the old `sync_write_batch_bytes` key would otherwise be
+/// dropped silently and the renamed `sync_write_batch_size` would fall back to its (large) default,
+/// OOM-killing the node. Failing loudly forces the operator to migrate the key.
+#[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct DatabaseConfig {
+    /// Database file path.
+    pub path: PathBuf,
+    /// Deprecated: the old store's size limit; not read, warned when set.
+    #[serde(default)]
+    pub size: DatabaseSize,
+    /// Deprecated: the old store's bulk-sync write batch; not read, warned when set.
+    #[serde(default)]
+    pub sync_write_batch_size: SyncWriteBatchSize,
+    /// Deprecated: the old store's accumulator rebuild budget; not read, warned when set.
+    #[serde(default)]
+    pub accumulator_rebuild_memory_size: AccumulatorRebuildMemorySize,
+    /// Deprecated: the old store's checkpoint interval; not read, warned when set.
+    #[serde(default = "default_sync_checkpoint_interval")]
+    pub sync_checkpoint_interval: u64,
+    /// Whether the store deletes the directories it no longer opens: old
+    /// index formats, disabled indexes and the old database (`v1`). Default
+    /// true.
+    #[serde(default = "default_delete_stale")]
+    pub delete_stale: bool,
+}
+
+/// Default [`DatabaseConfig::delete_stale`].
+fn default_delete_stale() -> bool {
+    true
+}
+
+/// Default [`DatabaseConfig::sync_checkpoint_interval`].
+fn default_sync_checkpoint_interval() -> u64 {
+    DEFAULT_SYNC_CHECKPOINT_INTERVAL_SECS
+}
+
+impl Default for DatabaseConfig {
+    fn default() -> Self {
+        Self {
+            path: resolve_path_with_xdg_cache_defaults("zaino"),
+            size: DatabaseSize::default(),
+            sync_write_batch_size: SyncWriteBatchSize::default(),
+            accumulator_rebuild_memory_size: AccumulatorRebuildMemorySize::default(),
+            sync_checkpoint_interval: default_sync_checkpoint_interval(),
+            delete_stale: default_delete_stale(),
+        }
+    }
+}
+
+/// Storage configuration combining cache and database settings.
+///
+/// This is used by services that need both in-memory caching and persistent storage.
+#[derive(Debug, Clone, serde::Deserialize, serde::Serialize, Default)]
+pub struct StorageConfig {
+    /// Cache configuration. Uses defaults if not specified in TOML.
+    #[serde(default)]
+    pub cache: CacheConfig,
+    /// Database configuration
+    pub database: DatabaseConfig,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn default_database_budgets_are_the_safe_values() {
+        let database = DatabaseConfig::default();
+        assert_eq!(database.sync_write_batch_size, SyncWriteBatchSize(8));
+        assert_eq!(
+            database.accumulator_rebuild_memory_size,
+            AccumulatorRebuildMemorySize(8)
+        );
+        assert_eq!(database.sync_checkpoint_interval, 120);
+    }
+}

@@ -134,11 +134,10 @@ pub trait NfsEpochObserver: Clone + Send + Sync + 'static {
     }
 }
 
-/// A placeholder [`NfsEpochObserver`] for validator-only coherence.
-///
-/// It is never consulted — validator-only mode synthesizes the epoch from the
-/// validator tip — but supplies a concrete observer type for the validator-only
-/// coherence constructor.
+/// The null [`NfsEpochObserver`] of validator-only coherence: there is no
+/// non-finalised state to observe, so it answers "no epoch" and is never
+/// consulted (validator-only mode synthesizes the epoch from the validator
+/// tip); it exists so that constructor takes a concrete observer type.
 #[cfg(feature = "tip_aware_mempool")]
 #[derive(Debug, Clone, Copy, Default)]
 pub struct NoNfs;

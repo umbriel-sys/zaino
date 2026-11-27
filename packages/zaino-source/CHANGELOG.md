@@ -13,6 +13,33 @@ and this library adheres to Rust's notion of
 ### Removed
 ### Fixed
 
+## [0.3.0] - 2026-11-21
+### Added
+- `GetChainTipsError::Unsupported`: the validator does not answer `getchaintips`.
+- `OneShotGetStandardFee` and its resilient port `GetStandardFee`, mapping to `getstandardfee`; `GetStandardFeeError::Unsupported` for a validator without it.
+- `OneShotGetNetworkInfo` and `OneShotPing` (with their resilient twins), implemented by the zcash-rpc adapter, the zebra composite and the mock.
+### Changed
+- `SendRawTransactionError` gains `RejectedByPolicy` (−26) and `AlreadyInChain` (−27) beside `Malformed` (−22) and `Rejected` (−25), with `legacy_code()` and `message()`; the zcash RPC adapter maps each code to its variant.
+- `GetNetworkSolPs` takes a `SolutionRateWindow` (`Default`, `DifficultyAveraging`, `Blocks`) in place of `Option<u32>`: a non-positive `getnetworksolps` count is the difficulty averaging window, not the default (Q-34).
+- `MAX_ADDRESS_QUERY_RESULTS` (100,000, zebrad 7's cap), and `TooManyResults { limit }` on `GetAddressTxidsError`, `GetAddressUtxosError` and `GetAddressDeltasError`; `GetStandardFeeError` gains `Unsupported`.
+  _Migration:_ Exhaustive matches on these error enums must handle the new variants.
+- `get_address_utxos` takes a `UtxoPage` (zebrad's `startHeight` and `maxEntries`); `UtxoPage::select` applies it the same way in every implementor.
+- `FailureMode::InvalidSourceData`: the source's data decoded but broke its own contract (an in-process state answering off-shape). Non-retryable, like `Parse`, which it was reported as before.
+- Rename the non-answer error `FetchError` to `NonDomainError`, and the `QueryError`/`SourceError` `Fetch` variant to `NonDomain` — it is the complement of a domain answer (unreachable, timed out, unauthorized, or an unusable/undecodable response), not specifically a transport.
+  _Migration:_ Replace `zaino_source::FetchError` with `NonDomainError`, `FetchError::new`/`from_cause` with `NonDomainError::new`/`from_cause`, and `QueryError::Fetch`/`SourceError::Fetch` with the `NonDomain` variant.
+- Add the `ValidatorSource` port contract: each adapter declares `type NonDomain: Error + Send + Sync + Into<NonDomainError>`, every `OneShot*` port gains it as a supertrait and returns `QueryError<E, Self::NonDomain>`, and `QueryError` gains a second type parameter `N` (defaulting to `NonDomainError`). The resilience wrapper erases `N` to the seam, so the consumer-facing `SourceError<E>` is unchanged.
+  _Migration:_ External adapters implementing a `OneShot*` port must now `impl ValidatorSource` (set `type NonDomain = NonDomainError` if the adapter has no distinct non-domain type) and return `QueryError<E, Self::NonDomain>`.
+- The `testing` feature and `mock::MockChain` are removed: `zaino-source-mock` is the one fake validator. This crate's tests run on a scripted test-only source: every generated resilient port is tested through `ValidatorClient`, and `PolledChainTip`'s tests, which a feature gate had kept from ever running, run deterministically on paused time.
+- `get_transaction(txid, verbosity)` answers `TransactionAnswer` (`Raw` bytes or the validator's `Object`); `TransactionResponse` is removed.
+- `OneShotGetBlockVerbose::get_block_verbose` and `OneShotGetBlockVerboseByHash::get_block_verbose_by_hash` take a `BlockVerbosity` and return the validator's whole `getblock` answer.
+- dependency `zaino-primitives` 0.3.0→0.4.0 crossed the requirement `^0.3.0`
+### Fixed
+- `NonDomainError` now preserves the concrete transport cause via `Error::source()` instead of flattening it into a message string, so an abort trail reaches the underlying error.
+- `GetSubtreeRootsError::PoolUnavailable` documents what validators do: the node does not support the pool (zcashd: Ironwood). An inactive pool is answered empty, never refused.
+### Internal
+- Denies panicking code in production.
+- Documentation and comments only: rustdoc builds without warnings.
+
 ## [0.2.2] - 2026-09-26
 ### Added
 - `OneShotGetCommitmentTreeRootsByHeight`, with its resilient twin `GetCommitmentTreeRootsByHeight`: tree roots at the best-chain block at a height, answering with the block's hash alongside the roots. The hash names which block answered, so a consumer pairing this query with a concurrent hash-addressed read can detect a reorg between the two.

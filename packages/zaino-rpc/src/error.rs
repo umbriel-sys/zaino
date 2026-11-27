@@ -6,9 +6,10 @@ use crate::client::MAX_RESPONSE_BYTES;
 /// Errors from the JSON-RPC transport layer.
 #[derive(Debug, thiserror::Error)]
 pub enum RpcError {
-    /// HTTP request failed.
+    /// HTTP request failed. Built through `From`, which drops the
+    /// validator's URL from the error: this text reaches Zaino's clients.
     #[error("http error: {0}")]
-    Http(#[from] reqwest::Error),
+    Http(#[source] reqwest::Error),
 
     /// JSON serialization/deserialization failed.
     #[error("json error: {0}")]
@@ -27,11 +28,28 @@ pub enum RpcError {
     #[error("http status {0}")]
     Status(u16),
 
-    /// Retries exhausted on work-queue-full responses.
-    #[error("work queue full after {attempts} attempts")]
-    WorkQueueExhausted {
+    /// The validator is up but would not take the request, however often
+    /// it was asked: it is at its limit of requests (HTTP 429) or not
+    /// serving for now (HTTP 503).
+    #[error("the validator stayed busy (http status {status}) through {attempts} attempt(s)")]
+    Busy {
         /// Number of attempts made.
         attempts: u32,
+        /// The status it answered the last attempt with.
+        status: u16,
+    },
+
+    /// The request never left: every one of the client's request slots
+    /// stayed taken for as long as the request was allowed to wait.
+    #[error(
+        "no request slot to the validator came free in {waited:?}: \
+         {max_in_flight} requests were in flight the whole time"
+    )]
+    Saturated {
+        /// How long the request waited.
+        waited: std::time::Duration,
+        /// The client's limit of requests in flight.
+        max_in_flight: usize,
     },
 
     /// Server returned null result without an error object.
@@ -47,6 +65,12 @@ pub enum RpcError {
     },
 }
 
+impl From<reqwest::Error> for RpcError {
+    fn from(error: reqwest::Error) -> Self {
+        Self::Http(error.without_url())
+    }
+}
+
 impl From<RpcError> for zaino_source::NonDomainError {
     fn from(e: RpcError) -> Self {
         use zaino_source::FailureMode;
@@ -59,10 +83,12 @@ impl From<RpcError> for zaino_source::NonDomainError {
                     FailureMode::Connection
                 }
             }
+            // the validator did not answer in the time allowed
+            RpcError::Saturated { .. } => FailureMode::Timeout,
             RpcError::Status(401 | 403) => FailureMode::Auth,
             RpcError::Status(code) => FailureMode::HttpStatus(*code),
             RpcError::Rpc { code, .. } => FailureMode::RpcError(*code),
-            RpcError::WorkQueueExhausted { .. } => FailureMode::RpcError(-1),
+            RpcError::Busy { .. } => FailureMode::Busy,
             // An abandoned body is `Parse` rather than a retryable mode on
             // purpose: the same request would produce the same oversized
             // response, so retrying only repeats the cost.

@@ -1,13 +1,22 @@
 //! Retry policy for JSON-RPC calls.
 //!
 //! Pure decision logic: no IO, no sleep. The client owns the delay.
+//!
+//! Only an HTTP status says a validator is too busy. No JSON-RPC error code
+//! does: zebrad and zakura answer `-1` for any failed request, invalid
+//! parameters among them, so an error object is never asked again.
 
-/// Work-queue-full error code from Zebra/the legacy full node.
-const WORK_QUEUE_FULL_CODE: i64 = -1;
+/// A server at its limit of requests: zebrad's and zakura's answer past 100
+/// in flight.
+const TOO_MANY_REQUESTS: u16 = 429;
 
-/// Should this RPC error be retried?
-pub(crate) fn is_retryable(code: i64) -> bool {
-    code == WORK_QUEUE_FULL_CODE
+/// A server not taking requests for now.
+const SERVICE_UNAVAILABLE: u16 = 503;
+
+/// Does this HTTP status say the validator is up but would not take the
+/// call, so that asking again may be answered?
+pub(crate) fn is_busy_status(status: u16) -> bool {
+    matches!(status, TOO_MANY_REQUESTS | SERVICE_UNAVAILABLE)
 }
 
 /// Should we attempt another retry?
@@ -20,19 +29,12 @@ mod tests {
     use super::*;
 
     #[test]
-    fn work_queue_full_is_retryable() {
-        assert!(is_retryable(-1));
-    }
-
-    #[test]
-    fn block_not_found_is_not_retryable() {
-        assert!(!is_retryable(-8));
-    }
-
-    #[test]
-    fn other_errors_not_retryable() {
-        assert!(!is_retryable(0));
-        assert!(!is_retryable(-32600));
+    fn only_429_and_503_are_busy() {
+        assert!(is_busy_status(429));
+        assert!(is_busy_status(503));
+        for status in [400, 401, 403, 404, 413, 500, 502] {
+            assert!(!is_busy_status(status), "{status}");
+        }
     }
 
     #[test]

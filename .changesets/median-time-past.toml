@@ -1,0 +1,22 @@
+consumed_in = "zainod-0-11-0"
+[[changes]]
+crate = "zaino-consensus"
+kind = "feature"
+description = """
+`median_time_past` and `MEDIAN_TIME_SPAN`: protocol §7.7.3's `MedianTime` \
+over the last eleven block times, the one definition of a block's \
+`mediantime`."""
+
+[[changes]]
+crate = "zaino-source-zebra"
+kind = "internal"
+description = """
+The read-state `getblockdeltas` takes its `mediantime` from \
+`zaino_consensus::median_time_past` instead of its own copy."""
+
+[[changes]]
+crate = "zaino-source-mock"
+kind = "internal"
+description = """
+The mock's `getblockdeltas` `mediantime` uses \
+`zaino_consensus::median_time_past`."""

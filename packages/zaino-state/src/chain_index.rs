@@ -9,11 +9,10 @@
 use crate::chain_index::types::BlockIndex;
 use crate::chain_index::types::{BestChainLocation, NonBestChainLocation};
 use crate::CompactBlockStream;
-use crate::IndexedBlock;
 use std::collections::HashSet;
 use zaino_primitives::types::rpc::{
     AddressDeltas, AddressDeltasRequest, BlockDeltas, BlockHeaderVerbose, BlockSubsidy, MiningInfo,
-    NodeInfo, PeerInfo,
+    NodeInfo, PeerInfo, StandardFee,
 };
 use zaino_primitives::types::MempoolInfo;
 use zaino_primitives::types::TxOutSetInfo;
@@ -24,21 +23,13 @@ use zebra_rpc::{
     methods::GetBlock,
 };
 
-/// ChainIndex's side of the ChainHead boundary: handing ChainHead a validator.
-pub mod chain_head;
-/// ChainIndex's side of the ChainStore boundary: handing the finalised store a
-/// validator.
-pub mod chain_store;
-/// ChainIndex's side of the ChainView boundary: handing ChainView a validator,
-/// and composing it.
-pub mod chain_view;
-mod mempool;
-mod network_adoption;
+mod chain_head;
+pub(crate) mod chain_view;
+mod getblock_wire;
 mod node_backed;
 mod reads;
 mod rpc_reads;
-/// ChainIndex's driven port onto the validator. Temporary scaffolding — see
-/// the module docs.
+/// The validator source's error and location vocabulary.
 pub mod source;
 pub mod source_ports;
 /// The legacy type vocabulary and its conversions.
@@ -63,7 +54,7 @@ pub use node_backed::{NodeBackedChainIndex, NodeBackedChainIndexSubscriber};
 /// cross-crate live tests that enable the `fast-test-seam` feature — so short mock
 /// fixtures and small live chains still exercise a *moving* finalised seam. At the
 /// real depth `finalized_height_floor` saturates to genesis for those fixtures and
-/// the eviction/seam invariants become untestable (see zingolabs/zaino#1288). Both
+/// the eviction/seam invariants become untestable. Both
 /// arms derive from the same upstream reorg bound, so neither is a hard-coded literal.
 ///
 /// [`MAX_NONFINALISED_DEPTH`]: zaino_consensus::MAX_NONFINALISED_DEPTH
@@ -79,8 +70,7 @@ pub(crate) const OPERATIONAL_NFS_DEPTH: u32 = zaino_consensus::FAST_TEST_MAX_NON
 /// After a chain-shortening reorg this floor can move backwards while
 /// the on-disk `finalized_height` does not — finalized blocks are
 /// never evicted. Callers comparing this floor against
-/// `finalized_height` should account for the asymmetry
-/// (see zingolabs/zaino#1128).
+/// `finalized_height` should account for the asymmetry.
 #[cfg(test)]
 pub(crate) fn finalized_height_floor(chain_tip: u32) -> crate::Height {
     crate::Height(chain_tip.saturating_sub(OPERATIONAL_NFS_DEPTH))
@@ -103,18 +93,17 @@ pub(crate) fn finalized_height_floor(chain_tip: u32) -> crate::Height {
 /// Both backends are selected by config and built through
 /// [`NodeBackedIndexerService`](crate::NodeBackedIndexerService), which
 /// resolves the connection type, probes the validator, adopts its activation
-/// schedule and waits for the initial sync:
+/// schedule and waits for the chain head to reach the validator's tip:
 ///
 /// ```no_run
-/// # async fn example() -> Result<(), Box<dyn std::error::Error>> {
-/// use zaino_state::{
-///     LightWalletService, NodeBackedIndexerService, NodeBackedIndexerServiceConfig, ZcashService,
-/// };
+/// # async fn example(
+/// #     config: zaino_state::NodeBackedIndexerServiceConfig,
+/// # ) -> Result<(), Box<dyn std::error::Error>> {
+/// use zaino_state::{NodeBackedIndexerService, ZcashService};
 ///
-/// // `ValidatorConnectionType::Rpc` reaches the validator over JSON-RPC only;
-/// // `Direct` additionally reads its state database, and is preferred where
-/// // available.
-/// let config = NodeBackedIndexerServiceConfig::default();
+/// // `config` is `NodeBackedIndexerServiceConfig::new_rpc` (JSON-RPC only) or
+/// // `new_direct` (also reads the validator's state database; preferred
+/// // where available).
 /// let service = NodeBackedIndexerService::spawn(config).await?;
 /// # Ok(())
 /// # }
@@ -189,24 +178,6 @@ pub trait ChainIndex {
         snapshot: &Self::Snapshot,
         hash: types::Height,
     ) -> impl std::future::Future<Output = Result<Option<types::BlockHash>, Self::Error>>;
-
-    /// Returns Some(IndexedBlock) for the given block hash.
-    ///
-    /// Returns None if the specified block is not found.
-    fn get_indexed_block_by_hash(
-        &self,
-        snapshot: &Self::Snapshot,
-        target_hash: &types::BlockHash,
-    ) -> impl std::future::Future<Output = Result<Option<IndexedBlock>, Self::Error>>;
-
-    /// Returns Some(IndexedBlock) for the given block height.in the best chain.
-    ///
-    /// Returns None if the specified block height is above the best chain tip.
-    fn get_indexed_block_by_height(
-        &self,
-        snapshot: &Self::Snapshot,
-        target_height: &types::Height,
-    ) -> impl std::future::Future<Output = Result<Option<IndexedBlock>, Self::Error>>;
 
     /// Given inclusive start and end heights, stream all blocks
     /// between the given heights, descending when `start` is above `end`.
@@ -437,8 +408,7 @@ pub trait ChainIndexRpcExt: ChainIndex {
 
     /// Returns the raw serialised header of the block with the given hash.
     ///
-    /// The non-verbose half of `getblockheader`; see
-    /// [`BlockchainSource::get_raw_block_header`](source::BlockchainSource::get_raw_block_header).
+    /// The non-verbose half of `getblockheader`.
     fn get_raw_block_header(
         &self,
         hash: String,
@@ -482,6 +452,11 @@ pub trait ChainIndexRpcExt: ChainIndex {
         height: u32,
     ) -> impl std::future::Future<Output = Result<BlockSubsidy, Self::Error>>;
 
+    /// Returns the `getstandardfee` response.
+    fn get_standard_fee(
+        &self,
+    ) -> impl std::future::Future<Output = Result<StandardFee, Self::Error>>;
+
     /// Returns the `getmininginfo` response.
     fn get_mining_info(&self)
         -> impl std::future::Future<Output = Result<MiningInfo, Self::Error>>;
@@ -500,7 +475,7 @@ pub trait ChainIndexRpcExt: ChainIndex {
     fn get_spent_info(
         &self,
         outpoint: zaino_primitives::types::rpc::SpentOutpoint,
-    ) -> impl std::future::Future<Output = Result<zaino_primitives::types::rpc::SpentInfo, Self::Error>>;
+    ) -> impl std::future::Future<Output = Result<zaino_service::Spend, Self::Error>>;
 
     /// Returns the `getnetworksolps` response.
     fn get_network_sol_ps(
@@ -540,11 +515,11 @@ pub trait ChainIndexRpcExt: ChainIndex {
 
     /// Returns the full `gettxoutsetinfo` response for the whole chain at the tip.
     ///
-    /// Returns `None` while the finalised state and the chain head do not yet
-    /// meet. The wire layer renders that as the legacy full node's empty object.
+    /// Refused while the set is building (retryable) and where the deployment
+    /// does not build it.
     fn get_tx_out_set_info(
         &self,
-    ) -> impl std::future::Future<Output = Result<Option<TxOutSetInfo>, Self::Error>>;
+    ) -> impl std::future::Future<Output = Result<TxOutSetInfo, Self::Error>>;
 }
 
 /// The shielded pools this crate names.
@@ -553,4 +528,4 @@ pub trait ChainIndexRpcExt: ChainIndex {
 /// network upgrade that activates it, because that is what it needs to decide
 /// whether a block should have a commitment tree root. A second copy here drifts
 /// the moment a pool is added.
-pub use zaino_chain_store_zainodb::pool::ShieldedPool;
+pub use crate::legacy::chain::ShieldedPool;

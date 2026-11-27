@@ -1,13 +1,9 @@
 use std::collections::BTreeSet;
 
 use crate::proto::{
-    compact_formats::{ChainMetadata, CompactBlock, CompactOrchardAction, CompactTx},
+    compact_formats::{CompactBlock, CompactTx},
     service::{BlockId, BlockRange, PoolType},
 };
-#[cfg(feature = "heavy")]
-use zebra_chain::block::Height;
-#[cfg(feature = "heavy")]
-use zebra_state::HashOrHeight;
 
 /// Every pool a request may name — the `PoolType` variants minus `Invalid`.
 const KNOWN_POOLS: [PoolType; 4] = [
@@ -264,21 +260,6 @@ impl PoolTypeFilter {
     }
 }
 
-#[cfg(feature = "heavy")]
-/// Converts [`BlockId`] into [`HashOrHeight`] Zebra type
-pub fn blockid_to_hashorheight(block_id: BlockId) -> Option<HashOrHeight> {
-    <[u8; 32]>::try_from(block_id.hash)
-        .map(zebra_chain::block::Hash)
-        .map(HashOrHeight::from)
-        .or_else(|_| {
-            block_id
-                .height
-                .try_into()
-                .map(|height| HashOrHeight::Height(Height(height)))
-        })
-        .ok()
-}
-
 impl CompactTx {
     /// Whether any per-pool field of this transaction is non-empty.
     pub fn has_pool_data(&self) -> bool {
@@ -341,46 +322,6 @@ fn included_or_empty<T>(included: bool, items: Vec<T>) -> Vec<T> {
     } else {
         Vec::new()
     }
-}
-
-/// Rebuilds the block so each transaction carries only its nullifier
-/// carriers: Sapling spends whole (the spend is its own nullifier record),
-/// Orchard and Ironwood actions reduced to nullifier-only, and every other
-/// field emptied. Chain metadata is zeroed.
-pub fn compact_block_to_nullifiers(mut block: CompactBlock) -> CompactBlock {
-    block.vtx = block
-        .vtx
-        .into_iter()
-        .map(|compact_tx| CompactTx {
-            index: compact_tx.index,
-            txid: compact_tx.txid,
-            fee: compact_tx.fee,
-            spends: compact_tx.spends,
-            outputs: Vec::new(),
-            actions: nullifiers_only(compact_tx.actions),
-            ironwood_actions: nullifiers_only(compact_tx.ironwood_actions),
-            vin: Vec::new(),
-            vout: Vec::new(),
-        })
-        .collect();
-
-    block.chain_metadata = Some(ChainMetadata {
-        sapling_commitment_tree_size: 0,
-        orchard_commitment_tree_size: 0,
-        ironwood_commitment_tree_size: 0,
-    });
-    block
-}
-
-/// Reduces each action to one carrying only its nullifier.
-fn nullifiers_only(actions: Vec<CompactOrchardAction>) -> Vec<CompactOrchardAction> {
-    actions
-        .into_iter()
-        .map(|action| CompactOrchardAction {
-            nullifier: action.nullifier,
-            ..Default::default()
-        })
-        .collect()
 }
 
 #[cfg(test)]
@@ -492,5 +433,45 @@ mod test {
         assert!(filter.includes_sapling());
         assert!(filter.includes_orchard());
         assert!(!filter.includes_transparent());
+    }
+
+    /// `prune_compact_block` clears the pools the filter leaves out and drops
+    /// a transaction left with nothing, keeping the others' indexes.
+    #[test]
+    fn pruning_clears_excluded_pools_and_drops_empty_transactions() {
+        use crate::proto::compact_formats::{CompactBlock, CompactSaplingSpend, CompactTx, TxOut};
+        let spend = CompactSaplingSpend { nf: vec![1; 32] };
+        let out = TxOut {
+            value: 5,
+            script_pub_key: vec![0x6a],
+        };
+        let block = CompactBlock {
+            vtx: vec![
+                CompactTx {
+                    index: 0,
+                    vout: vec![out.clone()],
+                    ..Default::default()
+                },
+                CompactTx {
+                    index: 1,
+                    spends: vec![spend.clone()],
+                    vout: vec![out.clone()],
+                    ..Default::default()
+                },
+            ],
+            ..Default::default()
+        };
+
+        let shielded = super::prune_compact_block(block.clone(), &PoolTypeFilter::default());
+        assert_eq!(
+            shielded.vtx,
+            vec![CompactTx {
+                index: 1,
+                spends: vec![spend],
+                ..Default::default()
+            }]
+        );
+        let all = super::prune_compact_block(block.clone(), &PoolTypeFilter::includes_all());
+        assert_eq!(all, block);
     }
 }

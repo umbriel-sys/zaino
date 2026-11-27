@@ -20,9 +20,9 @@ use zaino_source::*;
 /// What the finalised state asks of the validator.
 ///
 /// Derived from what the implementation calls, not from what a store might
-/// plausibly want. Blocks by height to build from; blocks by hash and
-/// transactions for the passthrough mode, which answers reads from the
-/// validator and so asks questions a building store never does; the chain tip
+/// plausibly want. Blocks by height to build from; blocks by hash for the
+/// passthrough mode, which answers reads from the validator and so asks a
+/// question a building store never does; the chain tip
 /// to know how far there is to go; commitment tree roots, which a block alone
 /// does not yield.
 ///
@@ -37,7 +37,6 @@ pub trait FinalisedSourceCaps:
     + OneShotGetBlock
     + OneShotGetBlockByHash
     + OneShotGetCommitmentTreeRoots
-    + OneShotGetTransaction
     + Send
     + Sync
     + 'static
@@ -49,7 +48,6 @@ impl<T> FinalisedSourceCaps for T where
         + OneShotGetBlock
         + OneShotGetBlockByHash
         + OneShotGetCommitmentTreeRoots
-        + OneShotGetTransaction
         + Send
         + Sync
         + 'static
@@ -120,6 +118,7 @@ pub trait ChainIndexSourceCaps:
     + OneShotGetRawBlockHeader
     + OneShotGetBlockDeltas
     + OneShotGetBlockSubsidy
+    + OneShotGetStandardFee
     + OneShotGetBlockchainInfo
     + OneShotGetDifficulty
     + OneShotGetNodeInfo
@@ -151,6 +150,7 @@ impl<T> ChainIndexSourceCaps for T where
         + OneShotGetRawBlockHeader
         + OneShotGetBlockDeltas
         + OneShotGetBlockSubsidy
+        + OneShotGetStandardFee
         + OneShotGetBlockchainInfo
         + OneShotGetDifficulty
         + OneShotGetNodeInfo

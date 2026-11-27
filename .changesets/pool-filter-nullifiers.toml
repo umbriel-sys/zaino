@@ -1,0 +1,36 @@
+consumed_in = "zainod-0-11-0"
+[[changes]]
+crate = "zaino-primitives"
+kind = "breaking"
+description = """
+`PoolFilter` moves here from `zaino-chain-store` and gains \
+`nullifiers_only()` / `includes_outputs()`. Compact transactions carry \
+actions as `CompactAction { nullifier, output: Option<ActionOutput> }`, \
+`None` where a nullifiers-only read left the output unread."""
+
+[[changes]]
+crate = "zaino-chain-store"
+kind = "internal"
+description = """
+`PoolFilter` is re-exported from `zaino-primitives`."""
+
+[[changes]]
+crate = "zaino-indexes"
+kind = "breaking"
+description = """
+I-05's `Reader::actions` takes `outputs`: with `false` it reads only the \
+nullifier column. `FoldTx` refuses an action without its output \
+(`FoldBlockError::ActionWithoutOutput`)."""
+
+[[changes]]
+crate = "zaino-chain-store-service"
+kind = "feature"
+description = """
+A nullifiers-only compact read reads only I-05's nullifier columns."""
+
+[[changes]]
+crate = "zaino-chain"
+kind = "feature"
+description = """
+Compact blocks from the window and the validator honour the \
+nullifiers-only filter, so every provider answers it alike."""

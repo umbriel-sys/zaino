@@ -25,3 +25,15 @@ and this library adheres to Rust's notion of
   correction.
 - `Task` wraps `tokio::spawn` with a typed name, cooperative cancellation, a
   hard abort, and panic capture surfaced as `TaskError`.
+
+## [0.2.0] - 2026-11-21
+### Added
+- `CpuBudget` splits the process's cores between components by `Share` (chain store 8/16, chain head 4/16, mempool 2/16, chain view 2/16, each with a floor and a cap), so no two components both size themselves from the core count.
+- `StatusCell` (a shared status a runtime sets and handles read and watch) and `ComponentStatus::{is_live, is_ready}`.
+- A component status now carries the cause of its condition: the failing error's full source chain when unhealthy, cleared on any clean transition. Adds `RunLoop` for a supervised run body, `Progress` for bring-up progress, and `ReachabilityProbe` for asking whether a dependency is reachable.
+- `StatusCell::degraded_unless_closing`: `Recoverable` with a reason, unless closing.
+### Changed
+- `Task`, `TaskName` and `TaskError` move to zaino-async: a component runs on a task rather than defining one. `CancellationToken` is re-exported from this crate so an implementor needs to name only one.
+  _Migration:_ Import `Task`, `TaskName` and `TaskError` from `zaino_async` instead of `zaino_component`. `ComponentStatus` is now `Clone` and no longer `Copy`, so read it out of a watch with `.clone()`.
+### Internal
+- Denies panicking code in production.

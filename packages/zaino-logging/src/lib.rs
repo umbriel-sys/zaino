@@ -1,6 +1,24 @@
 #![doc = include_str!("../usage.md")]
 #![forbid(unsafe_code)]
 #![deny(clippy::wildcard_enum_match_arm)]
+// production code never panics: no indexing, unchecked arithmetic or panicking calls
+#![cfg_attr(
+    not(test),
+    deny(
+        clippy::unwrap_used,
+        clippy::expect_used,
+        clippy::panic,
+        clippy::unreachable,
+        clippy::todo,
+        clippy::unimplemented,
+        clippy::indexing_slicing,
+        clippy::arithmetic_side_effects,
+        clippy::string_slice,
+        clippy::get_unwrap,
+        clippy::let_underscore_must_use,
+        let_underscore_drop
+    )
+)]
 
 //! Entry points: [`init`] for binaries, [`try_init`] for tests.
 
@@ -44,13 +62,69 @@ impl LogFormat {
             _ => None,
         }
     }
+}
 
-    /// Get from ZAINOLOG_FORMAT environment variable.
-    fn from_env() -> Self {
-        env::var("ZAINOLOG_FORMAT")
-            .ok()
-            .and_then(|s| Self::parse_str(&s))
-            .unwrap_or_default()
+/// Why logging was not initialised.
+#[derive(Debug)]
+pub enum LogInitError {
+    /// An environment setting holds a value it does not take.
+    Setting {
+        /// The variable.
+        variable: &'static str,
+        /// What it holds.
+        value: String,
+        /// What it takes.
+        expected: &'static str,
+    },
+    /// `RUST_LOG` does not parse as a filter.
+    Filter(String),
+    /// A global subscriber is already set.
+    Install(TryInitError),
+}
+
+impl std::fmt::Display for LogInitError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Setting {
+                variable,
+                value,
+                expected,
+            } => write!(f, "{variable}={value:?} is not one of: {expected}"),
+            Self::Filter(error) => write!(f, "RUST_LOG is not a log filter: {error}"),
+            Self::Install(error) => write!(f, "{error}"),
+        }
+    }
+}
+
+impl std::error::Error for LogInitError {}
+
+/// `variable`'s value through `parse`; `default` where it is not set. A
+/// value `parse` refuses is an error, never the default.
+fn setting<T>(
+    variable: &'static str,
+    held: Result<String, env::VarError>,
+    expected: &'static str,
+    default: T,
+    parse: impl FnOnce(&str) -> Option<T>,
+) -> Result<T, LogInitError> {
+    let refused = |value: String| LogInitError::Setting {
+        variable,
+        value,
+        expected,
+    };
+    match held {
+        Err(env::VarError::NotPresent) => Ok(default),
+        Err(env::VarError::NotUnicode(value)) => Err(refused(value.to_string_lossy().into_owned())),
+        Ok(value) => parse(&value).ok_or_else(|| refused(value)),
+    }
+}
+
+/// `1`/`true`/`yes`/`on` or `0`/`false`/`no`/`off`, in any case.
+fn switch(value: &str) -> Option<bool> {
+    match value.to_lowercase().as_str() {
+        "1" | "true" | "yes" | "on" => Some(true),
+        "0" | "false" | "no" | "off" => Some(false),
+        _ => None,
     }
 }
 
@@ -68,53 +142,68 @@ struct LogConfig {
     level: Level,
 }
 
-impl Default for LogConfig {
-    fn default() -> Self {
-        // Check ZAINOLOG_COLOR env var:
-        // - "true"/"1"/etc: force color on
-        // - "false"/"0"/etc: force color off
-        // - "auto": auto-detect TTY (default behavior)
-        // If not set, default to color enabled (better dev experience)
-        let color = env::var("ZAINOLOG_COLOR")
-            .ok()
-            .and_then(|s| match s.to_lowercase().as_str() {
-                "1" | "true" | "yes" | "on" => Some(true),
-                "0" | "false" | "no" | "off" => Some(false),
+impl LogConfig {
+    /// The configuration the environment asks for; a setting holding a value
+    /// it does not take is an error.
+    fn from_env() -> Result<Self, LogInitError> {
+        let format = setting(
+            "ZAINOLOG_FORMAT",
+            env::var("ZAINOLOG_FORMAT"),
+            "tree, stream, json",
+            LogFormat::default(),
+            LogFormat::parse_str,
+        )?;
+        // on unless set otherwise; `auto` follows the terminal
+        let color = setting(
+            "ZAINOLOG_COLOR",
+            env::var("ZAINOLOG_COLOR"),
+            "1, true, yes, on, 0, false, no, off, auto",
+            true,
+            |value| match value.to_lowercase().as_str() {
                 "auto" => Some(std::io::stderr().is_terminal()),
-                _ => None,
-            })
-            .unwrap_or(true); // Default to color enabled
-
-        // Source `file:line` on every line is debugging detail, not something to
-        // read during normal log watching. Off unless `ZAINOLOG_LOCATION` opts in.
-        let location = env::var("ZAINOLOG_LOCATION")
-            .ok()
-            .is_some_and(|s| matches!(s.to_lowercase().as_str(), "1" | "true" | "yes" | "on"));
-
-        Self {
-            format: LogFormat::from_env(),
+                _ => switch(value),
+            },
+        )?;
+        // Source `file:line` on every line is debugging detail: off unless
+        // `ZAINOLOG_LOCATION` opts in.
+        let location = setting(
+            "ZAINOLOG_LOCATION",
+            env::var("ZAINOLOG_LOCATION"),
+            "1, true, yes, on, 0, false, no, off",
+            false,
+            switch,
+        )?;
+        Ok(Self {
+            format,
             color,
             location,
             level: Level::INFO,
-        }
+        })
     }
 }
 
 /// Initialise logging, configured from the environment (see the [crate
-/// docs](crate)). Installs the global subscriber and the panic hook.
-///
-/// # Panics
-///
-/// Panics if a global tracing subscriber has already been set.
-pub fn init() {
-    try_install(LogConfig::default()).expect("global tracing subscriber already set");
+/// docs](crate)). Installs the global subscriber and the panic hook; fails
+/// if a setting or `RUST_LOG` holds a value it does not take, or a global
+/// tracing subscriber has already been set.
+pub fn init() -> Result<(), LogInitError> {
+    try_install(LogConfig::from_env()?)?;
     install_panic_logger();
+    Ok(())
 }
 
 /// Idempotent variant of [`init`] for tests, where several test functions may
-/// each try to initialise. Does not panic if a subscriber is already set.
+/// each try to initialise: a subscriber already set is kept. A setting that
+/// does not parse is reported on stderr, and nothing is installed.
 pub fn try_init() {
-    let _ = try_install(LogConfig::default());
+    match LogConfig::from_env().and_then(try_install) {
+        Ok(()) => {}
+        // already initialised: the first subscriber stays
+        Err(LogInitError::Install(_)) => {}
+        Err(error @ (LogInitError::Setting { .. } | LogInitError::Filter(_))) => {
+            eprintln!("logging not initialised: {error}");
+        }
+    }
     install_panic_logger();
 }
 
@@ -154,15 +243,21 @@ fn install_panic_logger() {
 
 /// Build the subscriber described by `config` and install it as the global
 /// default, erroring if one is already set.
-fn try_install(config: LogConfig) -> Result<(), TryInitError> {
+fn try_install(config: LogConfig) -> Result<(), LogInitError> {
     // If RUST_LOG is set, use it directly. Otherwise, default to zaino crates only.
     // Users can set RUST_LOG=info to see all crates including zebra.
-    let env_filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| {
-        EnvFilter::new(format!(
+    let env_filter = match env::var("RUST_LOG") {
+        Ok(filter) => {
+            EnvFilter::try_new(filter).map_err(|error| LogInitError::Filter(error.to_string()))?
+        }
+        Err(env::VarError::NotPresent) => EnvFilter::new(format!(
             "zaino={level},zainod={level},zainodlib={level}",
             level = config.level.as_str()
-        ))
-    });
+        )),
+        Err(env::VarError::NotUnicode(_)) => {
+            return Err(LogInitError::Filter("not Unicode".to_owned()));
+        }
+    };
     // Panics are routed through `tracing` under the `panic` target by
     // `install_panic_logger`. That target is outside the `zaino*` namespace, so
     // neither the default filter nor a typical `RUST_LOG=zaino=…` enables it — the
@@ -170,14 +265,14 @@ fn try_install(config: LogConfig) -> Result<(), TryInitError> {
     // the default hook's raw stderr backtrace, and absent from the JSON sink).
     // Ensure the `panic` target is enabled at ERROR so panic visibility is
     // structural, not contingent on the operator's filter.
-    let env_filter = env_filter.add_directive(
-        "panic=error"
-            .parse()
-            .expect("static `panic=error` directive is valid"),
-    );
+    let env_filter = match "panic=error".parse() {
+        Ok(directive) => env_filter.add_directive(directive),
+        // a static directive: never refused
+        Err(_) => env_filter,
+    };
     let registry = tracing_subscriber::registry().with(env_filter);
 
-    match config.format {
+    let installed = match config.format {
         LogFormat::Tree => registry
             .with(
                 HierarchicalLayer::new(2)
@@ -216,12 +311,44 @@ fn try_install(config: LogConfig) -> Result<(), TryInitError> {
                     .with_line_number(config.location),
             )
             .try_init(),
-    }
+    };
+    installed.map_err(LogInitError::Install)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A setting that is not set takes its default; one holding a value it
+    /// does not take is an error naming it, never the default.
+    #[test]
+    fn a_setting_is_its_value_its_default_or_an_error() {
+        let read = |held| {
+            setting(
+                "ZAINOLOG_FORMAT",
+                held,
+                "tree, stream, json",
+                LogFormat::Stream,
+                LogFormat::parse_str,
+            )
+        };
+        assert_eq!(
+            read(Err(env::VarError::NotPresent)).expect("default"),
+            LogFormat::Stream
+        );
+        assert_eq!(
+            read(Ok("JSON".to_owned())).expect("parses"),
+            LogFormat::Json
+        );
+        let refused = read(Ok("jsno".to_owned())).expect_err("refused");
+        assert_eq!(
+            refused.to_string(),
+            "ZAINOLOG_FORMAT=\"jsno\" is not one of: tree, stream, json"
+        );
+        assert_eq!(switch("ON"), Some(true));
+        assert_eq!(switch("no"), Some(false));
+        assert_eq!(switch("maybe"), None);
+    }
 
     #[test]
     fn panic_logger_installs_idempotently_and_still_unwinds() {
